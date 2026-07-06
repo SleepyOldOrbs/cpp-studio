@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"cpp-studio/internal/config"
+	"cpp-studio/internal/demo"
 	"cpp-studio/internal/lifecycle"
 )
 
@@ -47,11 +48,32 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", r.handleRoot)
+	mux.HandleFunc("/demo", r.handleDemoRedirect)
+	mux.Handle("/demo/", http.StripPrefix("/demo/", demo.Handler()))
 	mux.HandleFunc("/health", r.handleHealth)
 	mux.HandleFunc("/v1/chat/completions", r.handleChatCompletions)
 	mux.HandleFunc("/v1/audio/speech", r.handleSpeech)
 	mux.HandleFunc("/v1/audio/transcriptions", r.handleTranscriptions)
 	return mux
+}
+
+func (r *router) handleRoot(w http.ResponseWriter, req *http.Request) {
+	if req.URL.Path != "/" {
+		http.NotFound(w, req)
+		return
+	}
+	if !requireMethod(w, req, http.MethodGet) {
+		return
+	}
+	http.Redirect(w, req, "/demo/", http.StatusFound)
+}
+
+func (r *router) handleDemoRedirect(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodGet) {
+		return
+	}
+	http.Redirect(w, req, "/demo/", http.StatusFound)
 }
 
 func (r *router) handleHealth(w http.ResponseWriter, req *http.Request) {

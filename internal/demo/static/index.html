@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cpp-studio voice loop</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell" aria-busy="false">
+    <header class="topbar">
+      <div>
+        <h1>cpp-studio voice loop</h1>
+        <p class="route-line">/health /v1/audio/transcriptions /v1/chat/completions /v1/audio/speech</p>
+      </div>
+      <button class="secondary" id="healthButton" type="button">Refresh health</button>
+    </header>
+
+    <section class="status-strip" aria-live="polite">
+      <span class="status-pill unknown" id="gatewayStatus">Unknown</span>
+      <span id="healthUpdated">No health check yet</span>
+    </section>
+
+    <section class="workspace">
+      <form class="control-panel" id="voiceForm">
+        <label class="field">
+          <span>Typed message</span>
+          <textarea id="messageInput" rows="5" placeholder="Message text"></textarea>
+        </label>
+
+        <div class="record-row">
+          <button class="record-button" id="recordButton" type="button">Push to record</button>
+          <label class="file-button">
+            <input id="wavInput" type="file" accept=".wav,audio/wav,audio/x-wav">
+            <span>Choose WAV</span>
+          </label>
+        </div>
+
+        <div class="source-row">
+          <span class="source-label">WAV source</span>
+          <span id="wavStatus">None</span>
+        </div>
+
+        <div class="action-row">
+          <button class="primary" id="runButton" type="submit">Run voice loop</button>
+          <button class="secondary" id="clearButton" type="button">Clear</button>
+        </div>
+
+        <p class="error-box" id="errorBox" hidden></p>
+      </form>
+
+      <section class="result-panel">
+        <label class="field">
+          <span>Transcript</span>
+          <textarea id="transcriptOutput" rows="5" readonly></textarea>
+        </label>
+
+        <label class="field">
+          <span>Assistant reply</span>
+          <textarea id="replyOutput" rows="7" readonly></textarea>
+        </label>
+
+        <div class="audio-panel">
+          <span>Audio playback</span>
+          <audio id="replyAudio" controls></audio>
+        </div>
+      </section>
+    </section>
+
+    <section class="health-panel">
+      <h2>Gateway health</h2>
+      <div id="healthBody" class="health-body">No data</div>
+    </section>
+
+    <section class="log-panel">
+      <div class="log-header">
+        <h2>Log</h2>
+        <button class="plain" id="clearLogButton" type="button">Clear log</button>
+      </div>
+      <pre id="logOutput" aria-live="polite"></pre>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

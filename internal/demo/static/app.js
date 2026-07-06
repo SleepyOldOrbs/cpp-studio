@@ -1,0 +1,577 @@
+(function () {
+  "use strict";
+
+  var shell = document.querySelector(".app-shell");
+  var healthButton = document.getElementById("healthButton");
+  var gatewayStatus = document.getElementById("gatewayStatus");
+  var healthUpdated = document.getElementById("healthUpdated");
+  var healthBody = document.getElementById("healthBody");
+  var voiceForm = document.getElementById("voiceForm");
+  var messageInput = document.getElementById("messageInput");
+  var recordButton = document.getElementById("recordButton");
+  var wavInput = document.getElementById("wavInput");
+  var wavStatus = document.getElementById("wavStatus");
+  var runButton = document.getElementById("runButton");
+  var clearButton = document.getElementById("clearButton");
+  var clearLogButton = document.getElementById("clearLogButton");
+  var transcriptOutput = document.getElementById("transcriptOutput");
+  var replyOutput = document.getElementById("replyOutput");
+  var replyAudio = document.getElementById("replyAudio");
+  var errorBox = document.getElementById("errorBox");
+  var logOutput = document.getElementById("logOutput");
+
+  var running = false;
+  var recording = false;
+  var activeWavFile = null;
+  var activeAudioUrl = "";
+  var recorder = null;
+  var recordSetupPending = false;
+  var recordStopRequested = false;
+
+  var apiControls = [
+    healthButton,
+    wavInput,
+    runButton,
+    clearButton,
+    clearLogButton,
+    messageInput
+  ];
+
+  function log(message) {
+    var stamp = new Date().toLocaleTimeString();
+    logOutput.textContent += "[" + stamp + "] " + message + "\n";
+    logOutput.scrollTop = logOutput.scrollHeight;
+  }
+
+  function setError(error) {
+    var message = error && error.message ? error.message : String(error);
+    errorBox.textContent = message;
+    errorBox.hidden = false;
+    log("Error: " + message);
+  }
+
+  function clearError() {
+    errorBox.textContent = "";
+    errorBox.hidden = true;
+  }
+
+  function setRunning(value) {
+    running = value;
+    shell.setAttribute("aria-busy", value ? "true" : "false");
+    apiControls.forEach(function (control) {
+      control.disabled = value || recording || recordSetupPending;
+    });
+    recordButton.disabled = value || (!recording && !recordSetupPending && !canRecord());
+  }
+
+  function setRecording(value) {
+    recording = value;
+    recordButton.classList.toggle("recording", value);
+    recordButton.setAttribute("aria-pressed", value ? "true" : "false");
+    recordButton.textContent = value ? "Release to stop" : "Push to record";
+    apiControls.forEach(function (control) {
+      control.disabled = value || running || recordSetupPending;
+    });
+    recordButton.disabled = running || (!value && !recordSetupPending && !canRecord());
+  }
+
+  function setRecordSetupPending(value) {
+    recordSetupPending = value;
+    recordButton.textContent = value ? "Preparing..." : recording ? "Release to stop" : "Push to record";
+    apiControls.forEach(function (control) {
+      control.disabled = value || recording || running;
+    });
+    recordButton.disabled = running || (!recording && !value && !canRecord());
+  }
+
+  function canRecord() {
+    return Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.AudioContext);
+  }
+
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes)) {
+      return "";
+    }
+    if (bytes < 1024) {
+      return bytes + " B";
+    }
+    if (bytes < 1024 * 1024) {
+      return (bytes / 1024).toFixed(1) + " KB";
+    }
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  function setActiveWav(file, source) {
+    activeWavFile = file;
+    wavStatus.textContent = source + ": " + file.name + " (" + formatBytes(file.size) + ")";
+    log("WAV ready from " + source + ": " + file.name + ", " + formatBytes(file.size));
+  }
+
+  function clearAudioUrl() {
+    if (activeAudioUrl) {
+      URL.revokeObjectURL(activeAudioUrl);
+      activeAudioUrl = "";
+    }
+    replyAudio.removeAttribute("src");
+    replyAudio.load();
+  }
+
+  function resetOutputs() {
+    transcriptOutput.value = "";
+    replyOutput.value = "";
+    clearAudioUrl();
+    clearError();
+  }
+
+  function createElement(tag, className, text) {
+    var element = document.createElement(tag);
+    if (className) {
+      element.className = className;
+    }
+    if (text !== undefined) {
+      element.textContent = text;
+    }
+    return element;
+  }
+
+  function renderStatus(status) {
+    var normalized = status || "unknown";
+    gatewayStatus.textContent = normalized;
+    gatewayStatus.className = "status-pill " + normalized;
+  }
+
+  function renderHealth(data) {
+    renderStatus(data.status);
+    healthUpdated.textContent = data.updatedAt ? "Updated " + new Date(data.updatedAt).toLocaleString() : "Updated now";
+    healthBody.textContent = "";
+
+    var engines = data.engines || {};
+    var names = Object.keys(engines).sort();
+    if (names.length === 0) {
+      healthBody.textContent = "No engines reported";
+      return;
+    }
+
+    names.forEach(function (name) {
+      var engine = engines[name] || {};
+      var row = createElement("div", "engine-row");
+      row.appendChild(createElement("span", "engine-name", name));
+      row.appendChild(createElement("span", "engine-status", engine.status || "unknown"));
+
+      var detail = engine.ready ? "ready" : "not ready";
+      if (engine.pid) {
+        detail += ", pid " + engine.pid;
+      }
+      if (engine.lastSuccessAt) {
+        detail += ", last success " + new Date(engine.lastSuccessAt).toLocaleString();
+      }
+      if (engine.lastError) {
+        detail += ", " + engine.lastError;
+      }
+      row.appendChild(createElement("span", "engine-detail", detail));
+      healthBody.appendChild(row);
+    });
+  }
+
+  async function readErrorBody(response) {
+    var text = await response.text();
+    if (!text) {
+      return response.status + " " + response.statusText;
+    }
+    try {
+      var parsed = JSON.parse(text);
+      return parsed.error || text;
+    } catch (error) {
+      return text;
+    }
+  }
+
+  async function ensureOk(response, label) {
+    if (response.ok) {
+      return;
+    }
+    var body = await readErrorBody(response);
+    throw new Error(label + " failed: HTTP " + response.status + ": " + body);
+  }
+
+  async function refreshHealth() {
+    clearError();
+    setRunning(true);
+    try {
+      log("GET /health");
+      var response = await fetch("/health", { method: "GET" });
+      await ensureOk(response, "Health");
+      var data = await response.json();
+      renderHealth(data);
+      log("Health status: " + (data.status || "unknown"));
+    } catch (error) {
+      renderStatus("error");
+      setError(error);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function transcribeWav(file) {
+    var form = new FormData();
+    form.append("file", file, file.name || "input.wav");
+    log("POST /v1/audio/transcriptions");
+    var response = await fetch("/v1/audio/transcriptions", {
+      method: "POST",
+      body: form
+    });
+    await ensureOk(response, "Transcription");
+    var data = await response.json();
+    var text = typeof data.text === "string" ? data.text.trim() : "";
+    if (!text) {
+      throw new Error("Transcription returned no text");
+    }
+    log("Transcript received");
+    return text;
+  }
+
+  function readChatReply(data) {
+    var choices = Array.isArray(data.choices) ? data.choices : [];
+    var first = choices[0] || {};
+    if (first.message && typeof first.message.content === "string") {
+      return first.message.content.trim();
+    }
+    if (typeof first.text === "string") {
+      return first.text.trim();
+    }
+    return JSON.stringify(data, null, 2);
+  }
+
+  async function sendChat(text) {
+    log("POST /v1/chat/completions");
+    var response = await fetch("/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "default",
+        messages: [
+          {
+            role: "user",
+            content: text
+          }
+        ]
+      })
+    });
+    await ensureOk(response, "Chat");
+    var data = await response.json();
+    var reply = readChatReply(data);
+    if (!reply) {
+      throw new Error("Chat returned no assistant reply");
+    }
+    log("Assistant reply received");
+    return reply;
+  }
+
+  async function synthesizeSpeech(text) {
+    log("POST /v1/audio/speech");
+    var response = await fetch("/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        input: text,
+        voice: "default",
+        format: "wav"
+      })
+    });
+    await ensureOk(response, "Speech");
+    var blob = await response.blob();
+    if (!blob.size) {
+      throw new Error("Speech returned an empty WAV");
+    }
+    log("Speech WAV received: " + formatBytes(blob.size));
+    return blob;
+  }
+
+  async function runVoiceLoop(event) {
+    if (event) {
+      event.preventDefault();
+    }
+    clearError();
+    setRunning(true);
+    try {
+      resetOutputs();
+      var text = "";
+      if (activeWavFile) {
+        text = await transcribeWav(activeWavFile);
+        transcriptOutput.value = text;
+      } else {
+        text = messageInput.value.trim();
+        if (!text) {
+          throw new Error("Record audio, choose a WAV, or enter a typed message");
+        }
+        transcriptOutput.value = text;
+        log("Using typed message as transcript");
+      }
+
+      var reply = await sendChat(text);
+      replyOutput.value = reply;
+
+      var speech = await synthesizeSpeech(reply);
+      activeAudioUrl = URL.createObjectURL(speech);
+      replyAudio.src = activeAudioUrl;
+      replyAudio.load();
+      try {
+        await replyAudio.play();
+      } catch (error) {
+        log("Audio playback is ready");
+      }
+    } catch (error) {
+      setError(error);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  function mergeChunks(chunks, length) {
+    var output = new Float32Array(length);
+    var offset = 0;
+    chunks.forEach(function (chunk) {
+      output.set(chunk, offset);
+      offset += chunk.length;
+    });
+    return output;
+  }
+
+  function writeAscii(view, offset, text) {
+    for (var i = 0; i < text.length; i += 1) {
+      view.setUint8(offset + i, text.charCodeAt(i));
+    }
+  }
+
+  function encodeWav(samples, sampleRate) {
+    var bytesPerSample = 2;
+    var blockAlign = bytesPerSample;
+    var buffer = new ArrayBuffer(44 + samples.length * bytesPerSample);
+    var view = new DataView(buffer);
+
+    writeAscii(view, 0, "RIFF");
+    view.setUint32(4, 36 + samples.length * bytesPerSample, true);
+    writeAscii(view, 8, "WAVE");
+    writeAscii(view, 12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true);
+    writeAscii(view, 36, "data");
+    view.setUint32(40, samples.length * bytesPerSample, true);
+
+    var offset = 44;
+    for (var i = 0; i < samples.length; i += 1) {
+      var sample = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      offset += 2;
+    }
+
+    return new Blob([view], { type: "audio/wav" });
+  }
+
+  async function cleanupRecorderResources(target) {
+    if (!target) {
+      return;
+    }
+    try {
+      if (target.processor) {
+        target.processor.disconnect();
+      }
+    } catch (error) {
+      // Already disconnected.
+    }
+    try {
+      if (target.source) {
+        target.source.disconnect();
+      }
+    } catch (error) {
+      // Already disconnected.
+    }
+    if (target.stream) {
+      target.stream.getTracks().forEach(function (track) {
+        track.stop();
+      });
+    }
+    if (target.audioContext && target.audioContext.state !== "closed") {
+      try {
+        await target.audioContext.close();
+      } catch (error) {
+        // Ignore cleanup errors after a failed recording setup.
+      }
+    }
+  }
+
+  async function startRecording(event) {
+    if (event && recordButton.setPointerCapture && event.pointerId !== undefined) {
+      recordButton.setPointerCapture(event.pointerId);
+    }
+    clearError();
+    if (!canRecord()) {
+      setError(new Error("Audio recording is not available in this browser"));
+      return;
+    }
+    if (recording || running) {
+      return;
+    }
+
+    recordStopRequested = false;
+    setRecordSetupPending(true);
+    var stream = null;
+    var audioContext = null;
+    var source = null;
+    var processor = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      });
+      if (recordStopRequested) {
+        await cleanupRecorderResources({ stream: stream });
+        recordStopRequested = false;
+        setRecordSetupPending(false);
+        log("Recording cancelled before microphone setup completed");
+        return;
+      }
+      var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      audioContext = new AudioContextClass();
+      source = audioContext.createMediaStreamSource(stream);
+      processor = audioContext.createScriptProcessor(4096, 1, 1);
+      var chunks = [];
+      var length = 0;
+
+      processor.onaudioprocess = function (processEvent) {
+        if (!recording) {
+          return;
+        }
+        var input = processEvent.inputBuffer.getChannelData(0);
+        var copy = new Float32Array(input.length);
+        copy.set(input);
+        chunks.push(copy);
+        length += copy.length;
+
+        var output = processEvent.outputBuffer.getChannelData(0);
+        output.fill(0);
+      };
+
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+      recorder = {
+        audioContext: audioContext,
+        chunks: chunks,
+        length: length,
+        processor: processor,
+        sampleRate: audioContext.sampleRate,
+        source: source,
+        stream: stream
+      };
+
+      Object.defineProperty(recorder, "length", {
+        get: function () {
+          return length;
+        }
+      });
+
+      setRecordSetupPending(false);
+      setRecording(true);
+      log("Recording started at " + audioContext.sampleRate + " Hz");
+      if (recordStopRequested) {
+        await stopRecording();
+      }
+    } catch (error) {
+      await cleanupRecorderResources({
+        audioContext: audioContext,
+        processor: processor,
+        source: source,
+        stream: stream
+      });
+      recordStopRequested = false;
+      setRecordSetupPending(false);
+      setRecording(false);
+      setError(error);
+    }
+  }
+
+  async function stopRecording() {
+    if (recordSetupPending && !recording) {
+      recordStopRequested = true;
+      return;
+    }
+    if (!recording || !recorder) {
+      return;
+    }
+
+    var current = recorder;
+    recordStopRequested = false;
+    setRecording(false);
+    await cleanupRecorderResources(current);
+
+    var samples = mergeChunks(current.chunks, current.length);
+    if (samples.length < current.sampleRate / 4) {
+      recorder = null;
+      setError(new Error("Recording is too short"));
+      return;
+    }
+
+    var wavBlob = encodeWav(samples, current.sampleRate);
+    var file = new File([wavBlob], "recording.wav", { type: "audio/wav" });
+    setActiveWav(file, "recording");
+    recorder = null;
+  }
+
+  function chooseWav(event) {
+    clearError();
+    var file = event.target.files && event.target.files[0];
+    if (!file) {
+      return;
+    }
+    var name = file.name || "upload.wav";
+    var looksLikeWav = /\.wav$/i.test(name) || /wav/i.test(file.type || "");
+    if (!looksLikeWav) {
+      event.target.value = "";
+      setError(new Error("Choose a WAV file"));
+      return;
+    }
+    setActiveWav(file, "upload");
+  }
+
+  function clearAll() {
+    activeWavFile = null;
+    wavInput.value = "";
+    wavStatus.textContent = "None";
+    messageInput.value = "";
+    resetOutputs();
+    log("Cleared workspace");
+  }
+
+  healthButton.addEventListener("click", refreshHealth);
+  voiceForm.addEventListener("submit", runVoiceLoop);
+  wavInput.addEventListener("change", chooseWav);
+  clearButton.addEventListener("click", clearAll);
+  clearLogButton.addEventListener("click", function () {
+    logOutput.textContent = "";
+  });
+
+  recordButton.addEventListener("pointerdown", startRecording);
+  recordButton.addEventListener("pointerup", stopRecording);
+  recordButton.addEventListener("pointercancel", stopRecording);
+  recordButton.addEventListener("lostpointercapture", stopRecording);
+
+  if (!canRecord()) {
+    recordButton.disabled = true;
+    recordButton.textContent = "Recording unavailable";
+  }
+
+  log("Demo loaded");
+  refreshHealth();
+}());

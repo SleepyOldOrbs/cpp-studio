@@ -33,11 +33,22 @@ Smoke the gateway without native model binaries:
 go run .\cmd\cpp-studio --config .\config.smoke.json --run-seconds 5
 ```
 
+That smoke config only proves lifecycle and `/health`; it does not configure the voice-loop engines.
+
 Health:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8765/health
 ```
+
+Browser demo:
+
+```text
+http://127.0.0.1:8765/demo/
+```
+
+The demo can refresh gateway health, record a WAV in the browser, upload a WAV fallback, run transcription -> chat -> speech, and play the returned WAV.
+The full loop requires configured `whisper`, `llama`, and `audio` engines. With `config.audio-local.example.json`, the demo can exercise health and the speech route; transcription and chat still need local `whisper.cpp` and `llama.cpp` paths.
 
 ## Routes
 
@@ -87,7 +98,7 @@ try {
 
   New-Item -ItemType Directory -Force -Path .\out | Out-Null
   $out = ".\out\speech-route.wav"
-$body = @{ input = 'Hello from cpp-studio.'; voice = 'default'; format = 'wav' } | ConvertTo-Json
+  $body = @{ input = 'Hello from cpp-studio.'; voice = 'default'; format = 'wav' } | ConvertTo-Json
   Invoke-WebRequest -Uri http://127.0.0.1:8765/v1/audio/speech -Method Post -ContentType 'application/json' -Body $body -OutFile $out
   py -3.11 -c "import wave, pathlib; p=pathlib.Path(r'$out'); w=wave.open(str(p),'rb'); print({'bytes': p.stat().st_size, 'channels': w.getnchannels(), 'sample_width_bytes': w.getsampwidth(), 'sample_rate': w.getframerate(), 'frames': w.getnframes(), 'duration_seconds': round(w.getnframes()/w.getframerate(), 3)})"
 }

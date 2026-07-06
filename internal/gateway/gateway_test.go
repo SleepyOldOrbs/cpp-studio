@@ -48,6 +48,31 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestDemoRoute(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": {Command: "audio-helper"},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/demo/", nil)
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "cpp-studio voice loop") {
+		t.Fatalf("expected demo HTML, got %q", body)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/demo/" {
+		t.Fatalf("expected root redirect to /demo/, got %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
 func TestChatCompletionsProxy(t *testing.T) {
 	var gotBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
