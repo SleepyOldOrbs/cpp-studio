@@ -71,6 +71,12 @@ Release checklist:
 docs\RELEASE.md
 ```
 
+Configuration guide:
+
+```text
+docs\CONFIG.md
+```
+
 ## Routes
 
 - `GET /health`: gateway and engine state, process IDs, last errors, and log tails.
