@@ -1,0 +1,18 @@
+{
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "engines": {
+    "smoke": {
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "Write-Output 'smoke engine ready'; Start-Sleep -Seconds 30"
+      ],
+      "startupTimeoutSeconds": 2,
+      "shutdownTimeoutSeconds": 2
+    }
+  }
+}

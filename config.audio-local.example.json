@@ -1,0 +1,23 @@
+{
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "engines": {
+    "audio": {
+      "command": "..\\audio.cpp\\build\\windows-cuda-release\\bin\\audiocpp_cli.exe",
+      "args": [
+        "--task", "tts",
+        "--family", "qwen3_tts",
+        "--model", "..\\audio.cpp\\models\\Qwen3-TTS-12Hz-0.6B-Base",
+        "--backend", "cuda",
+        "--voice-ref", "..\\audio.cpp\\assets\\resources\\b.wav",
+        "--reference-text", "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you.",
+        "--max-tokens", "256",
+        "--session-option", "qwen3_tts.weight_type=q8_0"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 180
+    }
+  }
+}

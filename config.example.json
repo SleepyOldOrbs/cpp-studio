@@ -1,0 +1,38 @@
+{
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "engines": {
+    "llama": {
+      "command": "llama-server",
+      "args": ["--host", "127.0.0.1", "--port", "8733", "-m", "C:\\Temp\\model.gguf", "--jinja"],
+      "mode": "server",
+      "healthUrl": "http://127.0.0.1:8733/health",
+      "startupTimeoutSeconds": 60,
+      "shutdownTimeoutSeconds": 10,
+      "requestTimeoutSeconds": 120
+    },
+    "whisper": {
+      "command": "whisper-cli",
+      "args": ["-m", "C:\\Temp\\whisper.bin"],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 120
+    },
+    "audio": {
+      "command": "audiocpp_cli",
+      "args": [
+        "--task", "tts",
+        "--family", "qwen3_tts",
+        "--model", "C:\\Temp\\Qwen3-TTS-12Hz-0.6B-Base",
+        "--backend", "cuda",
+        "--voice-ref", "C:\\Temp\\voice.wav",
+        "--reference-text", "Reference voice transcript.",
+        "--max-tokens", "256",
+        "--session-option", "qwen3_tts.weight_type=q8_0"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 180
+    }
+  }
+}
