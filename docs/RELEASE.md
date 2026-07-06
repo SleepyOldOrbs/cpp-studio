@@ -15,13 +15,19 @@
    .\scripts\smoke-speech-route.ps1
    ```
 
-3. Confirm generated files are ignored:
+3. Run the deterministic full-loop fixture smoke:
+
+   ```powershell
+   .\scripts\smoke-voice-loop-fixture.ps1
+   ```
+
+4. Confirm generated files are ignored:
 
    ```powershell
    git status --ignored --short
    ```
 
-4. Push the branch and let GitHub Actions run on Windows and Linux.
+5. Push the branch and let GitHub Actions run on Windows and Linux.
 
 ## Current Release Scope
 

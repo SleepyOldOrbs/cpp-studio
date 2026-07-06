@@ -65,6 +65,12 @@ James-local audio route check:
 .\scripts\smoke-speech-route.ps1
 ```
 
+Deterministic full-loop fixture check:
+
+```powershell
+.\scripts\smoke-voice-loop-fixture.ps1
+```
+
 Release checklist:
 
 ```text
@@ -75,6 +81,12 @@ Configuration guide:
 
 ```text
 docs\CONFIG.md
+```
+
+Fixture engine guide:
+
+```text
+docs\FIXTURE.md
 ```
 
 ## Routes
