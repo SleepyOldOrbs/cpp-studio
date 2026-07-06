@@ -21,13 +21,21 @@
    .\scripts\smoke-voice-loop-fixture.ps1
    ```
 
-4. Confirm generated files are ignored:
+4. Build a release package:
+
+   ```powershell
+   .\scripts\package-release.ps1 -Runtime windows-amd64
+   ```
+
+   The archive is written to `dist\cpp-studio-windows-amd64.zip`. GitHub Actions also builds and uploads Windows and Linux package archives for every CI run.
+
+5. Confirm generated files are ignored:
 
    ```powershell
    git status --ignored --short
    ```
 
-5. Push the branch and let GitHub Actions run on Windows and Linux.
+6. Push the branch and let GitHub Actions run on Windows and Linux.
 
 ## Current Release Scope
 
@@ -39,6 +47,16 @@
 - Browser demo at `/demo/`.
 - Local Qwen3 TTS proof through `audio.cpp`.
 - Route contracts documented in `docs\API.md`.
+- CI-built release archives for Windows and Linux containing `cpp-studio`, `cpp-studio-fixture`, configs, README, and docs.
+
+## CI Artifacts
+
+- `cpp-studio-windows-amd64`: `dist\cpp-studio-windows-amd64.zip`
+- `cpp-studio-linux-amd64`: `dist/cpp-studio-linux-amd64.tar.gz`
+
+Both archives extract to a top-level `cpp-studio-<runtime>` directory. They include `cpp-studio`, `cpp-studio-fixture`, README, docs, and sample configs. They do not include native inference engine binaries or model weights.
+
+`config.ci.json` is the portable config-check example. `config.smoke.json` is included for parity with the source tree, but it is Windows-oriented because it starts `powershell.exe`.
 
 ## Still Outside This Release
 

@@ -11,7 +11,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            runtime: linux-amd64
+            archive: dist/cpp-studio-linux-amd64.tar.gz
+          - os: windows-latest
+            runtime: windows-amd64
+            archive: dist/cpp-studio-windows-amd64.zip
 
     steps:
       - uses: actions/checkout@v4
@@ -43,3 +49,14 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: .\scripts\smoke-voice-loop-fixture.ps1
+
+      - name: package release archive
+        shell: pwsh
+        run: ./scripts/package-release.ps1 -Runtime ${{ matrix.runtime }}
+
+      - name: upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp-studio-${{ matrix.runtime }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error

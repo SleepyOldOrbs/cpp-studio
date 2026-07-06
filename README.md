@@ -12,7 +12,7 @@ go run .\cmd\cpp-studio --config .\config.smoke.json --check
 ```
 
 `config.example.json` is a shape example. Point `command`, `args`, and `healthUrl` at real local binaries before starting the gateway.
-`config.smoke.json` is a runnable local smoke config that starts a harmless PowerShell process so the gateway can be tested end to end.
+`config.smoke.json` is a Windows-local smoke config that starts a harmless PowerShell process so the gateway can be tested end to end. Use `config.ci.json` for portable config validation.
 `config.audio-local.example.json` points at the sibling `..\audio.cpp` checkout and the verified Qwen3 TTS model from the proof note.
 
 After wiring real binaries into a copy of `config.example.json`, validate it with:
@@ -70,6 +70,14 @@ Deterministic full-loop fixture check:
 ```powershell
 .\scripts\smoke-voice-loop-fixture.ps1
 ```
+
+Build a release package:
+
+```powershell
+.\scripts\package-release.ps1 -Runtime windows-amd64
+```
+
+The package is written under `dist\` and includes the gateway binary, fixture binary, example configs, README, and docs. It does not bundle native engine binaries or model weights. GitHub Actions also uploads Windows and Linux package archives from each CI run; see `docs\RELEASE.md` for artifact names and platform caveats.
 
 Release checklist:
 
