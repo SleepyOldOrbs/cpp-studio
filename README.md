@@ -83,6 +83,12 @@ Configuration guide:
 docs\CONFIG.md
 ```
 
+API reference:
+
+```text
+docs\API.md
+```
+
 Fixture engine guide:
 
 ```text

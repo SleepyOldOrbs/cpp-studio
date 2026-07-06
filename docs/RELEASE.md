@@ -38,6 +38,7 @@
 - PNG image generation subprocess route for configured `sd-cli`.
 - Browser demo at `/demo/`.
 - Local Qwen3 TTS proof through `audio.cpp`.
+- Route contracts documented in `docs\API.md`.
 
 ## Still Outside This Release
 
