@@ -141,6 +141,79 @@ func TestSpeechRequiresText(t *testing.T) {
 	}
 }
 
+func TestImageWritesValidPNG(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image.png")
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"image", "--prompt", "a fixture image", "--output", path, "--width", "512", "--height", "512"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run image: %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("unexpected output stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read png: %v", err)
+	}
+	assertFixturePNG(t, data)
+}
+
+func TestImageSupportsSDCLIShortAliases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image.png")
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"image", "-p", "a fixture image", "-o", path, "-W", "256", "-H", "256"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run image with aliases: %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("unexpected output stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read png: %v", err)
+	}
+	assertFixturePNG(t, data)
+}
+
+func TestImageRequiresPrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image.png")
+
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"image", "--prompt", " ", "--output", path}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run image succeeded with empty prompt")
+	}
+	if !strings.Contains(err.Error(), "non-empty") {
+		t.Fatalf("error = %q, want non-empty", err.Error())
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("output file exists after rejected image input: %v", statErr)
+	}
+}
+
+func TestImageRequireSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image.png")
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"image", "--prompt", "a fixture image", "--output", path, "--width", "64", "--height", "64", "--require-size", "64x64"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run image: %v", err)
+	}
+
+	badPath := filepath.Join(t.TempDir(), "bad-image.png")
+	stdout.Reset()
+	stderr.Reset()
+	err := run([]string{"image", "--prompt", "a fixture image", "--output", badPath, "--width", "32", "--height", "64", "--require-size", "64x64"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run image succeeded with mismatched required size")
+	}
+	if !strings.Contains(err.Error(), "required size") {
+		t.Fatalf("error = %q, want required size", err.Error())
+	}
+	if _, statErr := os.Stat(badPath); !os.IsNotExist(statErr) {
+		t.Fatalf("output file exists after rejected image size: %v", statErr)
+	}
+}
+
 func TestSpeechRequireContains(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "out.wav")
 
@@ -158,6 +231,17 @@ func TestSpeechRequireContains(t *testing.T) {
 
 	if err := run([]string{"speech", "--text", "fixture transcript", "--require-contains", "fixture transcript", "--out", path}, &stdout, &stderr); err != nil {
 		t.Fatalf("run speech with required text: %v", err)
+	}
+}
+
+func assertFixturePNG(t *testing.T, data []byte) {
+	t.Helper()
+	signature := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if len(data) < len(signature) {
+		t.Fatalf("png length = %d, want at least %d", len(data), len(signature))
+	}
+	if !bytes.Equal(data[:len(signature)], signature) {
+		t.Fatalf("missing PNG signature")
 	}
 }
 

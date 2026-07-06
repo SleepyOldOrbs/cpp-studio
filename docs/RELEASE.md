@@ -35,6 +35,7 @@
 - Chat proxy route for a configured `llama-server`.
 - WAV transcription subprocess route for a configured `whisper-cli`.
 - WAV speech subprocess route for configured `audiocpp_cli`.
+- PNG image generation subprocess route for configured `sd-cli`.
 - Browser demo at `/demo/`.
 - Local Qwen3 TTS proof through `audio.cpp`.
 
@@ -44,5 +45,6 @@
 - Bundled model weights.
 - Strict OpenAI compatibility.
 - Realtime streaming.
-- `stable-diffusion.cpp` image generation.
+- Local `stable-diffusion.cpp` model proof on James's machine.
+- URL image responses and non-PNG image outputs.
 - Desktop installer.

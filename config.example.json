@@ -33,6 +33,12 @@
       ],
       "mode": "subprocess",
       "requestTimeoutSeconds": 180
+    },
+    "sd": {
+      "command": "sd-cli",
+      "args": ["-m", "C:\\Temp\\v1-5-pruned-emaonly.safetensors"],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 300
     }
   }
 }

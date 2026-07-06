@@ -43,6 +43,7 @@ The gateway appends request arguments to the configured base args:
 
 - `whisper`: appends `-f <uploaded-temp-wav>`.
 - `audio`: appends `--text <input> --out <generated-temp-wav>`.
+- `sd`: appends `--prompt <prompt> --output <generated-temp-png>`, plus `--width <px> --height <px>` when the request includes `size`.
 
 Keep stable model/backend options in `args`, and let the gateway own request input/output paths.
 
@@ -101,10 +102,27 @@ Point `command` at your `whisper-cli` binary and keep the model in `args`.
 
 The current transcription route accepts WAV uploads only.
 
+### stable-diffusion.cpp
+
+Point `command` at your `sd-cli` binary and keep model/backend options in `args`.
+
+```json
+{
+  "command": "sd-cli",
+  "args": ["-m", "C:\\Temp\\v1-5-pruned-emaonly.safetensors"],
+  "mode": "subprocess",
+  "requestTimeoutSeconds": 300
+}
+```
+
+The image route accepts `{ "prompt": "...", "size": "512x512", "response_format": "b64_json" }`, runs the configured `sd` subprocess, validates the generated PNG, and returns OpenAI-shaped `b64_json` data. Requested dimensions are capped at 2048 px per side and 4,194,304 total pixels. This is a narrow subset: one PNG only, `b64_json` only, `n` must be omitted or `1`, and request fields such as `model`, `quality`, `style`, and `user` are ignored.
+
+The gateway currently appends `--prompt`, `--output`, `--width`, and `--height`. The upstream `stable-diffusion.cpp` README describes the project as active development and notes that CLI options may change frequently, so run `sd-cli -h` against your exact binary before relying on a newer build.
+
 ## Health Behavior
 
 - Server engines report process IDs once started.
 - Subprocess engines report ready after config validation.
 - Successful route calls update `lastSuccessAt`.
 - Failed subprocess route calls update `status` and `lastError`.
-- Busy audio/transcription engines return `429` for concurrent route calls.
+- Busy audio/transcription/image engines return `429` for concurrent route calls.

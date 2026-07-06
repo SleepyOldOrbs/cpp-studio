@@ -37,6 +37,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runWhisper(args[1:], stdout, stderr)
 	case "speech":
 		return runSpeech(args[1:], stdout, stderr)
+	case "image":
+		return runImage(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		printUsage(stdout)
 		return nil
@@ -53,6 +55,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  cpp-studio-fixture server --host 127.0.0.1 --port 8799")
 	fmt.Fprintln(w, "  cpp-studio-fixture whisper -f <wav>")
 	fmt.Fprintln(w, "  cpp-studio-fixture speech --text <text> --out <path>")
+	fmt.Fprintln(w, "  cpp-studio-fixture image --prompt <prompt> --output <path> [--width <px> --height <px>]")
 }
 
 func runServer(args []string, stderr io.Writer) error {
@@ -261,6 +264,62 @@ func writeFixtureWAV(path string) error {
 
 	if err := os.WriteFile(path, wav.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("write wav: %w", err)
+	}
+	return nil
+}
+
+func runImage(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("image", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	var prompt string
+	var outPath string
+	var width int
+	var height int
+	var requireSize string
+	flags.StringVar(&prompt, "prompt", "", "fixture/test helper prompt")
+	flags.StringVar(&prompt, "p", "", "fixture/test helper prompt")
+	flags.StringVar(&outPath, "output", "", "fixture/test helper PNG output path")
+	flags.StringVar(&outPath, "o", "", "fixture/test helper PNG output path")
+	flags.IntVar(&width, "width", 0, "fixture/test helper image width")
+	flags.IntVar(&width, "W", 0, "fixture/test helper image width")
+	flags.IntVar(&height, "height", 0, "fixture/test helper image height")
+	flags.IntVar(&height, "H", 0, "fixture/test helper image height")
+	flags.StringVar(&requireSize, "require-size", "", "fail unless width and height match WIDTHxHEIGHT")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return errors.New("image --prompt must be non-empty")
+	}
+	if outPath == "" {
+		return errors.New("image --output <path> is required")
+	}
+	if width < 0 || height < 0 {
+		return errors.New("image width and height must be non-negative")
+	}
+	if requireSize != "" && fmt.Sprintf("%dx%d", width, height) != requireSize {
+		return fmt.Errorf("image size %dx%d did not match required size %s", width, height, requireSize)
+	}
+	return writeFixturePNG(outPath)
+}
+
+func writeFixturePNG(path string) error {
+	data := []byte{
+		0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n',
+		0x00, 0x00, 0x00, 0x0d, 'I', 'H', 'D', 'R',
+		0x00, 0x00, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x01,
+		0x08, 0x02, 0x00, 0x00, 0x00,
+		0x90, 0x77, 0x53, 0xde,
+		0x00, 0x00, 0x00, 0x10, 'I', 'D', 'A', 'T',
+		0x78, 0x9c, 0x62, 0xfa, 0xff, 0xff, 0x3f, 0x20,
+		0x00, 0x00, 0xff, 0xff, 0x06, 0x06, 0x03, 0x00,
+		0xb7, 0x66, 0x11, 0x21,
+		0x00, 0x00, 0x00, 0x00, 'I', 'E', 'N', 'D',
+		0xae, 0x42, 0x60, 0x82,
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write png: %w", err)
 	}
 	return nil
 }

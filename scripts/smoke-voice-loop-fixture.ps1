@@ -33,6 +33,24 @@ function Get-WavInfo {
   }
 }
 
+function Get-PngInfo {
+  param([byte[]]$Bytes)
+
+  $signature = [byte[]](0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
+  if ($Bytes.Length -lt $signature.Length) {
+    throw "PNG payload is too small: $($Bytes.Length) bytes"
+  }
+  for ($i = 0; $i -lt $signature.Length; $i++) {
+    if ($Bytes[$i] -ne $signature[$i]) {
+      throw "PNG payload does not have the expected signature"
+    }
+  }
+  [pscustomobject]@{
+    bytes = $Bytes.Length
+    signature = "PNG"
+  }
+}
+
 function Stop-FixtureListener {
   param(
     [int]$Port,
@@ -138,6 +156,12 @@ $config = [ordered]@{
       mode = "subprocess"
       requestTimeoutSeconds = 30
     }
+    sd = [ordered]@{
+      command = $fixtureCommand
+      args = @("image", "--require-size", "64x64")
+      mode = "subprocess"
+      requestTimeoutSeconds = 30
+    }
   }
 }
 $config | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -Path $configPath
@@ -188,12 +212,22 @@ try {
   Invoke-WebRequest -Uri "http://127.0.0.1:$GatewayPort/v1/audio/speech" -Method Post -ContentType "application/json" -Body $speechBody -OutFile $outputWav
 
   $wavInfo = Get-WavInfo -Path $outputWav
+
+  $imageBody = @{ prompt = "fixture image"; size = "64x64"; response_format = "b64_json" } | ConvertTo-Json
+  $image = Invoke-RestMethod -Uri "http://127.0.0.1:$GatewayPort/v1/images/generations" -Method Post -ContentType "application/json" -Body $imageBody
+  if (-not $image.data -or -not $image.data[0].b64_json) {
+    throw "image response did not include data[0].b64_json"
+  }
+  $imageBytes = [Convert]::FromBase64String($image.data[0].b64_json)
+  $imageInfo = Get-PngInfo -Bytes $imageBytes
+
   [pscustomobject]@{
     health = $health.status
     transcript = $transcription.text
     reply = $reply
     output = (Resolve-Path $outputWav).Path
     wav = $wavInfo
+    image = $imageInfo
   } | ConvertTo-Json
 } finally {
   if ($server -and -not $server.HasExited) {

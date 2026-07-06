@@ -3,13 +3,16 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,9 +32,13 @@ const (
 	defaultChatTimeout          = 120 * time.Second
 	defaultTranscriptionTimeout = 120 * time.Second
 	defaultSpeechTimeout        = 180 * time.Second
+	defaultImageTimeout         = 300 * time.Second
 	maxJSONBodyBytes            = 64 * 1024
 	maxTranscriptionUploadBytes = 32 * 1024 * 1024
 	maxSpeechOutputBytes        = 32 * 1024 * 1024
+	maxImageOutputBytes         = 32 * 1024 * 1024
+	maxImageDimension           = 2048
+	maxImagePixels              = maxImageDimension * maxImageDimension
 	maxSubprocessLogBytes       = 1024 * 1024
 )
 
@@ -53,6 +60,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.Handle("/demo/", http.StripPrefix("/demo/", demo.Handler()))
 	mux.HandleFunc("/health", r.handleHealth)
 	mux.HandleFunc("/v1/chat/completions", r.handleChatCompletions)
+	mux.HandleFunc("/v1/images/generations", r.handleImageGenerations)
 	mux.HandleFunc("/v1/audio/speech", r.handleSpeech)
 	mux.HandleFunc("/v1/audio/transcriptions", r.handleTranscriptions)
 	return mux
@@ -210,6 +218,102 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 	_, _ = w.Write(data)
 }
 
+func (r *router) handleImageGenerations(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+
+	var body imageGenerationRequest
+	req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON request: %v", err))
+		return
+	}
+	if strings.TrimSpace(body.Prompt) == "" {
+		writeJSONError(w, http.StatusBadRequest, "prompt is required")
+		return
+	}
+	if body.ResponseFormat != "" && body.ResponseFormat != "b64_json" {
+		writeJSONError(w, http.StatusBadRequest, "only b64_json response_format is supported")
+		return
+	}
+	if body.N != nil && *body.N != 1 {
+		writeJSONError(w, http.StatusBadRequest, "only n=1 is supported")
+		return
+	}
+	width, height, err := parseImageSize(body.Size)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	engine, ok := r.engine("sd")
+	if !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, `engine "sd" is not configured`)
+		return
+	}
+	release, ok := r.acquire("sd")
+	if !ok {
+		writeJSONError(w, http.StatusTooManyRequests, `engine "sd" is busy`)
+		return
+	}
+	defer release()
+
+	out, err := os.CreateTemp("", "cpp-studio-image-*.png")
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create temp output: %v", err))
+		return
+	}
+	outPath := out.Name()
+	if err := out.Close(); err != nil {
+		_ = os.Remove(outPath)
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("close temp output: %v", err))
+		return
+	}
+	defer os.Remove(outPath)
+
+	engineArgs := []string{"--prompt", body.Prompt, "--output", outPath}
+	if width > 0 && height > 0 {
+		engineArgs = append(engineArgs, "--width", strconv.Itoa(width), "--height", strconv.Itoa(height))
+	}
+	stdout, stderr, _, err := runEngineCommand(req.Context(), engine, defaultImageTimeout, engineArgs...)
+	if err != nil {
+		message := commandFailure("sd image generation command failed", err, stdout, stderr)
+		r.manager.MarkFailure("sd", lifecycle.StatusCrashed, message)
+		writeJSONError(w, http.StatusBadGateway, message)
+		return
+	}
+	if err := validateFileSize(outPath, maxImageOutputBytes, "generated png"); err != nil {
+		message := fmt.Sprintf("sd image generation command produced oversized PNG: %v", err)
+		r.manager.MarkFailure("sd", lifecycle.StatusCrashed, message)
+		writeJSONError(w, http.StatusBadGateway, message)
+		return
+	}
+	if err := validatePNGFile(outPath); err != nil {
+		message := fmt.Sprintf("sd image generation command produced invalid PNG: %v", err)
+		r.manager.MarkFailure("sd", lifecycle.StatusCrashed, message)
+		writeJSONError(w, http.StatusBadGateway, message)
+		return
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		message := fmt.Sprintf("read generated png: %v", err)
+		r.manager.MarkFailure("sd", lifecycle.StatusCrashed, message)
+		writeJSONError(w, http.StatusBadGateway, message)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	r.manager.MarkSuccess("sd")
+	_ = json.NewEncoder(w).Encode(imageGenerationResponse{
+		Created: time.Now().Unix(),
+		Data: []imageGenerationData{
+			{B64JSON: base64.StdEncoding.EncodeToString(data)},
+		},
+	})
+}
+
 func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) {
 	if !requireMethod(w, req, http.MethodPost) {
 		return
@@ -360,6 +464,40 @@ func validateWAVFile(path string) error {
 	return nil
 }
 
+func validatePNGFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open generated image: %v", err)
+	}
+	defer file.Close()
+
+	header := make([]byte, 8)
+	if _, err := io.ReadFull(file, header); err != nil {
+		return fmt.Errorf("unsupported image file: expected PNG signature")
+	}
+	pngSignature := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if !bytes.Equal(header, pngSignature) {
+		return fmt.Errorf("unsupported image file: expected PNG signature")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind generated image: %v", err)
+	}
+	cfg, err := png.DecodeConfig(file)
+	if err != nil {
+		return fmt.Errorf("decode PNG metadata: %v", err)
+	}
+	if err := validateImageDimensions(cfg.Width, cfg.Height); err != nil {
+		return err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind generated image: %v", err)
+	}
+	if _, err := png.Decode(file); err != nil {
+		return fmt.Errorf("decode PNG image: %v", err)
+	}
+	return nil
+}
+
 func validateFileSize(path string, maxBytes int64, label string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -382,6 +520,42 @@ func commandFailure(prefix string, err error, stdout []byte, stderr []byte) stri
 	return strings.Join(parts, "; ")
 }
 
+func parseImageSize(size string) (int, int, error) {
+	size = strings.TrimSpace(size)
+	if size == "" {
+		return 0, 0, nil
+	}
+	widthText, heightText, ok := strings.Cut(size, "x")
+	if !ok {
+		return 0, 0, fmt.Errorf("size must be formatted as WIDTHxHEIGHT")
+	}
+	width, err := strconv.Atoi(widthText)
+	if err != nil || width <= 0 {
+		return 0, 0, fmt.Errorf("size width must be a positive integer")
+	}
+	height, err := strconv.Atoi(heightText)
+	if err != nil || height <= 0 {
+		return 0, 0, fmt.Errorf("size height must be a positive integer")
+	}
+	if err := validateImageDimensions(width, height); err != nil {
+		return 0, 0, err
+	}
+	return width, height, nil
+}
+
+func validateImageDimensions(width int, height int) error {
+	if width <= 0 || height <= 0 {
+		return fmt.Errorf("image dimensions must be positive")
+	}
+	if width > maxImageDimension || height > maxImageDimension {
+		return fmt.Errorf("image dimensions must be at most %dx%d", maxImageDimension, maxImageDimension)
+	}
+	if width > maxImagePixels/height {
+		return fmt.Errorf("image dimensions must contain at most %d pixels", maxImagePixels)
+	}
+	return nil
+}
+
 func requireMethod(w http.ResponseWriter, req *http.Request, method string) bool {
 	if req.Method == method {
 		return true
@@ -401,6 +575,22 @@ type speechRequest struct {
 	Input  string `json:"input"`
 	Voice  string `json:"voice"`
 	Format string `json:"format"`
+}
+
+type imageGenerationRequest struct {
+	Prompt         string `json:"prompt"`
+	Size           string `json:"size"`
+	ResponseFormat string `json:"response_format"`
+	N              *int   `json:"n"`
+}
+
+type imageGenerationResponse struct {
+	Created int64                 `json:"created"`
+	Data    []imageGenerationData `json:"data"`
+}
+
+type imageGenerationData struct {
+	B64JSON string `json:"b64_json"`
 }
 
 type transcriptionResponse struct {

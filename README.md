@@ -1,8 +1,8 @@
 # cpp-studio
 
-Local gateway and launcher for the native `*.cpp` inference family: `llama.cpp`, `whisper.cpp`, `audio.cpp`, and later `stable-diffusion.cpp`.
+Local gateway and launcher for the native `*.cpp` inference family: `llama.cpp`, `whisper.cpp`, `audio.cpp`, and `stable-diffusion.cpp`.
 
-Milestone 1 is intentionally narrow: load a config, manage native engine process lifecycle, expose `/health`, and provide the first OpenAI-shaped local routes for chat, transcription, and speech. Engines stay native subprocesses or local servers; the gateway owns orchestration.
+Milestone 1 is intentionally narrow: load a config, manage native engine process lifecycle, expose `/health`, and provide the first OpenAI-shaped local routes for chat, transcription, speech, and image generation. Engines stay native subprocesses or local servers; the gateway owns orchestration.
 
 ## Quick Start
 
@@ -48,7 +48,7 @@ http://127.0.0.1:8765/demo/
 ```
 
 The demo can refresh gateway health, record a WAV in the browser, upload a WAV fallback, run transcription -> chat -> speech, and play the returned WAV.
-The full loop requires configured `whisper`, `llama`, and `audio` engines. With `config.audio-local.example.json`, the demo can exercise health and the speech route; transcription and chat still need local `whisper.cpp` and `llama.cpp` paths.
+The browser demo is voice-loop only for now. Its full loop requires configured `whisper`, `llama`, and `audio` engines. With `config.audio-local.example.json`, the demo can exercise health and the speech route; transcription and chat still need local `whisper.cpp` and `llama.cpp` paths.
 
 ## Verification
 
@@ -95,14 +95,15 @@ docs\FIXTURE.md
 - `POST /v1/chat/completions`: proxies JSON to the configured `llama` server. If `healthUrl` is `http://127.0.0.1:8733/health`, the gateway proxies to `http://127.0.0.1:8733/v1/chat/completions`.
 - `POST /v1/audio/transcriptions`: accepts multipart field `file`, runs the configured `whisper` subprocess with `-f <temp-file>`, and returns `{ "text": "...", "duration_ms": 1234 }`.
 - `POST /v1/audio/speech`: accepts `{ "input": "...", "voice": "default", "format": "wav" }`, runs the configured `audio` subprocess with `--text <input> --out <temp.wav>`, and returns `audio/wav`.
+- `POST /v1/images/generations`: accepts `{ "prompt": "...", "size": "512x512", "response_format": "b64_json" }`, runs the configured `sd` subprocess with `--prompt <prompt> --output <temp.png>` plus optional width and height flags, validates PNG output, and returns OpenAI-shaped `b64_json` image data. Requested dimensions are capped at 2048 px per side and 4,194,304 total pixels.
 
-Milestone 1 supports WAV speech output only. Streaming, MP3, WebRTC, and image generation are still deferred.
+Milestone 1 supports WAV speech output and one PNG `b64_json` image output only. Streaming, MP3, WebRTC, URL image responses, multiple-image requests, and bundled native engines are still deferred. Image `n` must be omitted or `1`; request fields such as `model`, `quality`, `style`, and `user` are not honored yet.
 
 ## Engine Modes
 
 Use `mode: "server"` for long-running services such as `llama-server`. These are started with the gateway and can use `healthUrl`.
 
-Use `mode: "subprocess"` for request-time tools such as `whisper-cli` and `audiocpp_cli`. These are validated at startup, shown as ready in `/health`, and launched per request with cancellation and timeout inherited from the HTTP request.
+Use `mode: "subprocess"` for request-time tools such as `whisper-cli`, `audiocpp_cli`, and `sd-cli`. These are validated at startup, shown as ready in `/health`, and launched per request with cancellation and timeout inherited from the HTTP request.
 
 ## audio.cpp TTS Proof
 

@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -183,6 +184,212 @@ func TestSpeechSuccess(t *testing.T) {
 	}
 	if manager.Health().Engines["audio"].LastSuccessAt == nil {
 		t.Fatalf("expected audio lastSuccessAt to be recorded")
+	}
+}
+
+func TestImageGenerationSuccess(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"sd": helperEngine("image-require-size"),
+	})
+	manager := lifecycle.NewManager(cfg)
+	router := NewRouter(cfg, manager)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"a small cabin","size":"512x512","response_format":"b64_json"}`))
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if contentType := rec.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
+		t.Fatalf("expected JSON content type, got %q", contentType)
+	}
+
+	var response imageGenerationResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode image generation response: %v", err)
+	}
+	if response.Created <= 0 {
+		t.Fatalf("expected created timestamp, got %d", response.Created)
+	}
+	if len(response.Data) != 1 || response.Data[0].B64JSON == "" {
+		t.Fatalf("expected one b64_json image, got %+v", response)
+	}
+	image, err := base64.StdEncoding.DecodeString(response.Data[0].B64JSON)
+	if err != nil {
+		t.Fatalf("decode b64_json: %v", err)
+	}
+	if !bytes.Equal(image, validPNGBytes()) {
+		t.Fatalf("unexpected png bytes %v", image)
+	}
+	if manager.Health().Engines["sd"].LastSuccessAt == nil {
+		t.Fatalf("expected sd lastSuccessAt to be recorded")
+	}
+}
+
+func TestImageGenerationMissingEngine(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"a small cabin"}`))
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "sd") {
+		t.Fatalf("expected missing sd detail, got %s", rec.Body.String())
+	}
+}
+
+func TestImageGenerationBadRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "missing prompt",
+			body: `{"size":"512x512","response_format":"b64_json"}`,
+			want: "prompt",
+		},
+		{
+			name: "unsupported response format",
+			body: `{"prompt":"a small cabin","response_format":"url"}`,
+			want: "response_format",
+		},
+		{
+			name: "invalid size",
+			body: `{"prompt":"a small cabin","size":"wide"}`,
+			want: "WIDTHxHEIGHT",
+		},
+		{
+			name: "oversized size",
+			body: `{"prompt":"a small cabin","size":"4096x4096"}`,
+			want: "at most",
+		},
+		{
+			name: "zero n",
+			body: `{"prompt":"a small cabin","n":0}`,
+			want: "n=1",
+		},
+		{
+			name: "multiple n",
+			body: `{"prompt":"a small cabin","n":2}`,
+			want: "n=1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig(map[string]config.EngineConfig{
+				"sd": helperEngine("image"),
+			})
+			router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(tt.body))
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.want) {
+				t.Fatalf("expected %q detail, got %s", tt.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestImageGenerationRejectsInvalidGeneratedPNGAndMarksFailure(t *testing.T) {
+	tests := []struct {
+		name   string
+		helper string
+	}{
+		{name: "bad signature", helper: "image-invalid"},
+		{name: "corrupt image data", helper: "image-corrupt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig(map[string]config.EngineConfig{
+				"sd": helperEngine(tt.helper),
+			})
+			manager := lifecycle.NewManager(cfg)
+			router := NewRouter(cfg, manager)
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"a small cabin"}`))
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("expected status 502, got %d: %s", rec.Code, rec.Body.String())
+			}
+			health := manager.Health().Engines["sd"]
+			if health.Status != lifecycle.StatusCrashed {
+				t.Fatalf("expected crashed health status, got %+v", health)
+			}
+			if !strings.Contains(health.LastError, "invalid PNG") {
+				t.Fatalf("expected invalid PNG health detail, got %+v", health)
+			}
+			if health.LastSuccessAt != nil {
+				t.Fatalf("invalid image output should not mark success: %+v", health)
+			}
+		})
+	}
+}
+
+func TestImageGenerationBusy(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"sd": helperEngine("image-slow"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"a small cabin"}`))
+		router.ServeHTTP(rec, req)
+		done <- rec
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"a small cabin"}`))
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected status 429, got %d: %s", rec.Code, rec.Body.String())
+	}
+	first := <-done
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected first request to complete, got %d: %s", first.Code, first.Body.String())
+	}
+}
+
+func TestImageGenerationSubprocessFailure(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"sd": helperEngine("fail"),
+	})
+	manager := lifecycle.NewManager(cfg)
+	router := NewRouter(cfg, manager)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"a small cabin"}`))
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected status 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "partial stdout") || !strings.Contains(rec.Body.String(), "failure stderr") {
+		t.Fatalf("expected stdout and stderr detail, got %s", rec.Body.String())
+	}
+	health := manager.Health().Engines["sd"]
+	if health.Status != lifecycle.StatusCrashed || !strings.Contains(health.LastError, "failure stderr") {
+		t.Fatalf("expected crashed health detail, got %+v", health)
 	}
 }
 
@@ -444,6 +651,17 @@ func TestGatewayHelperProcess(t *testing.T) {
 			runFlakySpeechHelper(helperArgs)
 		case "speech-large":
 			runLargeSpeechHelper(helperArgs)
+		case "image":
+			runImageHelper(helperArgs, false)
+		case "image-require-size":
+			runImageHelper(helperArgs, true)
+		case "image-slow":
+			time.Sleep(500 * time.Millisecond)
+			runImageHelper(helperArgs, false)
+		case "image-invalid":
+			runInvalidImageHelper(helperArgs)
+		case "image-corrupt":
+			runCorruptImageHelper(helperArgs)
 		case "transcribe":
 			runTranscriptionHelper(helperArgs)
 		case "transcribe-slow":
@@ -538,6 +756,56 @@ func runSpeechHelper(args []string) {
 	os.Exit(0)
 }
 
+func runInvalidImageHelper(args []string) {
+	out := helperArg(args, "--output")
+	if out == "" {
+		fmt.Fprintln(os.Stderr, "missing --output")
+		os.Exit(2)
+	}
+	if err := os.WriteFile(out, []byte("not a png"), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+func runCorruptImageHelper(args []string) {
+	out := helperArg(args, "--output")
+	if out == "" {
+		fmt.Fprintln(os.Stderr, "missing --output")
+		os.Exit(2)
+	}
+	data := validPNGBytes()
+	if err := os.WriteFile(out, data[:33], 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+func runImageHelper(args []string, requireSize bool) {
+	prompt := helperArg(args, "--prompt")
+	out := helperArg(args, "--output")
+	if prompt == "" || out == "" {
+		fmt.Fprintf(os.Stderr, "missing image args prompt=%q output=%q\n", prompt, out)
+		os.Exit(2)
+	}
+	if requireSize {
+		width := helperArg(args, "--width")
+		height := helperArg(args, "--height")
+		if width != "512" || height != "512" {
+			fmt.Fprintf(os.Stderr, "missing image size width=%q height=%q\n", width, height)
+			os.Exit(2)
+		}
+	}
+	if err := os.WriteFile(out, validPNGBytes(), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	fmt.Fprintln(os.Stdout, "image ok")
+	os.Exit(0)
+}
+
 func runTranscriptionHelper(args []string) {
 	path := helperArg(args, "-f")
 	if path == "" {
@@ -593,6 +861,23 @@ func validWAVBytes() []byte {
 		0x24, 0x00, 0x00, 0x00,
 		'W', 'A', 'V', 'E',
 		'f', 'm', 't', ' ',
+	}
+}
+
+func validPNGBytes() []byte {
+	return []byte{
+		0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n',
+		0x00, 0x00, 0x00, 0x0d, 'I', 'H', 'D', 'R',
+		0x00, 0x00, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x01,
+		0x08, 0x02, 0x00, 0x00, 0x00,
+		0x90, 0x77, 0x53, 0xde,
+		0x00, 0x00, 0x00, 0x10, 'I', 'D', 'A', 'T',
+		0x78, 0x9c, 0x62, 0xfa, 0xff, 0xff, 0x3f, 0x20,
+		0x00, 0x00, 0xff, 0xff, 0x06, 0x06, 0x03, 0x00,
+		0xb7, 0x66, 0x11, 0x21,
+		0x00, 0x00, 0x00, 0x00, 'I', 'E', 'N', 'D',
+		0xae, 0x42, 0x60, 0x82,
 	}
 }
 

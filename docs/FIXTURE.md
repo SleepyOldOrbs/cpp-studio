@@ -6,6 +6,7 @@ It exists so CI and new contributors can prove the full route sequence without d
 
 ```text
 WAV upload -> /v1/audio/transcriptions -> /v1/chat/completions -> /v1/audio/speech -> WAV output
+POST /v1/images/generations -> PNG b64_json output
 ```
 
 ## Commands
@@ -28,6 +29,12 @@ Run an audio.cpp-like speech command:
 .\bin\cpp-studio-fixture.exe speech --text "hello" --out .\reply.wav
 ```
 
+Run an sd-cli-like image command:
+
+```powershell
+.\bin\cpp-studio-fixture.exe image --prompt "a small cabin" --output .\image.png --width 512 --height 512
+```
+
 ## Smoke Test
 
 Run the complete loop through the real gateway:
@@ -36,7 +43,7 @@ Run the complete loop through the real gateway:
 .\scripts\smoke-voice-loop-fixture.ps1
 ```
 
-The script builds `cpp-studio.exe` and `cpp-studio-fixture.exe`, generates a temporary config under `out\fixture-loop`, starts the gateway, sends all three route requests, verifies the final WAV header, and stops the gateway.
+The script builds `cpp-studio.exe` and `cpp-studio-fixture.exe`, generates a temporary config under `out\fixture-loop`, starts the gateway, sends the voice-loop requests plus an image request, verifies the final WAV header and PNG payload signature, and stops the gateway.
 
 ## Native Engine Boundary
 
@@ -45,5 +52,6 @@ The fixture is only for repeatable route and lifecycle checks. Real usage should
 - `llama-server` for chat.
 - `whisper-cli` for transcription.
 - `audiocpp_cli` for speech.
+- `sd-cli` for image generation.
 
 Use `docs\CONFIG.md` for native engine config examples.
