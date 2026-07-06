@@ -19,8 +19,15 @@ func TestHandlerServesIndex(t *testing.T) {
 	if contentType := rec.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
 		t.Fatalf("expected HTML content type, got %q", contentType)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "cpp-studio voice loop") {
+	body := rec.Body.String()
+	if !strings.Contains(body, "cpp-studio local studio") {
 		t.Fatalf("expected index HTML marker, got %q", body)
+	}
+	if !strings.Contains(body, "/v1/images/generations") {
+		t.Fatalf("expected image route marker, got %q", body)
+	}
+	if !strings.Contains(body, "imageErrorBox") {
+		t.Fatalf("expected image error marker, got %q", body)
 	}
 }
 
@@ -35,13 +42,13 @@ func TestHandlerServesAssets(t *testing.T) {
 			name:        "javascript",
 			path:        "/app.js",
 			contentType: "javascript",
-			needle:      "runVoiceLoop",
+			needle:      "generateImage",
 		},
 		{
 			name:        "css",
 			path:        "/styles.css",
 			contentType: "text/css",
-			needle:      ".app-shell",
+			needle:      ".image-panel",
 		},
 	}
 

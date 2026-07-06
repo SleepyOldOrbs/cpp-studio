@@ -62,8 +62,12 @@ func TestDemoRoute(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "cpp-studio voice loop") {
+	body := rec.Body.String()
+	if !strings.Contains(body, "cpp-studio local studio") {
 		t.Fatalf("expected demo HTML, got %q", body)
+	}
+	if !strings.Contains(body, "/v1/images/generations") {
+		t.Fatalf("expected image route marker, got %q", body)
 	}
 
 	rec = httptest.NewRecorder()

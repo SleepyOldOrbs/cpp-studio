@@ -53,6 +53,7 @@ input:disabled {
 
 button:focus-visible,
 textarea:focus-visible,
+input.text-input:focus-visible,
 .file-button:focus-within {
   outline: 3px solid rgba(0, 107, 91, 0.25);
   outline-offset: 2px;
@@ -67,6 +68,7 @@ textarea:focus-visible,
 .status-strip,
 .control-panel,
 .result-panel,
+.image-panel,
 .health-panel,
 .log-panel {
   border: 1px solid var(--line);
@@ -163,12 +165,15 @@ h2 {
 .control-panel,
 .result-panel,
 .health-panel,
+.image-panel,
 .log-panel {
   padding: 16px;
 }
 
 .control-panel,
-.result-panel {
+.result-panel,
+.image-form,
+.image-result {
   display: grid;
   gap: 14px;
 }
@@ -203,6 +208,20 @@ textarea {
 
 textarea[readonly] {
   background: #f8f9f5;
+}
+
+.text-input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 10px;
+  background: #fcfcfa;
+  color: var(--ink);
+}
+
+.compact-field {
+  max-width: 180px;
 }
 
 .record-row,
@@ -323,6 +342,37 @@ audio {
   width: 100%;
 }
 
+.image-panel {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(340px, 1.1fr);
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.image-frame {
+  display: grid;
+  min-height: 260px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8f9f5;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.image-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 520px;
+  object-fit: contain;
+}
+
+.image-frame img[hidden] {
+  display: none;
+}
+
 .health-panel,
 .log-panel {
   margin-top: 14px;
@@ -390,7 +440,8 @@ pre {
   }
 
   .topbar,
-  .workspace {
+  .workspace,
+  .image-panel {
     display: grid;
     grid-template-columns: 1fr;
   }

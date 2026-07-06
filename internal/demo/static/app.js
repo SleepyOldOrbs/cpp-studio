@@ -19,6 +19,15 @@
   var replyAudio = document.getElementById("replyAudio");
   var errorBox = document.getElementById("errorBox");
   var logOutput = document.getElementById("logOutput");
+  var imageForm = document.getElementById("imageForm");
+  var imagePromptInput = document.getElementById("imagePromptInput");
+  var imageSizeInput = document.getElementById("imageSizeInput");
+  var generateImageButton = document.getElementById("generateImageButton");
+  var clearImageButton = document.getElementById("clearImageButton");
+  var imagePreview = document.getElementById("imagePreview");
+  var imagePlaceholder = document.getElementById("imagePlaceholder");
+  var imageStatus = document.getElementById("imageStatus");
+  var imageErrorBox = document.getElementById("imageErrorBox");
 
   var running = false;
   var recording = false;
@@ -34,7 +43,11 @@
     runButton,
     clearButton,
     clearLogButton,
-    messageInput
+    messageInput,
+    imagePromptInput,
+    imageSizeInput,
+    generateImageButton,
+    clearImageButton
   ];
 
   function log(message) {
@@ -50,9 +63,21 @@
     log("Error: " + message);
   }
 
+  function setImageError(error) {
+    var message = error && error.message ? error.message : String(error);
+    imageErrorBox.textContent = message;
+    imageErrorBox.hidden = false;
+    log("Error: " + message);
+  }
+
   function clearError() {
     errorBox.textContent = "";
     errorBox.hidden = true;
+  }
+
+  function clearImageError() {
+    imageErrorBox.textContent = "";
+    imageErrorBox.hidden = true;
   }
 
   function setRunning(value) {
@@ -101,6 +126,14 @@
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   }
 
+  function estimateBase64Bytes(value) {
+    if (!value) {
+      return 0;
+    }
+    var padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+    return Math.max(0, Math.floor(value.length * 3 / 4) - padding);
+  }
+
   function setActiveWav(file, source) {
     activeWavFile = file;
     wavStatus.textContent = source + ": " + file.name + " (" + formatBytes(file.size) + ")";
@@ -121,6 +154,14 @@
     replyOutput.value = "";
     clearAudioUrl();
     clearError();
+  }
+
+  function clearImageOutput() {
+    imagePreview.removeAttribute("src");
+    imagePreview.hidden = true;
+    imagePlaceholder.hidden = false;
+    imageStatus.textContent = "Idle";
+    clearImageError();
   }
 
   function createElement(tag, className, text) {
@@ -289,6 +330,57 @@
     }
     log("Speech WAV received: " + formatBytes(blob.size));
     return blob;
+  }
+
+  function readGeneratedImage(data) {
+    var images = data && Array.isArray(data.data) ? data.data : [];
+    var first = images[0] || {};
+    var b64 = typeof first.b64_json === "string" ? first.b64_json : "";
+    if (!b64) {
+      throw new Error("Image generation returned no b64_json data");
+    }
+    return b64;
+  }
+
+  async function generateImage(event) {
+    if (event) {
+      event.preventDefault();
+    }
+    clearImageError();
+    setRunning(true);
+    try {
+      var prompt = imagePromptInput.value.trim();
+      var size = imageSizeInput.value.trim() || "512x512";
+      if (!prompt) {
+        throw new Error("Enter an image prompt");
+      }
+      imageStatus.textContent = "Generating...";
+      log("POST /v1/images/generations");
+      var response = await fetch("/v1/images/generations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          prompt: prompt,
+          size: size,
+          response_format: "b64_json"
+        })
+      });
+      await ensureOk(response, "Image generation");
+      var data = await response.json();
+      var b64 = readGeneratedImage(data);
+      imagePreview.src = "data:image/png;base64," + b64;
+      imagePreview.hidden = false;
+      imagePlaceholder.hidden = true;
+      imageStatus.textContent = size + " PNG, " + formatBytes(estimateBase64Bytes(b64));
+      log("Image PNG received: " + imageStatus.textContent);
+    } catch (error) {
+      imageStatus.textContent = "Error";
+      setImageError(error);
+    } finally {
+      setRunning(false);
+    }
   }
 
   async function runVoiceLoop(event) {
@@ -556,8 +648,13 @@
 
   healthButton.addEventListener("click", refreshHealth);
   voiceForm.addEventListener("submit", runVoiceLoop);
+  imageForm.addEventListener("submit", generateImage);
   wavInput.addEventListener("change", chooseWav);
   clearButton.addEventListener("click", clearAll);
+  clearImageButton.addEventListener("click", function () {
+    clearImageOutput();
+    log("Cleared image");
+  });
   clearLogButton.addEventListener("click", function () {
     logOutput.textContent = "";
   });

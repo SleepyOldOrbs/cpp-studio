@@ -47,8 +47,8 @@ Browser demo:
 http://127.0.0.1:8765/demo/
 ```
 
-The demo can refresh gateway health, record a WAV in the browser, upload a WAV fallback, run transcription -> chat -> speech, and play the returned WAV.
-The browser demo is voice-loop only for now. Its full loop requires configured `whisper`, `llama`, and `audio` engines. With `config.audio-local.example.json`, the demo can exercise health and the speech route; transcription and chat still need local `whisper.cpp` and `llama.cpp` paths.
+The demo can refresh gateway health, record a WAV in the browser, upload a WAV fallback, run transcription -> chat -> speech, play the returned WAV, and generate a PNG through `/v1/images/generations`.
+The voice loop requires configured `whisper`, `llama`, and `audio` engines. Image generation requires a configured `sd` engine. With `config.audio-local.example.json`, the demo can exercise health and the speech route; transcription, chat, and image generation still need local `whisper.cpp`, `llama.cpp`, and `stable-diffusion.cpp` paths.
 
 ## Verification
 

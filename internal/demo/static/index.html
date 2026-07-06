@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>cpp-studio voice loop</title>
+  <title>cpp-studio local studio</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <main class="app-shell" aria-busy="false">
     <header class="topbar">
       <div>
-        <h1>cpp-studio voice loop</h1>
-        <p class="route-line">/health /v1/audio/transcriptions /v1/chat/completions /v1/audio/speech</p>
+        <h1>cpp-studio local studio</h1>
+        <p class="route-line">/health /v1/audio/transcriptions /v1/chat/completions /v1/audio/speech /v1/images/generations</p>
       </div>
       <button class="secondary" id="healthButton" type="button">Refresh health</button>
     </header>
@@ -64,6 +64,37 @@
           <span>Audio playback</span>
           <audio id="replyAudio" controls></audio>
         </div>
+      </section>
+    </section>
+
+    <section class="image-panel">
+      <form class="image-form" id="imageForm">
+        <label class="field">
+          <span>Image prompt</span>
+          <textarea id="imagePromptInput" rows="4" placeholder="Image prompt"></textarea>
+        </label>
+
+        <label class="field compact-field">
+          <span>Size</span>
+          <input class="text-input" id="imageSizeInput" type="text" value="512x512" inputmode="numeric">
+        </label>
+
+        <div class="action-row">
+          <button class="primary" id="generateImageButton" type="submit">Generate image</button>
+          <button class="secondary" id="clearImageButton" type="button">Clear image</button>
+        </div>
+      </form>
+
+      <section class="image-result" aria-live="polite">
+        <div class="image-frame">
+          <img id="imagePreview" alt="Generated image preview" hidden>
+          <span id="imagePlaceholder">No image yet</span>
+        </div>
+        <div class="source-row">
+          <span class="source-label">Image status</span>
+          <span id="imageStatus">Idle</span>
+        </div>
+        <p class="error-box" id="imageErrorBox" hidden></p>
       </section>
     </section>
 
