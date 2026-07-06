@@ -54,6 +54,16 @@ jobs:
         shell: pwsh
         run: ./scripts/package-release.ps1 -Runtime ${{ matrix.runtime }}
 
+      - name: verify release package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $packageDir = Join-Path "dist" "cpp-studio-${{ matrix.runtime }}"
+          $exe = if ("${{ matrix.runtime }}".StartsWith("windows")) { ".exe" } else { "" }
+          & (Join-Path $packageDir "cpp-studio$exe") --config (Join-Path $packageDir "config.ci.json") --check
+          & (Join-Path $packageDir "cpp-studio-fixture$exe") --help
+
       - name: upload release archive
         uses: actions/upload-artifact@v7.0.1
         with:
