@@ -28,9 +28,23 @@
   var imagePlaceholder = document.getElementById("imagePlaceholder");
   var imageStatus = document.getElementById("imageStatus");
   var imageErrorBox = document.getElementById("imageErrorBox");
+  var storyForm = document.getElementById("storyForm");
+  var storySubjectInput = document.getElementById("storySubjectInput");
+  var storySecondsInput = document.getElementById("storySecondsInput");
+  var storyGenerateButton = document.getElementById("storyGenerateButton");
+  var storyCancelButton = document.getElementById("storyCancelButton");
+  var storyErrorBox = document.getElementById("storyErrorBox");
+  var storyStatus = document.getElementById("storyStatus");
+  var storyProgress = document.getElementById("storyProgress");
+  var storyAudio = document.getElementById("storyAudio");
+  var storyLibraryButton = document.getElementById("storyLibraryButton");
+  var storyLibrary = document.getElementById("storyLibrary");
+  var storyFacts = document.getElementById("storyFacts");
 
   var running = false;
   var recording = false;
+  var activeStoryID = "";
+  var activeStoryPoll = 0;
   var activeWavFile = null;
   var activeAudioUrl = "";
   var recorder = null;
@@ -47,7 +61,11 @@
     imagePromptInput,
     imageSizeInput,
     generateImageButton,
-    clearImageButton
+    clearImageButton,
+    storySubjectInput,
+    storySecondsInput,
+    storyGenerateButton,
+    storyLibraryButton
   ];
 
   function log(message) {
@@ -70,6 +88,13 @@
     log("Error: " + message);
   }
 
+  function setStoryError(error) {
+    var message = error && error.message ? error.message : String(error);
+    storyErrorBox.textContent = message;
+    storyErrorBox.hidden = false;
+    log("Error: " + message);
+  }
+
   function clearError() {
     errorBox.textContent = "";
     errorBox.hidden = true;
@@ -78,6 +103,11 @@
   function clearImageError() {
     imageErrorBox.textContent = "";
     imageErrorBox.hidden = true;
+  }
+
+  function clearStoryError() {
+    storyErrorBox.textContent = "";
+    storyErrorBox.hidden = true;
   }
 
   function setRunning(value) {
@@ -221,6 +251,9 @@
     }
     try {
       var parsed = JSON.parse(text);
+      if (parsed.error && typeof parsed.error === "object") {
+        return parsed.error.message || parsed.error.code || text;
+      }
       return parsed.error || text;
     } catch (error) {
       return text;
@@ -340,6 +373,267 @@
       throw new Error("Image generation returned no b64_json data");
     }
     return b64;
+  }
+
+  function collectStorySources() {
+    var titles = Array.prototype.slice.call(document.querySelectorAll(".story-source-title"));
+    var urls = Array.prototype.slice.call(document.querySelectorAll(".story-source-url"));
+    var excerpts = Array.prototype.slice.call(document.querySelectorAll(".story-source-excerpt"));
+    return titles.map(function (titleInput, index) {
+      return {
+        id: "src-" + (index + 1),
+        title: titleInput.value.trim(),
+        url: urls[index] ? urls[index].value.trim() : "",
+        excerpt: excerpts[index] ? excerpts[index].value.trim() : ""
+      };
+    });
+  }
+
+  function clearStoryPoll() {
+    if (activeStoryPoll) {
+      window.clearTimeout(activeStoryPoll);
+      activeStoryPoll = 0;
+    }
+  }
+
+  function setStoryStatus(status, progress) {
+    storyStatus.textContent = status || "Idle";
+    storyProgress.value = Number.isFinite(progress) ? progress : 0;
+  }
+
+  function appendSection(container, title, body) {
+    container.appendChild(createElement("h3", "", title));
+    container.appendChild(body);
+  }
+
+  function renderStoryManifest(manifest) {
+    storyFacts.textContent = "";
+    if (!manifest) {
+      return;
+    }
+
+    var sourcesList = createElement("ul");
+    (manifest.sources || []).forEach(function (source) {
+      var item = createElement("li");
+      if (source.url) {
+        var link = createElement("a", "story-source-link", source.title || source.id || source.url);
+        link.href = source.url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        item.appendChild(link);
+      } else {
+        item.textContent = source.title || source.id || "source";
+      }
+      sourcesList.appendChild(item);
+    });
+
+    var speakers = {};
+    var castList = createElement("ul", "story-cast-list");
+    (manifest.cast || []).forEach(function (member) {
+      speakers[member.id] = member.display_name || member.id;
+      castList.appendChild(createElement("li", "", (member.display_name || member.id || "speaker") + " / " + (member.voice_id || "voice")));
+    });
+
+    var scriptList = createElement("div", "story-script");
+    (manifest.script || []).forEach(function (line) {
+      var row = createElement("article", "story-line");
+      row.appendChild(createElement("span", "story-speaker", speakers[line.speaker_id] || line.speaker_id || "speaker"));
+      row.appendChild(createElement("p", "story-text", line.text || ""));
+      row.appendChild(createElement("span", "story-fact-refs", (line.fact_ids || []).join(", ")));
+      scriptList.appendChild(row);
+    });
+
+    var factsList = createElement("ul");
+    (manifest.fact_cards || []).forEach(function (fact) {
+      factsList.appendChild(createElement("li", "", (fact.id || "fact") + ": " + (fact.claim || "")));
+    });
+
+    appendSection(storyFacts, "Sources", sourcesList);
+    appendSection(storyFacts, "Cast", castList);
+    appendSection(storyFacts, "Script", scriptList);
+    appendSection(storyFacts, "Fact cards", factsList);
+  }
+
+  function renderStoryLibrary(stories) {
+    storyLibrary.textContent = "";
+    if (!stories || stories.length === 0) {
+      storyLibrary.appendChild(createElement("span", "story-library-empty", "No retained stories"));
+      return;
+    }
+    stories.forEach(function (story) {
+      var item = createElement("button", "story-library-item");
+      item.type = "button";
+      item.dataset.storyId = story.id || "";
+      var title = story.title || story.subject || story.id || "Story";
+      var created = story.created_at ? new Date(story.created_at).toLocaleString() : "";
+      var detail = [story.status || "unknown", story.duration_seconds ? story.duration_seconds + "s" : "", created].filter(Boolean).join(" / ");
+      item.appendChild(createElement("span", "story-library-title", title));
+      item.appendChild(createElement("span", "story-library-detail", detail));
+      item.addEventListener("click", function () {
+        loadStory(story.id);
+      });
+      storyLibrary.appendChild(item);
+    });
+  }
+
+  async function refreshStoryLibrary() {
+    clearStoryError();
+    setRunning(true);
+    try {
+      log("GET /v1/stories");
+      var response = await fetch("/v1/stories", { method: "GET" });
+      await ensureOk(response, "Story library");
+      var data = await response.json();
+      renderStoryLibrary(data.stories || []);
+    } catch (error) {
+      setStoryError(error);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function loadStory(id) {
+    if (!id) {
+      return;
+    }
+    clearStoryError();
+    if (activeStoryID) {
+      setStoryError(new Error("A story is already running"));
+      return;
+    }
+    clearStoryPoll();
+    setRunning(true);
+    try {
+      log("GET /v1/stories/" + id);
+      var response = await fetch("/v1/stories/" + encodeURIComponent(id), { method: "GET" });
+      await ensureOk(response, "Story load");
+      var data = await response.json();
+      setStoryStatus(data.status || data.stage || "unknown", data.progress || 0);
+      if (!data.manifest) {
+        throw new Error("Story has no completed manifest");
+      }
+      if (data.artifact_url) {
+        storyAudio.src = data.artifact_url;
+        storyAudio.load();
+      }
+      renderStoryManifest(data.manifest);
+      log("Story loaded: " + id);
+    } catch (error) {
+      setStoryStatus("Error", 0);
+      setStoryError(error);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function pollStory(id) {
+    clearStoryPoll();
+    try {
+      log("GET /v1/stories/" + id);
+      var response = await fetch("/v1/stories/" + encodeURIComponent(id), { method: "GET" });
+      await ensureOk(response, "Story status");
+      var data = await response.json();
+      setStoryStatus(data.status || data.stage || "unknown", data.progress || 0);
+      if (data.status === "complete") {
+        activeStoryID = "";
+        storyCancelButton.disabled = true;
+        if (data.artifact_url) {
+          storyAudio.src = data.artifact_url;
+          storyAudio.load();
+        }
+        renderStoryManifest(data.manifest);
+        log("Story complete");
+        refreshStoryLibrary();
+        return;
+      }
+      if (data.status === "failed") {
+        activeStoryID = "";
+        storyCancelButton.disabled = true;
+        throw new Error(data.error && data.error.message ? data.error.message : "Story failed");
+      }
+      if (data.status === "cancelled") {
+        activeStoryID = "";
+        storyCancelButton.disabled = true;
+        log("Story cancelled");
+        return;
+      }
+      activeStoryPoll = window.setTimeout(function () {
+        pollStory(id);
+      }, data.retry_after_ms || 500);
+    } catch (error) {
+      activeStoryID = "";
+      storyCancelButton.disabled = true;
+      setStoryStatus("Error", 0);
+      setStoryError(error);
+    }
+  }
+
+  async function startStory(event) {
+    if (event) {
+      event.preventDefault();
+    }
+    clearStoryError();
+    if (activeStoryID) {
+      setStoryError(new Error("A story is already running"));
+      return;
+    }
+    clearStoryPoll();
+    setRunning(true);
+    try {
+      storyAudio.removeAttribute("src");
+      storyAudio.load();
+      storyFacts.textContent = "";
+      setStoryStatus("Starting...", 0);
+      var targetSeconds = Number(storySecondsInput.value || "90");
+      var response = await fetch("/v1/stories", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          subject: storySubjectInput.value.trim(),
+          target_seconds: targetSeconds,
+          source_mode: "curated",
+          voice_mode: "placeholder",
+          sources: collectStorySources()
+        })
+      });
+      await ensureOk(response, "Story");
+      var data = await response.json();
+      activeStoryID = data.id;
+      storyCancelButton.disabled = false;
+      log("Story queued: " + activeStoryID);
+      pollStory(activeStoryID);
+    } catch (error) {
+      activeStoryID = "";
+      storyCancelButton.disabled = true;
+      setStoryStatus("Error", 0);
+      setStoryError(error);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function cancelStory() {
+    if (!activeStoryID) {
+      return;
+    }
+    clearStoryError();
+    var id = activeStoryID;
+    clearStoryPoll();
+    try {
+      log("POST /v1/stories/" + id + "/cancel");
+      var response = await fetch("/v1/stories/" + encodeURIComponent(id) + "/cancel", {
+        method: "POST"
+      });
+      await ensureOk(response, "Cancel story");
+      var data = await response.json();
+      activeStoryID = "";
+      storyCancelButton.disabled = true;
+      setStoryStatus(data.status || "cancelled", data.progress || 0);
+    } catch (error) {
+      setStoryError(error);
+    }
   }
 
   async function generateImage(event) {
@@ -649,6 +943,9 @@
   healthButton.addEventListener("click", refreshHealth);
   voiceForm.addEventListener("submit", runVoiceLoop);
   imageForm.addEventListener("submit", generateImage);
+  storyForm.addEventListener("submit", startStory);
+  storyCancelButton.addEventListener("click", cancelStory);
+  storyLibraryButton.addEventListener("click", refreshStoryLibrary);
   wavInput.addEventListener("change", chooseWav);
   clearButton.addEventListener("click", clearAll);
   clearImageButton.addEventListener("click", function () {
@@ -671,4 +968,5 @@
 
   log("Demo loaded");
   refreshHealth();
+  refreshStoryLibrary();
 }());

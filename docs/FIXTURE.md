@@ -45,6 +45,17 @@ Run the complete loop through the real gateway:
 
 The script builds `cpp-studio.exe` and `cpp-studio-fixture.exe`, generates a temporary config under `out\fixture-loop`, starts the gateway, sends the voice-loop requests plus an image request, verifies the final WAV header and PNG payload signature, and stops the gateway.
 
+Story route fixture smoke:
+
+```powershell
+.\scripts\smoke-story-fixture.ps1
+```
+
+The script starts the gateway with a harmless subprocess engine, submits a curated
+three-source story request to `/v1/stories`, polls completion, verifies fact-card
+grounding, downloads `story.wav`, validates the WAV header and 90-second fixture
+duration, checks retained story listing, and stops the gateway.
+
 ## Native Engine Boundary
 
 The fixture is only for repeatable route and lifecycle checks. Real usage should replace it with:

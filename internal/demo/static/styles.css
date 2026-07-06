@@ -69,6 +69,7 @@ input.text-input:focus-visible,
 .control-panel,
 .result-panel,
 .image-panel,
+.story-panel,
 .health-panel,
 .log-panel {
   border: 1px solid var(--line);
@@ -164,6 +165,7 @@ h2 {
 
 .control-panel,
 .result-panel,
+.story-panel,
 .health-panel,
 .image-panel,
 .log-panel {
@@ -173,7 +175,9 @@ h2 {
 .control-panel,
 .result-panel,
 .image-form,
-.image-result {
+.image-result,
+.story-form,
+.story-result {
   display: grid;
   gap: 14px;
 }
@@ -307,6 +311,12 @@ textarea[readonly] {
   color: var(--ink);
 }
 
+.compact-button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.78rem;
+}
+
 .secondary:hover:not(:disabled),
 .plain:hover:not(:disabled),
 .file-button:hover {
@@ -347,6 +357,180 @@ audio {
   grid-template-columns: minmax(300px, 0.9fr) minmax(340px, 1.1fr);
   gap: 14px;
   margin-top: 14px;
+}
+
+.story-panel {
+  display: grid;
+  grid-template-columns: minmax(340px, 1fr) minmax(320px, 0.9fr);
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.story-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 150px;
+  gap: 12px;
+}
+
+.source-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.source-group {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(180px, 0.8fr);
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.source-group .field:last-child {
+  grid-column: 1 / -1;
+}
+
+.story-source-excerpt {
+  min-height: 84px;
+}
+
+progress {
+  width: 100%;
+  height: 12px;
+  accent-color: var(--accent);
+}
+
+.story-facts {
+  display: grid;
+  gap: 10px;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px;
+  background: #f8f9f5;
+}
+
+.story-facts:empty::before {
+  color: var(--muted);
+  content: "No story yet";
+  font-size: 0.9rem;
+}
+
+.story-facts h3 {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.2;
+}
+
+.story-facts ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.story-library-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.story-library {
+  display: grid;
+  gap: 8px;
+}
+
+.story-library:empty::before {
+  color: var(--muted);
+  content: "No retained stories";
+  font-size: 0.86rem;
+}
+
+.story-library-empty {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.story-library-item {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 54px;
+  border-color: var(--line);
+  padding: 7px 9px;
+  background: #fcfcfa;
+  color: var(--ink);
+  text-align: left;
+}
+
+.story-library-item:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: #add7cf;
+}
+
+.story-library-title,
+.story-library-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.story-library-title {
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.story-library-detail {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 500;
+}
+
+.story-source-link {
+  color: var(--accent-strong);
+  overflow-wrap: anywhere;
+}
+
+.story-cast-list {
+  list-style: square;
+}
+
+.story-script {
+  display: grid;
+  gap: 8px;
+}
+
+.story-line {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px;
+  background: #ffffff;
+}
+
+.story-speaker {
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.story-text {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.88rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.story-fact-refs {
+  color: var(--muted);
+  font-family: "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
 }
 
 .image-frame {
@@ -441,7 +625,10 @@ pre {
 
   .topbar,
   .workspace,
-  .image-panel {
+  .image-panel,
+  .story-panel,
+  .story-controls,
+  .source-group {
     display: grid;
     grid-template-columns: 1fr;
   }

@@ -47,7 +47,7 @@ Browser demo:
 http://127.0.0.1:8765/demo/
 ```
 
-The demo can refresh gateway health, record a WAV in the browser, upload a WAV fallback, run transcription -> chat -> speech, play the returned WAV, and generate a PNG through `/v1/images/generations`.
+The demo can refresh gateway health, record a WAV in the browser, upload a WAV fallback, run transcription -> chat -> speech, play the returned WAV, generate a PNG through `/v1/images/generations`, create fixture-backed factual stories through `/v1/stories`, and reload retained story outputs from disk.
 The voice loop requires configured `whisper`, `llama`, and `audio` engines. Image generation requires a configured `sd` engine. With `config.audio-local.example.json`, the demo can exercise health and the speech route; transcription, chat, and image generation still need local `whisper.cpp`, `llama.cpp`, and `stable-diffusion.cpp` paths.
 
 ## Verification
@@ -69,6 +69,12 @@ Deterministic full-loop fixture check:
 
 ```powershell
 .\scripts\smoke-voice-loop-fixture.ps1
+```
+
+Deterministic story fixture check:
+
+```powershell
+.\scripts\smoke-story-fixture.ps1
 ```
 
 Build a release package:
@@ -97,6 +103,12 @@ API reference:
 docs\API.md
 ```
 
+Story API contract:
+
+```text
+docs\STORY_API.md
+```
+
 Fixture engine guide:
 
 ```text
@@ -110,6 +122,7 @@ docs\FIXTURE.md
 - `POST /v1/audio/transcriptions`: accepts multipart field `file`, runs the configured `whisper` subprocess with `-f <temp-file>`, and returns `{ "text": "...", "duration_ms": 1234 }`.
 - `POST /v1/audio/speech`: accepts `{ "input": "...", "voice": "default", "format": "wav" }`, runs the configured `audio` subprocess with `--text <input> --out <temp.wav>`, and returns `audio/wav`.
 - `POST /v1/images/generations`: accepts `{ "prompt": "...", "size": "512x512", "response_format": "b64_json" }`, runs the configured `sd` subprocess with `--prompt <prompt> --output <temp.png>` plus optional width and height flags, validates PNG output, and returns OpenAI-shaped `b64_json` image data. Requested dimensions are capped at 2048 px per side and 4,194,304 total pixels.
+- `/v1/stories`: deterministic fixture-backed factual story jobs from curated pasted excerpts. See `docs\STORY_API.md`.
 
 Milestone 1 supports WAV speech output and one PNG `b64_json` image output only. Streaming, MP3, WebRTC, URL image responses, multiple-image requests, and bundled native engines are still deferred. Image `n` must be omitted or `1`; request fields such as `model`, `quality`, `style`, and `user` are not honored yet.
 

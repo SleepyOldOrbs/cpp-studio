@@ -10,6 +10,10 @@ All JSON errors use this shape:
 
 Wrong HTTP methods return `405` with an `Allow` header.
 
+Story routes intentionally use a richer machine-readable error envelope. See
+`docs/STORY_API.md` for the story job contract, limits, job states, artifact
+layout, and story-specific errors.
+
 ## Engine Names
 
 Routes use fixed engine keys from the config:

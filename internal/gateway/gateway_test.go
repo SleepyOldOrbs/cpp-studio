@@ -18,6 +18,7 @@ import (
 
 	"cpp-studio/internal/config"
 	"cpp-studio/internal/lifecycle"
+	"cpp-studio/internal/story"
 )
 
 func TestHealth(t *testing.T) {
@@ -394,6 +395,232 @@ func TestImageGenerationSubprocessFailure(t *testing.T) {
 	health := manager.Health().Engines["sd"]
 	if health.Status != lifecycle.StatusCrashed || !strings.Contains(health.LastError, "failure stderr") {
 		t.Fatalf("expected crashed health detail, got %+v", health)
+	}
+}
+
+func TestStoryCreateStatusArtifactAndList(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var create story.CreateResponse
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(validStoryRequestJSON()))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&create); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if create.ID == "" || create.StatusURL != "/v1/stories/"+create.ID {
+		t.Fatalf("unexpected create response %+v", create)
+	}
+
+	status := waitGatewayStoryStatus(t, router, create.ID, story.StatusComplete)
+	if status.Manifest == nil {
+		t.Fatalf("expected completed manifest, got %+v", status)
+	}
+	if status.Manifest.Subject != "how stars are born" {
+		t.Fatalf("unexpected story subject %q", status.Manifest.Subject)
+	}
+	if len(status.Manifest.FactCards) != 9 {
+		t.Fatalf("expected fixture fact cards, got %+v", status.Manifest.FactCards)
+	}
+	if len(status.Manifest.Script) < 10 {
+		t.Fatalf("expected richer fixture script, got %d lines", len(status.Manifest.Script))
+	}
+	if status.Manifest.DurationSeconds != 90 {
+		t.Fatalf("expected 90 second fixture story, got %d", status.Manifest.DurationSeconds)
+	}
+	for i, line := range status.Manifest.Script {
+		if len(line.FactIDs) == 0 {
+			t.Fatalf("script line %d has no fact ids", i)
+		}
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/stories/"+create.ID+"/artifact/story.wav", nil)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected artifact status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if contentType := rec.Header().Get("Content-Type"); !strings.Contains(contentType, "audio/wav") {
+		t.Fatalf("expected audio/wav content type, got %q", contentType)
+	}
+	if body := rec.Body.String(); len(body) < 12 || body[:4] != "RIFF" || body[8:12] != "WAVE" {
+		t.Fatalf("expected WAV body, got %q", body)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/stories/"+create.ID+"/artifact/manifest.json", nil)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected unknown artifact status 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/stories", nil)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected list status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var list story.ListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatalf("decode story list: %v", err)
+	}
+	if len(list.Stories) != 1 || list.Stories[0].ID != create.ID {
+		t.Fatalf("unexpected story list %+v", list)
+	}
+}
+
+func TestStoryValidationError(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	body := `{
+  "subject": "how stars are born",
+  "source_mode": "curated",
+  "voice_mode": "placeholder",
+  "sources": [
+    {"title":"one","url":"https://example.test/one"},
+    {"title":"two","excerpt":"two excerpt"},
+    {"title":"three","excerpt":"three excerpt"}
+  ]
+}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(body))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Error story.StoryError `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if envelope.Error.Code != story.CodeMissingSourceExcerpt {
+		t.Fatalf("expected missing excerpt code, got %+v", envelope.Error)
+	}
+}
+
+func TestStoryBusyAndAudioReservation(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var create story.CreateResponse
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(validStoryRequestJSON()))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&create); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(validStoryRequestJSON()))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected busy story status 429, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	waitGatewayStoryActive(t, router, create.ID)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"input":"hello","format":"wav"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected direct speech to see reserved audio status 429, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/stories/"+create.ID+"/cancel", nil)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected cancel status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStoryCreateReturnsBusyWhenAudioIsAlreadyReserved(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech-slow"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"input":"hello","format":"wav"}`))
+		router.ServeHTTP(rec, req)
+		done <- rec
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(validStoryRequestJSON()))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected story create to return 429 while audio is busy, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Error story.StoryError `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode story error: %v", err)
+	}
+	if envelope.Error.Code != story.CodeEngineBusy {
+		t.Fatalf("expected engine_busy error, got %+v", envelope.Error)
+	}
+
+	first := <-done
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected direct speech to complete, got %d: %s", first.Code, first.Body.String())
+	}
+}
+
+func TestStoryMalformedIDReturnsNotFoundEnvelope(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	for _, tt := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "status", method: http.MethodGet, path: "/v1/stories/bad..id"},
+		{name: "cancel", method: http.MethodPost, path: "/v1/stories/bad..id/cancel"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("expected status 404, got %d: %s", rec.Code, rec.Body.String())
+			}
+			var envelope struct {
+				Error story.StoryError `json:"error"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&envelope); err != nil {
+				t.Fatalf("decode story error: %v", err)
+			}
+			if envelope.Error.Code != story.CodeNotFound {
+				t.Fatalf("expected not_found error, got %+v", envelope.Error)
+			}
+		})
 	}
 }
 
@@ -902,6 +1129,86 @@ func multipartRequest(t *testing.T, filename string, data []byte) *http.Request 
 	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	return req
+}
+
+func validStoryRequestJSON() string {
+	return `{
+  "subject": "how stars are born",
+  "target_seconds": 90,
+  "source_mode": "curated",
+  "voice_mode": "placeholder",
+  "sources": [
+    {
+      "id": "src-1",
+      "title": "NASA Science: Star Basics",
+      "url": "https://science.nasa.gov/universe/stars/",
+      "excerpt": "Stars form inside molecular clouds of gas and dust. Cold cloud conditions help gas clump into denser pockets. As clumps gain mass, gravity can make them collapse."
+    },
+    {
+      "id": "src-2",
+      "title": "NASA Webb: Fiery Hourglass",
+      "url": "https://science.nasa.gov/missions/webb/nasas-webb-catches-fiery-hourglass-as-new-star-forms/",
+      "excerpt": "A forming protostar gathers material from its surrounding molecular cloud. Falling material spirals inward and forms an accretion disk. The disk feeds material onto the protostar."
+    },
+    {
+      "id": "src-3",
+      "title": "NASA Hubble: Planet-Forming Disks",
+      "url": "https://science.nasa.gov/missions/hubble/hubbles-album-of-planet-forming-disks/",
+      "excerpt": "Some falling material forms a rotating disk around the protostar. Jets from magnetic poles are part of star formation. Jets help carry away angular momentum so material can continue collecting."
+    }
+  ]
+}`
+}
+
+func waitGatewayStoryStatus(t *testing.T, router http.Handler, id string, want story.Status) story.StatusResponse {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/stories/"+id, nil)
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status response 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var status story.StatusResponse
+		if err := json.NewDecoder(rec.Body).Decode(&status); err != nil {
+			t.Fatalf("decode story status: %v", err)
+		}
+		if status.Status == want {
+			return status
+		}
+		if status.Status == story.StatusFailed {
+			t.Fatalf("story failed: %+v", status.Error)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for story status %s", want)
+	return story.StatusResponse{}
+}
+
+func waitGatewayStoryActive(t *testing.T, router http.Handler, id string) {
+	t.Helper()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/stories/"+id, nil)
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status response 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var status story.StatusResponse
+		if err := json.NewDecoder(rec.Body).Decode(&status); err != nil {
+			t.Fatalf("decode story status: %v", err)
+		}
+		if status.Status != story.StatusQueued && status.Status != story.StatusComplete {
+			return
+		}
+		if status.Status == story.StatusFailed {
+			t.Fatalf("story failed: %+v", status.Error)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for active story")
 }
 
 func testConfig(engines map[string]config.EngineConfig) config.Config {

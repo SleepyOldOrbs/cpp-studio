@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/png"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"cpp-studio/internal/config"
 	"cpp-studio/internal/demo"
 	"cpp-studio/internal/lifecycle"
+	"cpp-studio/internal/story"
 )
 
 type router struct {
@@ -26,6 +28,7 @@ type router struct {
 	manager *lifecycle.Manager
 	client  *http.Client
 	busy    map[string]chan struct{}
+	stories *story.Manager
 }
 
 const (
@@ -53,6 +56,9 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	for name := range cfg.Engines {
 		r.busy[name] = make(chan struct{}, 1)
 	}
+	r.stories = story.NewManager(story.ManagerOptions{
+		ReserveEngine: r.reserveEngine,
+	})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", r.handleRoot)
@@ -61,6 +67,8 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/health", r.handleHealth)
 	mux.HandleFunc("/v1/chat/completions", r.handleChatCompletions)
 	mux.HandleFunc("/v1/images/generations", r.handleImageGenerations)
+	mux.HandleFunc("/v1/stories", r.handleStories)
+	mux.HandleFunc("/v1/stories/", r.handleStory)
 	mux.HandleFunc("/v1/audio/speech", r.handleSpeech)
 	mux.HandleFunc("/v1/audio/transcriptions", r.handleTranscriptions)
 	return mux
@@ -314,6 +322,88 @@ func (r *router) handleImageGenerations(w http.ResponseWriter, req *http.Request
 	})
 }
 
+func (r *router) handleStories(w http.ResponseWriter, req *http.Request) {
+	switch req.Method {
+	case http.MethodGet:
+		stories, err := r.stories.List()
+		if err != nil {
+			writeStoryError(w, http.StatusInternalServerError, story.CodeStoreFailure, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(story.ListResponse{Stories: stories})
+	case http.MethodPost:
+		var body story.CreateRequest
+		req.Body = http.MaxBytesReader(w, req.Body, story.MaxRequestBodyBytes)
+		decoder := json.NewDecoder(req.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
+			writeStoryError(w, http.StatusBadRequest, story.CodeInvalidRequest, fmt.Sprintf("invalid JSON request: %v", err))
+			return
+		}
+		response, err := r.stories.Submit(req.Context(), body)
+		if err != nil {
+			writeStoryErrorFromError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(response)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeStoryError(w, http.StatusMethodNotAllowed, story.CodeInvalidRequest, "method not allowed")
+	}
+}
+
+func (r *router) handleStory(w http.ResponseWriter, req *http.Request) {
+	tail := strings.TrimPrefix(req.URL.Path, "/v1/stories/")
+	parts := strings.Split(tail, "/")
+	if len(parts) == 1 && parts[0] != "" {
+		if !requireMethod(w, req, http.MethodGet) {
+			return
+		}
+		status, ok, err := r.stories.Status(parts[0])
+		if err != nil {
+			writeStoryErrorFromError(w, err)
+			return
+		}
+		if !ok {
+			writeStoryError(w, http.StatusNotFound, story.CodeNotFound, "story not found")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(status)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "cancel" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		status, err := r.stories.Cancel(parts[0])
+		if err != nil {
+			writeStoryErrorFromError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(status)
+		return
+	}
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "artifact" && parts[2] != "" {
+		if !requireMethod(w, req, http.MethodGet) {
+			return
+		}
+		path, err := r.stories.ArtifactPath(parts[0], parts[2])
+		if err != nil {
+			writeStoryErrorFromError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		http.ServeFile(w, req, path)
+		return
+	}
+	http.NotFound(w, req)
+}
+
 func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) {
 	if !requireMethod(w, req, http.MethodPost) {
 		return
@@ -397,6 +487,11 @@ func (r *router) acquire(name string) (func(), bool) {
 	default:
 		return nil, false
 	}
+}
+
+func (r *router) reserveEngine(ctx context.Context, name string) (func(), bool) {
+	_ = ctx
+	return r.acquire(name)
 }
 
 func inferChatCompletionsURL(healthURL string) (string, bool) {
@@ -569,6 +664,38 @@ func writeJSONError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+func writeStoryErrorFromError(w http.ResponseWriter, err error) {
+	var storyErr *story.StoryError
+	if errors.As(err, &storyErr) {
+		writeStoryError(w, storyHTTPStatus(storyErr.Code), storyErr.Code, storyErr.Message)
+		return
+	}
+	writeStoryError(w, http.StatusInternalServerError, story.CodeStoreFailure, err.Error())
+}
+
+func writeStoryError(w http.ResponseWriter, status int, code story.ErrorCode, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]*story.StoryError{
+		"error": story.NewError(code, message),
+	})
+}
+
+func storyHTTPStatus(code story.ErrorCode) int {
+	switch code {
+	case story.CodeStoryBusy, story.CodeEngineBusy:
+		return http.StatusTooManyRequests
+	case story.CodeNotFound, story.CodeArtifactNotFound, story.CodeUnsupportedArtifact, story.CodeInvalidArtifactRequest:
+		return http.StatusNotFound
+	case story.CodeCannotCancel:
+		return http.StatusConflict
+	case story.CodeStoreFailure:
+		return http.StatusInternalServerError
+	default:
+		return http.StatusBadRequest
+	}
 }
 
 type speechRequest struct {

@@ -11,7 +11,7 @@
     <header class="topbar">
       <div>
         <h1>cpp-studio local studio</h1>
-        <p class="route-line">/health /v1/audio/transcriptions /v1/chat/completions /v1/audio/speech /v1/images/generations</p>
+        <p class="route-line">/health /v1/audio/transcriptions /v1/chat/completions /v1/audio/speech /v1/images/generations /v1/stories</p>
       </div>
       <button class="secondary" id="healthButton" type="button">Refresh health</button>
     </header>
@@ -95,6 +95,93 @@
           <span id="imageStatus">Idle</span>
         </div>
         <p class="error-box" id="imageErrorBox" hidden></p>
+      </section>
+    </section>
+
+    <section class="story-panel">
+      <form class="story-form" id="storyForm">
+        <div class="story-controls">
+          <label class="field">
+            <span>Story subject</span>
+            <input class="text-input" id="storySubjectInput" type="text" value="how stars are born">
+          </label>
+
+          <label class="field compact-field">
+            <span>Seconds</span>
+            <input class="text-input" id="storySecondsInput" type="number" min="30" max="300" value="90">
+          </label>
+        </div>
+
+        <div class="source-stack">
+          <div class="source-group">
+            <label class="field">
+              <span>Source 1 title</span>
+              <input class="text-input story-source-title" type="text" value="NASA Science: Star Basics">
+            </label>
+            <label class="field">
+              <span>Source 1 URL</span>
+              <input class="text-input story-source-url" type="url" value="https://science.nasa.gov/universe/stars/">
+            </label>
+            <label class="field">
+              <span>Source 1 excerpt</span>
+              <textarea class="story-source-excerpt" rows="3">Stars form inside molecular clouds of gas and dust. Cold cloud conditions help gas clump into denser pockets. As clumps gain mass, gravity can make them collapse.</textarea>
+            </label>
+          </div>
+
+          <div class="source-group">
+            <label class="field">
+              <span>Source 2 title</span>
+              <input class="text-input story-source-title" type="text" value="NASA Webb: Fiery Hourglass">
+            </label>
+            <label class="field">
+              <span>Source 2 URL</span>
+              <input class="text-input story-source-url" type="url" value="https://science.nasa.gov/missions/webb/nasas-webb-catches-fiery-hourglass-as-new-star-forms/">
+            </label>
+            <label class="field">
+              <span>Source 2 excerpt</span>
+              <textarea class="story-source-excerpt" rows="3">A forming protostar gathers material from its surrounding molecular cloud. Falling material spirals inward and forms an accretion disk. The disk feeds material onto the protostar.</textarea>
+            </label>
+          </div>
+
+          <div class="source-group">
+            <label class="field">
+              <span>Source 3 title</span>
+              <input class="text-input story-source-title" type="text" value="NASA Hubble: Planet-Forming Disks">
+            </label>
+            <label class="field">
+              <span>Source 3 URL</span>
+              <input class="text-input story-source-url" type="url" value="https://science.nasa.gov/missions/hubble/hubbles-album-of-planet-forming-disks/">
+            </label>
+            <label class="field">
+              <span>Source 3 excerpt</span>
+              <textarea class="story-source-excerpt" rows="3">Some falling material forms a rotating disk around the protostar. Jets from magnetic poles are part of star formation. Jets help carry away angular momentum so material can continue collecting.</textarea>
+            </label>
+          </div>
+        </div>
+
+        <div class="action-row">
+          <button class="primary" id="storyGenerateButton" type="submit">Generate story</button>
+          <button class="secondary" id="storyCancelButton" type="button" disabled>Cancel story</button>
+        </div>
+        <p class="error-box" id="storyErrorBox" hidden></p>
+      </form>
+
+      <section class="story-result" aria-live="polite">
+        <div class="source-row">
+          <span class="source-label">Story status</span>
+          <span id="storyStatus">Idle</span>
+        </div>
+        <progress id="storyProgress" max="1" value="0"></progress>
+        <div class="audio-panel">
+          <span>Story playback</span>
+          <audio id="storyAudio" controls></audio>
+        </div>
+        <div class="story-library-header">
+          <span class="source-label">Retained stories</span>
+          <button class="secondary compact-button" id="storyLibraryButton" type="button">Refresh</button>
+        </div>
+        <div class="story-library" id="storyLibrary"></div>
+        <div class="story-facts" id="storyFacts"></div>
       </section>
     </section>
 

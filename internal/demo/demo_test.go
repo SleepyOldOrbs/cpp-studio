@@ -26,8 +26,14 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "/v1/images/generations") {
 		t.Fatalf("expected image route marker, got %q", body)
 	}
+	if !strings.Contains(body, "/v1/stories") {
+		t.Fatalf("expected story route marker, got %q", body)
+	}
 	if !strings.Contains(body, "imageErrorBox") {
 		t.Fatalf("expected image error marker, got %q", body)
+	}
+	if !strings.Contains(body, "storyLibraryButton") {
+		t.Fatalf("expected story library marker, got %q", body)
 	}
 }
 
@@ -42,13 +48,13 @@ func TestHandlerServesAssets(t *testing.T) {
 			name:        "javascript",
 			path:        "/app.js",
 			contentType: "javascript",
-			needle:      "generateImage",
+			needle:      "refreshStoryLibrary",
 		},
 		{
 			name:        "css",
 			path:        "/styles.css",
 			contentType: "text/css",
-			needle:      ".image-panel",
+			needle:      ".story-library-item",
 		},
 	}
 

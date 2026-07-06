@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$env:Path = $env:Path + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
 
 function Get-DefaultRuntime {
   $goHostOS = ""
@@ -90,7 +91,18 @@ $manifest = [ordered]@{
   createdAt = (Get-Date).ToUniversalTime().ToString("o")
   binaries = @("cpp-studio$exe", "cpp-studio-fixture$exe")
   configs = @("config.audio-local.example.json", "config.example.json", "config.ci.json", "config.smoke.json")
-  docs = @("README.md", "docs/API.md", "docs/CONFIG.md", "docs/FIXTURE.md", "docs/RELEASE.md")
+  docs = @(
+    "README.md",
+    "docs/API.md",
+    "docs/CONFIG.md",
+    "docs/FIXTURE.md",
+    "docs/RELEASE.md",
+    "docs/STORY_API.md",
+    "docs/story-packets/how-stars-are-born/cast.json",
+    "docs/story-packets/how-stars-are-born/fact-cards.json",
+    "docs/story-packets/how-stars-are-born/script.md",
+    "docs/story-packets/how-stars-are-born/sources.md"
+  )
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -Path (Join-Path $packageDir "PACKAGE.json")
 

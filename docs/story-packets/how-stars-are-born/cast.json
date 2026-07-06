@@ -1,0 +1,20 @@
+[
+  {
+    "id": "narrator",
+    "display_name": "Narrator",
+    "voice_id": "fixture-narrator",
+    "voice_description": "Calm documentary guide"
+  },
+  {
+    "id": "nova",
+    "display_name": "Nova",
+    "voice_id": "fixture-character-a",
+    "voice_description": "Curious student voice"
+  },
+  {
+    "id": "dr-lumen",
+    "display_name": "Dr. Lumen",
+    "voice_id": "fixture-character-b",
+    "voice_description": "Warm astrophysicist voice"
+  }
+]

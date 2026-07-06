@@ -1,0 +1,52 @@
+[
+  {
+    "id": "fact-1",
+    "source_ids": ["src-1"],
+    "claim": "Stars form inside large molecular clouds of gas and dust."
+  },
+  {
+    "id": "fact-2",
+    "source_ids": ["src-1"],
+    "claim": "Cold molecular-cloud conditions help gas clump into denser pockets."
+  },
+  {
+    "id": "fact-3",
+    "source_ids": ["src-1", "src-4"],
+    "claim": "As dense clumps gather mass, gravity can make them collapse."
+  },
+  {
+    "id": "fact-4",
+    "source_ids": ["src-4"],
+    "claim": "The earliest stage of the forming star is a protostar."
+  },
+  {
+    "id": "fact-5",
+    "source_ids": ["src-2", "src-4"],
+    "claim": "A protostar is fed by gas from its surrounding cloud."
+  },
+  {
+    "id": "fact-6",
+    "source_ids": ["src-2", "src-3", "src-4"],
+    "claim": "Falling material can spiral into a rotating accretion disk."
+  },
+  {
+    "id": "fact-7",
+    "source_ids": ["src-2"],
+    "claim": "The accretion disk feeds material onto the protostar."
+  },
+  {
+    "id": "fact-8",
+    "source_ids": ["src-2"],
+    "claim": "As a protostar gains mass, its core compresses and gets closer to stable nuclear fusion."
+  },
+  {
+    "id": "fact-9",
+    "source_ids": ["src-3"],
+    "claim": "Jets from a protostar's magnetic poles are part of the formation process."
+  },
+  {
+    "id": "fact-10",
+    "source_ids": ["src-3"],
+    "claim": "Jets help carry away angular momentum so material can continue collecting."
+  }
+]

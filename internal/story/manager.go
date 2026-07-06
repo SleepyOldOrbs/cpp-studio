@@ -1,0 +1,286 @@
+package story
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+)
+
+type ReserveEngineFunc func(ctx context.Context, name string) (func(), bool)
+
+type ManagerOptions struct {
+	RootDir       string
+	ReserveEngine ReserveEngineFunc
+	StageDelay    time.Duration
+	Now           func() time.Time
+}
+
+type Manager struct {
+	mu            sync.Mutex
+	store         *Store
+	reserveEngine ReserveEngineFunc
+	stageDelay    time.Duration
+	now           func() time.Time
+	counter       int
+	activeID      string
+	jobs          map[string]*job
+}
+
+type job struct {
+	id      string
+	req     NormalizedRequest
+	cancel  context.CancelFunc
+	release func()
+	status  StatusResponse
+}
+
+func NewManager(opts ManagerOptions) *Manager {
+	now := opts.Now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	stageDelay := opts.StageDelay
+	if stageDelay == 0 {
+		stageDelay = 25 * time.Millisecond
+	}
+	return &Manager{
+		store:         NewStore(opts.RootDir),
+		reserveEngine: opts.ReserveEngine,
+		stageDelay:    stageDelay,
+		now:           now,
+		jobs:          make(map[string]*job),
+	}
+}
+
+func (m *Manager) Submit(ctx context.Context, req CreateRequest) (CreateResponse, error) {
+	normalized, err := ValidateCreateRequest(req)
+	if err != nil {
+		return CreateResponse{}, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeID != "" {
+		return CreateResponse{}, NewError(CodeStoryBusy, "another story job is already active")
+	}
+	var release func()
+	if m.reserveEngine != nil {
+		var ok bool
+		release, ok = m.reserveEngine(ctx, "audio")
+		if !ok {
+			return CreateResponse{}, NewError(CodeEngineBusy, "engine \"audio\" is busy")
+		}
+	}
+	m.counter++
+	id := fmt.Sprintf("story_%s_%03d", m.now().UTC().Format("20060102_150405"), m.counter)
+	jobCtx, cancel := context.WithCancel(context.Background())
+	j := &job{
+		id:      id,
+		req:     normalized,
+		cancel:  cancel,
+		release: release,
+		status: StatusResponse{
+			ID:           id,
+			Status:       StatusQueued,
+			Stage:        StatusQueued,
+			Progress:     0,
+			Error:        nil,
+			ArtifactURL:  nil,
+			RetryAfterMS: DefaultRetryAfterMillis,
+		},
+	}
+	m.jobs[id] = j
+	m.activeID = id
+
+	go m.run(jobCtx, j)
+
+	_ = ctx
+	return CreateResponse{
+		ID:        id,
+		Status:    StatusQueued,
+		StatusURL: "/v1/stories/" + id,
+	}, nil
+}
+
+func (m *Manager) Status(id string) (StatusResponse, bool, error) {
+	m.mu.Lock()
+	if j, ok := m.jobs[id]; ok {
+		status := j.status
+		m.mu.Unlock()
+		return status, true, nil
+	}
+	m.mu.Unlock()
+
+	manifest, ok, err := m.store.Load(id)
+	if err != nil || !ok {
+		return StatusResponse{}, ok, err
+	}
+	artifactURL := manifest.Audio.URL
+	return StatusResponse{
+		ID:          manifest.ID,
+		Status:      StatusComplete,
+		Stage:       StatusComplete,
+		Progress:    1,
+		Error:       nil,
+		ArtifactURL: &artifactURL,
+		Manifest:    &manifest,
+	}, true, nil
+}
+
+func (m *Manager) Cancel(id string) (StatusResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[id]
+	if !ok {
+		if _, exists, err := m.store.Load(id); err != nil {
+			return StatusResponse{}, err
+		} else if exists {
+			return StatusResponse{}, NewError(CodeCannotCancel, "story is already complete")
+		}
+		return StatusResponse{}, NewError(CodeNotFound, "story not found")
+	}
+	if j.status.Status == StatusComplete || j.status.Status == StatusFailed || j.status.Status == StatusCancelled {
+		return StatusResponse{}, NewError(CodeCannotCancel, "story cannot be cancelled from its current state")
+	}
+	j.cancel()
+	j.status.Status = StatusCancelled
+	j.status.Stage = StatusCancelled
+	j.status.Progress = 0
+	j.status.Error = nil
+	j.status.RetryAfterMS = 0
+	return j.status, nil
+}
+
+func (m *Manager) List() ([]Summary, error) {
+	return m.store.List()
+}
+
+func (m *Manager) ArtifactPath(id string, filename string) (string, error) {
+	return m.store.ArtifactPath(id, filename)
+}
+
+func (m *Manager) run(ctx context.Context, j *job) {
+	if j.release != nil {
+		defer j.release()
+	}
+
+	stages := []struct {
+		status   Status
+		progress float64
+	}{
+		{StatusExtractingSources, 0.15},
+		{StatusPlanning, 0.35},
+		{StatusScripting, 0.55},
+		{StatusSynthesizing, 0.75},
+		{StatusStitching, 0.9},
+	}
+	for _, stage := range stages {
+		if !m.advance(ctx, j, stage.status, stage.progress) {
+			return
+		}
+	}
+	if ctx.Err() != nil || m.isCancelled(j) {
+		m.cancelled(j)
+		return
+	}
+
+	createdAt := m.now()
+	manifest, audio, err := BuildFixtureManifest(j.id, j.req, createdAt)
+	if err != nil {
+		m.fail(j, err)
+		return
+	}
+	if ctx.Err() != nil || m.isCancelled(j) {
+		m.cancelled(j)
+		return
+	}
+	if err := m.store.Save(manifest, audio); err != nil {
+		m.fail(j, NewError(CodeStoreFailure, err.Error()))
+		return
+	}
+	artifactURL := manifest.Audio.URL
+	m.mu.Lock()
+	if j.status.Status == StatusCancelled {
+		if m.activeID == j.id {
+			m.activeID = ""
+		}
+		m.mu.Unlock()
+		_ = m.store.Delete(j.id)
+		return
+	}
+	j.status.Status = StatusComplete
+	j.status.Stage = StatusComplete
+	j.status.Progress = 1
+	j.status.ArtifactURL = &artifactURL
+	j.status.Manifest = &manifest
+	j.status.RetryAfterMS = 0
+	if m.activeID == j.id {
+		m.activeID = ""
+	}
+	m.mu.Unlock()
+}
+
+func (m *Manager) advance(ctx context.Context, j *job, stage Status, progress float64) bool {
+	m.mu.Lock()
+	if j.status.Status == StatusCancelled {
+		if m.activeID == j.id {
+			m.activeID = ""
+		}
+		m.mu.Unlock()
+		return false
+	}
+	j.status.Status = stage
+	j.status.Stage = stage
+	j.status.Progress = progress
+	j.status.RetryAfterMS = DefaultRetryAfterMillis
+	m.mu.Unlock()
+
+	timer := time.NewTimer(m.stageDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		m.cancelled(j)
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (m *Manager) fail(j *job, err error) {
+	storyErr, ok := err.(*StoryError)
+	if !ok {
+		storyErr = NewError(CodeStoreFailure, err.Error())
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j.status.Status == StatusCancelled {
+		return
+	}
+	j.status.Status = StatusFailed
+	j.status.Stage = StatusFailed
+	j.status.Progress = 0
+	j.status.Error = storyErr
+	j.status.RetryAfterMS = 0
+	if m.activeID == j.id {
+		m.activeID = ""
+	}
+}
+
+func (m *Manager) isCancelled(j *job) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return j.status.Status == StatusCancelled
+}
+
+func (m *Manager) cancelled(j *job) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j.status.Status = StatusCancelled
+	j.status.Stage = StatusCancelled
+	j.status.Progress = 0
+	j.status.RetryAfterMS = 0
+	if m.activeID == j.id {
+		m.activeID = ""
+	}
+}
