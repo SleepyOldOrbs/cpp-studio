@@ -1,0 +1,14 @@
+{
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "engines": {
+    "ci": {
+      "command": "go",
+      "args": ["version"],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 10
+    }
+  }
+}

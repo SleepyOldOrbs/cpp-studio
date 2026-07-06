@@ -50,6 +50,27 @@ http://127.0.0.1:8765/demo/
 The demo can refresh gateway health, record a WAV in the browser, upload a WAV fallback, run transcription -> chat -> speech, and play the returned WAV.
 The full loop requires configured `whisper`, `llama`, and `audio` engines. With `config.audio-local.example.json`, the demo can exercise health and the speech route; transcription and chat still need local `whisper.cpp` and `llama.cpp` paths.
 
+## Verification
+
+Portable checks:
+
+```powershell
+.\scripts\verify.ps1
+```
+
+James-local audio route check:
+
+```powershell
+.\scripts\verify.ps1 -IncludeLocalAudio
+.\scripts\smoke-speech-route.ps1
+```
+
+Release checklist:
+
+```text
+docs\RELEASE.md
+```
+
 ## Routes
 
 - `GET /health`: gateway and engine state, process IDs, last errors, and log tails.

@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt check
+        shell: pwsh
+        run: |
+          $files = gofmt -l ./cmd ./internal
+          if ($files) {
+            $files
+            throw "gofmt reported unformatted files"
+          }
+
+      - name: test
+        run: go test ./... -count=1
+
+      - name: vet
+        run: go vet ./...
+
+      - name: config check
+        run: go run ./cmd/cpp-studio --config ./config.ci.json --check
