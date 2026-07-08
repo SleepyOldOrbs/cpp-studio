@@ -37,6 +37,10 @@ Use `subprocess` for tools that should run once per request.
 
 Subprocess engines are validated at startup and shown as ready in `/health`, but they are not launched until a route needs them.
 
+### GPU serialization
+
+Set `"gpu": true` on subprocess engines that are heavy GPU users (typically `audio` and `sd`). Runs of GPU-marked engines are serialized across engine names: a speech synthesis that lands while an image is rendering waits for the GPU instead of crashing on VRAM contention. Each engine still has its own single-run slot; `gpu` only adds the cross-engine ordering.
+
 ## Route-Specific Arguments
 
 The gateway appends request arguments to the configured base args:

@@ -32,13 +32,15 @@
         "--session-option", "qwen3_tts.weight_type=q8_0"
       ],
       "mode": "subprocess",
-      "requestTimeoutSeconds": 180
+      "requestTimeoutSeconds": 180,
+      "gpu": true
     },
     "sd": {
       "command": "sd-cli",
       "args": ["-m", "C:\\Temp\\v1-5-pruned-emaonly.safetensors"],
       "mode": "subprocess",
-      "requestTimeoutSeconds": 300
+      "requestTimeoutSeconds": 300,
+      "gpu": true
     }
   }
 }

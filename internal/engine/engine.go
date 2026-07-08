@@ -100,6 +100,7 @@ type Runner struct {
 	engines  map[string]config.EngineConfig
 	recorder StatusRecorder
 	busy     map[string]chan struct{}
+	gpu      chan struct{}
 }
 
 func NewRunner(engines map[string]config.EngineConfig, recorder StatusRecorder) *Runner {
@@ -107,7 +108,20 @@ func NewRunner(engines map[string]config.EngineConfig, recorder StatusRecorder) 
 	for name := range engines {
 		busy[name] = make(chan struct{}, 1)
 	}
-	return &Runner{engines: engines, recorder: recorder, busy: busy}
+	return &Runner{engines: engines, recorder: recorder, busy: busy, gpu: make(chan struct{}, 1)}
+}
+
+// acquireGPU serializes runs of engines marked gpu: true across engine
+// names, so two heavy GPU jobs (e.g. sd and audio) never race for VRAM.
+// Unlike the per-engine slot it waits instead of failing, turning a
+// cross-engine collision into brief queueing.
+func (r *Runner) acquireGPU(ctx context.Context) (func(), error) {
+	select {
+	case r.gpu <- struct{}{}:
+		return func() { <-r.gpu }, nil
+	case <-ctx.Done():
+		return nil, &Error{Kind: KindBusy, Message: fmt.Sprintf("waiting for the GPU: %v", ctx.Err())}
+	}
 }
 
 // Reserve takes the engine's single-run slot. It reports false when the
@@ -170,6 +184,14 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (Result, error) {
 			return Result{}, &Error{Kind: KindInternal, Message: fmt.Sprintf("close temp output: %v", err)}
 		}
 		defer os.Remove(outPath)
+	}
+
+	if engineCfg.GPU {
+		releaseGPU, err := r.acquireGPU(ctx)
+		if err != nil {
+			return Result{}, err
+		}
+		defer releaseGPU()
 	}
 
 	stdout, stderr, elapsed, err := runCommand(ctx, engineCfg, spec.Timeout, spec.BuildArgs(inPath, outPath))

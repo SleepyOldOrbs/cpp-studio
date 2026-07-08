@@ -85,6 +85,56 @@ func TestRunBusy(t *testing.T) {
 	}
 }
 
+func TestAcquireGPUSerializesAcrossEngines(t *testing.T) {
+	runner := NewRunner(map[string]config.EngineConfig{
+		"audio": {Command: "unused", GPU: true},
+		"sd":    {Command: "unused", GPU: true},
+	}, &fakeRecorder{})
+
+	release, err := runner.acquireGPU(context.Background())
+	if err != nil {
+		t.Fatalf("first GPU acquire: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = runner.acquireGPU(ctx)
+	var engErr *Error
+	if !errors.As(err, &engErr) || engErr.Kind != KindBusy {
+		t.Fatalf("expected busy error while GPU held, got %v", err)
+	}
+
+	release()
+	release2, err := runner.acquireGPU(context.Background())
+	if err != nil {
+		t.Fatalf("GPU acquire after release: %v", err)
+	}
+	release2()
+}
+
+func TestAcquireGPUWaitsForRelease(t *testing.T) {
+	runner := NewRunner(map[string]config.EngineConfig{
+		"audio": {Command: "unused", GPU: true},
+	}, &fakeRecorder{})
+
+	release, err := runner.acquireGPU(context.Background())
+	if err != nil {
+		t.Fatalf("first GPU acquire: %v", err)
+	}
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		release()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	release2, err := runner.acquireGPU(ctx)
+	if err != nil {
+		t.Fatalf("expected waiting acquire to succeed after release, got %v", err)
+	}
+	release2()
+}
+
 func TestRunRejectsInvalidInputWithoutInvoking(t *testing.T) {
 	recorder := &fakeRecorder{}
 	runner := NewRunner(map[string]config.EngineConfig{

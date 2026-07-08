@@ -30,6 +30,9 @@ type EngineConfig struct {
 	StartupTimeoutSeconds  int      `json:"startupTimeoutSeconds,omitempty"`
 	ShutdownTimeoutSeconds int      `json:"shutdownTimeoutSeconds,omitempty"`
 	RequestTimeoutSeconds  int      `json:"requestTimeoutSeconds,omitempty"`
+	// GPU marks a subprocess engine as a heavy GPU user; runs of GPU-marked
+	// engines are serialized across engines so they never race for VRAM.
+	GPU bool `json:"gpu,omitempty"`
 }
 
 // Load reads a config file and validates everything that can be checked
@@ -169,7 +172,7 @@ func rejectUnknownKeys(data []byte) error {
 			}
 			for key := range engine {
 				switch key {
-				case "command", "args", "mode", "workingDir", "healthUrl", "startupTimeoutSeconds", "shutdownTimeoutSeconds", "requestTimeoutSeconds":
+				case "command", "args", "mode", "workingDir", "healthUrl", "startupTimeoutSeconds", "shutdownTimeoutSeconds", "requestTimeoutSeconds", "gpu":
 				default:
 					return fmt.Errorf("unknown engine %q field %q", name, key)
 				}
