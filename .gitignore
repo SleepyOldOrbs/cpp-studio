@@ -1,6 +1,7 @@
 bin/
 dist/
 out/
+config.real.json
 coverage.out
 *.exe
 *.log

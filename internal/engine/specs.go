@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"cpp-studio/internal/wav"
@@ -25,7 +26,11 @@ const (
 
 // SpeechSpec invokes the "audio" engine: --text <input> --out <wav path>.
 // The engine must produce a valid WAV of at most MaxSpeechOutputBytes.
+// The input is transliterated to ASCII first: audiocpp_cli parses argv via
+// the Windows ANSI codepage, so any non-ASCII byte in --text reaches the
+// engine as invalid UTF-8 and the request fails.
 func SpeechSpec(input string) Spec {
+	text := sanitizeSpeechText(input)
 	return Spec{
 		Engine:        "audio",
 		Label:         "audio speech command",
@@ -33,7 +38,7 @@ func SpeechSpec(input string) Spec {
 		OutputPattern: "cpp-studio-speech-*.wav",
 		OutputLabel:   "generated wav",
 		BuildArgs: func(_, outPath string) []string {
-			return []string{"--text", input, "--out", outPath}
+			return []string{"--text", text, "--out", outPath}
 		},
 		ValidateOutput: func(path string) error {
 			if err := wav.ValidateFile(path); err != nil {
@@ -93,6 +98,48 @@ func ImageSpec(prompt string, width, height int) Spec {
 			return nil
 		},
 	}
+}
+
+// speechTextReplacements maps typography and common accented letters that
+// chat models emit to spoken-equivalent ASCII.
+var speechTextReplacements = map[rune]string{
+	'‘': "'", '’': "'", '‚': "'", '‛': "'",
+	'“': `"`, '”': `"`, '„': `"`,
+	'‐': "-", '‑': "-", '‒': "-", '–': "-",
+	'—': " - ", '―': " - ", '…': "...",
+	' ': " ", ' ': " ", ' ': " ", ' ': " ",
+	'•': "-", '×': "x", '÷': "/",
+	'à': "a", 'á': "a", 'â': "a", 'ã': "a", 'ä': "a", 'å': "a", 'æ': "ae",
+	'ç': "c", 'è': "e", 'é': "e", 'ê': "e", 'ë': "e",
+	'ì': "i", 'í': "i", 'î': "i", 'ï': "i", 'ñ': "n",
+	'ò': "o", 'ó': "o", 'ô': "o", 'õ': "o", 'ö': "o", 'ø': "o", 'œ': "oe",
+	'ù': "u", 'ú': "u", 'û': "u", 'ü': "u", 'ý': "y", 'ÿ': "y", 'ß': "ss",
+	'À': "A", 'Á': "A", 'Â': "A", 'Ã': "A", 'Ä': "A", 'Å': "A", 'Æ': "AE",
+	'Ç': "C", 'È': "E", 'É': "E", 'Ê': "E", 'Ë': "E",
+	'Ì': "I", 'Í': "I", 'Î': "I", 'Ï': "I", 'Ñ': "N",
+	'Ò': "O", 'Ó': "O", 'Ô': "O", 'Õ': "O", 'Ö': "O", 'Ø': "O", 'Œ': "OE",
+	'Ù': "U", 'Ú': "U", 'Û': "U", 'Ü': "U", 'Ý': "Y",
+}
+
+// sanitizeSpeechText rewrites input so every byte is printable ASCII plus
+// space. Mapped runes are transliterated; unmapped non-ASCII runes and
+// control characters are dropped, with whitespace collapsed to single spaces.
+func sanitizeSpeechText(input string) string {
+	var b strings.Builder
+	b.Grow(len(input))
+	for _, r := range input {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			b.WriteByte(' ')
+		case r >= 0x20 && r < 0x7F:
+			b.WriteRune(r)
+		default:
+			if repl, ok := speechTextReplacements[r]; ok {
+				b.WriteString(repl)
+			}
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 // ValidateImageDimensions enforces the shared caps on requested and

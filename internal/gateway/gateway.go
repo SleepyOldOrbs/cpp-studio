@@ -276,6 +276,11 @@ func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+// voiceSystemPrompt shapes voice-loop replies for the speech engine: the
+// reply is spoken aloud, so markdown and essay-length answers degrade into
+// unlistenable audio.
+const voiceSystemPrompt = "You are a voice assistant. Your reply will be spoken aloud, so answer conversationally in at most three short sentences of plain text, with no markdown, lists, or emojis."
+
 // chatOnce is the voice loop's ChatFunc: one user message in, the assistant
 // reply out, via the llama server's /v1/chat/completions route.
 func (r *router) chatOnce(ctx context.Context, message string) (string, error) {
@@ -289,8 +294,11 @@ func (r *router) chatOnce(ctx context.Context, message string) (string, error) {
 	}
 
 	payload, err := json.Marshal(chatCompletionRequest{
-		Model:    "default",
-		Messages: []chatMessage{{Role: "user", Content: message}},
+		Model: "default",
+		Messages: []chatMessage{
+			{Role: "system", Content: voiceSystemPrompt},
+			{Role: "user", Content: message},
+		},
 	})
 	if err != nil {
 		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode chat request: %v", err)}

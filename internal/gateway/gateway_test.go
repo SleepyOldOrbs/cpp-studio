@@ -1082,7 +1082,7 @@ func TestVoiceLoopWithAudioUpload(t *testing.T) {
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			t.Errorf("decode upstream chat request: %v", err)
 		}
-		if len(body.Messages) != 1 || body.Messages[0].Content != "transcribed text" {
+		if len(body.Messages) != 2 || body.Messages[0].Role != "system" || body.Messages[0].Content != voiceSystemPrompt || body.Messages[1].Content != "transcribed text" {
 			t.Errorf("unexpected upstream chat messages %+v", body.Messages)
 		}
 		w.Header().Set("Content-Type", "application/json")
