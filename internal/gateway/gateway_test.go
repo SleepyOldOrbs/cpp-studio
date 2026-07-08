@@ -1152,6 +1152,140 @@ func TestVoiceLoopWithAudioUpload(t *testing.T) {
 	}
 }
 
+func TestVoiceLoopSendsHistoryUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var body chatCompletionRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream chat request: %v", err)
+		}
+		if len(body.Messages) != 4 ||
+			body.Messages[0].Role != "system" ||
+			body.Messages[1].Role != "user" || body.Messages[1].Content != "earlier question" ||
+			body.Messages[2].Role != "assistant" || body.Messages[2].Content != "earlier answer" ||
+			body.Messages[3].Role != "user" || body.Messages[3].Content != "follow-up" {
+			t.Errorf("unexpected upstream chat messages %+v", body.Messages)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"contextual reply"}}]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+		"llama": {Command: "llama-server", HealthURL: upstream.URL + "/health"},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("message", "follow-up")
+	_ = writer.WriteField("history", `[{"role":"user","text":"earlier question"},{"role":"assistant","text":"earlier answer"}]`)
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voice", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVoiceLoopRejectsBadHistory(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	tests := []struct {
+		name    string
+		history string
+	}{
+		{name: "not json", history: "not-json"},
+		{name: "bad role", history: `[{"role":"system","text":"sneaky"}]`},
+		{name: "empty text", history: `[{"role":"user","text":"  "}]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			_ = writer.WriteField("message", "hello")
+			_ = writer.WriteField("history", tt.history)
+			if err := writer.Close(); err != nil {
+				t.Fatalf("close multipart writer: %v", err)
+			}
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/voice", &body)
+			req.Header.Set("Content-Type", writer.FormDataContentType())
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestTranscriptionsViaWhisperServer(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/inference" {
+			t.Errorf("unexpected upstream path %q", req.URL.Path)
+		}
+		if err := req.ParseMultipartForm(32 << 20); err != nil {
+			t.Errorf("parse upstream multipart: %v", err)
+		}
+		if req.FormValue("response_format") != "json" {
+			t.Errorf("expected response_format json, got %q", req.FormValue("response_format"))
+		}
+		if _, _, err := req.FormFile("file"); err != nil {
+			t.Errorf("expected file field: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":" served transcript\n with newlines\n"}`))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"whisper": {Command: "whisper-server", Mode: "server", HealthURL: upstream.URL + "/health"},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "sample.wav")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write(validWAVBytes()); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode transcription response: %v", err)
+	}
+	if response.Text != "served transcript with newlines" {
+		t.Fatalf("unexpected transcript %q", response.Text)
+	}
+}
+
 func TestVoiceLoopWithTypedMessage(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

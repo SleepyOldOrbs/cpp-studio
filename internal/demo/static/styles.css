@@ -593,6 +593,68 @@ audio {
   height: 40px;
 }
 
+.convo-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  padding: 6px 10px;
+  background: var(--well);
+  font-size: 0.86rem;
+}
+
+.convo-row > span:nth-child(2) {
+  flex: 1;
+  color: var(--muted);
+}
+
+.convo-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  padding: 10px;
+  background: var(--well);
+}
+
+.convo-turn {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  padding: 7px 10px;
+  background: var(--panel);
+}
+
+.convo-turn.assistant {
+  border-left: 2px solid var(--accent);
+}
+
+.convo-role {
+  color: var(--muted);
+  font-family: var(--display);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.convo-turn.assistant .convo-role {
+  color: var(--accent);
+}
+
+.convo-text {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.86rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 /* ---------- story desk ---------- */
 
 .story-controls {

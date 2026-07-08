@@ -20,6 +20,9 @@
   var transcriptOutput = document.getElementById("transcriptOutput");
   var replyOutput = document.getElementById("replyOutput");
   var replyAudio = document.getElementById("replyAudio");
+  var convoStatus = document.getElementById("convoStatus");
+  var convoList = document.getElementById("convoList");
+  var newConvoButton = document.getElementById("newConvoButton");
   var errorBox = document.getElementById("errorBox");
   var logOutput = document.getElementById("logOutput");
   var imageForm = document.getElementById("imageForm");
@@ -51,6 +54,9 @@
   var LIVE_MAX_SECONDS = 90;
   var LIVE_TARGET_RATE = 16000;
   var LIVE_MAX_FAILURES = 3;
+  var CONVO_MAX_TURNS = 40;
+
+  var conversation = [];
 
   var running = false;
   var recording = false;
@@ -83,7 +89,8 @@
     clearImageButton,
     storySubjectInput,
     storySecondsInput,
-    storyGenerateButton
+    storyGenerateButton,
+    newConvoButton
   ].concat(sizePresets);
 
   function log(message, level) {
@@ -743,6 +750,9 @@
         form.append("message", text);
         log("Using typed message as transcript");
       }
+      if (conversation.length > 0) {
+        form.append("history", JSON.stringify(conversation));
+      }
 
       log("POST /v1/voice");
       var response = await fetch("/v1/voice", {
@@ -757,6 +767,11 @@
         throw new Error("Voice loop returned no audio");
       }
       var speech = base64ToBlob(data.audio_b64, "audio/wav");
+      recordExchange(data.transcript || "", data.reply || "");
+      // The turn is in the conversation now; clear the inputs so the next
+      // recording or message is a fresh follow-up.
+      clearActiveWav();
+      messageInput.value = "";
       log("Voice loop complete: " + formatBytes(speech.size) + " WAV");
 
       activeAudioUrl = URL.createObjectURL(speech);
@@ -971,6 +986,37 @@
     var file = new File([wavBlob], "recording.wav", { type: "audio/wav" });
     setActiveWav(file, "recording");
     recorder = null;
+  }
+
+  function renderConversation() {
+    var exchanges = conversation.length / 2;
+    convoStatus.textContent = exchanges === 0 ? "No turns yet" : exchanges + (exchanges === 1 ? " exchange of context" : " exchanges of context");
+    convoList.textContent = "";
+    convoList.hidden = conversation.length === 0;
+    conversation.forEach(function (turn) {
+      var item = createElement("div", "convo-turn " + turn.role);
+      item.appendChild(createElement("span", "convo-role", turn.role === "user" ? "You" : "Assistant"));
+      item.appendChild(createElement("p", "convo-text", turn.text));
+      convoList.appendChild(item);
+    });
+    convoList.scrollTop = convoList.scrollHeight;
+  }
+
+  function recordExchange(transcript, reply) {
+    conversation.push({ role: "user", text: transcript });
+    conversation.push({ role: "assistant", text: reply });
+    while (conversation.length > CONVO_MAX_TURNS) {
+      conversation.shift();
+      conversation.shift();
+    }
+    renderConversation();
+  }
+
+  function startNewConversation() {
+    conversation = [];
+    renderConversation();
+    resetOutputs();
+    log("Started a new conversation");
   }
 
   function liveLabel() {
@@ -1228,6 +1274,7 @@
   });
   wavInput.addEventListener("change", chooseWav);
   clearButton.addEventListener("click", clearAll);
+  newConvoButton.addEventListener("click", startNewConversation);
   wavClearButton.addEventListener("click", function () {
     if (!activeWavFile) {
       return;

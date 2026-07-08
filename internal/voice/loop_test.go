@@ -21,7 +21,7 @@ func testLoop(t *testing.T) (*Loop, *engine.Fake) {
 	})
 	loop := &Loop{
 		Engines: fake,
-		Chat: func(ctx context.Context, message string) (string, error) {
+		Chat: func(ctx context.Context, history []Turn, message string) (string, error) {
 			return "reply to: " + message, nil
 		},
 	}
@@ -69,6 +69,44 @@ func TestLoopWithTypedMessage(t *testing.T) {
 	}
 }
 
+func TestLoopPassesHistoryToChat(t *testing.T) {
+	loop, _ := testLoop(t)
+	var gotHistory []Turn
+	loop.Chat = func(ctx context.Context, history []Turn, message string) (string, error) {
+		gotHistory = history
+		return "reply", nil
+	}
+
+	history := []Turn{
+		{Role: "user", Text: "first question"},
+		{Role: "assistant", Text: "first answer"},
+	}
+	if _, err := loop.Run(context.Background(), Request{Message: "follow-up", History: history}); err != nil {
+		t.Fatalf("run loop: %v", err)
+	}
+	if len(gotHistory) != 2 || gotHistory[0].Text != "first question" || gotHistory[1].Role != "assistant" {
+		t.Fatalf("unexpected history %+v", gotHistory)
+	}
+}
+
+func TestLoopUsesInjectedTranscribe(t *testing.T) {
+	loop, fake := testLoop(t)
+	loop.Transcribe = func(ctx context.Context, wavBytes []byte) (string, error) {
+		return "  injected transcript \n", nil
+	}
+
+	result, err := loop.Run(context.Background(), Request{WAV: wav.SyntheticTone(160)})
+	if err != nil {
+		t.Fatalf("run loop: %v", err)
+	}
+	if result.Transcript != "injected transcript" {
+		t.Fatalf("unexpected transcript %q", result.Transcript)
+	}
+	if calls := fake.Calls(); len(calls) != 1 || calls[0].Engine != "audio" {
+		t.Fatalf("injected transcribe should skip the whisper subprocess, got %+v", calls)
+	}
+}
+
 func TestLoopRejectsEmptyInput(t *testing.T) {
 	loop, _ := testLoop(t)
 	_, err := loop.Run(context.Background(), Request{Message: "   "})
@@ -79,7 +117,7 @@ func TestLoopRejectsEmptyInput(t *testing.T) {
 
 func TestLoopPropagatesChatFailure(t *testing.T) {
 	loop, fake := testLoop(t)
-	loop.Chat = func(ctx context.Context, message string) (string, error) {
+	loop.Chat = func(ctx context.Context, history []Turn, message string) (string, error) {
 		return "", fmt.Errorf("llama upstream request failed: connection refused")
 	}
 	_, err := loop.Run(context.Background(), Request{Message: "hello"})

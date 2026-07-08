@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"cpp-studio/internal/lifecycle"
 	"cpp-studio/internal/story"
 	"cpp-studio/internal/voice"
+	"cpp-studio/internal/wav"
 )
 
 type router struct {
@@ -223,7 +225,8 @@ func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	result, err := r.engines.Run(req.Context(), engine.TranscriptionSpec(data))
+	started := time.Now()
+	text, err := r.transcribe(req.Context(), data)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -231,9 +234,83 @@ func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(transcriptionResponse{
-		Text:       strings.TrimSpace(string(result.Stdout)),
-		DurationMS: result.Elapsed.Milliseconds(),
+		Text:       strings.TrimSpace(text),
+		DurationMS: time.Since(started).Milliseconds(),
 	})
+}
+
+// transcribe produces the transcript for uploaded WAV bytes. Subprocess
+// whisper crosses the engine seam; server-mode whisper posts to the resident
+// whisper-server's /inference route so the model stays loaded between
+// requests (which is what makes live transcription passes fast).
+func (r *router) transcribe(ctx context.Context, wavBytes []byte) (string, error) {
+	engineCfg, ok := r.engine("whisper")
+	if !ok {
+		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "whisper" is not configured`}
+	}
+	if engineCfg.Mode != "server" {
+		res, err := r.engines.Run(ctx, engine.TranscriptionSpec(wavBytes))
+		if err != nil {
+			return "", err
+		}
+		return string(res.Stdout), nil
+	}
+
+	if err := wav.ValidateBytes(wavBytes); err != nil {
+		return "", &engine.Error{Kind: engine.KindInvalidInput, Message: err.Error()}
+	}
+	upstreamURL, ok := inferEngineURL(engineCfg.HealthURL, "/inference")
+	if !ok {
+		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "whisper" healthUrl must end in /health to infer /inference`}
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "input.wav")
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
+	}
+	if _, err := part.Write(wavBytes); err != nil {
+		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
+	}
+	if err := writer.WriteField("response_format", "json"); err != nil {
+		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
+	}
+	if err := writer.Close(); err != nil {
+		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, engine.RequestTimeout(engineCfg, engine.DefaultTranscriptionTimeout))
+	defer cancel()
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, &body)
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
+	}
+	upstreamReq.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := r.client.Do(upstreamReq)
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("whisper upstream request failed: %v", err)}
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxChatReplyBytes))
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read whisper upstream response: %v", err)}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("whisper upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))}
+	}
+
+	var parsed struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("decode whisper upstream response: %v", err)}
+	}
+	r.manager.MarkSuccess("whisper")
+	// whisper-server joins segments with newlines; collapse to one line to
+	// match the subprocess -nt output shape.
+	return strings.Join(strings.Fields(parsed.Text), " "), nil
 }
 
 func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
@@ -257,10 +334,17 @@ func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
 		wavBytes = data
 	}
 
-	loop := voice.Loop{Engines: r.engines, Chat: r.chatOnce}
+	history, err := parseVoiceHistory(req.FormValue("history"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	loop := voice.Loop{Engines: r.engines, Chat: r.chatOnce, Transcribe: r.transcribe}
 	result, err := loop.Run(req.Context(), voice.Request{
 		WAV:     wavBytes,
 		Message: req.FormValue("message"),
+		History: history,
 	})
 	if err != nil {
 		writeEngineError(w, err)
@@ -276,14 +360,50 @@ func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+const (
+	// maxVoiceHistoryTurns caps how many prior turns one voice request may
+	// carry; older turns should be dropped client-side.
+	maxVoiceHistoryTurns = 40
+	// maxVoiceHistoryTurnChars caps one turn's text.
+	maxVoiceHistoryTurnChars = 4000
+)
+
+// parseVoiceHistory decodes the optional multipart "history" field: a JSON
+// array of {"role","text"} turns, oldest first.
+func parseVoiceHistory(raw string) ([]voice.Turn, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var history []voice.Turn
+	if err := json.Unmarshal([]byte(raw), &history); err != nil {
+		return nil, fmt.Errorf("history must be a JSON array of {role, text} turns: %v", err)
+	}
+	if len(history) > maxVoiceHistoryTurns {
+		return nil, fmt.Errorf("history cannot exceed %d turns", maxVoiceHistoryTurns)
+	}
+	for i, turn := range history {
+		if turn.Role != "user" && turn.Role != "assistant" {
+			return nil, fmt.Errorf("history turn %d role must be user or assistant", i+1)
+		}
+		if strings.TrimSpace(turn.Text) == "" {
+			return nil, fmt.Errorf("history turn %d text cannot be empty", i+1)
+		}
+		if len(turn.Text) > maxVoiceHistoryTurnChars {
+			return nil, fmt.Errorf("history turn %d text cannot exceed %d characters", i+1, maxVoiceHistoryTurnChars)
+		}
+	}
+	return history, nil
+}
+
 // voiceSystemPrompt shapes voice-loop replies for the speech engine: the
 // reply is spoken aloud, so markdown and essay-length answers degrade into
 // unlistenable audio.
 const voiceSystemPrompt = "You are a voice assistant. Your reply will be spoken aloud, so answer conversationally in at most three short sentences of plain text, with no markdown, lists, or emojis."
 
-// chatOnce is the voice loop's ChatFunc: one user message in, the assistant
-// reply out, via the llama server's /v1/chat/completions route.
-func (r *router) chatOnce(ctx context.Context, message string) (string, error) {
+// chatOnce is the voice loop's ChatFunc: the prior turns plus one user
+// message in, the assistant reply out, via the llama server's
+// /v1/chat/completions route.
+func (r *router) chatOnce(ctx context.Context, history []voice.Turn, message string) (string, error) {
 	engineCfg, ok := r.engine("llama")
 	if !ok {
 		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "llama" is not configured`}
@@ -293,12 +413,16 @@ func (r *router) chatOnce(ctx context.Context, message string) (string, error) {
 		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "llama" healthUrl must end in /health to infer /v1/chat/completions`}
 	}
 
+	messages := make([]chatMessage, 0, len(history)+2)
+	messages = append(messages, chatMessage{Role: "system", Content: voiceSystemPrompt})
+	for _, turn := range history {
+		messages = append(messages, chatMessage{Role: turn.Role, Content: turn.Text})
+	}
+	messages = append(messages, chatMessage{Role: "user", Content: message})
+
 	payload, err := json.Marshal(chatCompletionRequest{
-		Model: "default",
-		Messages: []chatMessage{
-			{Role: "system", Content: voiceSystemPrompt},
-			{Role: "user", Content: message},
-		},
+		Model:    "default",
+		Messages: messages,
 	})
 	if err != nil {
 		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode chat request: %v", err)}
@@ -467,7 +591,9 @@ func readUploadedWAV(w http.ResponseWriter, req *http.Request) ([]byte, bool) {
 	return data, true
 }
 
-func inferChatCompletionsURL(healthURL string) (string, bool) {
+// inferEngineURL derives a server engine's request route from its healthUrl,
+// e.g. http://127.0.0.1:8733/health -> http://127.0.0.1:8733<path>.
+func inferEngineURL(healthURL string, path string) (string, bool) {
 	if healthURL == "" {
 		return "", false
 	}
@@ -479,10 +605,14 @@ func inferChatCompletionsURL(healthURL string) (string, bool) {
 		return "", false
 	}
 
-	parsed.Path = strings.TrimSuffix(parsed.Path, "/health") + "/v1/chat/completions"
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/health") + path
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), true
+}
+
+func inferChatCompletionsURL(healthURL string) (string, bool) {
+	return inferEngineURL(healthURL, "/v1/chat/completions")
 }
 
 func parseImageSize(size string) (int, int, error) {
