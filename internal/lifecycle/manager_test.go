@@ -225,18 +225,6 @@ func TestHealthJSONShape(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsMissingCommand(t *testing.T) {
-	cfg := config.Config{
-		Gateway: config.GatewayConfig{Host: "127.0.0.1", Port: 8765},
-		Engines: map[string]config.EngineConfig{
-			"missing": {Command: "definitely-not-a-real-cpp-studio-command"},
-		},
-	}
-	if err := Validate(cfg); err == nil {
-		t.Fatalf("expected missing command error")
-	}
-}
-
 func TestHelperProcess(t *testing.T) {
 	args := os.Args
 	for i, arg := range args {

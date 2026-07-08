@@ -3,11 +3,12 @@ package story
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"cpp-studio/internal/wav"
 )
 
 type Store struct {
@@ -31,8 +32,8 @@ func (s *Store) Save(manifest Manifest, audio []byte) error {
 	if len(audio) > MaxGeneratedWAVBytes {
 		return fmt.Errorf("generated wav is %d bytes, max is %d bytes", len(audio), MaxGeneratedWAVBytes)
 	}
-	if err := validateWAVBytes(audio); err != nil {
-		return err
+	if err := wav.ValidateBytes(audio); err != nil {
+		return fmt.Errorf("generated wav: %w", err)
 	}
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
 		return fmt.Errorf("create stories dir: %w", err)
@@ -136,11 +137,7 @@ func (s *Store) ArtifactPath(id string, filename string) (string, error) {
 		return "", err
 	}
 	defer file.Close()
-	header := make([]byte, 12)
-	if _, err := io.ReadFull(file, header); err != nil {
-		return "", NewError(CodeArtifactNotFound, "story artifact is not a valid WAV")
-	}
-	if string(header[0:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
+	if err := wav.ValidateHeader(file); err != nil {
 		return "", NewError(CodeArtifactNotFound, "story artifact is not a valid WAV")
 	}
 	return path, nil
@@ -152,13 +149,6 @@ func (s *Store) Delete(id string) error {
 	}
 	if err := os.RemoveAll(filepath.Join(s.rootDir, id)); err != nil {
 		return fmt.Errorf("delete story dir: %w", err)
-	}
-	return nil
-}
-
-func validateWAVBytes(data []byte) error {
-	if len(data) < 12 || string(data[0:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
-		return fmt.Errorf("generated wav must start with RIFF/WAVE header")
 	}
 	return nil
 }

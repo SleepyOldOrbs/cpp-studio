@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -93,25 +92,6 @@ func NewManager(cfg config.Config) *Manager {
 		engines: engines,
 		client:  &http.Client{Timeout: 2 * time.Second},
 	}
-}
-
-func Validate(cfg config.Config) error {
-	for name, engine := range cfg.Engines {
-		if strings.ContainsAny(engine.Command, `/\`) {
-			abs := engine.Command
-			if !filepath.IsAbs(abs) && engine.WorkingDir != "" {
-				abs = filepath.Join(engine.WorkingDir, engine.Command)
-			}
-			if _, err := exec.LookPath(abs); err != nil {
-				return fmt.Errorf("engine %q command not found: %w", name, err)
-			}
-			continue
-		}
-		if _, err := exec.LookPath(engine.Command); err != nil {
-			return fmt.Errorf("engine %q command not found on PATH: %w", name, err)
-		}
-	}
-	return nil
 }
 
 func (m *Manager) StartAll(ctx context.Context) error {

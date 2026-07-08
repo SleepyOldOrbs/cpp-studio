@@ -7,42 +7,34 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"image/png"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
 	"cpp-studio/internal/config"
 	"cpp-studio/internal/demo"
+	"cpp-studio/internal/engine"
 	"cpp-studio/internal/lifecycle"
 	"cpp-studio/internal/story"
+	"cpp-studio/internal/voice"
 )
 
 type router struct {
 	cfg     config.Config
 	manager *lifecycle.Manager
 	client  *http.Client
-	busy    map[string]chan struct{}
+	engines engine.Invoker
 	stories *story.Manager
 }
 
 const (
 	defaultChatTimeout          = 120 * time.Second
-	defaultTranscriptionTimeout = 120 * time.Second
-	defaultSpeechTimeout        = 180 * time.Second
-	defaultImageTimeout         = 300 * time.Second
 	maxJSONBodyBytes            = 64 * 1024
 	maxTranscriptionUploadBytes = 32 * 1024 * 1024
-	maxSpeechOutputBytes        = 32 * 1024 * 1024
-	maxImageOutputBytes         = 32 * 1024 * 1024
-	maxImageDimension           = 2048
-	maxImagePixels              = maxImageDimension * maxImageDimension
-	maxSubprocessLogBytes       = 1024 * 1024
+	maxChatReplyBytes           = 1024 * 1024
 )
 
 // NewRouter builds the cpp-studio gateway HTTP routes.
@@ -51,10 +43,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 		cfg:     cfg,
 		manager: manager,
 		client:  http.DefaultClient,
-		busy:    make(map[string]chan struct{}, len(cfg.Engines)),
-	}
-	for name := range cfg.Engines {
-		r.busy[name] = make(chan struct{}, 1)
+		engines: engine.NewRunner(cfg.Engines, manager),
 	}
 	r.stories = story.NewManager(story.ManagerOptions{
 		ReserveEngine: r.reserveEngine,
@@ -71,6 +60,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/stories/", r.handleStory)
 	mux.HandleFunc("/v1/audio/speech", r.handleSpeech)
 	mux.HandleFunc("/v1/audio/transcriptions", r.handleTranscriptions)
+	mux.HandleFunc("/v1/voice", r.handleVoice)
 	return mux
 }
 
@@ -108,18 +98,18 @@ func (r *router) handleChatCompletions(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	engine, ok := r.engine("llama")
+	engineCfg, ok := r.engine("llama")
 	if !ok {
 		writeJSONError(w, http.StatusServiceUnavailable, `engine "llama" is not configured`)
 		return
 	}
-	upstreamURL, ok := inferChatCompletionsURL(engine.HealthURL)
+	upstreamURL, ok := inferChatCompletionsURL(engineCfg.HealthURL)
 	if !ok {
 		writeJSONError(w, http.StatusServiceUnavailable, `engine "llama" healthUrl must end in /health to infer /v1/chat/completions`)
 		return
 	}
 
-	ctx, cancel := requestContext(req.Context(), engine, defaultChatTimeout)
+	ctx, cancel := context.WithTimeout(req.Context(), engine.RequestTimeout(engineCfg, defaultChatTimeout))
 	defer cancel()
 
 	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, req.Body)
@@ -167,63 +157,15 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	engine, ok := r.engine("audio")
-	if !ok {
-		writeJSONError(w, http.StatusServiceUnavailable, `engine "audio" is not configured`)
-		return
-	}
-	release, ok := r.acquire("audio")
-	if !ok {
-		writeJSONError(w, http.StatusTooManyRequests, `engine "audio" is busy`)
-		return
-	}
-	defer release()
-
-	out, err := os.CreateTemp("", "cpp-studio-speech-*.wav")
+	result, err := r.engines.Run(req.Context(), engine.SpeechSpec(body.Input))
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create temp output: %v", err))
-		return
-	}
-	outPath := out.Name()
-	if err := out.Close(); err != nil {
-		_ = os.Remove(outPath)
-		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("close temp output: %v", err))
-		return
-	}
-	defer os.Remove(outPath)
-
-	stdout, stderr, _, err := runEngineCommand(req.Context(), engine, defaultSpeechTimeout, "--text", body.Input, "--out", outPath)
-	if err != nil {
-		message := commandFailure("audio speech command failed", err, stdout, stderr)
-		r.manager.MarkFailure("audio", lifecycle.StatusCrashed, message)
-		writeJSONError(w, http.StatusBadGateway, message)
-		return
-	}
-	if err := validateWAVFile(outPath); err != nil {
-		message := fmt.Sprintf("audio speech command produced invalid WAV: %v", err)
-		r.manager.MarkFailure("audio", lifecycle.StatusCrashed, message)
-		writeJSONError(w, http.StatusBadGateway, message)
-		return
-	}
-	if err := validateFileSize(outPath, maxSpeechOutputBytes, "generated wav"); err != nil {
-		message := fmt.Sprintf("audio speech command produced oversized WAV: %v", err)
-		r.manager.MarkFailure("audio", lifecycle.StatusCrashed, message)
-		writeJSONError(w, http.StatusBadGateway, message)
-		return
-	}
-
-	data, err := os.ReadFile(outPath)
-	if err != nil {
-		message := fmt.Sprintf("read generated wav: %v", err)
-		r.manager.MarkFailure("audio", lifecycle.StatusCrashed, message)
-		writeJSONError(w, http.StatusBadGateway, message)
+		writeEngineError(w, err)
 		return
 	}
 
 	w.Header().Set("Content-Type", "audio/wav")
-	r.manager.MarkSuccess("audio")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	_, _ = w.Write(result.Output)
 }
 
 func (r *router) handleImageGenerations(w http.ResponseWriter, req *http.Request) {
@@ -255,71 +197,153 @@ func (r *router) handleImageGenerations(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	engine, ok := r.engine("sd")
-	if !ok {
-		writeJSONError(w, http.StatusServiceUnavailable, `engine "sd" is not configured`)
-		return
-	}
-	release, ok := r.acquire("sd")
-	if !ok {
-		writeJSONError(w, http.StatusTooManyRequests, `engine "sd" is busy`)
-		return
-	}
-	defer release()
-
-	out, err := os.CreateTemp("", "cpp-studio-image-*.png")
+	result, err := r.engines.Run(req.Context(), engine.ImageSpec(body.Prompt, width, height))
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create temp output: %v", err))
-		return
-	}
-	outPath := out.Name()
-	if err := out.Close(); err != nil {
-		_ = os.Remove(outPath)
-		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("close temp output: %v", err))
-		return
-	}
-	defer os.Remove(outPath)
-
-	engineArgs := []string{"--prompt", body.Prompt, "--output", outPath}
-	if width > 0 && height > 0 {
-		engineArgs = append(engineArgs, "--width", strconv.Itoa(width), "--height", strconv.Itoa(height))
-	}
-	stdout, stderr, _, err := runEngineCommand(req.Context(), engine, defaultImageTimeout, engineArgs...)
-	if err != nil {
-		message := commandFailure("sd image generation command failed", err, stdout, stderr)
-		r.manager.MarkFailure("sd", lifecycle.StatusCrashed, message)
-		writeJSONError(w, http.StatusBadGateway, message)
-		return
-	}
-	if err := validateFileSize(outPath, maxImageOutputBytes, "generated png"); err != nil {
-		message := fmt.Sprintf("sd image generation command produced oversized PNG: %v", err)
-		r.manager.MarkFailure("sd", lifecycle.StatusCrashed, message)
-		writeJSONError(w, http.StatusBadGateway, message)
-		return
-	}
-	if err := validatePNGFile(outPath); err != nil {
-		message := fmt.Sprintf("sd image generation command produced invalid PNG: %v", err)
-		r.manager.MarkFailure("sd", lifecycle.StatusCrashed, message)
-		writeJSONError(w, http.StatusBadGateway, message)
-		return
-	}
-
-	data, err := os.ReadFile(outPath)
-	if err != nil {
-		message := fmt.Sprintf("read generated png: %v", err)
-		r.manager.MarkFailure("sd", lifecycle.StatusCrashed, message)
-		writeJSONError(w, http.StatusBadGateway, message)
+		writeEngineError(w, err)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	r.manager.MarkSuccess("sd")
 	_ = json.NewEncoder(w).Encode(imageGenerationResponse{
 		Created: time.Now().Unix(),
 		Data: []imageGenerationData{
-			{B64JSON: base64.StdEncoding.EncodeToString(data)},
+			{B64JSON: base64.StdEncoding.EncodeToString(result.Output)},
 		},
 	})
+}
+
+func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxTranscriptionUploadBytes)
+
+	data, ok := readUploadedWAV(w, req)
+	if !ok {
+		return
+	}
+
+	result, err := r.engines.Run(req.Context(), engine.TranscriptionSpec(data))
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(transcriptionResponse{
+		Text:       strings.TrimSpace(string(result.Stdout)),
+		DurationMS: result.Elapsed.Milliseconds(),
+	})
+}
+
+func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxTranscriptionUploadBytes)
+
+	var wavBytes []byte
+	if file, header, err := req.FormFile("file"); err == nil {
+		defer file.Close()
+		if header == nil || header.Filename == "" {
+			writeJSONError(w, http.StatusBadRequest, "multipart field file must include a filename")
+			return
+		}
+		data, err := io.ReadAll(file)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("save uploaded file: %v", err))
+			return
+		}
+		wavBytes = data
+	}
+
+	loop := voice.Loop{Engines: r.engines, Chat: r.chatOnce}
+	result, err := loop.Run(req.Context(), voice.Request{
+		WAV:     wavBytes,
+		Message: req.FormValue("message"),
+	})
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(voiceResponse{
+		Transcript:  result.Transcript,
+		Reply:       result.Reply,
+		AudioFormat: "wav",
+		AudioB64:    base64.StdEncoding.EncodeToString(result.Audio),
+	})
+}
+
+// chatOnce is the voice loop's ChatFunc: one user message in, the assistant
+// reply out, via the llama server's /v1/chat/completions route.
+func (r *router) chatOnce(ctx context.Context, message string) (string, error) {
+	engineCfg, ok := r.engine("llama")
+	if !ok {
+		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "llama" is not configured`}
+	}
+	upstreamURL, ok := inferChatCompletionsURL(engineCfg.HealthURL)
+	if !ok {
+		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "llama" healthUrl must end in /health to infer /v1/chat/completions`}
+	}
+
+	payload, err := json.Marshal(chatCompletionRequest{
+		Model:    "default",
+		Messages: []chatMessage{{Role: "user", Content: message}},
+	})
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode chat request: %v", err)}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, engine.RequestTimeout(engineCfg, defaultChatTimeout))
+	defer cancel()
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(payload))
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
+	}
+	upstreamReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := r.client.Do(upstreamReq)
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("llama upstream request failed: %v", err)}
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxChatReplyBytes))
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read llama upstream response: %v", err)}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("llama upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
+	}
+
+	reply, err := extractChatReply(body)
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: err.Error()}
+	}
+	r.manager.MarkSuccess("llama")
+	return reply, nil
+}
+
+func extractChatReply(body []byte) (string, error) {
+	var parsed struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			Text string `json:"text"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("decode llama chat response: %v", err)
+	}
+	if len(parsed.Choices) == 0 {
+		return "", fmt.Errorf("llama chat response has no choices")
+	}
+	if content := strings.TrimSpace(parsed.Choices[0].Message.Content); content != "" {
+		return content, nil
+	}
+	return strings.TrimSpace(parsed.Choices[0].Text), nil
 }
 
 func (r *router) handleStories(w http.ResponseWriter, req *http.Request) {
@@ -404,94 +428,35 @@ func (r *router) handleStory(w http.ResponseWriter, req *http.Request) {
 	http.NotFound(w, req)
 }
 
-func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) {
-	if !requireMethod(w, req, http.MethodPost) {
-		return
-	}
-	req.Body = http.MaxBytesReader(w, req.Body, maxTranscriptionUploadBytes)
-
-	file, header, err := req.FormFile("file")
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "multipart field file is required")
-		return
-	}
-	defer file.Close()
-	if header == nil || header.Filename == "" {
-		writeJSONError(w, http.StatusBadRequest, "multipart field file must include a filename")
-		return
-	}
-
-	engine, ok := r.engine("whisper")
-	if !ok {
-		writeJSONError(w, http.StatusServiceUnavailable, `engine "whisper" is not configured`)
-		return
-	}
-	release, ok := r.acquire("whisper")
-	if !ok {
-		writeJSONError(w, http.StatusTooManyRequests, `engine "whisper" is busy`)
-		return
-	}
-	defer release()
-
-	in, err := os.CreateTemp("", "cpp-studio-transcription-*")
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create temp input: %v", err))
-		return
-	}
-	inPath := in.Name()
-	defer os.Remove(inPath)
-
-	if _, err := io.Copy(in, file); err != nil {
-		_ = in.Close()
-		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("save uploaded file: %v", err))
-		return
-	}
-	if err := in.Close(); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("close temp input: %v", err))
-		return
-	}
-	if err := validateWAVFile(inPath); err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	stdout, stderr, elapsed, err := runEngineCommand(req.Context(), engine, defaultTranscriptionTimeout, "-f", inPath)
-	if err != nil {
-		message := commandFailure("whisper transcription command failed", err, stdout, stderr)
-		r.manager.MarkFailure("whisper", lifecycle.StatusCrashed, message)
-		writeJSONError(w, http.StatusBadGateway, message)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	r.manager.MarkSuccess("whisper")
-	_ = json.NewEncoder(w).Encode(transcriptionResponse{
-		Text:       strings.TrimSpace(string(stdout)),
-		DurationMS: elapsed.Milliseconds(),
-	})
-}
-
 func (r *router) engine(name string) (config.EngineConfig, bool) {
-	engine, ok := r.cfg.Engines[name]
-	return engine, ok
-}
-
-func (r *router) acquire(name string) (func(), bool) {
-	lock, ok := r.busy[name]
-	if !ok {
-		return func() {}, true
-	}
-	select {
-	case lock <- struct{}{}:
-		return func() { <-lock }, true
-	default:
-		return nil, false
-	}
+	engineCfg, ok := r.cfg.Engines[name]
+	return engineCfg, ok
 }
 
 func (r *router) reserveEngine(ctx context.Context, name string) (func(), bool) {
 	_ = ctx
-	return r.acquire(name)
+	return r.engines.Reserve(name)
+}
+
+// readUploadedWAV pulls the multipart "file" field into memory, writing the
+// HTTP error itself when the upload is unusable.
+func readUploadedWAV(w http.ResponseWriter, req *http.Request) ([]byte, bool) {
+	file, header, err := req.FormFile("file")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "multipart field file is required")
+		return nil, false
+	}
+	defer file.Close()
+	if header == nil || header.Filename == "" {
+		writeJSONError(w, http.StatusBadRequest, "multipart field file must include a filename")
+		return nil, false
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("save uploaded file: %v", err))
+		return nil, false
+	}
+	return data, true
 }
 
 func inferChatCompletionsURL(healthURL string) (string, bool) {
@@ -512,109 +477,6 @@ func inferChatCompletionsURL(healthURL string) (string, bool) {
 	return parsed.String(), true
 }
 
-func runEngineCommand(ctx context.Context, engine config.EngineConfig, fallback time.Duration, extraArgs ...string) ([]byte, []byte, time.Duration, error) {
-	ctx, cancel := commandContext(ctx, engine, fallback)
-	defer cancel()
-
-	args := append([]string{}, engine.Args...)
-	args = append(args, extraArgs...)
-	cmd := exec.CommandContext(ctx, engine.Command, args...)
-	cmd.Dir = engine.WorkingDir
-
-	stdout := newLimitedBuffer(maxSubprocessLogBytes)
-	stderr := newLimitedBuffer(maxSubprocessLogBytes)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-
-	started := time.Now()
-	err := cmd.Run()
-	return stdout.Bytes(), stderr.Bytes(), time.Since(started), err
-}
-
-func requestContext(ctx context.Context, engine config.EngineConfig, fallback time.Duration) (context.Context, context.CancelFunc) {
-	return commandContext(ctx, engine, fallback)
-}
-
-func commandContext(ctx context.Context, engine config.EngineConfig, fallback time.Duration) (context.Context, context.CancelFunc) {
-	if engine.RequestTimeoutSeconds <= 0 {
-		return context.WithTimeout(ctx, fallback)
-	}
-	return context.WithTimeout(ctx, time.Duration(engine.RequestTimeoutSeconds)*time.Second)
-}
-
-func validateWAVFile(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open uploaded audio: %v", err)
-	}
-	defer file.Close()
-
-	header := make([]byte, 12)
-	if _, err := io.ReadFull(file, header); err != nil {
-		return fmt.Errorf("unsupported audio file: expected WAV RIFF header")
-	}
-	if string(header[0:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
-		return fmt.Errorf("unsupported audio file: expected WAV RIFF header")
-	}
-	return nil
-}
-
-func validatePNGFile(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open generated image: %v", err)
-	}
-	defer file.Close()
-
-	header := make([]byte, 8)
-	if _, err := io.ReadFull(file, header); err != nil {
-		return fmt.Errorf("unsupported image file: expected PNG signature")
-	}
-	pngSignature := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
-	if !bytes.Equal(header, pngSignature) {
-		return fmt.Errorf("unsupported image file: expected PNG signature")
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("rewind generated image: %v", err)
-	}
-	cfg, err := png.DecodeConfig(file)
-	if err != nil {
-		return fmt.Errorf("decode PNG metadata: %v", err)
-	}
-	if err := validateImageDimensions(cfg.Width, cfg.Height); err != nil {
-		return err
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("rewind generated image: %v", err)
-	}
-	if _, err := png.Decode(file); err != nil {
-		return fmt.Errorf("decode PNG image: %v", err)
-	}
-	return nil
-}
-
-func validateFileSize(path string, maxBytes int64, label string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("stat %s: %v", label, err)
-	}
-	if info.Size() > maxBytes {
-		return fmt.Errorf("%s is %d bytes, max is %d bytes", label, info.Size(), maxBytes)
-	}
-	return nil
-}
-
-func commandFailure(prefix string, err error, stdout []byte, stderr []byte) string {
-	parts := []string{fmt.Sprintf("%s: %v", prefix, err)}
-	if out := strings.TrimSpace(string(stdout)); out != "" {
-		parts = append(parts, "stdout: "+out)
-	}
-	if out := strings.TrimSpace(string(stderr)); out != "" {
-		parts = append(parts, "stderr: "+out)
-	}
-	return strings.Join(parts, "; ")
-}
-
 func parseImageSize(size string) (int, int, error) {
 	size = strings.TrimSpace(size)
 	if size == "" {
@@ -632,23 +494,10 @@ func parseImageSize(size string) (int, int, error) {
 	if err != nil || height <= 0 {
 		return 0, 0, fmt.Errorf("size height must be a positive integer")
 	}
-	if err := validateImageDimensions(width, height); err != nil {
+	if err := engine.ValidateImageDimensions(width, height); err != nil {
 		return 0, 0, err
 	}
 	return width, height, nil
-}
-
-func validateImageDimensions(width int, height int) error {
-	if width <= 0 || height <= 0 {
-		return fmt.Errorf("image dimensions must be positive")
-	}
-	if width > maxImageDimension || height > maxImageDimension {
-		return fmt.Errorf("image dimensions must be at most %dx%d", maxImageDimension, maxImageDimension)
-	}
-	if width > maxImagePixels/height {
-		return fmt.Errorf("image dimensions must contain at most %d pixels", maxImagePixels)
-	}
-	return nil
 }
 
 func requireMethod(w http.ResponseWriter, req *http.Request, method string) bool {
@@ -664,6 +513,36 @@ func writeJSONError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+// writeEngineError maps failures crossing the engine seam (and the voice
+// loop built on it) to HTTP status codes.
+func writeEngineError(w http.ResponseWriter, err error) {
+	if errors.Is(err, voice.ErrNoInput) {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var engErr *engine.Error
+	if errors.As(err, &engErr) {
+		writeJSONError(w, engineHTTPStatus(engErr.Kind), engErr.Message)
+		return
+	}
+	writeJSONError(w, http.StatusBadGateway, err.Error())
+}
+
+func engineHTTPStatus(kind engine.FailureKind) int {
+	switch kind {
+	case engine.KindNotConfigured:
+		return http.StatusServiceUnavailable
+	case engine.KindBusy:
+		return http.StatusTooManyRequests
+	case engine.KindInternal:
+		return http.StatusInternalServerError
+	case engine.KindInvalidInput:
+		return http.StatusBadRequest
+	default:
+		return http.StatusBadGateway
+	}
 }
 
 func writeStoryErrorFromError(w http.ResponseWriter, err error) {
@@ -725,36 +604,19 @@ type transcriptionResponse struct {
 	DurationMS int64  `json:"duration_ms"`
 }
 
-type limitedBuffer struct {
-	buf       bytes.Buffer
-	limit     int64
-	truncated bool
+type voiceResponse struct {
+	Transcript  string `json:"transcript"`
+	Reply       string `json:"reply"`
+	AudioFormat string `json:"audio_format"`
+	AudioB64    string `json:"audio_b64"`
 }
 
-func newLimitedBuffer(limit int64) *limitedBuffer {
-	return &limitedBuffer{limit: limit}
+type chatCompletionRequest struct {
+	Model    string        `json:"model"`
+	Messages []chatMessage `json:"messages"`
 }
 
-func (b *limitedBuffer) Write(p []byte) (int, error) {
-	if int64(b.buf.Len()) < b.limit {
-		remaining := b.limit - int64(b.buf.Len())
-		if int64(len(p)) > remaining {
-			_, _ = b.buf.Write(p[:remaining])
-			b.truncated = true
-			return len(p), nil
-		}
-		_, _ = b.buf.Write(p)
-		return len(p), nil
-	}
-	b.truncated = true
-	return len(p), nil
-}
-
-func (b *limitedBuffer) Bytes() []byte {
-	if !b.truncated {
-		return b.buf.Bytes()
-	}
-	out := append([]byte{}, b.buf.Bytes()...)
-	out = append(out, []byte("\n[truncated]")...)
-	return out
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }

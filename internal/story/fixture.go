@@ -1,11 +1,11 @@
 package story
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
 	"strings"
 	"time"
+
+	"cpp-studio/internal/wav"
 )
 
 func BuildFixtureManifest(id string, req NormalizedRequest, createdAt time.Time) (Manifest, []byte, error) {
@@ -58,11 +58,7 @@ func BuildFixtureManifest(id string, req NormalizedRequest, createdAt time.Time)
 	if err := ValidateManifestGrounding(manifest); err != nil {
 		return Manifest{}, nil, err
 	}
-	audio, err := fixtureWAV(req.TargetSeconds)
-	if err != nil {
-		return Manifest{}, nil, err
-	}
-	return manifest, audio, nil
+	return manifest, fixtureWAV(req.TargetSeconds), nil
 }
 
 func ValidateManifestGrounding(manifest Manifest) error {
@@ -187,48 +183,9 @@ func titleForSubject(subject string) string {
 	return "A Short Story About " + subject
 }
 
-func fixtureWAV(seconds int) ([]byte, error) {
-	const (
-		channels      = 1
-		sampleRate    = 16000
-		bitsPerSample = 16
-	)
+func fixtureWAV(seconds int) []byte {
 	if seconds <= 0 {
 		seconds = 1
 	}
-	sampleCount := sampleRate * seconds
-
-	var pcm bytes.Buffer
-	for i := 0; i < sampleCount; i++ {
-		sample := int16(0)
-		if i%2 == 0 {
-			sample = 1000
-		} else {
-			sample = -1000
-		}
-		if err := binary.Write(&pcm, binary.LittleEndian, sample); err != nil {
-			return nil, fmt.Errorf("encode pcm: %w", err)
-		}
-	}
-
-	var wav bytes.Buffer
-	dataSize := uint32(pcm.Len())
-	byteRate := uint32(sampleRate * channels * bitsPerSample / 8)
-	blockAlign := uint16(channels * bitsPerSample / 8)
-
-	wav.WriteString("RIFF")
-	_ = binary.Write(&wav, binary.LittleEndian, uint32(36)+dataSize)
-	wav.WriteString("WAVE")
-	wav.WriteString("fmt ")
-	_ = binary.Write(&wav, binary.LittleEndian, uint32(16))
-	_ = binary.Write(&wav, binary.LittleEndian, uint16(1))
-	_ = binary.Write(&wav, binary.LittleEndian, uint16(channels))
-	_ = binary.Write(&wav, binary.LittleEndian, uint32(sampleRate))
-	_ = binary.Write(&wav, binary.LittleEndian, byteRate)
-	_ = binary.Write(&wav, binary.LittleEndian, blockAlign)
-	_ = binary.Write(&wav, binary.LittleEndian, uint16(bitsPerSample))
-	wav.WriteString("data")
-	_ = binary.Write(&wav, binary.LittleEndian, dataSize)
-	wav.Write(pcm.Bytes())
-	return wav.Bytes(), nil
+	return wav.SyntheticTone(wav.ToneSampleRate * seconds)
 }

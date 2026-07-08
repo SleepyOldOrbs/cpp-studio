@@ -213,6 +213,23 @@ try {
 
   $wavInfo = Get-WavInfo -Path $outputWav
 
+  $voiceForm = @{
+    file = Get-Item $inputWav
+  }
+  $voice = Invoke-RestMethod -Uri "http://127.0.0.1:$GatewayPort/v1/voice" -Method Post -Form $voiceForm
+  if ($voice.transcript -ne "fixture transcript") {
+    throw "unexpected voice transcript: $($voice.transcript)"
+  }
+  if (-not $voice.reply -or -not $voice.reply.Contains("fixture transcript")) {
+    throw "unexpected voice reply: $($voice.reply)"
+  }
+  if (-not $voice.audio_b64) {
+    throw "voice response did not include audio_b64"
+  }
+  $voiceWavPath = Join-Path $OutDir "voice-reply.wav"
+  [System.IO.File]::WriteAllBytes((Join-Path (Resolve-Path $OutDir).Path "voice-reply.wav"), [Convert]::FromBase64String($voice.audio_b64))
+  $voiceWavInfo = Get-WavInfo -Path $voiceWavPath
+
   $imageBody = @{ prompt = "fixture image"; size = "64x64"; response_format = "b64_json" } | ConvertTo-Json
   $image = Invoke-RestMethod -Uri "http://127.0.0.1:$GatewayPort/v1/images/generations" -Method Post -ContentType "application/json" -Body $imageBody
   if (-not $image.data -or -not $image.data[0].b64_json) {
@@ -227,8 +244,13 @@ try {
     reply = $reply
     output = (Resolve-Path $outputWav).Path
     wav = $wavInfo
+    voice = [pscustomobject]@{
+      transcript = $voice.transcript
+      reply = $voice.reply
+      wav = $voiceWavInfo
+    }
     image = $imageInfo
-  } | ConvertTo-Json
+  } | ConvertTo-Json -Depth 4
 } finally {
   if ($server -and -not $server.HasExited) {
     Stop-Process -Id $server.Id -Force

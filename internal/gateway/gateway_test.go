@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"cpp-studio/internal/config"
+	"cpp-studio/internal/engine"
 	"cpp-studio/internal/lifecycle"
 	"cpp-studio/internal/story"
 )
@@ -960,7 +960,7 @@ func runLargeSpeechHelper(args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	if err := file.Truncate(maxSpeechOutputBytes + 1); err != nil {
+	if err := file.Truncate(engine.MaxSpeechOutputBytes + 1); err != nil {
 		_ = file.Close()
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -1073,16 +1073,178 @@ func helperEngine(mode string) config.EngineConfig {
 	}
 }
 
-func TestCommandContextUsesRouteDefaultTimeout(t *testing.T) {
-	ctx, cancel := commandContext(context.Background(), config.EngineConfig{}, 10*time.Millisecond)
-	defer cancel()
+func TestVoiceLoopWithAudioUpload(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/v1/chat/completions" {
+			t.Errorf("unexpected upstream path %q", req.URL.Path)
+		}
+		var body chatCompletionRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream chat request: %v", err)
+		}
+		if len(body.Messages) != 1 || body.Messages[0].Content != "transcribed text" {
+			t.Errorf("unexpected upstream chat messages %+v", body.Messages)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"assistant says hi"}}]}`))
+	}))
+	defer upstream.Close()
 
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		t.Fatalf("expected deadline")
+	cfg := testConfig(map[string]config.EngineConfig{
+		"whisper": helperEngine("transcribe"),
+		"audio":   helperEngine("speech"),
+		"llama":   {Command: "llama-server", HealthURL: upstream.URL + "/health"},
+	})
+	manager := lifecycle.NewManager(cfg)
+	router := NewRouter(cfg, manager)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "sample.wav")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
 	}
-	if until := time.Until(deadline); until <= 0 || until > time.Second {
-		t.Fatalf("unexpected default deadline %s", until)
+	if _, err := part.Write(validWAVBytes()); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voice", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Transcript  string `json:"transcript"`
+		Reply       string `json:"reply"`
+		AudioFormat string `json:"audio_format"`
+		AudioB64    string `json:"audio_b64"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode voice response: %v", err)
+	}
+	if response.Transcript != "transcribed text" {
+		t.Fatalf("unexpected transcript %q", response.Transcript)
+	}
+	if response.Reply != "assistant says hi" {
+		t.Fatalf("unexpected reply %q", response.Reply)
+	}
+	if response.AudioFormat != "wav" {
+		t.Fatalf("unexpected audio format %q", response.AudioFormat)
+	}
+	audio, err := base64.StdEncoding.DecodeString(response.AudioB64)
+	if err != nil {
+		t.Fatalf("decode audio_b64: %v", err)
+	}
+	if string(audio) != "RIFFtestWAVE" {
+		t.Fatalf("unexpected wav bytes %q", audio)
+	}
+	health := manager.Health().Engines
+	for _, name := range []string{"whisper", "llama", "audio"} {
+		if health[name].LastSuccessAt == nil {
+			t.Fatalf("expected %s lastSuccessAt to be recorded", name)
+		}
+	}
+}
+
+func TestVoiceLoopWithTypedMessage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"typed reply"}}]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+		"llama": {Command: "llama-server", HealthURL: upstream.URL + "/health"},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("message", "hello from the keyboard"); err != nil {
+		t.Fatalf("write message field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voice", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Transcript string `json:"transcript"`
+		Reply      string `json:"reply"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode voice response: %v", err)
+	}
+	if response.Transcript != "hello from the keyboard" {
+		t.Fatalf("unexpected transcript %q", response.Transcript)
+	}
+	if response.Reply != "typed reply" {
+		t.Fatalf("unexpected reply %q", response.Reply)
+	}
+}
+
+func TestVoiceLoopRejectsEmptyRequest(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voice", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVoiceLoopChatUnavailable(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"whisper": helperEngine("transcribe"),
+		"audio":   helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("message", "hello"); err != nil {
+		t.Fatalf("write message field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voice", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "llama") {
+		t.Fatalf("expected missing llama detail, got %s", rec.Body.String())
 	}
 }
 

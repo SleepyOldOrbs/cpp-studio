@@ -147,6 +147,38 @@ Behavior:
 - Only one speech request can run at a time for this gateway process; concurrent requests return `429`.
 - Command failure or invalid output marks `audio` crashed and returns `502` with bounded stdout/stderr details.
 
+## POST /v1/voice
+
+Runs the whole voice loop server-side: transcription -> chat -> speech in one
+request. This is the route the browser demo uses.
+
+Multipart form fields (upload limit 32 MiB):
+
+- `file`: optional WAV recording; must have a RIFF/WAVE header.
+- `message`: optional typed text, used as the transcript when no `file` is sent.
+
+At least one of `file` or `message` is required; requests with neither return `400`.
+
+Response:
+
+```json
+{
+  "transcript": "what the user said",
+  "reply": "assistant reply text",
+  "audio_format": "wav",
+  "audio_b64": "<base64 WAV of the spoken reply>"
+}
+```
+
+Behavior:
+
+- Engine keys: `whisper` (skipped for typed messages), `llama`, `audio`.
+- Each stage reserves its engine exactly like the standalone routes, so a
+  voice request and a direct `/v1/audio/speech` request cannot race.
+- Stage failures map to the same statuses as the standalone routes:
+  missing engine `503`, busy engine `429`, invalid input `400`, engine
+  failure `502` (which also marks the engine crashed in `/health`).
+
 ## POST /v1/images/generations
 
 Runs the configured `sd` subprocess and returns one PNG as `b64_json`.

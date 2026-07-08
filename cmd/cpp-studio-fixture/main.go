@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"cpp-studio/internal/wav"
 )
 
 const fixtureModel = "cpp-studio-fixture"
@@ -181,18 +181,8 @@ func runWhisper(args []string, stdout, stderr io.Writer) error {
 }
 
 func validateWAVFile(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open wav: %w", err)
-	}
-	defer f.Close()
-
-	header := make([]byte, 12)
-	if _, err := io.ReadFull(f, header); err != nil {
-		return fmt.Errorf("invalid wav: missing RIFF/WAVE header")
-	}
-	if !bytes.Equal(header[0:4], []byte("RIFF")) || !bytes.Equal(header[8:12], []byte("WAVE")) {
-		return fmt.Errorf("invalid wav: expected RIFF/WAVE header")
+	if err := wav.ValidateFile(path); err != nil {
+		return fmt.Errorf("invalid wav: %v", err)
 	}
 	return nil
 }
@@ -222,47 +212,8 @@ func runSpeech(args []string, stdout, stderr io.Writer) error {
 }
 
 func writeFixtureWAV(path string) error {
-	const (
-		channels      = 1
-		sampleRate    = 16000
-		bitsPerSample = 16
-		sampleCount   = 160
-	)
-
-	var pcm bytes.Buffer
-	for i := 0; i < sampleCount; i++ {
-		sample := int16(0)
-		if i%2 == 0 {
-			sample = 1000
-		} else {
-			sample = -1000
-		}
-		if err := binary.Write(&pcm, binary.LittleEndian, sample); err != nil {
-			return fmt.Errorf("encode pcm: %w", err)
-		}
-	}
-
-	var wav bytes.Buffer
-	dataSize := uint32(pcm.Len())
-	byteRate := uint32(sampleRate * channels * bitsPerSample / 8)
-	blockAlign := uint16(channels * bitsPerSample / 8)
-
-	wav.WriteString("RIFF")
-	_ = binary.Write(&wav, binary.LittleEndian, uint32(36)+dataSize)
-	wav.WriteString("WAVE")
-	wav.WriteString("fmt ")
-	_ = binary.Write(&wav, binary.LittleEndian, uint32(16))
-	_ = binary.Write(&wav, binary.LittleEndian, uint16(1))
-	_ = binary.Write(&wav, binary.LittleEndian, uint16(channels))
-	_ = binary.Write(&wav, binary.LittleEndian, uint32(sampleRate))
-	_ = binary.Write(&wav, binary.LittleEndian, byteRate)
-	_ = binary.Write(&wav, binary.LittleEndian, blockAlign)
-	_ = binary.Write(&wav, binary.LittleEndian, uint16(bitsPerSample))
-	wav.WriteString("data")
-	_ = binary.Write(&wav, binary.LittleEndian, dataSize)
-	wav.Write(pcm.Bytes())
-
-	if err := os.WriteFile(path, wav.Bytes(), 0o644); err != nil {
+	const sampleCount = 160
+	if err := os.WriteFile(path, wav.SyntheticTone(sampleCount), 0o644); err != nil {
 		return fmt.Errorf("write wav: %w", err)
 	}
 	return nil

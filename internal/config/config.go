@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 type Config struct {
@@ -29,6 +32,8 @@ type EngineConfig struct {
 	RequestTimeoutSeconds  int      `json:"requestTimeoutSeconds,omitempty"`
 }
 
+// Load reads a config file and validates everything that can be checked
+// portably: shape, unknown keys, defaults, ranges, modes, and URLs.
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -39,9 +44,7 @@ func Load(path string) (Config, error) {
 	}
 
 	var cfg Config
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cfg); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(data)).Decode(&cfg); err != nil {
 		return Config{}, err
 	}
 
@@ -87,6 +90,48 @@ func Load(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// LoadChecked is Load plus the machine-local check that every engine command
+// resolves to an executable on this machine. One call fully answers "is this
+// config acceptable here"; CI-style portable validation uses Load alone.
+func LoadChecked(path string) (Config, error) {
+	cfg, err := Load(path)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := cfg.CheckCommands(nil); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// LookPath resolves a command name to an executable path. It exists so tests
+// can substitute the machine-local probe; nil means exec.LookPath.
+type LookPath func(string) (string, error)
+
+// CheckCommands verifies that each engine command resolves to an executable:
+// path-like commands relative to the engine workingDir, bare names on PATH.
+func (c Config) CheckCommands(lookPath LookPath) error {
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	for name, engine := range c.Engines {
+		if strings.ContainsAny(engine.Command, `/\`) {
+			abs := engine.Command
+			if !filepath.IsAbs(abs) && engine.WorkingDir != "" {
+				abs = filepath.Join(engine.WorkingDir, engine.Command)
+			}
+			if _, err := lookPath(abs); err != nil {
+				return fmt.Errorf("engine %q command not found: %w", name, err)
+			}
+			continue
+		}
+		if _, err := lookPath(engine.Command); err != nil {
+			return fmt.Errorf("engine %q command not found on PATH: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func rejectUnknownKeys(data []byte) error {

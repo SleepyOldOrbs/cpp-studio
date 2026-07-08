@@ -58,6 +58,52 @@ func TestLoadRejectsInvalidRuntimeValues(t *testing.T) {
 	}
 }
 
+func TestCheckCommandsRejectsMissingCommand(t *testing.T) {
+	cfg := Config{
+		Gateway: GatewayConfig{Host: "127.0.0.1", Port: 8765},
+		Engines: map[string]EngineConfig{
+			"missing": {Command: "definitely-not-a-real-cpp-studio-command"},
+		},
+	}
+	if err := cfg.CheckCommands(nil); err == nil {
+		t.Fatalf("expected missing command error")
+	}
+}
+
+func TestCheckCommandsResolvesRelativeToWorkingDir(t *testing.T) {
+	var probed []string
+	lookPath := func(path string) (string, error) {
+		probed = append(probed, path)
+		return path, nil
+	}
+	cfg := Config{
+		Engines: map[string]EngineConfig{
+			"relative": {Command: `bin\engine.exe`, WorkingDir: `C:\engines`},
+			"bare":     {Command: "engine"},
+		},
+	}
+	if err := cfg.CheckCommands(lookPath); err != nil {
+		t.Fatalf("check commands: %v", err)
+	}
+	joined := strings.Join(probed, ";")
+	if !strings.Contains(joined, filepath.Join(`C:\engines`, `bin\engine.exe`)) {
+		t.Fatalf("expected workingDir-joined probe, got %v", probed)
+	}
+	if !strings.Contains(joined, "engine") {
+		t.Fatalf("expected bare-name probe, got %v", probed)
+	}
+}
+
+func TestLoadCheckedRejectsMissingCommand(t *testing.T) {
+	path := writeConfig(t, `{
+  "gateway": {"host": "127.0.0.1", "port": 8765},
+  "engines": {"llama": {"command": "definitely-not-a-real-cpp-studio-command"}}
+}`)
+	if _, err := LoadChecked(path); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected missing command error, got %v", err)
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.json")

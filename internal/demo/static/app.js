@@ -286,83 +286,13 @@
     }
   }
 
-  async function transcribeWav(file) {
-    var form = new FormData();
-    form.append("file", file, file.name || "input.wav");
-    log("POST /v1/audio/transcriptions");
-    var response = await fetch("/v1/audio/transcriptions", {
-      method: "POST",
-      body: form
-    });
-    await ensureOk(response, "Transcription");
-    var data = await response.json();
-    var text = typeof data.text === "string" ? data.text.trim() : "";
-    if (!text) {
-      throw new Error("Transcription returned no text");
+  function base64ToBlob(b64, contentType) {
+    var binary = atob(b64);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
     }
-    log("Transcript received");
-    return text;
-  }
-
-  function readChatReply(data) {
-    var choices = Array.isArray(data.choices) ? data.choices : [];
-    var first = choices[0] || {};
-    if (first.message && typeof first.message.content === "string") {
-      return first.message.content.trim();
-    }
-    if (typeof first.text === "string") {
-      return first.text.trim();
-    }
-    return JSON.stringify(data, null, 2);
-  }
-
-  async function sendChat(text) {
-    log("POST /v1/chat/completions");
-    var response = await fetch("/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "default",
-        messages: [
-          {
-            role: "user",
-            content: text
-          }
-        ]
-      })
-    });
-    await ensureOk(response, "Chat");
-    var data = await response.json();
-    var reply = readChatReply(data);
-    if (!reply) {
-      throw new Error("Chat returned no assistant reply");
-    }
-    log("Assistant reply received");
-    return reply;
-  }
-
-  async function synthesizeSpeech(text) {
-    log("POST /v1/audio/speech");
-    var response = await fetch("/v1/audio/speech", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        input: text,
-        voice: "default",
-        format: "wav"
-      })
-    });
-    await ensureOk(response, "Speech");
-    var blob = await response.blob();
-    if (!blob.size) {
-      throw new Error("Speech returned an empty WAV");
-    }
-    log("Speech WAV received: " + formatBytes(blob.size));
-    return blob;
+    return new Blob([bytes], { type: contentType });
   }
 
   function readGeneratedImage(data) {
@@ -685,23 +615,33 @@
     setRunning(true);
     try {
       resetOutputs();
-      var text = "";
+      var form = new FormData();
       if (activeWavFile) {
-        text = await transcribeWav(activeWavFile);
-        transcriptOutput.value = text;
+        form.append("file", activeWavFile, activeWavFile.name || "input.wav");
       } else {
-        text = messageInput.value.trim();
+        var text = messageInput.value.trim();
         if (!text) {
           throw new Error("Record audio, choose a WAV, or enter a typed message");
         }
-        transcriptOutput.value = text;
+        form.append("message", text);
         log("Using typed message as transcript");
       }
 
-      var reply = await sendChat(text);
-      replyOutput.value = reply;
+      log("POST /v1/voice");
+      var response = await fetch("/v1/voice", {
+        method: "POST",
+        body: form
+      });
+      await ensureOk(response, "Voice loop");
+      var data = await response.json();
+      transcriptOutput.value = data.transcript || "";
+      replyOutput.value = data.reply || "";
+      if (!data.audio_b64) {
+        throw new Error("Voice loop returned no audio");
+      }
+      var speech = base64ToBlob(data.audio_b64, "audio/wav");
+      log("Voice loop complete: " + formatBytes(speech.size) + " WAV");
 
-      var speech = await synthesizeSpeech(reply);
       activeAudioUrl = URL.createObjectURL(speech);
       replyAudio.src = activeAudioUrl;
       replyAudio.load();

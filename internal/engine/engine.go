@@ -1,0 +1,273 @@
+// Package engine owns the invocation contract for the native *.cpp engines:
+// which CLI flags each engine kind takes, what output a run must produce, and
+// how a single run reserves the engine, stages temp files, invokes the
+// command, validates the result, and records success or failure.
+//
+// The Invoker interface is the seam the gateway and the voice loop cross;
+// Runner is the subprocess adapter and Fake is the in-memory test adapter.
+package engine
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	"cpp-studio/internal/config"
+	"cpp-studio/internal/lifecycle"
+)
+
+const maxSubprocessLogBytes = 1024 * 1024
+
+// FailureKind classifies a failed run so the HTTP layer can map it to a
+// status code without knowing how the run failed internally.
+type FailureKind int
+
+const (
+	// KindNotConfigured: the named engine is absent from the config.
+	KindNotConfigured FailureKind = iota
+	// KindBusy: the engine is reserved by another run.
+	KindBusy
+	// KindInternal: temp files could not be staged.
+	KindInternal
+	// KindInvalidInput: the caller-supplied input failed validation.
+	KindInvalidInput
+	// KindEngineFailure: the engine crashed or produced invalid output.
+	KindEngineFailure
+)
+
+// Error is the failure surface of a run.
+type Error struct {
+	Kind    FailureKind
+	Message string
+}
+
+func (e *Error) Error() string { return e.Message }
+
+// Spec describes one engine invocation. Construct specs with SpeechSpec,
+// TranscriptionSpec, or ImageSpec so the per-engine CLI contract stays in
+// this package.
+type Spec struct {
+	// Engine is the config name of the engine, e.g. "audio".
+	Engine string
+	// Label prefixes failure messages, e.g. "audio speech command".
+	Label string
+	// Timeout applies when the engine config has no requestTimeoutSeconds.
+	Timeout time.Duration
+	// Input, when non-nil, is written to a temp file before the run.
+	Input []byte
+	// InputPattern names the temp input file (os.CreateTemp pattern).
+	InputPattern string
+	// ValidateInput rejects bad input before the engine runs (KindInvalidInput).
+	ValidateInput func(path string) error
+	// OutputPattern, when non-empty, creates a temp output file whose bytes
+	// are read back into Result.Output after validation.
+	OutputPattern string
+	// OutputLabel names the output in read-failure messages, e.g. "generated wav".
+	OutputLabel string
+	// ValidateOutput rejects invalid engine output (KindEngineFailure).
+	ValidateOutput func(path string) error
+	// BuildArgs produces the extra CLI args; inPath/outPath are "" when unused.
+	BuildArgs func(inPath, outPath string) []string
+}
+
+// Result is the outcome of a successful run.
+type Result struct {
+	Stdout  []byte
+	Stderr  []byte
+	Output  []byte
+	Elapsed time.Duration
+}
+
+// Invoker is the seam callers cross to run an engine once or reserve it.
+type Invoker interface {
+	Run(ctx context.Context, spec Spec) (Result, error)
+	Reserve(name string) (release func(), ok bool)
+}
+
+// StatusRecorder receives run outcomes; *lifecycle.Manager satisfies it.
+type StatusRecorder interface {
+	MarkSuccess(name string)
+	MarkFailure(name string, status lifecycle.Status, lastErr string)
+}
+
+// Runner is the subprocess adapter: it satisfies Invoker by launching the
+// configured engine command once per run.
+type Runner struct {
+	engines  map[string]config.EngineConfig
+	recorder StatusRecorder
+	busy     map[string]chan struct{}
+}
+
+func NewRunner(engines map[string]config.EngineConfig, recorder StatusRecorder) *Runner {
+	busy := make(map[string]chan struct{}, len(engines))
+	for name := range engines {
+		busy[name] = make(chan struct{}, 1)
+	}
+	return &Runner{engines: engines, recorder: recorder, busy: busy}
+}
+
+// Reserve takes the engine's single-run slot. It reports false when the
+// engine is already reserved; the release func must be called exactly once.
+func (r *Runner) Reserve(name string) (func(), bool) {
+	lock, ok := r.busy[name]
+	if !ok {
+		return func() {}, true
+	}
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, true
+	default:
+		return nil, false
+	}
+}
+
+func (r *Runner) Run(ctx context.Context, spec Spec) (Result, error) {
+	engineCfg, ok := r.engines[spec.Engine]
+	if !ok {
+		return Result{}, &Error{Kind: KindNotConfigured, Message: fmt.Sprintf("engine %q is not configured", spec.Engine)}
+	}
+	release, ok := r.Reserve(spec.Engine)
+	if !ok {
+		return Result{}, &Error{Kind: KindBusy, Message: fmt.Sprintf("engine %q is busy", spec.Engine)}
+	}
+	defer release()
+
+	inPath := ""
+	if spec.Input != nil {
+		in, err := os.CreateTemp("", spec.InputPattern)
+		if err != nil {
+			return Result{}, &Error{Kind: KindInternal, Message: fmt.Sprintf("create temp input: %v", err)}
+		}
+		inPath = in.Name()
+		defer os.Remove(inPath)
+		if _, err := in.Write(spec.Input); err != nil {
+			_ = in.Close()
+			return Result{}, &Error{Kind: KindInternal, Message: fmt.Sprintf("save input: %v", err)}
+		}
+		if err := in.Close(); err != nil {
+			return Result{}, &Error{Kind: KindInternal, Message: fmt.Sprintf("close temp input: %v", err)}
+		}
+		if spec.ValidateInput != nil {
+			if err := spec.ValidateInput(inPath); err != nil {
+				return Result{}, &Error{Kind: KindInvalidInput, Message: err.Error()}
+			}
+		}
+	}
+
+	outPath := ""
+	if spec.OutputPattern != "" {
+		out, err := os.CreateTemp("", spec.OutputPattern)
+		if err != nil {
+			return Result{}, &Error{Kind: KindInternal, Message: fmt.Sprintf("create temp output: %v", err)}
+		}
+		outPath = out.Name()
+		if err := out.Close(); err != nil {
+			_ = os.Remove(outPath)
+			return Result{}, &Error{Kind: KindInternal, Message: fmt.Sprintf("close temp output: %v", err)}
+		}
+		defer os.Remove(outPath)
+	}
+
+	stdout, stderr, elapsed, err := runCommand(ctx, engineCfg, spec.Timeout, spec.BuildArgs(inPath, outPath))
+	if err != nil {
+		return Result{}, r.fail(spec, commandFailure(spec.Label+" failed", err, stdout, stderr))
+	}
+	if spec.ValidateOutput != nil {
+		if err := spec.ValidateOutput(outPath); err != nil {
+			return Result{}, r.fail(spec, fmt.Sprintf("%s %v", spec.Label, err))
+		}
+	}
+
+	result := Result{Stdout: stdout, Stderr: stderr, Elapsed: elapsed}
+	if outPath != "" {
+		data, err := os.ReadFile(outPath)
+		if err != nil {
+			return Result{}, r.fail(spec, fmt.Sprintf("read %s: %v", spec.OutputLabel, err))
+		}
+		result.Output = data
+	}
+	r.recorder.MarkSuccess(spec.Engine)
+	return result, nil
+}
+
+func (r *Runner) fail(spec Spec, message string) error {
+	r.recorder.MarkFailure(spec.Engine, lifecycle.StatusCrashed, message)
+	return &Error{Kind: KindEngineFailure, Message: message}
+}
+
+// RequestTimeout resolves the per-run timeout: the engine's configured
+// requestTimeoutSeconds, or fallback when unset.
+func RequestTimeout(cfg config.EngineConfig, fallback time.Duration) time.Duration {
+	if cfg.RequestTimeoutSeconds <= 0 {
+		return fallback
+	}
+	return time.Duration(cfg.RequestTimeoutSeconds) * time.Second
+}
+
+func runCommand(ctx context.Context, engineCfg config.EngineConfig, fallback time.Duration, extraArgs []string) ([]byte, []byte, time.Duration, error) {
+	ctx, cancel := context.WithTimeout(ctx, RequestTimeout(engineCfg, fallback))
+	defer cancel()
+
+	args := append([]string{}, engineCfg.Args...)
+	args = append(args, extraArgs...)
+	cmd := exec.CommandContext(ctx, engineCfg.Command, args...)
+	cmd.Dir = engineCfg.WorkingDir
+
+	stdout := newLimitedBuffer(maxSubprocessLogBytes)
+	stderr := newLimitedBuffer(maxSubprocessLogBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	started := time.Now()
+	err := cmd.Run()
+	return stdout.Bytes(), stderr.Bytes(), time.Since(started), err
+}
+
+func commandFailure(prefix string, err error, stdout []byte, stderr []byte) string {
+	parts := []string{fmt.Sprintf("%s: %v", prefix, err)}
+	if out := strings.TrimSpace(string(stdout)); out != "" {
+		parts = append(parts, "stdout: "+out)
+	}
+	if out := strings.TrimSpace(string(stderr)); out != "" {
+		parts = append(parts, "stderr: "+out)
+	}
+	return strings.Join(parts, "; ")
+}
+
+type limitedBuffer struct {
+	buf       bytes.Buffer
+	limit     int64
+	truncated bool
+}
+
+func newLimitedBuffer(limit int64) *limitedBuffer {
+	return &limitedBuffer{limit: limit}
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if int64(b.buf.Len()) < b.limit {
+		remaining := b.limit - int64(b.buf.Len())
+		if int64(len(p)) > remaining {
+			_, _ = b.buf.Write(p[:remaining])
+			b.truncated = true
+			return len(p), nil
+		}
+		_, _ = b.buf.Write(p)
+		return len(p), nil
+	}
+	b.truncated = true
+	return len(p), nil
+}
+
+func (b *limitedBuffer) Bytes() []byte {
+	if !b.truncated {
+		return b.buf.Bytes()
+	}
+	out := append([]byte{}, b.buf.Bytes()...)
+	out = append(out, []byte("\n[truncated]")...)
+	return out
+}

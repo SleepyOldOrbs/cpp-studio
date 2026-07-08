@@ -6,6 +6,7 @@ It exists so CI and new contributors can prove the full route sequence without d
 
 ```text
 WAV upload -> /v1/audio/transcriptions -> /v1/chat/completions -> /v1/audio/speech -> WAV output
+WAV upload -> /v1/voice (server-side transcription -> chat -> speech) -> transcript + reply + WAV output
 POST /v1/images/generations -> PNG b64_json output
 ```
 

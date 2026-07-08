@@ -31,12 +31,9 @@ func run(args []string) error {
 		return err
 	}
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.LoadChecked(*configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
-	}
-	if err := lifecycle.Validate(cfg); err != nil {
-		return fmt.Errorf("validate config: %w", err)
 	}
 	if *checkOnly {
 		fmt.Println("config ok")
