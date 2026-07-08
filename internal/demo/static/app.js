@@ -6,11 +6,14 @@
   var gatewayStatus = document.getElementById("gatewayStatus");
   var healthUpdated = document.getElementById("healthUpdated");
   var healthBody = document.getElementById("healthBody");
+  var engineRack = document.getElementById("engineRack");
   var voiceForm = document.getElementById("voiceForm");
   var messageInput = document.getElementById("messageInput");
   var recordButton = document.getElementById("recordButton");
+  var liveButton = document.getElementById("liveButton");
   var wavInput = document.getElementById("wavInput");
   var wavStatus = document.getElementById("wavStatus");
+  var wavClearButton = document.getElementById("wavClearButton");
   var runButton = document.getElementById("runButton");
   var clearButton = document.getElementById("clearButton");
   var clearLogButton = document.getElementById("clearLogButton");
@@ -22,6 +25,7 @@
   var imageForm = document.getElementById("imageForm");
   var imagePromptInput = document.getElementById("imagePromptInput");
   var imageSizeInput = document.getElementById("imageSizeInput");
+  var sizePresets = Array.prototype.slice.call(document.querySelectorAll(".preset"));
   var generateImageButton = document.getElementById("generateImageButton");
   var clearImageButton = document.getElementById("clearImageButton");
   var imagePreview = document.getElementById("imagePreview");
@@ -41,8 +45,22 @@
   var storyLibrary = document.getElementById("storyLibrary");
   var storyFacts = document.getElementById("storyFacts");
 
+  var ENGINE_NAMES = ["llama", "whisper", "audio", "sd"];
+  var HEALTH_POLL_MS = 20000;
+  var LIVE_TICK_MS = 2500;
+  var LIVE_MAX_SECONDS = 90;
+  var LIVE_TARGET_RATE = 16000;
+  var LIVE_MAX_FAILURES = 3;
+
   var running = false;
   var recording = false;
+  var live = false;
+  var liveCapture = null;
+  var livePassBusy = false;
+  var liveLabelTimer = 0;
+  var livePassTimer = 0;
+  var liveStartedAt = 0;
+  var liveFailures = 0;
   var activeStoryID = "";
   var activeStoryPoll = 0;
   var activeWavFile = null;
@@ -50,13 +68,14 @@
   var recorder = null;
   var recordSetupPending = false;
   var recordStopRequested = false;
+  var recordStartedAt = 0;
+  var recordTimer = 0;
+  var lastHealthStatus = "";
 
   var apiControls = [
-    healthButton,
     wavInput,
     runButton,
     clearButton,
-    clearLogButton,
     messageInput,
     imagePromptInput,
     imageSizeInput,
@@ -64,13 +83,17 @@
     clearImageButton,
     storySubjectInput,
     storySecondsInput,
-    storyGenerateButton,
-    storyLibraryButton
-  ];
+    storyGenerateButton
+  ].concat(sizePresets);
 
-  function log(message) {
+  function log(message, level) {
     var stamp = new Date().toLocaleTimeString();
-    logOutput.textContent += "[" + stamp + "] " + message + "\n";
+    var line = document.createElement("span");
+    if (level === "error") {
+      line.className = "log-error";
+    }
+    line.textContent = "[" + stamp + "] " + message + "\n";
+    logOutput.appendChild(line);
     logOutput.scrollTop = logOutput.scrollHeight;
   }
 
@@ -78,21 +101,21 @@
     var message = error && error.message ? error.message : String(error);
     errorBox.textContent = message;
     errorBox.hidden = false;
-    log("Error: " + message);
+    log("Error: " + message, "error");
   }
 
   function setImageError(error) {
     var message = error && error.message ? error.message : String(error);
     imageErrorBox.textContent = message;
     imageErrorBox.hidden = false;
-    log("Error: " + message);
+    log("Error: " + message, "error");
   }
 
   function setStoryError(error) {
     var message = error && error.message ? error.message : String(error);
     storyErrorBox.textContent = message;
     storyErrorBox.hidden = false;
-    log("Error: " + message);
+    log("Error: " + message, "error");
   }
 
   function clearError() {
@@ -110,33 +133,80 @@
     storyErrorBox.hidden = true;
   }
 
+  function setBusy(button, busyText) {
+    if (!button.dataset.idleText) {
+      button.dataset.idleText = button.textContent;
+    }
+    button.textContent = busyText;
+  }
+
+  function clearBusy(button) {
+    if (button.dataset.idleText) {
+      button.textContent = button.dataset.idleText;
+      delete button.dataset.idleText;
+    }
+  }
+
+  function syncControls() {
+    var busy = running || recording || recordSetupPending || live;
+    apiControls.forEach(function (control) {
+      control.disabled = busy;
+    });
+    if (activeStoryID) {
+      storyGenerateButton.disabled = true;
+    }
+    recordButton.disabled = running || live || (!recording && !recordSetupPending && !canRecord());
+    liveButton.disabled = running || recording || recordSetupPending || (!live && !canRecord());
+  }
+
   function setRunning(value) {
     running = value;
     shell.setAttribute("aria-busy", value ? "true" : "false");
-    apiControls.forEach(function (control) {
-      control.disabled = value || recording || recordSetupPending;
-    });
-    recordButton.disabled = value || (!recording && !recordSetupPending && !canRecord());
+    syncControls();
+  }
+
+  function recordLabel() {
+    var elapsed = Math.max(0, (Date.now() - recordStartedAt) / 1000);
+    var minutes = Math.floor(elapsed / 60);
+    var seconds = Math.floor(elapsed % 60);
+    return "Recording " + minutes + ":" + (seconds < 10 ? "0" : "") + seconds + " · release to stop";
+  }
+
+  function stopRecordTimer() {
+    if (recordTimer) {
+      window.clearInterval(recordTimer);
+      recordTimer = 0;
+    }
   }
 
   function setRecording(value) {
     recording = value;
     recordButton.classList.toggle("recording", value);
     recordButton.setAttribute("aria-pressed", value ? "true" : "false");
-    recordButton.textContent = value ? "Release to stop" : "Push to record";
-    apiControls.forEach(function (control) {
-      control.disabled = value || running || recordSetupPending;
-    });
-    recordButton.disabled = running || (!value && !recordSetupPending && !canRecord());
+    if (value) {
+      recordStartedAt = Date.now();
+      recordButton.textContent = recordLabel();
+      stopRecordTimer();
+      recordTimer = window.setInterval(function () {
+        recordButton.textContent = recordLabel();
+      }, 250);
+    } else {
+      stopRecordTimer();
+      recordButton.textContent = "Push to record";
+    }
+    syncControls();
   }
 
   function setRecordSetupPending(value) {
     recordSetupPending = value;
-    recordButton.textContent = value ? "Preparing..." : recording ? "Release to stop" : "Push to record";
-    apiControls.forEach(function (control) {
-      control.disabled = value || recording || running;
-    });
-    recordButton.disabled = running || (!recording && !value && !canRecord());
+    if (value) {
+      recordButton.textContent = "Preparing...";
+    } else if (recording) {
+      recordButton.textContent = recordLabel();
+    } else {
+      recordButton.textContent = "Push to record";
+    }
+    syncControls();
   }
 
   function canRecord() {
@@ -168,6 +238,12 @@
     activeWavFile = file;
     wavStatus.textContent = source + ": " + file.name + " (" + formatBytes(file.size) + ")";
     log("WAV ready from " + source + ": " + file.name + ", " + formatBytes(file.size));
+  }
+
+  function clearActiveWav() {
+    activeWavFile = null;
+    wavInput.value = "";
+    wavStatus.textContent = "None";
   }
 
   function clearAudioUrl() {
@@ -211,8 +287,29 @@
     gatewayStatus.className = "status-pill " + normalized;
   }
 
+  function renderEngineRack(engines) {
+    engineRack.textContent = "";
+    var names = Object.keys(engines || {}).sort();
+    if (names.length === 0) {
+      names = ENGINE_NAMES;
+    }
+    names.forEach(function (name) {
+      var engine = (engines || {})[name] || {};
+      var chip = createElement("span", "led-chip");
+      var state = engine.status || "unknown";
+      if (engine.ready) {
+        state = "ready";
+      }
+      chip.appendChild(createElement("i", "led " + state));
+      chip.appendChild(document.createTextNode(name));
+      chip.title = name + ": " + state;
+      engineRack.appendChild(chip);
+    });
+  }
+
   function renderHealth(data) {
     renderStatus(data.status);
+    renderEngineRack(data.engines);
     healthUpdated.textContent = data.updatedAt ? "Updated " + new Date(data.updatedAt).toLocaleString() : "Updated now";
     healthBody.textContent = "";
 
@@ -268,21 +365,29 @@
     throw new Error(label + " failed: HTTP " + response.status + ": " + body);
   }
 
-  async function refreshHealth() {
-    clearError();
-    setRunning(true);
+  async function refreshHealth(silent) {
+    healthButton.disabled = true;
     try {
-      log("GET /health");
+      if (!silent) {
+        log("GET /health");
+      }
       var response = await fetch("/health", { method: "GET" });
       await ensureOk(response, "Health");
       var data = await response.json();
       renderHealth(data);
-      log("Health status: " + (data.status || "unknown"));
+      var status = data.status || "unknown";
+      if (!silent || status !== lastHealthStatus) {
+        log("Health status: " + status);
+      }
+      lastHealthStatus = status;
     } catch (error) {
       renderStatus("error");
-      setError(error);
+      renderEngineRack(null);
+      healthUpdated.textContent = "Health check failed";
+      lastHealthStatus = "error";
+      log("Error: " + (error && error.message ? error.message : String(error)), "error");
     } finally {
-      setRunning(false);
+      healthButton.disabled = false;
     }
   }
 
@@ -387,7 +492,7 @@
   function renderStoryLibrary(stories) {
     storyLibrary.textContent = "";
     if (!stories || stories.length === 0) {
-      storyLibrary.appendChild(createElement("span", "story-library-empty", "No retained stories"));
+      storyLibrary.appendChild(createElement("span", "story-library-empty", "No retained stories yet"));
       return;
     }
     stories.forEach(function (story) {
@@ -406,11 +511,13 @@
     });
   }
 
-  async function refreshStoryLibrary() {
+  async function refreshStoryLibrary(silent) {
     clearStoryError();
-    setRunning(true);
+    storyLibraryButton.disabled = true;
     try {
-      log("GET /v1/stories");
+      if (!silent) {
+        log("GET /v1/stories");
+      }
       var response = await fetch("/v1/stories", { method: "GET" });
       await ensureOk(response, "Story library");
       var data = await response.json();
@@ -418,7 +525,7 @@
     } catch (error) {
       setStoryError(error);
     } finally {
-      setRunning(false);
+      storyLibraryButton.disabled = false;
     }
   }
 
@@ -459,7 +566,6 @@
   async function pollStory(id) {
     clearStoryPoll();
     try {
-      log("GET /v1/stories/" + id);
       var response = await fetch("/v1/stories/" + encodeURIComponent(id), { method: "GET" });
       await ensureOk(response, "Story status");
       var data = await response.json();
@@ -467,23 +573,26 @@
       if (data.status === "complete") {
         activeStoryID = "";
         storyCancelButton.disabled = true;
+        storyGenerateButton.disabled = false;
         if (data.artifact_url) {
           storyAudio.src = data.artifact_url;
           storyAudio.load();
         }
         renderStoryManifest(data.manifest);
         log("Story complete");
-        refreshStoryLibrary();
+        refreshStoryLibrary(true);
         return;
       }
       if (data.status === "failed") {
         activeStoryID = "";
         storyCancelButton.disabled = true;
+        storyGenerateButton.disabled = false;
         throw new Error(data.error && data.error.message ? data.error.message : "Story failed");
       }
       if (data.status === "cancelled") {
         activeStoryID = "";
         storyCancelButton.disabled = true;
+        storyGenerateButton.disabled = false;
         log("Story cancelled");
         return;
       }
@@ -493,6 +602,7 @@
     } catch (error) {
       activeStoryID = "";
       storyCancelButton.disabled = true;
+      storyGenerateButton.disabled = false;
       setStoryStatus("Error", 0);
       setStoryError(error);
     }
@@ -509,12 +619,14 @@
     }
     clearStoryPoll();
     setRunning(true);
+    setBusy(storyGenerateButton, "Queueing...");
     try {
       storyAudio.removeAttribute("src");
       storyAudio.load();
       storyFacts.textContent = "";
       setStoryStatus("Starting...", 0);
       var targetSeconds = Number(storySecondsInput.value || "90");
+      log("POST /v1/stories");
       var response = await fetch("/v1/stories", {
         method: "POST",
         headers: {
@@ -540,6 +652,7 @@
       setStoryStatus("Error", 0);
       setStoryError(error);
     } finally {
+      clearBusy(storyGenerateButton);
       setRunning(false);
     }
   }
@@ -560,6 +673,7 @@
       var data = await response.json();
       activeStoryID = "";
       storyCancelButton.disabled = true;
+      storyGenerateButton.disabled = false;
       setStoryStatus(data.status || "cancelled", data.progress || 0);
     } catch (error) {
       setStoryError(error);
@@ -572,6 +686,7 @@
     }
     clearImageError();
     setRunning(true);
+    setBusy(generateImageButton, "Generating...");
     try {
       var prompt = imagePromptInput.value.trim();
       var size = imageSizeInput.value.trim() || "512x512";
@@ -603,6 +718,7 @@
       imageStatus.textContent = "Error";
       setImageError(error);
     } finally {
+      clearBusy(generateImageButton);
       setRunning(false);
     }
   }
@@ -613,6 +729,7 @@
     }
     clearError();
     setRunning(true);
+    setBusy(runButton, "Running...");
     try {
       resetOutputs();
       var form = new FormData();
@@ -621,7 +738,7 @@
       } else {
         var text = messageInput.value.trim();
         if (!text) {
-          throw new Error("Record audio, choose a WAV, or enter a typed message");
+          throw new Error("Record audio, choose a WAV, or type a message");
         }
         form.append("message", text);
         log("Using typed message as transcript");
@@ -653,6 +770,7 @@
     } catch (error) {
       setError(error);
     } finally {
+      clearBusy(runButton);
       setRunning(false);
     }
   }
@@ -855,6 +973,210 @@
     recorder = null;
   }
 
+  function liveLabel() {
+    var elapsed = Math.max(0, (Date.now() - liveStartedAt) / 1000);
+    var minutes = Math.floor(elapsed / 60);
+    var seconds = Math.floor(elapsed % 60);
+    return "Stop live " + minutes + ":" + (seconds < 10 ? "0" : "") + seconds;
+  }
+
+  function setLive(value) {
+    live = value;
+    liveButton.classList.toggle("active", value);
+    liveButton.setAttribute("aria-pressed", value ? "true" : "false");
+    liveButton.textContent = value ? liveLabel() : "Live transcribe";
+    syncControls();
+  }
+
+  function stopLiveTimers() {
+    if (liveLabelTimer) {
+      window.clearInterval(liveLabelTimer);
+      liveLabelTimer = 0;
+    }
+    if (livePassTimer) {
+      window.clearInterval(livePassTimer);
+      livePassTimer = 0;
+    }
+  }
+
+  function downsampleForLive(samples, fromRate) {
+    var ratio = fromRate / LIVE_TARGET_RATE;
+    var length = Math.floor(samples.length / ratio);
+    var output = new Float32Array(length);
+    for (var i = 0; i < length; i += 1) {
+      var pos = i * ratio;
+      var left = Math.floor(pos);
+      var right = Math.min(left + 1, samples.length - 1);
+      var frac = pos - left;
+      output[i] = samples[left] * (1 - frac) + samples[right] * frac;
+    }
+    return output;
+  }
+
+  async function transcribeLiveTake(capture, finalPass) {
+    if (livePassBusy || !capture) {
+      return;
+    }
+    if (capture.length < capture.sampleRate / 2) {
+      return;
+    }
+    livePassBusy = true;
+    try {
+      var samples = mergeChunks(capture.chunks, capture.length);
+      var rate = capture.sampleRate;
+      if (rate > LIVE_TARGET_RATE) {
+        samples = downsampleForLive(samples, rate);
+        rate = LIVE_TARGET_RATE;
+      }
+      var blob = encodeWav(samples, rate);
+      var form = new FormData();
+      form.append("file", new File([blob], "live.wav", { type: "audio/wav" }));
+      var response = await fetch("/v1/audio/transcriptions", { method: "POST", body: form });
+      if (response.status === 429 && !finalPass) {
+        return;
+      }
+      await ensureOk(response, "Live transcription");
+      var data = await response.json();
+      transcriptOutput.value = data.text || "";
+      liveFailures = 0;
+    } catch (error) {
+      liveFailures += 1;
+      if (finalPass) {
+        setError(error);
+      } else {
+        log("Live transcription pass failed: " + (error && error.message ? error.message : String(error)), "error");
+      }
+    } finally {
+      livePassBusy = false;
+    }
+  }
+
+  async function startLive() {
+    if (live || running || recording || recordSetupPending) {
+      return;
+    }
+    if (!canRecord()) {
+      setError(new Error("Audio recording is not available in this browser"));
+      return;
+    }
+    clearError();
+    liveButton.disabled = true;
+    var stream = null;
+    var audioContext = null;
+    var source = null;
+    var processor = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      });
+      var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      audioContext = new AudioContextClass();
+      source = audioContext.createMediaStreamSource(stream);
+      processor = audioContext.createScriptProcessor(4096, 1, 1);
+      var capture = {
+        active: true,
+        audioContext: audioContext,
+        chunks: [],
+        length: 0,
+        processor: processor,
+        sampleRate: audioContext.sampleRate,
+        source: source,
+        stream: stream
+      };
+
+      processor.onaudioprocess = function (processEvent) {
+        if (!capture.active) {
+          return;
+        }
+        var input = processEvent.inputBuffer.getChannelData(0);
+        var copy = new Float32Array(input.length);
+        copy.set(input);
+        capture.chunks.push(copy);
+        capture.length += copy.length;
+
+        processEvent.outputBuffer.getChannelData(0).fill(0);
+      };
+
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+
+      resetOutputs();
+      clearActiveWav();
+      liveCapture = capture;
+      liveFailures = 0;
+      liveStartedAt = Date.now();
+      setLive(true);
+      liveLabelTimer = window.setInterval(function () {
+        liveButton.textContent = liveLabel();
+      }, 250);
+      livePassTimer = window.setInterval(function () {
+        if (liveFailures >= LIVE_MAX_FAILURES) {
+          log("Live transcription stopped after repeated failures", "error");
+          stopLive();
+          return;
+        }
+        if ((Date.now() - liveStartedAt) / 1000 >= LIVE_MAX_SECONDS) {
+          log("Live transcription reached the " + LIVE_MAX_SECONDS + "s cap");
+          stopLive();
+          return;
+        }
+        transcribeLiveTake(liveCapture, false);
+      }, LIVE_TICK_MS);
+      log("Live transcription started at " + audioContext.sampleRate + " Hz");
+    } catch (error) {
+      await cleanupRecorderResources({
+        audioContext: audioContext,
+        processor: processor,
+        source: source,
+        stream: stream
+      });
+      liveCapture = null;
+      setLive(false);
+      setError(error);
+    }
+  }
+
+  async function stopLive() {
+    if (!live || !liveCapture) {
+      return;
+    }
+    var capture = liveCapture;
+    liveCapture = null;
+    capture.active = false;
+    stopLiveTimers();
+    setLive(false);
+    liveButton.disabled = true;
+    try {
+      await cleanupRecorderResources(capture);
+
+      var waited = 0;
+      while (livePassBusy && waited < 15000) {
+        await new Promise(function (resolve) {
+          window.setTimeout(resolve, 100);
+        });
+        waited += 100;
+      }
+
+      if (capture.length < capture.sampleRate / 4) {
+        log("Live take was too short to keep");
+        return;
+      }
+
+      var samples = mergeChunks(capture.chunks, capture.length);
+      var wavBlob = encodeWav(samples, capture.sampleRate);
+      var file = new File([wavBlob], "live-take.wav", { type: "audio/wav" });
+      setActiveWav(file, "live");
+      await transcribeLiveTake(capture, true);
+      log("Live take ready: " + (capture.length / capture.sampleRate).toFixed(1) + "s");
+    } finally {
+      syncControls();
+    }
+  }
+
   function chooseWav(event) {
     clearError();
     var file = event.target.files && event.target.files[0];
@@ -872,28 +1194,72 @@
   }
 
   function clearAll() {
-    activeWavFile = null;
-    wavInput.value = "";
-    wavStatus.textContent = "None";
+    clearActiveWav();
     messageInput.value = "";
     resetOutputs();
     log("Cleared workspace");
   }
 
-  healthButton.addEventListener("click", refreshHealth);
+  function syncSizePresets() {
+    var current = imageSizeInput.value.trim();
+    sizePresets.forEach(function (preset) {
+      preset.classList.toggle("active", preset.dataset.size === current);
+    });
+  }
+
+  function submitOnCtrlEnter(input, form) {
+    input.addEventListener("keydown", function (event) {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && !input.disabled) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+  }
+
+  healthButton.addEventListener("click", function () {
+    refreshHealth(false);
+  });
   voiceForm.addEventListener("submit", runVoiceLoop);
   imageForm.addEventListener("submit", generateImage);
   storyForm.addEventListener("submit", startStory);
   storyCancelButton.addEventListener("click", cancelStory);
-  storyLibraryButton.addEventListener("click", refreshStoryLibrary);
+  storyLibraryButton.addEventListener("click", function () {
+    refreshStoryLibrary(false);
+  });
   wavInput.addEventListener("change", chooseWav);
   clearButton.addEventListener("click", clearAll);
+  wavClearButton.addEventListener("click", function () {
+    if (!activeWavFile) {
+      return;
+    }
+    clearActiveWav();
+    log("Removed WAV source");
+  });
   clearImageButton.addEventListener("click", function () {
     clearImageOutput();
     log("Cleared image");
   });
   clearLogButton.addEventListener("click", function () {
     logOutput.textContent = "";
+  });
+
+  sizePresets.forEach(function (preset) {
+    preset.addEventListener("click", function () {
+      imageSizeInput.value = preset.dataset.size;
+      syncSizePresets();
+    });
+  });
+  imageSizeInput.addEventListener("input", syncSizePresets);
+
+  submitOnCtrlEnter(messageInput, voiceForm);
+  submitOnCtrlEnter(imagePromptInput, imageForm);
+
+  liveButton.addEventListener("click", function () {
+    if (live) {
+      stopLive();
+    } else {
+      startLive();
+    }
   });
 
   recordButton.addEventListener("pointerdown", startRecording);
@@ -904,9 +1270,16 @@
   if (!canRecord()) {
     recordButton.disabled = true;
     recordButton.textContent = "Recording unavailable";
+    liveButton.disabled = true;
   }
 
+  renderEngineRack(null);
   log("Demo loaded");
-  refreshHealth();
-  refreshStoryLibrary();
+  refreshHealth(false);
+  refreshStoryLibrary(true);
+  window.setInterval(function () {
+    if (document.visibilityState === "visible") {
+      refreshHealth(true);
+    }
+  }, HEALTH_POLL_MS);
 }());

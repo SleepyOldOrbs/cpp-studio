@@ -9,194 +9,242 @@
 <body>
   <main class="app-shell" aria-busy="false">
     <header class="topbar">
-      <div>
-        <h1>cpp-studio local studio</h1>
-        <p class="route-line">/health /v1/audio/transcriptions /v1/chat/completions /v1/audio/speech /v1/images/generations /v1/stories</p>
+      <div class="brand">
+        <h1>cpp&#8209;studio</h1>
+        <p class="tagline">local studio console</p>
       </div>
-      <button class="secondary" id="healthButton" type="button">Refresh health</button>
+      <div class="engine-rack" id="engineRack" aria-live="polite" aria-label="Engine status"></div>
+      <div class="topbar-status">
+        <span class="status-pill unknown" id="gatewayStatus">Unknown</span>
+        <button class="secondary" id="healthButton" type="button">Refresh health</button>
+      </div>
     </header>
 
-    <section class="status-strip" aria-live="polite">
-      <span class="status-pill unknown" id="gatewayStatus">Unknown</span>
-      <span id="healthUpdated">No health check yet</span>
-    </section>
-
-    <section class="workspace">
-      <form class="control-panel" id="voiceForm">
-        <label class="field">
-          <span>Typed message</span>
-          <textarea id="messageInput" rows="5" placeholder="Message text"></textarea>
-        </label>
-
-        <div class="record-row">
-          <button class="record-button" id="recordButton" type="button">Push to record</button>
-          <label class="file-button">
-            <input id="wavInput" type="file" accept=".wav,audio/wav,audio/x-wav">
-            <span>Choose WAV</span>
-          </label>
-        </div>
-
-        <div class="source-row">
-          <span class="source-label">WAV source</span>
-          <span id="wavStatus">None</span>
-        </div>
-
-        <div class="action-row">
-          <button class="primary" id="runButton" type="submit">Run voice loop</button>
-          <button class="secondary" id="clearButton" type="button">Clear</button>
-        </div>
-
-        <p class="error-box" id="errorBox" hidden></p>
-      </form>
-
-      <section class="result-panel">
-        <label class="field">
-          <span>Transcript</span>
-          <textarea id="transcriptOutput" rows="5" readonly></textarea>
-        </label>
-
-        <label class="field">
-          <span>Assistant reply</span>
-          <textarea id="replyOutput" rows="7" readonly></textarea>
-        </label>
-
-        <div class="audio-panel">
-          <span>Audio playback</span>
-          <audio id="replyAudio" controls></audio>
-        </div>
-      </section>
-    </section>
-
-    <section class="image-panel">
-      <form class="image-form" id="imageForm">
-        <label class="field">
-          <span>Image prompt</span>
-          <textarea id="imagePromptInput" rows="4" placeholder="Image prompt"></textarea>
-        </label>
-
-        <label class="field compact-field">
-          <span>Size</span>
-          <input class="text-input" id="imageSizeInput" type="text" value="512x512" inputmode="numeric">
-        </label>
-
-        <div class="action-row">
-          <button class="primary" id="generateImageButton" type="submit">Generate image</button>
-          <button class="secondary" id="clearImageButton" type="button">Clear image</button>
-        </div>
-      </form>
-
-      <section class="image-result" aria-live="polite">
-        <div class="image-frame">
-          <img id="imagePreview" alt="Generated image preview" hidden>
-          <span id="imagePlaceholder">No image yet</span>
-        </div>
-        <div class="source-row">
-          <span class="source-label">Image status</span>
-          <span id="imageStatus">Idle</span>
-        </div>
-        <p class="error-box" id="imageErrorBox" hidden></p>
-      </section>
-    </section>
-
-    <section class="story-panel">
-      <form class="story-form" id="storyForm">
-        <div class="story-controls">
+    <section class="module" aria-label="Voice loop">
+      <header class="module-head">
+        <h2>Voice loop</h2>
+        <span class="module-route">POST /v1/voice</span>
+        <span class="module-note">record &rarr; transcribe &rarr; chat &rarr; speak</span>
+      </header>
+      <div class="module-body workspace">
+        <form class="control-panel" id="voiceForm">
           <label class="field">
-            <span>Story subject</span>
-            <input class="text-input" id="storySubjectInput" type="text" value="how stars are born">
+            <span>Message</span>
+            <textarea id="messageInput" rows="5" placeholder="Type a message for the assistant&hellip;"></textarea>
+            <small class="hint">Used when no WAV is loaded. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs the loop.</small>
           </label>
 
-          <label class="field compact-field">
-            <span>Seconds</span>
-            <input class="text-input" id="storySecondsInput" type="number" min="30" max="300" value="90">
+          <div class="record-row">
+            <button class="record-button" id="recordButton" type="button" aria-pressed="false">Push to record</button>
+            <button class="live-button" id="liveButton" type="button" aria-pressed="false">Live transcribe</button>
+            <label class="file-button">
+              <input id="wavInput" type="file" accept=".wav,audio/wav,audio/x-wav">
+              <span>Choose WAV</span>
+            </label>
+          </div>
+          <small class="hint">Live transcribe streams your mic to whisper every few seconds; stop to keep the take as the WAV source.</small>
+
+          <div class="source-row">
+            <span class="source-label">WAV source</span>
+            <span id="wavStatus">None</span>
+            <button class="plain icon-button" id="wavClearButton" type="button" title="Remove WAV" aria-label="Remove WAV">&times;</button>
+          </div>
+
+          <div class="action-row">
+            <button class="primary" id="runButton" type="submit">Run voice loop</button>
+            <button class="secondary" id="clearButton" type="button">Clear</button>
+          </div>
+
+          <p class="error-box" id="errorBox" hidden></p>
+        </form>
+
+        <section class="result-panel">
+          <label class="field">
+            <span>Transcript</span>
+            <textarea id="transcriptOutput" rows="5" readonly placeholder="Whisper transcript appears here"></textarea>
           </label>
-        </div>
 
-        <div class="source-stack">
-          <div class="source-group">
-            <label class="field">
-              <span>Source 1 title</span>
-              <input class="text-input story-source-title" type="text" value="NASA Science: Star Basics">
-            </label>
-            <label class="field">
-              <span>Source 1 URL</span>
-              <input class="text-input story-source-url" type="url" value="https://science.nasa.gov/universe/stars/">
-            </label>
-            <label class="field">
-              <span>Source 1 excerpt</span>
-              <textarea class="story-source-excerpt" rows="3">Stars form inside molecular clouds of gas and dust. Cold cloud conditions help gas clump into denser pockets. As clumps gain mass, gravity can make them collapse.</textarea>
-            </label>
+          <label class="field">
+            <span>Assistant reply</span>
+            <textarea id="replyOutput" rows="7" readonly placeholder="Assistant reply appears here"></textarea>
+          </label>
+
+          <div class="audio-panel">
+            <span>Audio playback</span>
+            <audio id="replyAudio" controls></audio>
           </div>
-
-          <div class="source-group">
-            <label class="field">
-              <span>Source 2 title</span>
-              <input class="text-input story-source-title" type="text" value="NASA Webb: Fiery Hourglass">
-            </label>
-            <label class="field">
-              <span>Source 2 URL</span>
-              <input class="text-input story-source-url" type="url" value="https://science.nasa.gov/missions/webb/nasas-webb-catches-fiery-hourglass-as-new-star-forms/">
-            </label>
-            <label class="field">
-              <span>Source 2 excerpt</span>
-              <textarea class="story-source-excerpt" rows="3">A forming protostar gathers material from its surrounding molecular cloud. Falling material spirals inward and forms an accretion disk. The disk feeds material onto the protostar.</textarea>
-            </label>
-          </div>
-
-          <div class="source-group">
-            <label class="field">
-              <span>Source 3 title</span>
-              <input class="text-input story-source-title" type="text" value="NASA Hubble: Planet-Forming Disks">
-            </label>
-            <label class="field">
-              <span>Source 3 URL</span>
-              <input class="text-input story-source-url" type="url" value="https://science.nasa.gov/missions/hubble/hubbles-album-of-planet-forming-disks/">
-            </label>
-            <label class="field">
-              <span>Source 3 excerpt</span>
-              <textarea class="story-source-excerpt" rows="3">Some falling material forms a rotating disk around the protostar. Jets from magnetic poles are part of star formation. Jets help carry away angular momentum so material can continue collecting.</textarea>
-            </label>
-          </div>
-        </div>
-
-        <div class="action-row">
-          <button class="primary" id="storyGenerateButton" type="submit">Generate story</button>
-          <button class="secondary" id="storyCancelButton" type="button" disabled>Cancel story</button>
-        </div>
-        <p class="error-box" id="storyErrorBox" hidden></p>
-      </form>
-
-      <section class="story-result" aria-live="polite">
-        <div class="source-row">
-          <span class="source-label">Story status</span>
-          <span id="storyStatus">Idle</span>
-        </div>
-        <progress id="storyProgress" max="1" value="0"></progress>
-        <div class="audio-panel">
-          <span>Story playback</span>
-          <audio id="storyAudio" controls></audio>
-        </div>
-        <div class="story-library-header">
-          <span class="source-label">Retained stories</span>
-          <button class="secondary compact-button" id="storyLibraryButton" type="button">Refresh</button>
-        </div>
-        <div class="story-library" id="storyLibrary"></div>
-        <div class="story-facts" id="storyFacts"></div>
-      </section>
-    </section>
-
-    <section class="health-panel">
-      <h2>Gateway health</h2>
-      <div id="healthBody" class="health-body">No data</div>
-    </section>
-
-    <section class="log-panel">
-      <div class="log-header">
-        <h2>Log</h2>
-        <button class="plain" id="clearLogButton" type="button">Clear log</button>
+        </section>
       </div>
-      <pre id="logOutput" aria-live="polite"></pre>
     </section>
+
+    <section class="module" aria-label="Image lab">
+      <header class="module-head">
+        <h2>Image lab</h2>
+        <span class="module-route">POST /v1/images/generations</span>
+      </header>
+      <div class="module-body image-panel">
+        <form class="image-form" id="imageForm">
+          <label class="field">
+            <span>Image prompt</span>
+            <textarea id="imagePromptInput" rows="4" placeholder="Describe the image to generate&hellip;"></textarea>
+            <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> generates.</small>
+          </label>
+
+          <div class="field compact-field">
+            <span class="field-label" id="imageSizeLabel">Size</span>
+            <div class="size-row" role="group" aria-labelledby="imageSizeLabel">
+              <input class="text-input" id="imageSizeInput" type="text" value="512x512" inputmode="numeric" aria-label="Image size">
+              <button type="button" class="preset" data-size="256x256">256</button>
+              <button type="button" class="preset active" data-size="512x512">512</button>
+              <button type="button" class="preset" data-size="768x768">768</button>
+            </div>
+          </div>
+
+          <div class="action-row">
+            <button class="primary" id="generateImageButton" type="submit">Generate image</button>
+            <button class="secondary" id="clearImageButton" type="button">Clear image</button>
+          </div>
+        </form>
+
+        <section class="image-result" aria-live="polite">
+          <div class="image-frame">
+            <img id="imagePreview" alt="Generated image preview" hidden>
+            <span id="imagePlaceholder">No image yet</span>
+          </div>
+          <div class="source-row">
+            <span class="source-label">Image status</span>
+            <span id="imageStatus">Idle</span>
+          </div>
+          <p class="error-box" id="imageErrorBox" hidden></p>
+        </section>
+      </div>
+    </section>
+
+    <section class="module" aria-label="Story desk">
+      <header class="module-head">
+        <h2>Story desk</h2>
+        <span class="module-route">POST /v1/stories</span>
+        <span class="module-note">sources &rarr; facts &rarr; script &rarr; audio</span>
+      </header>
+      <div class="module-body story-panel">
+        <form class="story-form" id="storyForm">
+          <div class="story-controls">
+            <label class="field">
+              <span>Story subject</span>
+              <input class="text-input" id="storySubjectInput" type="text" value="how stars are born">
+            </label>
+
+            <label class="field compact-field">
+              <span>Target seconds</span>
+              <input class="text-input" id="storySecondsInput" type="number" min="30" max="300" value="90">
+            </label>
+          </div>
+
+          <div class="source-stack">
+            <details class="source-group" open>
+              <summary>Source 1 &middot; NASA Science: Star Basics</summary>
+              <div class="source-fields">
+                <label class="field">
+                  <span>Title</span>
+                  <input class="text-input story-source-title" type="text" value="NASA Science: Star Basics">
+                </label>
+                <label class="field">
+                  <span>URL</span>
+                  <input class="text-input story-source-url" type="url" value="https://science.nasa.gov/universe/stars/">
+                </label>
+                <label class="field">
+                  <span>Excerpt</span>
+                  <textarea class="story-source-excerpt" rows="3">Stars form inside molecular clouds of gas and dust. Cold cloud conditions help gas clump into denser pockets. As clumps gain mass, gravity can make them collapse.</textarea>
+                </label>
+              </div>
+            </details>
+
+            <details class="source-group">
+              <summary>Source 2 &middot; NASA Webb: Fiery Hourglass</summary>
+              <div class="source-fields">
+                <label class="field">
+                  <span>Title</span>
+                  <input class="text-input story-source-title" type="text" value="NASA Webb: Fiery Hourglass">
+                </label>
+                <label class="field">
+                  <span>URL</span>
+                  <input class="text-input story-source-url" type="url" value="https://science.nasa.gov/missions/webb/nasas-webb-catches-fiery-hourglass-as-new-star-forms/">
+                </label>
+                <label class="field">
+                  <span>Excerpt</span>
+                  <textarea class="story-source-excerpt" rows="3">A forming protostar gathers material from its surrounding molecular cloud. Falling material spirals inward and forms an accretion disk. The disk feeds material onto the protostar.</textarea>
+                </label>
+              </div>
+            </details>
+
+            <details class="source-group">
+              <summary>Source 3 &middot; NASA Hubble: Planet-Forming Disks</summary>
+              <div class="source-fields">
+                <label class="field">
+                  <span>Title</span>
+                  <input class="text-input story-source-title" type="text" value="NASA Hubble: Planet-Forming Disks">
+                </label>
+                <label class="field">
+                  <span>URL</span>
+                  <input class="text-input story-source-url" type="url" value="https://science.nasa.gov/missions/hubble/hubbles-album-of-planet-forming-disks/">
+                </label>
+                <label class="field">
+                  <span>Excerpt</span>
+                  <textarea class="story-source-excerpt" rows="3">Some falling material forms a rotating disk around the protostar. Jets from magnetic poles are part of star formation. Jets help carry away angular momentum so material can continue collecting.</textarea>
+                </label>
+              </div>
+            </details>
+          </div>
+
+          <div class="action-row">
+            <button class="primary" id="storyGenerateButton" type="submit">Generate story</button>
+            <button class="secondary" id="storyCancelButton" type="button" disabled>Cancel story</button>
+          </div>
+          <p class="error-box" id="storyErrorBox" hidden></p>
+        </form>
+
+        <section class="story-result" aria-live="polite">
+          <div class="source-row">
+            <span class="source-label">Story status</span>
+            <span id="storyStatus">Idle</span>
+          </div>
+          <progress id="storyProgress" max="1" value="0"></progress>
+          <div class="audio-panel">
+            <span>Story playback</span>
+            <audio id="storyAudio" controls></audio>
+          </div>
+          <div class="story-library-header">
+            <span class="source-label">Retained stories</span>
+            <button class="secondary compact-button" id="storyLibraryButton" type="button">Refresh</button>
+          </div>
+          <div class="story-library" id="storyLibrary"></div>
+          <div class="story-facts" id="storyFacts"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="module" aria-label="Engine rack">
+      <header class="module-head">
+        <h2>Engine rack</h2>
+        <span class="module-route">GET /health</span>
+        <span class="module-note" id="healthUpdated">No health check yet</span>
+      </header>
+      <div class="module-body">
+        <div id="healthBody" class="health-body">No data</div>
+      </div>
+    </section>
+
+    <section class="module" aria-label="Session log">
+      <header class="module-head">
+        <h2>Session log</h2>
+        <button class="plain" id="clearLogButton" type="button">Clear log</button>
+      </header>
+      <div class="module-body">
+        <pre id="logOutput" aria-live="polite"></pre>
+      </div>
+    </section>
+
+    <footer class="page-foot">Every request stays on this machine &mdash; llama.cpp, whisper.cpp, audio.cpp, stable-diffusion.cpp behind one gateway.</footer>
   </main>
 
   <script src="app.js"></script>
