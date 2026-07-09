@@ -83,8 +83,11 @@ type Result struct {
 }
 
 // Invoker is the seam callers cross to run an engine once or reserve it.
+// RunReserved is Run for callers that already hold the engine's slot via
+// Reserve.
 type Invoker interface {
 	Run(ctx context.Context, spec Spec) (Result, error)
+	RunReserved(ctx context.Context, spec Spec) (Result, error)
 	Reserve(name string) (release func(), ok bool)
 }
 
@@ -140,15 +143,23 @@ func (r *Runner) Reserve(name string) (func(), bool) {
 }
 
 func (r *Runner) Run(ctx context.Context, spec Spec) (Result, error) {
-	engineCfg, ok := r.engines[spec.Engine]
-	if !ok {
-		return Result{}, &Error{Kind: KindNotConfigured, Message: fmt.Sprintf("engine %q is not configured", spec.Engine)}
-	}
 	release, ok := r.Reserve(spec.Engine)
 	if !ok {
 		return Result{}, &Error{Kind: KindBusy, Message: fmt.Sprintf("engine %q is busy", spec.Engine)}
 	}
 	defer release()
+	return r.RunReserved(ctx, spec)
+}
+
+// RunReserved runs without taking the engine's single-run slot; the caller
+// already holds it via Reserve (the story pipeline reserves audio for the
+// whole job, then synthesizes line by line through this path). GPU-marked
+// engines still take the shared GPU slot per run.
+func (r *Runner) RunReserved(ctx context.Context, spec Spec) (Result, error) {
+	engineCfg, ok := r.engines[spec.Engine]
+	if !ok {
+		return Result{}, &Error{Kind: KindNotConfigured, Message: fmt.Sprintf("engine %q is not configured", spec.Engine)}
+	}
 
 	inPath := ""
 	if spec.Input != nil {

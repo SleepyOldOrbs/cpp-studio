@@ -3,11 +3,14 @@ package story
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"cpp-studio/internal/wav"
 )
 
 func TestValidateCreateRequest(t *testing.T) {
@@ -282,6 +285,81 @@ func TestManagerSubmitBusyCancelAndComplete(t *testing.T) {
 			t.Fatalf("expected engine busy, got %v", err)
 		}
 	})
+}
+
+func TestManagerSynthesizesFixedVoiceStories(t *testing.T) {
+	var synthesized []string
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(),
+		Synthesize: func(ctx context.Context, text string) ([]byte, error) {
+			synthesized = append(synthesized, text)
+			return wav.SyntheticTone(wav.ToneSampleRate), nil // one second per line
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	req := validCreateRequest()
+	req.VoiceMode = "fixed"
+	created, err := manager.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, created.ID, StatusComplete)
+
+	if status.Manifest == nil {
+		t.Fatalf("expected completed manifest, got %+v", status)
+	}
+	if len(synthesized) != len(status.Manifest.Script) {
+		t.Fatalf("expected %d synthesized lines, got %d", len(status.Manifest.Script), len(synthesized))
+	}
+	if synthesized[0] != status.Manifest.Script[0].Text {
+		t.Fatalf("expected first synthesized line to match script, got %q", synthesized[0])
+	}
+
+	// Stitched audio: len(script) seconds of clips plus 350ms gaps between.
+	wantSeconds := len(synthesized)
+	if got := status.Manifest.DurationSeconds; got < wantSeconds || got > wantSeconds+len(synthesized) {
+		t.Fatalf("expected roughly %ds of stitched audio, manifest says %ds", wantSeconds, got)
+	}
+
+	artifactPath, err := manager.ArtifactPath(created.ID, StoryArtifactName)
+	if err != nil {
+		t.Fatalf("ArtifactPath returned error: %v", err)
+	}
+	data, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	duration, err := wav.Duration(data)
+	if err != nil {
+		t.Fatalf("artifact is not decodable WAV: %v", err)
+	}
+	if duration < time.Duration(wantSeconds)*time.Second {
+		t.Fatalf("expected at least %ds of audio, got %s", wantSeconds, duration)
+	}
+}
+
+func TestManagerFailsWhenSynthesisFails(t *testing.T) {
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(),
+		Synthesize: func(ctx context.Context, text string) ([]byte, error) {
+			return nil, fmt.Errorf("audio engine exploded")
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	req := validCreateRequest()
+	req.VoiceMode = "fixed"
+	created, err := manager.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, created.ID, StatusFailed)
+	if status.Error == nil || status.Error.Code != CodeSynthesisFailure {
+		t.Fatalf("expected synthesis failure, got %+v", status.Error)
+	}
 }
 
 func validCreateRequest() CreateRequest {

@@ -54,6 +54,20 @@ func (f *Fake) Reserve(name string) (func(), bool) {
 }
 
 func (f *Fake) Run(ctx context.Context, spec Spec) (Result, error) {
+	release, reserved := f.Reserve(spec.Engine)
+	if !reserved {
+		f.mu.Lock()
+		f.calls = append(f.calls, spec)
+		f.mu.Unlock()
+		return Result{}, &Error{Kind: KindBusy, Message: fmt.Sprintf("engine %q is busy", spec.Engine)}
+	}
+	defer release()
+	return f.RunReserved(ctx, spec)
+}
+
+// RunReserved runs without taking the engine's slot; the caller already
+// holds it via Reserve.
+func (f *Fake) RunReserved(ctx context.Context, spec Spec) (Result, error) {
 	f.mu.Lock()
 	handler, ok := f.handlers[spec.Engine]
 	f.calls = append(f.calls, spec)
@@ -61,11 +75,6 @@ func (f *Fake) Run(ctx context.Context, spec Spec) (Result, error) {
 	if !ok {
 		return Result{}, &Error{Kind: KindNotConfigured, Message: fmt.Sprintf("engine %q is not configured", spec.Engine)}
 	}
-	release, reserved := f.Reserve(spec.Engine)
-	if !reserved {
-		return Result{}, &Error{Kind: KindBusy, Message: fmt.Sprintf("engine %q is busy", spec.Engine)}
-	}
-	defer release()
 	if err := ctx.Err(); err != nil {
 		return Result{}, &Error{Kind: KindEngineFailure, Message: err.Error()}
 	}

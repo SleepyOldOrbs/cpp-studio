@@ -49,6 +49,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	}
 	r.stories = story.NewManager(story.ManagerOptions{
 		ReserveEngine: r.reserveEngine,
+		Synthesize:    r.synthesizeSpeech,
 	})
 
 	mux := http.NewServeMux()
@@ -568,6 +569,17 @@ func (r *router) engine(name string) (config.EngineConfig, bool) {
 func (r *router) reserveEngine(ctx context.Context, name string) (func(), bool) {
 	_ = ctx
 	return r.engines.Reserve(name)
+}
+
+// synthesizeSpeech is the story pipeline's SynthesizeFunc. It crosses the
+// engine seam without re-reserving: the story manager already holds the
+// audio slot for the whole job.
+func (r *router) synthesizeSpeech(ctx context.Context, text string) ([]byte, error) {
+	res, err := r.engines.RunReserved(ctx, engine.SpeechSpec(text))
+	if err != nil {
+		return nil, err
+	}
+	return res.Output, nil
 }
 
 // readUploadedWAV pulls the multipart "file" field into memory, writing the

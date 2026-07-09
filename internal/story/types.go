@@ -52,6 +52,7 @@ const (
 	CodeNotFound               ErrorCode = "not_found"
 	CodeCannotCancel           ErrorCode = "cannot_cancel"
 	CodeStoreFailure           ErrorCode = "store_failure"
+	CodeSynthesisFailure       ErrorCode = "synthesis_failure"
 	CodeGroundingFailure       ErrorCode = "grounding_failure"
 	CodeArtifactNotFound       ErrorCode = "artifact_not_found"
 	CodeUnsupportedArtifact    ErrorCode = "unsupported_artifact"

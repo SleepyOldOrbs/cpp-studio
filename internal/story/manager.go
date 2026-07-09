@@ -5,13 +5,20 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"cpp-studio/internal/wav"
 )
 
 type ReserveEngineFunc func(ctx context.Context, name string) (func(), bool)
 
+// SynthesizeFunc speaks one script line through the audio engine while the
+// manager holds the engine's reservation. nil disables voice_mode "fixed".
+type SynthesizeFunc func(ctx context.Context, text string) ([]byte, error)
+
 type ManagerOptions struct {
 	RootDir       string
 	ReserveEngine ReserveEngineFunc
+	Synthesize    SynthesizeFunc
 	StageDelay    time.Duration
 	Now           func() time.Time
 }
@@ -20,6 +27,7 @@ type Manager struct {
 	mu            sync.Mutex
 	store         *Store
 	reserveEngine ReserveEngineFunc
+	synthesize    SynthesizeFunc
 	stageDelay    time.Duration
 	now           func() time.Time
 	counter       int
@@ -47,6 +55,7 @@ func NewManager(opts ManagerOptions) *Manager {
 	return &Manager{
 		store:         NewStore(opts.RootDir),
 		reserveEngine: opts.ReserveEngine,
+		synthesize:    opts.Synthesize,
 		stageDelay:    stageDelay,
 		now:           now,
 		jobs:          make(map[string]*job),
@@ -172,8 +181,6 @@ func (m *Manager) run(ctx context.Context, j *job) {
 		{StatusExtractingSources, 0.15},
 		{StatusPlanning, 0.35},
 		{StatusScripting, 0.55},
-		{StatusSynthesizing, 0.75},
-		{StatusStitching, 0.9},
 	}
 	for _, stage := range stages {
 		if !m.advance(ctx, j, stage.status, stage.progress) {
@@ -190,6 +197,32 @@ func (m *Manager) run(ctx context.Context, j *job) {
 	if err != nil {
 		m.fail(j, err)
 		return
+	}
+
+	if j.req.VoiceMode == "fixed" && m.synthesize != nil {
+		clips, ok := m.synthesizeScript(ctx, j, manifest.Script)
+		if !ok {
+			return
+		}
+		if !m.advance(ctx, j, StatusStitching, 0.9) {
+			return
+		}
+		stitched, err := wav.Concatenate(clips, lineGap)
+		if err != nil {
+			m.fail(j, NewError(CodeSynthesisFailure, "stitch story audio: "+err.Error()))
+			return
+		}
+		if duration, err := wav.Duration(stitched); err == nil {
+			manifest.DurationSeconds = int(duration.Round(time.Second) / time.Second)
+		}
+		audio = stitched
+	} else {
+		if !m.advance(ctx, j, StatusSynthesizing, 0.75) {
+			return
+		}
+		if !m.advance(ctx, j, StatusStitching, 0.9) {
+			return
+		}
 	}
 	if ctx.Err() != nil || m.isCancelled(j) {
 		m.cancelled(j)
@@ -219,6 +252,44 @@ func (m *Manager) run(ctx context.Context, j *job) {
 		m.activeID = ""
 	}
 	m.mu.Unlock()
+}
+
+// lineGap is the silence inserted between spoken script lines.
+const lineGap = 350 * time.Millisecond
+
+// synthesizeScript speaks each script line through the injected synthesizer,
+// walking progress across the synthesizing stage. It reports false when the
+// job was cancelled or failed (status already updated).
+func (m *Manager) synthesizeScript(ctx context.Context, j *job, script []ScriptLine) ([][]byte, bool) {
+	clips := make([][]byte, 0, len(script))
+	for i, line := range script {
+		if ctx.Err() != nil || m.isCancelled(j) {
+			m.cancelled(j)
+			return nil, false
+		}
+		m.setStage(j, StatusSynthesizing, 0.55+0.3*float64(i)/float64(len(script)))
+		clip, err := m.synthesize(ctx, line.Text)
+		if err != nil {
+			m.fail(j, NewError(CodeSynthesisFailure, fmt.Sprintf("synthesize script line %d: %v", i+1, err)))
+			return nil, false
+		}
+		clips = append(clips, clip)
+	}
+	return clips, true
+}
+
+// setStage updates status/progress without the stage-delay pause; synthesis
+// has its own natural pacing.
+func (m *Manager) setStage(j *job, stage Status, progress float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j.status.Status == StatusCancelled {
+		return
+	}
+	j.status.Status = stage
+	j.status.Stage = stage
+	j.status.Progress = progress
+	j.status.RetryAfterMS = DefaultRetryAfterMillis
 }
 
 func (m *Manager) advance(ctx context.Context, j *job, stage Status, progress float64) bool {

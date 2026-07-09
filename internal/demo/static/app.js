@@ -38,6 +38,7 @@
   var storyForm = document.getElementById("storyForm");
   var storySubjectInput = document.getElementById("storySubjectInput");
   var storySecondsInput = document.getElementById("storySecondsInput");
+  var storyVoiceSelect = document.getElementById("storyVoiceSelect");
   var storyGenerateButton = document.getElementById("storyGenerateButton");
   var storyCancelButton = document.getElementById("storyCancelButton");
   var storyErrorBox = document.getElementById("storyErrorBox");
@@ -89,6 +90,7 @@
     clearImageButton,
     storySubjectInput,
     storySecondsInput,
+    storyVoiceSelect,
     storyGenerateButton,
     newConvoButton
   ].concat(sizePresets);
@@ -643,7 +645,7 @@
           subject: storySubjectInput.value.trim(),
           target_seconds: targetSeconds,
           source_mode: "curated",
-          voice_mode: "placeholder",
+          voice_mode: storyVoiceSelect.value,
           sources: collectStorySources()
         })
       });

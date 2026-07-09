@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 )
 
 // ErrNotWAV reports data that does not begin with a RIFF/WAVE header.
@@ -40,6 +41,129 @@ func ValidateFile(path string) error {
 	}
 	defer file.Close()
 	return ValidateHeader(file)
+}
+
+// Format describes the PCM shape of a WAV clip.
+type Format struct {
+	Channels      uint16
+	SampleRate    uint32
+	BitsPerSample uint16
+}
+
+// Decode splits a WAV into its format and raw PCM data by walking the RIFF
+// chunks; chunks other than fmt and data (LIST, cue, ...) are skipped.
+func Decode(data []byte) (Format, []byte, error) {
+	if err := ValidateBytes(data); err != nil {
+		return Format{}, nil, err
+	}
+
+	var format Format
+	var pcm []byte
+	haveFormat := false
+	offset := 12
+	for offset+8 <= len(data) {
+		id := string(data[offset : offset+4])
+		size := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
+		body := offset + 8
+		if size < 0 || body+size > len(data) {
+			return Format{}, nil, fmt.Errorf("invalid WAV: chunk %q overruns the file", id)
+		}
+		switch id {
+		case "fmt ":
+			if size < 16 {
+				return Format{}, nil, fmt.Errorf("invalid WAV: fmt chunk is %d bytes", size)
+			}
+			format = Format{
+				Channels:      binary.LittleEndian.Uint16(data[body+2 : body+4]),
+				SampleRate:    binary.LittleEndian.Uint32(data[body+4 : body+8]),
+				BitsPerSample: binary.LittleEndian.Uint16(data[body+14 : body+16]),
+			}
+			haveFormat = true
+		case "data":
+			pcm = data[body : body+size]
+		}
+		offset = body + size
+		if size%2 == 1 {
+			offset++ // RIFF chunks are word-aligned
+		}
+	}
+	if !haveFormat {
+		return Format{}, nil, fmt.Errorf("invalid WAV: no fmt chunk")
+	}
+	if pcm == nil {
+		return Format{}, nil, fmt.Errorf("invalid WAV: no data chunk")
+	}
+	return format, pcm, nil
+}
+
+// Encode wraps raw PCM data in a canonical 44-byte WAV header.
+func Encode(format Format, pcm []byte) []byte {
+	var out bytes.Buffer
+	dataSize := uint32(len(pcm))
+	byteRate := format.SampleRate * uint32(format.Channels) * uint32(format.BitsPerSample) / 8
+	blockAlign := format.Channels * format.BitsPerSample / 8
+
+	out.WriteString("RIFF")
+	_ = binary.Write(&out, binary.LittleEndian, uint32(36)+dataSize)
+	out.WriteString("WAVE")
+	out.WriteString("fmt ")
+	_ = binary.Write(&out, binary.LittleEndian, uint32(16))
+	_ = binary.Write(&out, binary.LittleEndian, uint16(1))
+	_ = binary.Write(&out, binary.LittleEndian, format.Channels)
+	_ = binary.Write(&out, binary.LittleEndian, format.SampleRate)
+	_ = binary.Write(&out, binary.LittleEndian, byteRate)
+	_ = binary.Write(&out, binary.LittleEndian, blockAlign)
+	_ = binary.Write(&out, binary.LittleEndian, format.BitsPerSample)
+	out.WriteString("data")
+	_ = binary.Write(&out, binary.LittleEndian, dataSize)
+	out.Write(pcm)
+	return out.Bytes()
+}
+
+// Duration reports the play time of a WAV clip.
+func Duration(data []byte) (time.Duration, error) {
+	format, pcm, err := Decode(data)
+	if err != nil {
+		return 0, err
+	}
+	bytesPerSecond := int(format.SampleRate) * int(format.Channels) * int(format.BitsPerSample) / 8
+	if bytesPerSecond <= 0 {
+		return 0, fmt.Errorf("invalid WAV: zero byte rate")
+	}
+	return time.Duration(float64(len(pcm)) / float64(bytesPerSecond) * float64(time.Second)), nil
+}
+
+// Concatenate joins clips into one WAV, inserting gap of silence between
+// consecutive clips. Every clip must share the same PCM format.
+func Concatenate(clips [][]byte, gap time.Duration) ([]byte, error) {
+	if len(clips) == 0 {
+		return nil, fmt.Errorf("no clips to concatenate")
+	}
+
+	var format Format
+	var pcm bytes.Buffer
+	for i, clip := range clips {
+		clipFormat, clipPCM, err := Decode(clip)
+		if err != nil {
+			return nil, fmt.Errorf("clip %d: %v", i+1, err)
+		}
+		if i == 0 {
+			format = clipFormat
+		} else if clipFormat != format {
+			return nil, fmt.Errorf("clip %d format %+v does not match first clip %+v", i+1, clipFormat, format)
+		}
+		if i > 0 && gap > 0 {
+			gapBytes := int(float64(format.SampleRate)*gap.Seconds()) * int(format.Channels) * int(format.BitsPerSample) / 8
+			// Keep silence aligned to whole frames.
+			blockAlign := int(format.Channels) * int(format.BitsPerSample) / 8
+			if blockAlign > 0 {
+				gapBytes -= gapBytes % blockAlign
+			}
+			pcm.Write(make([]byte, gapBytes))
+		}
+		pcm.Write(clipPCM)
+	}
+	return Encode(format, pcm.Bytes()), nil
 }
 
 // ToneSampleRate is the sample rate of SyntheticTone output.
