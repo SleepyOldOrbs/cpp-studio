@@ -116,7 +116,12 @@ Request:
 Supported fields:
 
 - `source_mode` must be omitted or `curated`.
-- `voice_mode` must be omitted, `placeholder`, or `fixed`.
+- `voice_mode` must be omitted, `placeholder`, or `fixed`. `placeholder` (the
+  default) produces the deterministic synthetic tone. `fixed` synthesizes
+  every script line through the configured `audio` engine in one voice and
+  stitches the clips (350 ms gaps) into the story WAV; the manifest's
+  `duration_seconds` is updated to the real stitched length, and synthesis
+  failures end the job with code `synthesis_failure`.
 - `sources[].url` is attribution metadata only.
 
 Immediate response:

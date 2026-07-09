@@ -42,6 +42,7 @@
               <span>Choose WAV</span>
             </label>
           </div>
+          <div class="vu-meter" aria-hidden="true"><i id="vuLevel"></i></div>
           <small class="hint">Live transcribe streams your mic to whisper every few seconds; stop to keep the take as the WAV source.</small>
 
           <div class="source-row">
@@ -70,7 +71,10 @@
           </label>
 
           <div class="audio-panel">
-            <span>Audio playback</span>
+            <div class="panel-label-row">
+              <span>Audio playback</span>
+              <button class="plain" id="saveReplyButton" type="button" disabled>Save WAV</button>
+            </div>
             <audio id="replyAudio" controls></audio>
           </div>
 
@@ -121,6 +125,7 @@
           <div class="source-row">
             <span class="source-label">Image status</span>
             <span id="imageStatus">Idle</span>
+            <button class="plain" id="saveImageButton" type="button" disabled>Save PNG</button>
           </div>
           <p class="error-box" id="imageErrorBox" hidden></p>
         </section>
@@ -225,7 +230,10 @@
           </div>
           <progress id="storyProgress" max="1" value="0"></progress>
           <div class="audio-panel">
-            <span>Story playback</span>
+            <div class="panel-label-row">
+              <span>Story playback</span>
+              <button class="plain" id="saveStoryButton" type="button" disabled>Save WAV</button>
+            </div>
             <audio id="storyAudio" controls></audio>
           </div>
           <div class="story-library-header">

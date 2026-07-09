@@ -94,17 +94,34 @@ This is captured in `config.audio-local.example.json`.
 ### whisper.cpp
 
 Point `command` at your `whisper-cli` binary and keep the model in `args`.
+Add `-nt -np` so stdout carries only the transcript.
 
 ```json
 {
   "command": "whisper-cli",
-  "args": ["-m", "C:\\Temp\\ggml-base.en.bin"],
+  "args": ["-m", "C:\\Temp\\ggml-base.en.bin", "-nt", "-np"],
   "mode": "subprocess",
   "requestTimeoutSeconds": 120
 }
 ```
 
-The current transcription route accepts WAV uploads only.
+For repeated transcription (the demo's live-transcribe mode), prefer
+`whisper-server` in server mode — the model stays loaded between requests:
+
+```json
+{
+  "command": "whisper-server",
+  "args": ["-m", "C:\\Temp\\ggml-base.en.bin", "--host", "127.0.0.1", "--port", "8734"],
+  "mode": "server",
+  "healthUrl": "http://127.0.0.1:8734/health",
+  "startupTimeoutSeconds": 30,
+  "shutdownTimeoutSeconds": 5,
+  "requestTimeoutSeconds": 120
+}
+```
+
+The gateway infers the inference route from `healthUrl` (`/health` ->
+`/inference`). The current transcription route accepts WAV uploads only.
 
 ### stable-diffusion.cpp
 

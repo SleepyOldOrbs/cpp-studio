@@ -588,6 +588,34 @@ textarea[readonly] {
   gap: 8px;
 }
 
+.panel-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.vu-meter {
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--well);
+  border: 1px solid var(--line-soft);
+}
+
+.vu-meter i {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--ready);
+  transition: width 90ms linear;
+}
+
+.vu-meter i.hot {
+  background: var(--danger);
+}
+
 audio {
   width: 100%;
   height: 40px;

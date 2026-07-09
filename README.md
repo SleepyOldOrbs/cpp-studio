@@ -47,7 +47,7 @@ Browser demo:
 http://127.0.0.1:8765/demo/
 ```
 
-The demo can refresh gateway health, record a WAV in the browser, upload a WAV fallback, run the voice loop through the single `/v1/voice` route (the gateway orchestrates transcription -> chat -> speech server-side), play the returned WAV, generate a PNG through `/v1/images/generations`, create fixture-backed factual stories through `/v1/stories`, and reload retained story outputs from disk.
+The demo is a studio-console page with a live engine-LED meter bridge. It can record or live-transcribe from the microphone (live mode re-transcribes the growing take every few seconds and keeps it as the WAV source), run the voice loop through the single `/v1/voice` route as a multi-turn conversation (the browser keeps the history; the gateway orchestrates transcription -> chat -> speech server-side), play and save the returned WAV, generate and save a PNG through `/v1/images/generations`, and create factual stories through `/v1/stories` — with `voice_mode: "fixed"` every script line is spoken through the `audio` engine and stitched into one narrated WAV.
 The voice loop requires configured `whisper`, `llama`, and `audio` engines. Image generation requires a configured `sd` engine. With `config.audio-local.example.json`, the demo can exercise health and the speech route; transcription, chat, and image generation still need local `whisper.cpp`, `llama.cpp`, and `stable-diffusion.cpp` paths.
 
 ## Verification
@@ -75,6 +75,12 @@ Deterministic story fixture check:
 
 ```powershell
 .\scripts\smoke-story-fixture.ps1
+```
+
+Deterministic browser-demo API check (every flow the demo page makes):
+
+```powershell
+.\scripts\smoke-demo-ui.ps1
 ```
 
 Build a release package:
@@ -119,7 +125,8 @@ docs\FIXTURE.md
 
 - `GET /health`: gateway and engine state, process IDs, last errors, and log tails.
 - `POST /v1/chat/completions`: proxies JSON to the configured `llama` server. If `healthUrl` is `http://127.0.0.1:8733/health`, the gateway proxies to `http://127.0.0.1:8733/v1/chat/completions`.
-- `POST /v1/audio/transcriptions`: accepts multipart field `file`, runs the configured `whisper` subprocess with `-f <temp-file>`, and returns `{ "text": "...", "duration_ms": 1234 }`.
+- `POST /v1/audio/transcriptions`: accepts multipart field `file` and returns `{ "text": "...", "duration_ms": 1234 }`. With a subprocess `whisper` engine the gateway runs it with `-f <temp-file>`; with `mode: "server"` it posts to the resident `whisper-server`'s `/inference` route (inferred from `healthUrl`), which keeps the model loaded between requests.
+- `POST /v1/voice`: multipart voice loop — field `file` (WAV) or `message` (text), plus optional `history` (JSON array of `{"role","text"}` turns, oldest first, max 40 turns) so replies stay grounded in the conversation. Returns transcript, reply, and the spoken reply as base64 WAV.
 - `POST /v1/audio/speech`: accepts `{ "input": "...", "voice": "default", "format": "wav" }`, runs the configured `audio` subprocess with `--text <input> --out <temp.wav>`, and returns `audio/wav`.
 - `POST /v1/images/generations`: accepts `{ "prompt": "...", "size": "512x512", "response_format": "b64_json" }`, runs the configured `sd` subprocess with `--prompt <prompt> --output <temp.png>` plus optional width and height flags, validates PNG output, and returns OpenAI-shaped `b64_json` image data. Requested dimensions are capped at 2048 px per side and 4,194,304 total pixels.
 - `/v1/stories`: deterministic fixture-backed factual story jobs from curated pasted excerpts. See `docs\STORY_API.md`.
@@ -128,9 +135,11 @@ Milestone 1 supports WAV speech output and one PNG `b64_json` image output only.
 
 ## Engine Modes
 
-Use `mode: "server"` for long-running services such as `llama-server`. These are started with the gateway and can use `healthUrl`.
+Use `mode: "server"` for long-running services such as `llama-server` and `whisper-server`. These are started with the gateway and can use `healthUrl`.
 
 Use `mode: "subprocess"` for request-time tools such as `whisper-cli`, `audiocpp_cli`, and `sd-cli`. These are validated at startup, shown as ready in `/health`, and launched per request with cancellation and timeout inherited from the HTTP request.
+
+Mark heavy GPU subprocess engines (typically `audio` and `sd`) with `"gpu": true` so their runs are serialized across engines instead of racing for VRAM. See `docs\CONFIG.md`.
 
 ## audio.cpp TTS Proof
 

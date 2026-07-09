@@ -76,7 +76,12 @@ Behavior:
 
 ## POST /v1/audio/transcriptions
 
-Accepts a WAV upload and runs the configured `whisper` subprocess.
+Accepts a WAV upload and transcribes it through the configured `whisper`
+engine. With `mode: "subprocess"` the gateway runs the command per request;
+with `mode: "server"` it posts the WAV to the resident `whisper-server`'s
+`/inference` route (inferred from `healthUrl`, like the chat proxy), which
+keeps the model loaded between requests and is markedly faster for repeated
+calls such as live transcription.
 
 Request:
 
@@ -87,7 +92,7 @@ Request:
 - The file must have a RIFF/WAVE header.
 - Other OpenAI transcription fields are not interpreted by the gateway.
 
-Gateway subprocess arguments:
+Gateway subprocess arguments (subprocess mode):
 
 ```text
 <configured whisper args> -f <uploaded-temp-wav>
@@ -105,9 +110,8 @@ Response:
 Behavior:
 
 - Engine key: `whisper`.
-- Only one transcription request can run at a time for this gateway process; concurrent requests return `429`.
-- Command stdout becomes `text` after trimming whitespace.
-- Command failure marks `whisper` crashed and returns `502` with bounded stdout/stderr details.
+- Subprocess mode: only one transcription request can run at a time for this gateway process; concurrent requests return `429`. Command stdout becomes `text` after trimming whitespace. Command failure marks `whisper` crashed and returns `502` with bounded stdout/stderr details.
+- Server mode: segment newlines in the server's `text` are collapsed to single spaces; upstream failures return `502`.
 
 ## POST /v1/audio/speech
 
@@ -156,8 +160,17 @@ Multipart form fields (upload limit 32 MiB):
 
 - `file`: optional WAV recording; must have a RIFF/WAVE header.
 - `message`: optional typed text, used as the transcript when no `file` is sent.
+- `history`: optional JSON array of prior conversation turns, oldest first:
+  `[{"role":"user","text":"..."},{"role":"assistant","text":"..."}]`. Roles
+  must be `user` or `assistant`, at most 40 turns, each at most 4000
+  characters; invalid history returns `400`. The gateway replays the turns to
+  `llama` ahead of the new message so follow-up questions resolve.
 
 At least one of `file` or `message` is required; requests with neither return `400`.
+
+The reply is spoken aloud, so the gateway prepends a system prompt asking for
+short plain-text conversational replies, and transliterates the reply to
+ASCII before it reaches the `audio` engine.
 
 Response:
 

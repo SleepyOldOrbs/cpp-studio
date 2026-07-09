@@ -20,6 +20,10 @@
   var transcriptOutput = document.getElementById("transcriptOutput");
   var replyOutput = document.getElementById("replyOutput");
   var replyAudio = document.getElementById("replyAudio");
+  var saveReplyButton = document.getElementById("saveReplyButton");
+  var saveImageButton = document.getElementById("saveImageButton");
+  var saveStoryButton = document.getElementById("saveStoryButton");
+  var vuLevel = document.getElementById("vuLevel");
   var convoStatus = document.getElementById("convoStatus");
   var convoList = document.getElementById("convoList");
   var newConvoButton = document.getElementById("newConvoButton");
@@ -262,6 +266,7 @@
     }
     replyAudio.removeAttribute("src");
     replyAudio.load();
+    saveReplyButton.disabled = true;
   }
 
   function resetOutputs() {
@@ -276,6 +281,7 @@
     imagePreview.hidden = true;
     imagePlaceholder.hidden = false;
     imageStatus.textContent = "Idle";
+    saveImageButton.disabled = true;
     clearImageError();
   }
 
@@ -561,6 +567,7 @@
       if (data.artifact_url) {
         storyAudio.src = data.artifact_url;
         storyAudio.load();
+        saveStoryButton.disabled = false;
       }
       renderStoryManifest(data.manifest);
       log("Story loaded: " + id);
@@ -586,6 +593,7 @@
         if (data.artifact_url) {
           storyAudio.src = data.artifact_url;
           storyAudio.load();
+          saveStoryButton.disabled = false;
         }
         renderStoryManifest(data.manifest);
         log("Story complete");
@@ -632,6 +640,7 @@
     try {
       storyAudio.removeAttribute("src");
       storyAudio.load();
+      saveStoryButton.disabled = true;
       storyFacts.textContent = "";
       setStoryStatus("Starting...", 0);
       var targetSeconds = Number(storySecondsInput.value || "90");
@@ -721,6 +730,7 @@
       imagePreview.src = "data:image/png;base64," + b64;
       imagePreview.hidden = false;
       imagePlaceholder.hidden = true;
+      saveImageButton.disabled = false;
       imageStatus.textContent = size + " PNG, " + formatBytes(estimateBase64Bytes(b64));
       log("Image PNG received: " + imageStatus.textContent);
     } catch (error) {
@@ -779,6 +789,7 @@
       activeAudioUrl = URL.createObjectURL(speech);
       replyAudio.src = activeAudioUrl;
       replyAudio.load();
+      saveReplyButton.disabled = false;
       try {
         await replyAudio.play();
       } catch (error) {
@@ -920,6 +931,7 @@
         copy.set(input);
         chunks.push(copy);
         length += copy.length;
+        updateVuLevel(input);
 
         var output = processEvent.outputBuffer.getChannelData(0);
         output.fill(0);
@@ -975,6 +987,7 @@
     var current = recorder;
     recordStopRequested = false;
     setRecording(false);
+    resetVuLevel();
     await cleanupRecorderResources(current);
 
     var samples = mergeChunks(current.chunks, current.length);
@@ -988,6 +1001,33 @@
     var file = new File([wavBlob], "recording.wav", { type: "audio/wav" });
     setActiveWav(file, "recording");
     recorder = null;
+  }
+
+  function downloadURL(url, filename) {
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  function updateVuLevel(samples) {
+    var peak = 0;
+    for (var i = 0; i < samples.length; i += 1) {
+      var value = Math.abs(samples[i]);
+      if (value > peak) {
+        peak = value;
+      }
+    }
+    var percent = Math.min(100, Math.round(peak * 140));
+    vuLevel.style.width = percent + "%";
+    vuLevel.classList.toggle("hot", percent > 92);
+  }
+
+  function resetVuLevel() {
+    vuLevel.style.width = "0%";
+    vuLevel.classList.remove("hot");
   }
 
   function renderConversation() {
@@ -1145,6 +1185,7 @@
         copy.set(input);
         capture.chunks.push(copy);
         capture.length += copy.length;
+        updateVuLevel(input);
 
         processEvent.outputBuffer.getChannelData(0).fill(0);
       };
@@ -1197,6 +1238,7 @@
     capture.active = false;
     stopLiveTimers();
     setLive(false);
+    resetVuLevel();
     liveButton.disabled = true;
     try {
       await cleanupRecorderResources(capture);
@@ -1277,6 +1319,22 @@
   wavInput.addEventListener("change", chooseWav);
   clearButton.addEventListener("click", clearAll);
   newConvoButton.addEventListener("click", startNewConversation);
+  saveReplyButton.addEventListener("click", function () {
+    if (replyAudio.src) {
+      downloadURL(replyAudio.src, "voice-reply.wav");
+    }
+  });
+  saveImageButton.addEventListener("click", function () {
+    if (imagePreview.src) {
+      downloadURL(imagePreview.src, "generated-image.png");
+    }
+  });
+  saveStoryButton.addEventListener("click", function () {
+    var src = storyAudio.currentSrc || storyAudio.src;
+    if (src) {
+      downloadURL(src, "story.wav");
+    }
+  });
   wavClearButton.addEventListener("click", function () {
     if (!activeWavFile) {
       return;
