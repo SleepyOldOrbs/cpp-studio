@@ -58,6 +58,10 @@ Portable checks:
 .\scripts\verify.ps1
 ```
 
+The default verifier includes the deterministic browser-demo API smoke, so
+health, transcription, conversational voice, image generation, and narrated
+story flows are checked together on Windows.
+
 James-local audio route check:
 
 ```powershell

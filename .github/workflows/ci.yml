@@ -55,6 +55,11 @@ jobs:
         shell: pwsh
         run: .\scripts\smoke-story-fixture.ps1
 
+      - name: fixture demo UI smoke
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: .\scripts\smoke-demo-ui.ps1
+
       - name: package release archive
         shell: pwsh
         run: ./scripts/package-release.ps1 -Runtime ${{ matrix.runtime }}
