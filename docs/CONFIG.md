@@ -54,6 +54,33 @@ The gateway appends request arguments to the configured base args:
 
 Keep stable model/backend options in `args`, and let the gateway own request input/output paths.
 
+## Resident Audio Server
+
+The `audio` engine can run as `mode: "server"` pointing at `audiocpp_server`
+(build it with `cmake --build <build-dir> --target audiocpp_server` in the
+audio.cpp checkout). The server keeps the TTS model and session loaded
+between requests, cutting speech latency roughly 10x versus the
+subprocess CLI (~0.8s vs ~8s per short reply on the reference machine).
+
+```json
+{
+  "command": "..\\audio.cpp\\build\\windows-cuda-release\\bin\\audiocpp_server.exe",
+  "args": ["--config", "..\\engines\\audio-server.json"],
+  "mode": "server",
+  "healthUrl": "http://127.0.0.1:8736/health",
+  "startupTimeoutSeconds": 120,
+  "requestTimeoutSeconds": 180,
+  "defaultVoiceRef": "..\\audio.cpp\\assets\\resources\\b.wav",
+  "defaultVoiceText": "Some call me nature. ..."
+}
+```
+
+The gateway infers `/v1/audio/speech` from `healthUrl` and must find a model
+with id `"tts"` in the audiocpp_server config. `defaultVoiceRef` /
+`defaultVoiceText` replace the `--voice-ref`/`--reference-text` args of the
+subprocess shape (cloned voices are passed per request). Subprocess mode
+keeps working unchanged — the gateway routes per the configured `mode`.
+
 ## Voice Design Engines
 
 `POST /v1/voices/design` picks its engine from the request's `model` field: `voxcpm2` (default), `omnivoice`, or `qwen3` (engine name `voicedesign`). All three run `audiocpp_cli` as subprocess engines with `"gpu": true`; configure only the ones whose models you have — the demo page shows a model choice for each configured engine.

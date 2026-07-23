@@ -27,6 +27,10 @@ type ChatFunc func(ctx context.Context, history []Turn, message string) (string,
 // loop falls back to the engine seam's whisper subprocess.
 type TranscribeFunc func(ctx context.Context, wav []byte) (string, error)
 
+// SpeakFunc speaks the reply with the selected cloned voice (nil = default).
+// When nil, the loop falls back to the engine seam's audio subprocess.
+type SpeakFunc func(ctx context.Context, text string, voice *engine.Voice) ([]byte, error)
+
 // Request carries either recorded audio or a typed message, plus the prior
 // conversation turns the reply should be grounded in.
 type Request struct {
@@ -57,6 +61,7 @@ type Loop struct {
 	Engines    engine.Invoker
 	Chat       ChatFunc
 	Transcribe TranscribeFunc
+	Speak      SpeakFunc
 }
 
 func (l *Loop) Run(ctx context.Context, req Request) (Result, error) {
@@ -84,11 +89,22 @@ func (l *Loop) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, &engine.Error{Kind: engine.KindEngineFailure, Message: "chat returned no assistant reply"}
 	}
 
-	speech, err := l.Engines.Run(ctx, engine.SpeechVoiceSpec(reply, req.Voice))
+	audio, err := l.speak(ctx, reply, req.Voice)
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Transcript: transcript, Reply: reply, Audio: speech.Output}, nil
+	return Result{Transcript: transcript, Reply: reply, Audio: audio}, nil
+}
+
+func (l *Loop) speak(ctx context.Context, text string, voice *engine.Voice) ([]byte, error) {
+	if l.Speak != nil {
+		return l.Speak(ctx, text, voice)
+	}
+	res, err := l.Engines.Run(ctx, engine.SpeechVoiceSpec(text, voice))
+	if err != nil {
+		return nil, err
+	}
+	return res.Output, nil
 }
 
 func (l *Loop) transcribe(ctx context.Context, wavBytes []byte) (string, error) {

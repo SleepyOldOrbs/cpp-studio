@@ -1763,6 +1763,133 @@ func TestVoiceCloneLifecycleAndClonedVoiceLoop(t *testing.T) {
 	}
 }
 
+func TestSpeechViaResidentAudioServer(t *testing.T) {
+	t.Chdir(t.TempDir())
+	var gotRequests []audioServerSpeechRequest
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/v1/audio/speech" {
+			t.Errorf("unexpected upstream path %q", req.URL.Path)
+		}
+		var body audioServerSpeechRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Errorf("decode speech request: %v", err)
+		}
+		gotRequests = append(gotRequests, body)
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(wav.SyntheticTone(wav.ToneSampleRate))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": {
+			Command:          "audiocpp_server",
+			Mode:             "server",
+			HealthURL:        upstream.URL + "/health",
+			DefaultVoiceRef:  `C:\voices\default.wav`,
+			DefaultVoiceText: "default reference words",
+		},
+	})
+	manager := lifecycle.NewManager(cfg)
+	router := NewRouter(cfg, manager)
+
+	// Default voice speech.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"input":"hello resident","format":"wav"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	duration, err := wav.Duration(rec.Body.Bytes())
+	if err != nil {
+		t.Fatalf("decode response wav: %v", err)
+	}
+	// One second of tone plus the 500ms of padding.
+	if duration < 1400*time.Millisecond || duration > 1600*time.Millisecond {
+		t.Fatalf("unexpected padded duration %s", duration)
+	}
+	if len(gotRequests) != 1 {
+		t.Fatalf("expected one upstream request, got %d", len(gotRequests))
+	}
+	if gotRequests[0].Model != "tts" || gotRequests[0].Input != "hello resident" {
+		t.Fatalf("unexpected upstream request %+v", gotRequests[0])
+	}
+	if gotRequests[0].VoiceRef != "C:/voices/default.wav" || gotRequests[0].ReferenceText != "default reference words" {
+		t.Fatalf("expected forward-slashed default voice, got %+v", gotRequests[0])
+	}
+
+	// Cloned voice speech routes the stored reference through.
+	var createBody bytes.Buffer
+	writer := multipart.NewWriter(&createBody)
+	_ = writer.WriteField("name", "Resident Clone")
+	_ = writer.WriteField("transcript", "clone reference words")
+	part, err := writer.CreateFormFile("file", "reference.wav")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write(validWAVBytes()); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/voices", &createBody)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected voice create status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created voiceCloneSummary
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode voice create response: %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"input":"hello clone","voice":"`+created.ID+`","format":"wav"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected cloned speech status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	last := gotRequests[len(gotRequests)-1]
+	if !strings.HasSuffix(last.VoiceRef, "/ref.wav") || strings.Contains(last.VoiceRef, `\`) {
+		t.Fatalf("expected forward-slashed clone reference path, got %q", last.VoiceRef)
+	}
+	if last.ReferenceText != "clone reference words" {
+		t.Fatalf("expected clone transcript, got %+v", last)
+	}
+	if manager.Health().Engines["audio"].LastSuccessAt == nil {
+		t.Fatalf("expected audio lastSuccessAt to be recorded")
+	}
+}
+
+func TestSpeechResidentServerFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"model exploded"}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": {
+			Command:         "audiocpp_server",
+			Mode:            "server",
+			HealthURL:       upstream.URL + "/health",
+			DefaultVoiceRef: `C:\voices\default.wav`,
+		},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"input":"hello","format":"wav"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected status 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "model exploded") {
+		t.Fatalf("expected upstream error detail, got %s", rec.Body.String())
+	}
+}
+
 func TestSpeechPadsGeneratedAudioWithSilence(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{
 		"audio": helperEngine("speech-tone"),

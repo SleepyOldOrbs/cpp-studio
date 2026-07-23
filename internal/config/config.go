@@ -33,6 +33,12 @@ type EngineConfig struct {
 	// GPU marks a subprocess engine as a heavy GPU user; runs of GPU-marked
 	// engines are serialized across engines so they never race for VRAM.
 	GPU bool `json:"gpu,omitempty"`
+	// DefaultVoiceRef / DefaultVoiceText carry the default cloning
+	// reference for a server-mode audio engine, where per-request flags
+	// cannot ride in args. Subprocess audio engines keep the reference in
+	// args instead.
+	DefaultVoiceRef  string `json:"defaultVoiceRef,omitempty"`
+	DefaultVoiceText string `json:"defaultVoiceText,omitempty"`
 }
 
 // Load reads a config file and validates everything that can be checked
@@ -172,7 +178,7 @@ func rejectUnknownKeys(data []byte) error {
 			}
 			for key := range engine {
 				switch key {
-				case "command", "args", "mode", "workingDir", "healthUrl", "startupTimeoutSeconds", "shutdownTimeoutSeconds", "requestTimeoutSeconds", "gpu":
+				case "command", "args", "mode", "workingDir", "healthUrl", "startupTimeoutSeconds", "shutdownTimeoutSeconds", "requestTimeoutSeconds", "gpu", "defaultVoiceRef", "defaultVoiceText":
 				default:
 					return fmt.Errorf("unknown engine %q field %q", name, key)
 				}

@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -180,7 +181,7 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	result, err := r.engines.Run(req.Context(), engine.SpeechVoiceSpec(body.Input, clonedVoice))
+	audio, err := r.speak(req.Context(), body.Input, clonedVoice, false)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -188,7 +189,103 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 
 	w.Header().Set("Content-Type", "audio/wav")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(padSpeech(result.Output))
+	_, _ = w.Write(padSpeech(audio))
+}
+
+// audioServerModelID is the model id a server-mode audio engine must expose
+// for speech (see docs/CONFIG.md).
+const audioServerModelID = "tts"
+
+// speak synthesizes text with the selected cloned voice (nil = default)
+// through the audio engine: the resident audiocpp_server when audio is
+// mode "server" (model stays loaded between requests), the subprocess CLI
+// otherwise. reserved skips taking the engine's slot for callers that
+// already hold it (story jobs reserve audio for the whole run).
+func (r *router) speak(ctx context.Context, text string, clonedVoice *engine.Voice, reserved bool) ([]byte, error) {
+	engineCfg, ok := r.engine("audio")
+	if !ok {
+		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "audio" is not configured`}
+	}
+	if engineCfg.Mode != "server" {
+		spec := engine.SpeechVoiceSpec(text, clonedVoice)
+		var res engine.Result
+		var err error
+		if reserved {
+			res, err = r.engines.RunReserved(ctx, spec)
+		} else {
+			res, err = r.engines.Run(ctx, spec)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return res.Output, nil
+	}
+
+	if !reserved {
+		release, ok := r.engines.Reserve("audio")
+		if !ok {
+			return nil, &engine.Error{Kind: engine.KindBusy, Message: `engine "audio" is busy`}
+		}
+		defer release()
+	}
+	upstreamURL, ok := inferEngineURL(engineCfg.HealthURL, "/v1/audio/speech")
+	if !ok {
+		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "audio" healthUrl must end in /health to infer /v1/audio/speech`}
+	}
+	refPath := engineCfg.DefaultVoiceRef
+	refText := engineCfg.DefaultVoiceText
+	if clonedVoice != nil {
+		refPath = clonedVoice.RefWAVPath
+		refText = clonedVoice.RefText
+	}
+	if refPath == "" {
+		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `server-mode engine "audio" needs defaultVoiceRef configured`}
+	}
+	payload, err := json.Marshal(audioServerSpeechRequest{
+		Model:         audioServerModelID,
+		Input:         text,
+		VoiceRef:      filepath.ToSlash(refPath),
+		ReferenceText: refText,
+	})
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode speech request: %v", err)}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, engine.RequestTimeout(engineCfg, engine.DefaultSpeechTimeout))
+	defer cancel()
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
+	}
+	upstreamReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := r.client.Do(upstreamReq)
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("audio upstream request failed: %v", err)}
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, engine.MaxSpeechOutputBytes+1))
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read audio upstream response: %v", err)}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("audio upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))}
+	}
+	if int64(len(data)) > engine.MaxSpeechOutputBytes {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: "audio upstream produced an oversized WAV"}
+	}
+	if err := wav.ValidateBytes(data); err != nil {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("audio upstream produced an invalid WAV: %v", err)}
+	}
+	r.manager.MarkSuccess("audio")
+	return data, nil
+}
+
+type audioServerSpeechRequest struct {
+	Model         string `json:"model"`
+	Input         string `json:"input"`
+	VoiceRef      string `json:"voice_ref"`
+	ReferenceText string `json:"reference_text,omitempty"`
 }
 
 const (
@@ -518,7 +615,14 @@ func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	loop := voice.Loop{Engines: r.engines, Chat: r.chatOnce, Transcribe: r.transcribe}
+	loop := voice.Loop{
+		Engines:    r.engines,
+		Chat:       r.chatOnce,
+		Transcribe: r.transcribe,
+		Speak: func(ctx context.Context, text string, v *engine.Voice) ([]byte, error) {
+			return r.speak(ctx, text, v, false)
+		},
+	}
 	result, err := loop.Run(req.Context(), voice.Request{
 		WAV:     wavBytes,
 		Message: req.FormValue("message"),
@@ -1118,20 +1222,15 @@ func (r *router) reserveEngine(ctx context.Context, name string) (func(), bool) 
 	return r.engines.Reserve(name)
 }
 
-// synthesizeSpeech is the story pipeline's SynthesizeFunc. It crosses the
-// engine seam without re-reserving: the story manager already holds the
-// audio slot for the whole job. voiceID selects a stored cloned voice; ""
-// keeps the studio default.
+// synthesizeSpeech is the story pipeline's SynthesizeFunc. It speaks without
+// re-reserving: the story manager already holds the audio slot for the whole
+// job. voiceID selects a stored cloned voice; "" keeps the studio default.
 func (r *router) synthesizeSpeech(ctx context.Context, text string, voiceID string) ([]byte, error) {
 	clonedVoice, err := r.resolveVoice(voiceID)
 	if err != nil {
 		return nil, err
 	}
-	res, err := r.engines.RunReserved(ctx, engine.SpeechVoiceSpec(text, clonedVoice))
-	if err != nil {
-		return nil, err
-	}
-	return res.Output, nil
+	return r.speak(ctx, text, clonedVoice, true)
 }
 
 // storyScriptSystemPrompt instructs llama to write grounded audio stories
