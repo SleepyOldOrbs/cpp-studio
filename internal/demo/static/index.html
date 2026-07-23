@@ -180,7 +180,15 @@
           <label class="field">
             <span>Describe a voice</span>
             <textarea id="designDescriptionInput" rows="3" maxlength="500" placeholder="e.g. High pitched, singing voice &mdash; or &mdash; Deep gravelly cowboy&hellip;"></textarea>
-            <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> generates. Qwen3&#8209;TTS VoiceDesign invents the voice from your words &mdash; no recording needed.</small>
+            <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> generates. The voice is invented from your words &mdash; no recording needed.</small>
+          </label>
+
+          <label class="field compact-field">
+            <span>Generation model</span>
+            <select class="text-input" id="designModelSelect">
+              <option value="voxcpm2" selected>VoxCPM2 (realistic, 48 kHz)</option>
+            </select>
+            <small class="hint" id="designModelHint">VoxCPM2: realistic, accents, 48 kHz. OmniVoice: precision accents, fastest. Qwen3: most characterful and emotive. Type freely &mdash; your words are adapted to each model's preferred style.</small>
           </label>
 
           <div class="action-row">
@@ -194,6 +202,10 @@
           <div class="source-row">
             <span class="source-label">Candidate</span>
             <span id="designStatus">None yet</span>
+          </div>
+          <div class="source-row">
+            <span class="source-label">Engine input</span>
+            <span id="designEngineInput">&ndash;</span>
           </div>
           <div class="audio-panel">
             <div class="panel-label-row">

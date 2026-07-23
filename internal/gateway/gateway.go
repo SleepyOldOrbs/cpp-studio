@@ -562,8 +562,83 @@ const (
 	voiceDesignSampleText = "Hello there! This is my brand new voice, created from just a written description. I hope you enjoy the way I sound, because I could talk like this all day long."
 )
 
+// voiceDesignNormalizePrompt turns whatever the user typed into the two
+// input dialects the design engines prefer: a natural prose sentence
+// (Qwen3, VoxCPM2) and OmniVoice's strict attribute vocabulary.
+const voiceDesignNormalizePrompt = `You are a voice-design normalizer. Convert the user's voice description into two forms and reply with ONLY a JSON object, no markdown, in this exact shape: {"prose": "...", "attributes": "..."}
+"prose": one natural English sentence describing the voice (speaker, age, accent, tone, texture, emotion).
+"attributes": comma-separated attribute values chosen ONLY from this list, without category names, omitting anything the description does not imply: male, female, child, teenager, young adult, middle-aged, elderly, very low pitch, low pitch, moderate pitch, high pitch, very high pitch, whisper, american accent, british accent, australian accent, canadian accent, indian accent, chinese accent, korean accent, japanese accent, portuguese accent, russian accent.
+Example reply: {"prose": "An elderly British man with a deep, refined voice.", "attributes": "male, elderly, low pitch, british accent"}`
+
+// omniAttributeCategories is OmniVoice's instruct vocabulary, keyed by
+// attribute value with its category; one value per category may be used.
+var omniAttributeCategories = map[string]string{
+	"male": "gender", "female": "gender",
+	"child": "age", "teenager": "age", "young adult": "age", "middle-aged": "age", "elderly": "age",
+	"very low pitch": "pitch", "low pitch": "pitch", "moderate pitch": "pitch", "high pitch": "pitch", "very high pitch": "pitch",
+	"whisper":         "style",
+	"american accent": "accent", "british accent": "accent", "australian accent": "accent",
+	"canadian accent": "accent", "indian accent": "accent", "chinese accent": "accent",
+	"korean accent": "accent", "japanese accent": "accent", "portuguese accent": "accent",
+	"russian accent": "accent",
+}
+
+// sanitizeOmniAttributes reduces a normalizer attribute string to values
+// OmniVoice actually accepts: category prefixes are stripped, unknown items
+// dropped, and only the first value per category kept. "" means nothing
+// usable survived.
+func sanitizeOmniAttributes(raw string) string {
+	usedCategories := make(map[string]bool)
+	var kept []string
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(strings.ToLower(item))
+		if colon := strings.LastIndex(item, ":"); colon >= 0 {
+			item = strings.TrimSpace(item[colon+1:])
+		}
+		category, ok := omniAttributeCategories[item]
+		if !ok || usedCategories[category] {
+			continue
+		}
+		usedCategories[category] = true
+		kept = append(kept, item)
+	}
+	return strings.Join(kept, ", ")
+}
+
+// normalizeVoiceDescription is best-effort: when llama is unavailable or its
+// reply does not parse, both forms come back empty and the raw description
+// is used instead.
+func (r *router) normalizeVoiceDescription(ctx context.Context, description string) (prose string, attributes string) {
+	reply, err := r.llamaChat(ctx, []chatMessage{
+		{Role: "system", Content: voiceDesignNormalizePrompt},
+		{Role: "user", Content: description},
+	})
+	if err != nil {
+		return "", ""
+	}
+	return parseVoiceDesignForms(reply)
+}
+
+// parseVoiceDesignForms extracts the {"prose", "attributes"} object from a
+// normalizer reply, tolerating surrounding chatter.
+func parseVoiceDesignForms(reply string) (string, string) {
+	start := strings.Index(reply, "{")
+	end := strings.LastIndex(reply, "}")
+	if start < 0 || end <= start {
+		return "", ""
+	}
+	var decoded struct {
+		Prose      string `json:"prose"`
+		Attributes string `json:"attributes"`
+	}
+	if err := json.Unmarshal([]byte(reply[start:end+1]), &decoded); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(decoded.Prose), strings.TrimSpace(decoded.Attributes)
+}
+
 // handleVoiceDesign creates a voice from a natural-language description via
-// the Qwen3-TTS VoiceDesign engine. The response carries the spoken sample;
+// the selected design engine. The response carries the spoken sample;
 // that same WAV is the cloning reference if the user saves the voice, so no
 // candidate state lives server-side.
 func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
@@ -594,8 +669,42 @@ func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("sample_text cannot exceed %d characters", maxVoiceHistoryTurnChars))
 		return
 	}
+	model := strings.TrimSpace(body.Model)
+	if model == "" {
+		model = "voxcpm2"
+	}
+	if model != "qwen3" && model != "omnivoice" && model != "voxcpm2" {
+		writeJSONError(w, http.StatusBadRequest, "model must be qwen3, omnivoice, or voxcpm2")
+		return
+	}
 
-	result, err := r.engines.Run(req.Context(), engine.VoiceDesignSpec(description, sampleText))
+	// Normalize once, then hand each engine its preferred input dialect:
+	// prose sentences for Qwen3/VoxCPM2, strict attributes for OmniVoice.
+	prose, attributes := r.normalizeVoiceDescription(req.Context(), description)
+	engineInput := description
+	var spec engine.Spec
+	switch model {
+	case "qwen3":
+		if prose != "" {
+			engineInput = prose
+		}
+		spec = engine.VoiceDesignSpec(engineInput, sampleText)
+	case "omnivoice":
+		if cleaned := sanitizeOmniAttributes(attributes); cleaned != "" {
+			engineInput = cleaned
+		} else if cleaned := sanitizeOmniAttributes(description); cleaned != "" {
+			// The user may have typed valid attributes directly.
+			engineInput = cleaned
+		}
+		spec = engine.OmniVoiceDesignSpec(engineInput, sampleText)
+	case "voxcpm2":
+		if prose != "" {
+			engineInput = prose
+		}
+		spec = engine.VoxCPMDesignSpec(engineInput, sampleText)
+	}
+
+	result, err := r.engines.Run(req.Context(), spec)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -604,6 +713,10 @@ func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(voiceDesignResponse{
 		Description: description,
+		Model:       model,
+		Prose:       prose,
+		Attributes:  attributes,
+		EngineInput: engineInput,
 		Transcript:  sampleText,
 		AudioFormat: "wav",
 		// The raw (unpadded) WAV is the cloning reference; the padded copy
@@ -767,6 +880,17 @@ const voiceSystemPrompt = "You are a voice assistant. Your reply will be spoken 
 // message in, the assistant reply out, via the llama server's
 // /v1/chat/completions route.
 func (r *router) chatOnce(ctx context.Context, history []voice.Turn, message string) (string, error) {
+	messages := make([]chatMessage, 0, len(history)+2)
+	messages = append(messages, chatMessage{Role: "system", Content: voiceSystemPrompt})
+	for _, turn := range history {
+		messages = append(messages, chatMessage{Role: turn.Role, Content: turn.Text})
+	}
+	messages = append(messages, chatMessage{Role: "user", Content: message})
+	return r.llamaChat(ctx, messages)
+}
+
+// llamaChat sends one chat completion to the resident llama server.
+func (r *router) llamaChat(ctx context.Context, messages []chatMessage) (string, error) {
 	engineCfg, ok := r.engine("llama")
 	if !ok {
 		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "llama" is not configured`}
@@ -775,13 +899,6 @@ func (r *router) chatOnce(ctx context.Context, history []voice.Turn, message str
 	if !ok {
 		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "llama" healthUrl must end in /health to infer /v1/chat/completions`}
 	}
-
-	messages := make([]chatMessage, 0, len(history)+2)
-	messages = append(messages, chatMessage{Role: "system", Content: voiceSystemPrompt})
-	for _, turn := range history {
-		messages = append(messages, chatMessage{Role: turn.Role, Content: turn.Text})
-	}
-	messages = append(messages, chatMessage{Role: "user", Content: message})
 
 	payload, err := json.Marshal(chatCompletionRequest{
 		Model:    "default",
@@ -1119,10 +1236,19 @@ type transcriptionResponse struct {
 type voiceDesignRequest struct {
 	Description string `json:"description"`
 	SampleText  string `json:"sample_text"`
+	// Model picks the design engine: "qwen3" (default), "omnivoice", or
+	// "voxcpm2".
+	Model string `json:"model"`
 }
 
 type voiceDesignResponse struct {
-	Description  string `json:"description"`
+	Description string `json:"description"`
+	Model       string `json:"model"`
+	// Prose and Attributes are the normalized forms of the description;
+	// EngineInput is the one actually sent to the design engine.
+	Prose        string `json:"prose,omitempty"`
+	Attributes   string `json:"attributes,omitempty"`
+	EngineInput  string `json:"engine_input"`
 	Transcript   string `json:"transcript"`
 	AudioFormat  string `json:"audio_format"`
 	ReferenceB64 string `json:"reference_b64"`

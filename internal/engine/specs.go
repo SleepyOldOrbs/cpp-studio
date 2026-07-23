@@ -76,23 +76,56 @@ func SpeechVoiceSpec(input string, voice *Voice) Spec {
 	}
 }
 
-// VoiceDesignSpec invokes the "voicedesign" engine: --instruct <description>
-// --text <sample> --out <wav path>. The engine (Qwen3-TTS VoiceDesign)
+// VoiceDesignSpec invokes the "voicedesign" engine (Qwen3-TTS VoiceDesign):
+// --instruct <description> --text <sample> --out <wav path>. The engine
 // creates a brand-new voice from the natural-language instruction and speaks
 // the sample text with it — no reference audio involved. Both text arguments
 // cross the same ANSI argv boundary as speech, so both are sanitized.
 func VoiceDesignSpec(instruct string, sampleText string) Spec {
+	return instructDesignSpec("voicedesign", instruct, sampleText)
+}
+
+// OmniVoiceDesignSpec invokes the "omnivoice" engine, whose voice design
+// takes the same --instruct/--text/--out shape. OmniVoice expects
+// comma-separated speaker attributes (gender, age, pitch, whisper, English
+// accent, Chinese dialect) rather than free prose.
+func OmniVoiceDesignSpec(instruct string, sampleText string) Spec {
+	return instructDesignSpec("omnivoice", instruct, sampleText)
+}
+
+// VoxCPMDesignSpec invokes the "voxcpm2" engine. VoxCPM2 has no --instruct
+// flag: the voice description rides in the synthesis text as a leading
+// parenthesised style block, "(description)sample text".
+func VoxCPMDesignSpec(instruct string, sampleText string) Spec {
+	// Drop parentheses from the description so it cannot close the style
+	// block early.
+	instruction := strings.NewReplacer("(", " ", ")", " ").Replace(sanitizeSpeechText(instruct))
+	instruction = strings.Join(strings.Fields(instruction), " ")
+	text := "(" + instruction + ")" + sanitizeSpeechText(sampleText)
+	spec := designSpecShell("voxcpm2")
+	spec.BuildArgs = func(_, outPath string) []string {
+		return []string{"--text", text, "--out", outPath}
+	}
+	return spec
+}
+
+func instructDesignSpec(engineName string, instruct string, sampleText string) Spec {
 	instruction := sanitizeSpeechText(instruct)
 	sample := sanitizeSpeechText(sampleText)
+	spec := designSpecShell(engineName)
+	spec.BuildArgs = func(_, outPath string) []string {
+		return []string{"--instruct", instruction, "--text", sample, "--out", outPath}
+	}
+	return spec
+}
+
+func designSpecShell(engineName string) Spec {
 	return Spec{
-		Engine:        "voicedesign",
-		Label:         "voice design command",
+		Engine:        engineName,
+		Label:         engineName + " voice design command",
 		Timeout:       DefaultSpeechTimeout,
 		OutputPattern: "cpp-studio-voice-design-*.wav",
 		OutputLabel:   "designed voice wav",
-		BuildArgs: func(_, outPath string) []string {
-			return []string{"--instruct", instruction, "--text", sample, "--out", outPath}
-		},
 		ValidateOutput: func(path string) error {
 			if err := wav.ValidateFile(path); err != nil {
 				return fmt.Errorf("produced invalid WAV: %v", err)

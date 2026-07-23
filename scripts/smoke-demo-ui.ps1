@@ -120,6 +120,18 @@ $config = [ordered]@{
       mode = "subprocess"
       requestTimeoutSeconds = 30
     }
+    omnivoice = [ordered]@{
+      command = $fixtureCommand
+      args = @("design")
+      mode = "subprocess"
+      requestTimeoutSeconds = 30
+    }
+    voxcpm2 = [ordered]@{
+      command = $fixtureCommand
+      args = @("speech")
+      mode = "subprocess"
+      requestTimeoutSeconds = 30
+    }
     sd = [ordered]@{
       command = $fixtureCommand
       args = @("image")
@@ -233,6 +245,13 @@ try {
   $design = Invoke-RestMethod -Uri "$base/v1/voices/design" -Method Post -ContentType "application/json" -Body (@{ description = "deep gravelly cowboy" } | ConvertTo-Json)
   if (-not $design.reference_b64 -or -not $design.preview_b64 -or -not $design.transcript) {
     throw "voice design response missing fields: $($design | ConvertTo-Json -Depth 4)"
+  }
+  foreach ($designModel in @("omnivoice", "voxcpm2")) {
+    $altDesign = Invoke-RestMethod -Uri "$base/v1/voices/design" -Method Post -ContentType "application/json" -Body (@{ description = "female, british accent"; model = $designModel } | ConvertTo-Json)
+    if ($altDesign.model -ne $designModel -or -not $altDesign.preview_b64) {
+      throw "voice design via $designModel failed: $($altDesign | ConvertTo-Json -Depth 4)"
+    }
+    Assert-WavBytes -Bytes ([Convert]::FromBase64String($altDesign.preview_b64)) -Label "$designModel design preview"
   }
   Assert-WavBytes -Bytes ([Convert]::FromBase64String($design.preview_b64)) -Label "designed voice preview"
   $designedRefPath = Join-Path (Resolve-Path $OutDir).Path "designed-ref.wav"

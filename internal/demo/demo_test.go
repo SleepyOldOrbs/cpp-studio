@@ -65,6 +65,12 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "/v1/voices/design") {
 		t.Fatalf("expected voice design route marker, got %q", body)
 	}
+	if !strings.Contains(body, "designModelSelect") {
+		t.Fatalf("expected design model selector marker, got %q", body)
+	}
+	if !strings.Contains(body, "designEngineInput") {
+		t.Fatalf("expected design engine input marker, got %q", body)
+	}
 }
 
 func TestHandlerServesAssets(t *testing.T) {

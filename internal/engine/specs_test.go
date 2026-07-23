@@ -101,6 +101,39 @@ func TestVoiceDesignSpecSanitizesArgs(t *testing.T) {
 	}
 }
 
+func TestOmniVoiceDesignSpecShape(t *testing.T) {
+	spec := OmniVoiceDesignSpec("female, british accent", "A sample")
+
+	if spec.Engine != "omnivoice" {
+		t.Fatalf("expected omnivoice engine, got %q", spec.Engine)
+	}
+	args := spec.BuildArgs("", "out.wav")
+	want := []string{"--instruct", "female, british accent", "--text", "A sample", "--out", "out.wav"}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("expected args %v, got %v", want, args)
+		}
+	}
+}
+
+func TestVoxCPMDesignSpecEmbedsDescriptionInText(t *testing.T) {
+	spec := VoxCPMDesignSpec("Deep (gravelly) cowboy", "Howdy there")
+
+	if spec.Engine != "voxcpm2" {
+		t.Fatalf("expected voxcpm2 engine, got %q", spec.Engine)
+	}
+	args := spec.BuildArgs("", "out.wav")
+	want := []string{"--text", "(Deep gravelly cowboy)Howdy there", "--out", "out.wav"}
+	if len(args) != len(want) {
+		t.Fatalf("expected args %v, got %v", want, args)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("expected args %v, got %v", want, args)
+		}
+	}
+}
+
 func TestApplyArgOverrides(t *testing.T) {
 	tests := []struct {
 		name      string

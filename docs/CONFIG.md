@@ -46,10 +46,25 @@ Set `"gpu": true` on subprocess engines that are heavy GPU users (typically `aud
 The gateway appends request arguments to the configured base args:
 
 - `whisper`: appends `-f <uploaded-temp-wav>`.
-- `audio`: appends `--text <input> --out <generated-temp-wav>`.
+- `audio`: appends `--text <input> --out <generated-temp-wav>`, plus `--voice-ref <wav> --reference-text <transcript>` when the request selects a cloned voice (per-run values replace matching config flags in place).
 - `sd`: appends `--prompt <prompt> --output <generated-temp-png>`, plus `--width <px> --height <px>` when the request includes `size`.
+- `voicedesign` / `omnivoice`: append `--instruct <description> --text <sample> --out <generated-temp-wav>`.
+- `voxcpm2`: appends `--text "(<description>)<sample>" --out <generated-temp-wav>`.
+- `vision`: a `server` engine like `llama`; the image description route infers `/v1/chat/completions` from its `healthUrl`.
 
 Keep stable model/backend options in `args`, and let the gateway own request input/output paths.
+
+## Voice Design Engines
+
+`POST /v1/voices/design` picks its engine from the request's `model` field: `voxcpm2` (default), `omnivoice`, or `qwen3` (engine name `voicedesign`). All three run `audiocpp_cli` as subprocess engines with `"gpu": true`; configure only the ones whose models you have — the demo page shows a model choice for each configured engine.
+
+- `voicedesign`: `--task vdes --family qwen3_tts --model models/Qwen3-TTS-12Hz-1.7B-VoiceDesign` (most expressive; American-leaning).
+- `omnivoice`: `--task tts --family omnivoice --model models/OmniVoice` (precision accents; strict attribute instruct — the gateway normalizes free prose into its vocabulary via the `llama` engine when configured).
+- `voxcpm2`: `--task tts --family voxcpm2 --model models/VoxCPM2` (realistic free-prose design, 48 kHz). One-time setup: the HF snapshot ships `audiovae.pth`; convert it with audio.cpp's model manager before first use:
+
+```powershell
+py -3.11 ..\audio.cpp\tools\model_manager.py install voxcpm2_audiovae --source-file ..\audio.cpp\models\VoxCPM2\audiovae.pth --models-root ..\audio.cpp\models --overwrite
+```
 
 ## Local Examples
 

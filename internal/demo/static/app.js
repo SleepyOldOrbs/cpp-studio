@@ -76,9 +76,11 @@
   var clonePreviewAudio = document.getElementById("clonePreviewAudio");
   var designForm = document.getElementById("designForm");
   var designDescriptionInput = document.getElementById("designDescriptionInput");
+  var designModelSelect = document.getElementById("designModelSelect");
   var designGenerateButton = document.getElementById("designGenerateButton");
   var designErrorBox = document.getElementById("designErrorBox");
   var designStatus = document.getElementById("designStatus");
+  var designEngineInput = document.getElementById("designEngineInput");
   var saveDesignWavButton = document.getElementById("saveDesignWavButton");
   var designAudio = document.getElementById("designAudio");
   var designNameInput = document.getElementById("designNameInput");
@@ -160,6 +162,7 @@
     clearAllButton,
     imageFileInput,
     designDescriptionInput,
+    designModelSelect,
     designGenerateButton,
     designNameInput
   ].concat(sizePresets);
@@ -416,9 +419,38 @@
     });
   }
 
+  // DESIGN_MODELS maps designer model choices to the engine that must be
+  // configured for them to work; first entry is the preferred default.
+  var DESIGN_MODELS = [
+    { value: "voxcpm2", engine: "voxcpm2", label: "VoxCPM2 (realistic, 48 kHz)" },
+    { value: "omnivoice", engine: "omnivoice", label: "OmniVoice (precision accents)" },
+    { value: "qwen3", engine: "voicedesign", label: "Qwen3 (characterful)" }
+  ];
+
+  function updateDesignModels(engines) {
+    var available = DESIGN_MODELS.filter(function (model) {
+      return engines && Object.prototype.hasOwnProperty.call(engines, model.engine);
+    });
+    if (available.length === 0) {
+      available = [DESIGN_MODELS[0]];
+    }
+    var previous = designModelSelect.value;
+    designModelSelect.textContent = "";
+    available.forEach(function (model) {
+      var option = createElement("option", "", model.label);
+      option.value = model.value;
+      designModelSelect.appendChild(option);
+    });
+    designModelSelect.value = previous;
+    if (designModelSelect.value !== previous) {
+      designModelSelect.value = available[0].value;
+    }
+  }
+
   function renderHealth(data) {
     renderStatus(data.status);
     renderEngineRack(data.engines);
+    updateDesignModels(data.engines);
     healthUpdated.textContent = data.updatedAt ? "Updated " + new Date(data.updatedAt).toLocaleString() : "Updated now";
     healthBody.textContent = "";
 
@@ -1296,6 +1328,7 @@
   function clearDesignCandidate() {
     designCandidate = null;
     designStatus.textContent = "None yet";
+    designEngineInput.textContent = "–";
     if (designAudioUrl) {
       URL.revokeObjectURL(designAudioUrl);
       designAudioUrl = "";
@@ -1320,13 +1353,14 @@
     setBusy(designGenerateButton, "Designing...");
     try {
       clearDesignCandidate();
-      log("POST /v1/voices/design: " + description);
+      var model = designModelSelect.value || "voxcpm2";
+      log("POST /v1/voices/design (" + model + "): " + description);
       var response = await fetch("/v1/voices/design", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ description: description })
+        body: JSON.stringify({ description: description, model: model })
       });
       await ensureOk(response, "Voice design");
       var data = await response.json();
@@ -1335,10 +1369,15 @@
       }
       designCandidate = {
         description: data.description || description,
+        model: data.model || model,
         reference: base64ToBlob(data.reference_b64, "audio/wav"),
         transcript: data.transcript || ""
       };
-      designStatus.textContent = "\"" + designCandidate.description + "\"";
+      designStatus.textContent = "\"" + designCandidate.description + "\" via " + designCandidate.model;
+      designEngineInput.textContent = data.engine_input || designCandidate.description;
+      if (data.engine_input && data.engine_input !== designCandidate.description) {
+        log("Description adapted for " + designCandidate.model + ": " + data.engine_input);
+      }
       if (!designNameInput.value.trim()) {
         designNameInput.value = designCandidate.description.slice(0, 80);
       }

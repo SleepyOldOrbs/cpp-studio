@@ -1629,7 +1629,7 @@ func TestVoiceDesignReturnsPreviewAndReference(t *testing.T) {
 	router := NewRouter(cfg, manager)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/voices/design", strings.NewReader(`{"description":"Deep gravelly cowboy"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/voices/design", strings.NewReader(`{"description":"Deep gravelly cowboy","model":"qwen3"}`))
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -1641,6 +1641,10 @@ func TestVoiceDesignReturnsPreviewAndReference(t *testing.T) {
 	}
 	if response.Description != "Deep gravelly cowboy" {
 		t.Fatalf("unexpected description %q", response.Description)
+	}
+	// No llama engine configured: normalization falls back to the raw text.
+	if response.EngineInput != "Deep gravelly cowboy" {
+		t.Fatalf("expected raw description fallback, got %q", response.EngineInput)
 	}
 	if response.Transcript == "" {
 		t.Fatalf("expected sample transcript, got %+v", response)
@@ -1657,6 +1661,38 @@ func TestVoiceDesignReturnsPreviewAndReference(t *testing.T) {
 	}
 	if manager.Health().Engines["voicedesign"].LastSuccessAt == nil {
 		t.Fatalf("expected voicedesign lastSuccessAt to be recorded")
+	}
+}
+
+func TestVoiceDesignModelRouting(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"voicedesign": helperEngine("design"),
+		"omnivoice":   helperEngine("design"),
+		"voxcpm2":     helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	for _, model := range []string{"qwen3", "omnivoice", "voxcpm2"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/voices/design", strings.NewReader(`{"description":"female, british accent","model":"`+model+`"}`))
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("model %s: expected status 200, got %d: %s", model, rec.Code, rec.Body.String())
+		}
+		var response voiceDesignResponse
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatalf("model %s: decode design response: %v", model, err)
+		}
+		if response.Model != model {
+			t.Fatalf("expected model %s echoed, got %q", model, response.Model)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voices/design", strings.NewReader(`{"description":"x","model":"elevenlabs"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected unknown model status 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1702,8 +1738,129 @@ func TestVoiceDesignMissingEngine(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected status 503, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "voicedesign") {
-		t.Fatalf("expected missing voicedesign detail, got %s", rec.Body.String())
+	// The default model is voxcpm2.
+	if !strings.Contains(rec.Body.String(), "voxcpm2") {
+		t.Fatalf("expected missing voxcpm2 detail, got %s", rec.Body.String())
+	}
+}
+
+func TestVoiceDesignNormalizesPerModel(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var body chatCompletionRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Errorf("decode normalizer request: %v", err)
+		}
+		if len(body.Messages) != 2 || !strings.Contains(body.Messages[0].Content, "voice-design normalizer") {
+			t.Errorf("expected normalizer system prompt, got %+v", body.Messages)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"prose\": \"A deep gravelly cowboy voice.\", \"attributes\": \"male, middle-aged, low pitch, american accent\"}"}}]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"llama":       {Command: "llama-server", HealthURL: upstream.URL + "/health"},
+		"voicedesign": helperEngine("design"),
+		"omnivoice":   helperEngine("design"),
+		"voxcpm2":     helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{model: "qwen3", want: "A deep gravelly cowboy voice."},
+		{model: "voxcpm2", want: "A deep gravelly cowboy voice."},
+		{model: "omnivoice", want: "male, middle-aged, low pitch, american accent"},
+	}
+	for _, tt := range tests {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/voices/design", strings.NewReader(`{"description":"deep gravelly cowboy","model":"`+tt.model+`"}`))
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("model %s: expected status 200, got %d: %s", tt.model, rec.Code, rec.Body.String())
+		}
+		var response voiceDesignResponse
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatalf("model %s: decode design response: %v", tt.model, err)
+		}
+		if response.EngineInput != tt.want {
+			t.Fatalf("model %s: expected engine input %q, got %q", tt.model, tt.want, response.EngineInput)
+		}
+		if response.Prose != "A deep gravelly cowboy voice." || response.Attributes != "male, middle-aged, low pitch, american accent" {
+			t.Fatalf("model %s: unexpected normalized forms %+v", tt.model, response)
+		}
+	}
+}
+
+func TestSanitizeOmniAttributes(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "category prefixes stripped",
+			raw:  "gender: male, age: elderly, pitch: low pitch, style: whisper, english accent: british accent",
+			want: "male, elderly, low pitch, whisper, british accent",
+		},
+		{
+			name: "clean values pass through",
+			raw:  "female, young adult, high pitch, british accent",
+			want: "female, young adult, high pitch, british accent",
+		},
+		{
+			name: "unknown items dropped",
+			raw:  "male, gravelly, cowboy drawl, low pitch",
+			want: "male, low pitch",
+		},
+		{
+			name: "one value per category",
+			raw:  "male, female, elderly, child",
+			want: "male, elderly",
+		},
+		{name: "nothing usable", raw: "a booming radio announcer", want: ""},
+		{name: "case insensitive", raw: "Male, British Accent", want: "male, british accent"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeOmniAttributes(tt.raw); got != tt.want {
+				t.Fatalf("sanitizeOmniAttributes(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseVoiceDesignForms(t *testing.T) {
+	tests := []struct {
+		name       string
+		reply      string
+		prose      string
+		attributes string
+	}{
+		{
+			name:       "clean json",
+			reply:      `{"prose": "A warm voice.", "attributes": "female, low pitch"}`,
+			prose:      "A warm voice.",
+			attributes: "female, low pitch",
+		},
+		{
+			name:       "surrounded by chatter",
+			reply:      "Sure! Here you go:\n{\"prose\": \"A warm voice.\", \"attributes\": \"female\"}\nHope that helps.",
+			prose:      "A warm voice.",
+			attributes: "female",
+		},
+		{name: "no json", reply: "I cannot help with that."},
+		{name: "broken json", reply: `{"prose": "unterminated`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prose, attributes := parseVoiceDesignForms(tt.reply)
+			if prose != tt.prose || attributes != tt.attributes {
+				t.Fatalf("parseVoiceDesignForms(%q) = %q, %q; want %q, %q", tt.reply, prose, attributes, tt.prose, tt.attributes)
+			}
+		})
 	}
 }
 

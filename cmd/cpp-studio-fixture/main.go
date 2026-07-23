@@ -163,14 +163,22 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	lastUser := ""
 	lastUserHasImage := false
+	isNormalizer := false
 	for _, msg := range req.Messages {
+		text, hasImage := flattenContent(msg.Content)
+		if msg.Role == "system" && strings.Contains(text, "voice-design normalizer") {
+			isNormalizer = true
+		}
 		if msg.Role == "user" {
-			lastUser, lastUserHasImage = flattenContent(msg.Content)
+			lastUser, lastUserHasImage = text, hasImage
 		}
 	}
 	reply := "fixture assistant reply to: " + lastUser
 	if lastUserHasImage {
 		reply = "fixture image description"
+	}
+	if isNormalizer {
+		reply = `{"prose": "A deep, gravelly middle-aged cowboy voice with a slow drawl.", "attributes": "male, middle-aged, low pitch, american accent"}`
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
