@@ -321,89 +321,40 @@
             </label>
           </div>
 
-          <div class="story-controls story-cast-row">
-            <label class="field compact-field">
-              <span>Narrator</span>
-              <select class="text-input story-cast-select" id="castNarratorSelect" data-speaker="narrator">
-                <option value="" selected>Studio default</option>
-              </select>
-            </label>
-            <label class="field compact-field">
-              <span>Nova &middot; curious host</span>
-              <select class="text-input story-cast-select" id="castNovaSelect" data-speaker="nova">
-                <option value="" selected>Studio default</option>
-              </select>
-            </label>
-            <label class="field compact-field">
-              <span>Dr. Lumen &middot; expert</span>
-              <select class="text-input story-cast-select" id="castLumenSelect" data-speaker="dr-lumen">
-                <option value="" selected>Studio default</option>
-              </select>
-            </label>
+          <div class="story-library-header">
+            <span class="source-label">Cast</span>
+            <button class="secondary compact-button" id="castAddButton" type="button">Add speaker</button>
           </div>
-          <small class="hint">Give each speaker a voice from your library &mdash; cloned or designed. The script itself is written by llama from your sources.</small>
+          <div class="cast-list" id="castList"></div>
+          <small class="hint">Each speaker has a name, a role the writer follows, and a voice from your library. Two to six speakers.</small>
 
-          <div class="source-stack">
-            <details class="source-group" open>
-              <summary>Source 1 &middot; NASA Science: Star Basics</summary>
-              <div class="source-fields">
-                <label class="field">
-                  <span>Title</span>
-                  <input class="text-input story-source-title" type="text" value="NASA Science: Star Basics">
-                </label>
-                <label class="field">
-                  <span>URL</span>
-                  <input class="text-input story-source-url" type="url" value="https://science.nasa.gov/universe/stars/">
-                </label>
-                <label class="field">
-                  <span>Excerpt</span>
-                  <textarea class="story-source-excerpt" rows="3">Stars form inside molecular clouds of gas and dust. Cold cloud conditions help gas clump into denser pockets. As clumps gain mass, gravity can make them collapse.</textarea>
-                </label>
-              </div>
-            </details>
-
-            <details class="source-group">
-              <summary>Source 2 &middot; NASA Webb: Fiery Hourglass</summary>
-              <div class="source-fields">
-                <label class="field">
-                  <span>Title</span>
-                  <input class="text-input story-source-title" type="text" value="NASA Webb: Fiery Hourglass">
-                </label>
-                <label class="field">
-                  <span>URL</span>
-                  <input class="text-input story-source-url" type="url" value="https://science.nasa.gov/missions/webb/nasas-webb-catches-fiery-hourglass-as-new-star-forms/">
-                </label>
-                <label class="field">
-                  <span>Excerpt</span>
-                  <textarea class="story-source-excerpt" rows="3">A forming protostar gathers material from its surrounding molecular cloud. Falling material spirals inward and forms an accretion disk. The disk feeds material onto the protostar.</textarea>
-                </label>
-              </div>
-            </details>
-
-            <details class="source-group">
-              <summary>Source 3 &middot; NASA Hubble: Planet-Forming Disks</summary>
-              <div class="source-fields">
-                <label class="field">
-                  <span>Title</span>
-                  <input class="text-input story-source-title" type="text" value="NASA Hubble: Planet-Forming Disks">
-                </label>
-                <label class="field">
-                  <span>URL</span>
-                  <input class="text-input story-source-url" type="url" value="https://science.nasa.gov/missions/hubble/hubbles-album-of-planet-forming-disks/">
-                </label>
-                <label class="field">
-                  <span>Excerpt</span>
-                  <textarea class="story-source-excerpt" rows="3">Some falling material forms a rotating disk around the protostar. Jets from magnetic poles are part of star formation. Jets help carry away angular momentum so material can continue collecting.</textarea>
-                </label>
-              </div>
-            </details>
+          <div class="story-library-header">
+            <span class="source-label">Sources</span>
+            <button class="secondary compact-button" id="sourceAddButton" type="button">Add source</button>
           </div>
+          <div class="source-stack" id="sourceStack"></div>
+          <small class="hint">Three to five sources. Excerpts are split into notes and fact cards; every script line must cite them.</small>
 
           <div class="action-row">
+            <button class="secondary" id="storyDraftButton" type="button">Draft script</button>
             <button class="primary" id="storyGenerateButton" type="submit">Generate story</button>
             <button class="secondary" id="storyCancelButton" type="button" disabled>Cancel story</button>
           </div>
+          <small class="hint">Draft writes the script for review and editing (no audio). Generate story produces audio &mdash; from your edited draft when one is open, otherwise writing a fresh script.</small>
           <p class="error-box" id="storyErrorBox" hidden></p>
+
+          <div class="script-editor" id="scriptEditor" hidden>
+            <div class="story-library-header">
+              <span class="source-label">Draft script &middot; <span id="scriptDraftMeta"></span></span>
+              <button class="plain compact-button" id="scriptDiscardButton" type="button">Discard draft</button>
+            </div>
+            <label class="field">
+              <span>Title</span>
+              <input class="text-input" id="storyTitleInput" type="text" maxlength="200">
+            </label>
+            <div class="script-lines" id="scriptLines"></div>
+            <small class="hint">Edit any line's text or speaker; each line keeps its fact citations. Generate story produces exactly this script.</small>
+          </div>
         </form>
 
         <section class="story-result" aria-live="polite">

@@ -580,6 +580,68 @@ func TestStoryScriptedByLlamaWithCastVoices(t *testing.T) {
 	}
 }
 
+func TestStoryDraftThenProduceEditedScript(t *testing.T) {
+	t.Chdir(t.TempDir())
+	scriptJSON := `{"title": "Draft Title", "script": [
+{"speaker_id": "narrator", "text": "Draft opening.", "fact_ids": ["fact-1"]},
+{"speaker_id": "nova", "text": "Draft question?", "fact_ids": ["fact-2"]},
+{"speaker_id": "dr-lumen", "text": "Draft answer.", "fact_ids": ["fact-3"]},
+{"speaker_id": "narrator", "text": "Draft close.", "fact_ids": ["fact-1"]}
+]}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": scriptJSON}}},
+		})
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"llama": {Command: "llama-server", HealthURL: upstream.URL + "/health"},
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/stories/draft", strings.NewReader(validStoryRequestJSON()))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected draft status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var draft story.DraftResponse
+	if err := json.NewDecoder(rec.Body).Decode(&draft); err != nil {
+		t.Fatalf("decode draft: %v", err)
+	}
+	if draft.Title != "Draft Title" || len(draft.Script) != 4 || len(draft.FactCards) < 8 {
+		t.Fatalf("unexpected draft %+v", draft)
+	}
+
+	// Edit a line and produce with the edited script.
+	draft.Script[0].Text = "An edited opening line."
+	edited, err := json.Marshal(draft.Script)
+	if err != nil {
+		t.Fatalf("marshal edited script: %v", err)
+	}
+	produceBody := strings.Replace(validStoryRequestJSON(), `"sources"`, `"title": "Edited Title", "script": `+string(edited)+`, "sources"`, 1)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(produceBody))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected produce status 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var create story.CreateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&create); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	status := waitGatewayStoryStatus(t, router, create.ID, story.StatusComplete)
+	if status.Manifest == nil || status.Manifest.Title != "Edited Title" {
+		t.Fatalf("expected edited title, got %+v", status.Manifest)
+	}
+	if status.Manifest.Script[0].Text != "An edited opening line." {
+		t.Fatalf("expected edited line to survive production, got %+v", status.Manifest.Script[0])
+	}
+}
+
 func TestStoryValidationError(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cfg := testConfig(map[string]config.EngineConfig{

@@ -71,6 +71,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/images/generations", r.handleImageGenerations)
 	mux.HandleFunc("/v1/images/descriptions", r.handleImageDescriptions)
 	mux.HandleFunc("/v1/stories", r.handleStories)
+	mux.HandleFunc("/v1/stories/draft", r.handleStoryDraft)
 	mux.HandleFunc("/v1/stories/", r.handleStory)
 	mux.HandleFunc("/v1/audio/speech", r.handleSpeech)
 	mux.HandleFunc("/v1/audio/transcriptions", r.handleTranscriptions)
@@ -989,16 +990,8 @@ func (r *router) handleStories(w http.ResponseWriter, req *http.Request) {
 			writeStoryError(w, http.StatusBadRequest, story.CodeInvalidRequest, fmt.Sprintf("invalid JSON request: %v", err))
 			return
 		}
-		// Cast voices must exist before the job starts; a missing voice
-		// failing mid-synthesis would waste the whole run.
-		for speakerID, voiceID := range body.CastVoices {
-			if strings.TrimSpace(voiceID) == "" {
-				continue
-			}
-			if _, err := r.resolveVoice(voiceID); err != nil {
-				writeStoryError(w, http.StatusBadRequest, story.CodeInvalidRequest, fmt.Sprintf("cast_voices[%s]: %v", speakerID, err))
-				return
-			}
+		if !r.validateStoryCastVoices(w, body) {
+			return
 		}
 		response, err := r.stories.Submit(req.Context(), body)
 		if err != nil {
@@ -1012,6 +1005,58 @@ func (r *router) handleStories(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Allow", "GET, POST")
 		writeStoryError(w, http.StatusMethodNotAllowed, story.CodeInvalidRequest, "method not allowed")
 	}
+}
+
+// validateStoryCastVoices rejects requests naming voices that do not exist;
+// a missing voice failing mid-synthesis would waste the whole run.
+func (r *router) validateStoryCastVoices(w http.ResponseWriter, body story.CreateRequest) bool {
+	check := func(label string, voiceID string) bool {
+		if strings.TrimSpace(voiceID) == "" {
+			return true
+		}
+		if _, err := r.resolveVoice(voiceID); err != nil {
+			writeStoryError(w, http.StatusBadRequest, story.CodeInvalidRequest, fmt.Sprintf("%s: %v", label, err))
+			return false
+		}
+		return true
+	}
+	for speakerID, voiceID := range body.CastVoices {
+		if !check("cast_voices["+speakerID+"]", voiceID) {
+			return false
+		}
+	}
+	for i, member := range body.Cast {
+		if !check(fmt.Sprintf("cast[%d].voice_id", i), member.VoiceID) {
+			return false
+		}
+	}
+	return true
+}
+
+// handleStoryDraft writes a story without producing audio: the fast half of
+// the draft → edit → produce flow.
+func (r *router) handleStoryDraft(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	var body story.CreateRequest
+	req.Body = http.MaxBytesReader(w, req.Body, story.MaxRequestBodyBytes)
+	decoder := json.NewDecoder(req.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeStoryError(w, http.StatusBadRequest, story.CodeInvalidRequest, fmt.Sprintf("invalid JSON request: %v", err))
+		return
+	}
+	if !r.validateStoryCastVoices(w, body) {
+		return
+	}
+	draft, err := r.stories.Draft(req.Context(), body)
+	if err != nil {
+		writeStoryErrorFromError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(draft)
 }
 
 func (r *router) handleStory(w http.ResponseWriter, req *http.Request) {
@@ -1094,10 +1139,25 @@ func (r *router) synthesizeSpeech(ctx context.Context, text string, voiceID stri
 // stories as dialogue scripts" to return its canned script.
 const storyScriptSystemPrompt = `You write short, factual audio stories as dialogue scripts. Reply with ONLY a JSON object, no markdown, in this exact shape: {"title": "...", "script": [{"speaker_id": "...", "text": "...", "fact_ids": ["fact-1"]}]}
 Rules:
-- speaker_id must be exactly one of: narrator, nova, dr-lumen. The narrator sets scenes and links ideas, nova asks curious questions, dr-lumen explains clearly.
-- Every line must cite at least one fact id from the provided fact list in fact_ids, and may only state things those cited facts support. Do not invent information.
+%s- Every line must cite at least one fact id from the provided fact list in fact_ids, and may only state things those cited facts support. Do not invent information.
 - text is plain spoken language: one to three short sentences, no markdown, no stage directions, no emojis.
 - Give the story a beginning, a middle, and an ending line that lands.`
+
+// storyCastRules renders the dynamic speaker rules for the script prompt.
+func storyCastRules(cast []story.CastMember) string {
+	ids := make([]string, 0, len(cast))
+	for _, member := range cast {
+		ids = append(ids, member.ID)
+	}
+	var rules strings.Builder
+	fmt.Fprintf(&rules, "- speaker_id must be exactly one of: %s.\n", strings.Join(ids, ", "))
+	for _, member := range cast {
+		if member.Role != "" {
+			fmt.Fprintf(&rules, "- %s (%s): %s.\n", member.ID, member.DisplayName, member.Role)
+		}
+	}
+	return rules.String()
+}
 
 // writeStoryScript is the story manager's ScriptFunc: facts in, a grounded
 // script out of llama, with one retry that feeds the validation error back.
@@ -1119,7 +1179,7 @@ func (r *router) writeStoryScript(ctx context.Context, req story.ScriptRequest) 
 	}
 
 	messages := []chatMessage{
-		{Role: "system", Content: storyScriptSystemPrompt},
+		{Role: "system", Content: fmt.Sprintf(storyScriptSystemPrompt, storyCastRules(req.Cast))},
 		{Role: "user", Content: prompt.String()},
 	}
 	title, script, err := r.requestStoryScript(ctx, messages, req)

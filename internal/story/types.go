@@ -14,6 +14,11 @@ const (
 	MaxSourceURLChars       = 2048
 	MaxSourceExcerptChars   = 12000
 	MaxScriptLineTextChars  = 2000
+	MaxScriptLines          = 60
+	MinCastMembers          = 2
+	MaxCastMembers          = 6
+	MaxCastNameChars        = 60
+	MaxCastRoleChars        = 200
 	MaxGeneratedWAVBytes    = 32 * 1024 * 1024
 	StoryArtifactName       = "story.wav"
 	DefaultRetryAfterMillis = 500
@@ -81,10 +86,39 @@ type CreateRequest struct {
 	SourceMode    string        `json:"source_mode,omitempty"`
 	VoiceMode     string        `json:"voice_mode,omitempty"`
 	Sources       []SourceInput `json:"sources"`
-	// CastVoices assigns a stored voice id per cast member id (narrator,
-	// nova, dr-lumen); missing or empty entries speak with the studio
-	// default voice. Only meaningful for voice_mode "fixed".
+	// Cast defines the speakers (2-6). Empty means the default trio:
+	// narrator, nova, dr-lumen.
+	Cast []CastInput `json:"cast,omitempty"`
+	// CastVoices assigns a stored voice id per cast member id; missing or
+	// empty entries speak with the studio default voice. Only meaningful
+	// for voice_mode "fixed".
 	CastVoices map[string]string `json:"cast_voices,omitempty"`
+	// Title and Script, when provided together with Script non-empty,
+	// skip llama scripting and produce this exact script (the draft →
+	// edit → produce flow). Lines must stay grounded in the fact cards
+	// derived from Sources.
+	Title  string       `json:"title,omitempty"`
+	Script []ScriptLine `json:"script,omitempty"`
+}
+
+// CastInput is one user-defined speaker.
+type CastInput struct {
+	ID      string `json:"id,omitempty"`
+	Name    string `json:"name"`
+	Role    string `json:"role,omitempty"`
+	VoiceID string `json:"voice_id,omitempty"`
+}
+
+// DraftResponse is a story written but not produced: everything needed to
+// review and edit the script before synthesis.
+type DraftResponse struct {
+	Subject     string       `json:"subject"`
+	Title       string       `json:"title"`
+	Sources     []Source     `json:"sources"`
+	SourceNotes []SourceNote `json:"source_notes"`
+	FactCards   []FactCard   `json:"fact_cards"`
+	Cast        []CastMember `json:"cast"`
+	Script      []ScriptLine `json:"script"`
 }
 
 type SourceInput struct {
@@ -116,6 +150,7 @@ type FactCard struct {
 type CastMember struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
+	Role        string `json:"role,omitempty"`
 	VoiceID     string `json:"voice_id"`
 }
 

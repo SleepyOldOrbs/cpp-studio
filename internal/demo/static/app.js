@@ -51,7 +51,16 @@
   var storySubjectInput = document.getElementById("storySubjectInput");
   var storySecondsInput = document.getElementById("storySecondsInput");
   var storyVoiceSelect = document.getElementById("storyVoiceSelect");
-  var storyCastSelects = Array.prototype.slice.call(document.querySelectorAll(".story-cast-select"));
+  var castList = document.getElementById("castList");
+  var castAddButton = document.getElementById("castAddButton");
+  var sourceStack = document.getElementById("sourceStack");
+  var sourceAddButton = document.getElementById("sourceAddButton");
+  var storyDraftButton = document.getElementById("storyDraftButton");
+  var scriptEditor = document.getElementById("scriptEditor");
+  var scriptDraftMeta = document.getElementById("scriptDraftMeta");
+  var scriptDiscardButton = document.getElementById("scriptDiscardButton");
+  var storyTitleInput = document.getElementById("storyTitleInput");
+  var scriptLines = document.getElementById("scriptLines");
   var storyGenerateButton = document.getElementById("storyGenerateButton");
   var storyCancelButton = document.getElementById("storyCancelButton");
   var storyErrorBox = document.getElementById("storyErrorBox");
@@ -133,6 +142,8 @@
   var describeAudioUrl = "";
   var designAudioUrl = "";
   var designCandidate = null;
+  var libraryVoices = [];
+  var storyDraft = null;
   var selectedVoiceId = "";
   try {
     selectedVoiceId = window.localStorage.getItem("cpp-studio-voice") || "";
@@ -242,9 +253,7 @@
     cloneRecordButton.disabled = running || live || recording || recordSetupPending || (!cloneRecording && !cloneSetupPending && !canRecord());
     describeImageButton.disabled = busy || imagePreview.hidden || !imagePreview.src;
     designSaveButton.disabled = busy || !designCandidate;
-    storyCastSelects.forEach(function (select) {
-      select.disabled = busy || storyVoiceSelect.value !== "fixed";
-    });
+    storyDraftButton.disabled = busy || Boolean(activeStoryID);
   }
 
   function setRunning(value) {
@@ -773,21 +782,20 @@
       saveStoryButton.disabled = true;
       storyFacts.textContent = "";
       setStoryStatus("Starting...", 0);
-      var targetSeconds = Number(storySecondsInput.value || "90");
-      log("POST /v1/stories");
+      var body = storyRequestBody();
+      if (storyDraft && !scriptEditor.hidden) {
+        body.title = storyTitleInput.value.trim();
+        body.script = collectEditedScript();
+        log("POST /v1/stories (producing the edited draft)");
+      } else {
+        log("POST /v1/stories");
+      }
       var response = await fetch("/v1/stories", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-          subject: storySubjectInput.value.trim(),
-          target_seconds: targetSeconds,
-          source_mode: "curated",
-          voice_mode: storyVoiceSelect.value,
-          cast_voices: storyVoiceSelect.value === "fixed" ? collectCastVoices() : {},
-          sources: collectStorySources()
-        })
+        body: JSON.stringify(body)
       });
       await ensureOk(response, "Story");
       var data = await response.json();
@@ -1163,35 +1171,249 @@
     updateSpeakVoiceLabel();
   }
 
-  // renderStoryCastSelects mirrors the voice library into the three story
-  // cast pickers, keeping each picker's selection when it still exists.
-  function renderStoryCastSelects(voices) {
-    storyCastSelects.forEach(function (select) {
-      var previous = select.value;
-      select.textContent = "";
-      var fallback = createElement("option", "", "Studio default");
-      fallback.value = "";
-      select.appendChild(fallback);
-      (voices || []).forEach(function (clone) {
-        var option = createElement("option", "", clone.name || clone.id);
-        option.value = clone.id;
-        select.appendChild(option);
-      });
-      select.value = previous;
-      if (select.value !== previous) {
-        select.value = "";
+  // ---------- story cast editor ----------
+
+  var STORY_DEFAULT_CAST = [
+    { name: "Narrator", role: "sets scenes and links ideas" },
+    { name: "Nova", role: "asks curious questions" },
+    { name: "Dr. Lumen", role: "explains clearly" }
+  ];
+  var STORY_MIN_CAST = 2;
+  var STORY_MAX_CAST = 6;
+
+  function fillVoiceOptions(select, keepValue) {
+    select.textContent = "";
+    var fallback = createElement("option", "", "Studio default");
+    fallback.value = "";
+    select.appendChild(fallback);
+    libraryVoices.forEach(function (clone) {
+      var option = createElement("option", "", clone.name || clone.id);
+      option.value = clone.id;
+      select.appendChild(option);
+    });
+    select.value = keepValue || "";
+    if (select.value !== (keepValue || "")) {
+      select.value = "";
+    }
+  }
+
+  function addCastRow(prefill) {
+    var row = createElement("div", "cast-row");
+    var nameInput = createElement("input", "text-input cast-name");
+    nameInput.type = "text";
+    nameInput.maxLength = 60;
+    nameInput.placeholder = "Speaker name";
+    nameInput.value = (prefill && prefill.name) || "";
+    var roleInput = createElement("input", "text-input cast-role");
+    roleInput.type = "text";
+    roleInput.maxLength = 200;
+    roleInput.placeholder = "Role, e.g. gruff sea captain";
+    roleInput.value = (prefill && prefill.role) || "";
+    var voiceSelectEl = createElement("select", "text-input cast-voice-select");
+    fillVoiceOptions(voiceSelectEl, (prefill && prefill.voice) || "");
+    var removeButton = createElement("button", "plain icon-button cast-remove", "×");
+    removeButton.type = "button";
+    removeButton.title = "Remove speaker";
+    removeButton.addEventListener("click", function () {
+      if (castList.children.length <= STORY_MIN_CAST) {
+        setStoryError(new Error("A story needs at least " + STORY_MIN_CAST + " speakers"));
+        return;
       }
+      row.remove();
+      syncControls();
+    });
+    row.appendChild(nameInput);
+    row.appendChild(roleInput);
+    row.appendChild(voiceSelectEl);
+    row.appendChild(removeButton);
+    castList.appendChild(row);
+  }
+
+  function resetCast() {
+    castList.textContent = "";
+    STORY_DEFAULT_CAST.forEach(addCastRow);
+  }
+
+  function collectCast() {
+    return Array.prototype.map.call(castList.children, function (row) {
+      return {
+        name: row.querySelector(".cast-name").value.trim(),
+        role: row.querySelector(".cast-role").value.trim(),
+        voice_id: row.querySelector(".cast-voice-select").value
+      };
+    }).filter(function (member) {
+      return member.name !== "";
     });
   }
 
-  function collectCastVoices() {
-    var cast = {};
-    storyCastSelects.forEach(function (select) {
-      if (select.value) {
-        cast[select.dataset.speaker] = select.value;
-      }
+  function renderCastVoiceSelects() {
+    Array.prototype.forEach.call(castList.querySelectorAll(".cast-voice-select"), function (select) {
+      fillVoiceOptions(select, select.value);
     });
-    return cast;
+  }
+
+  // ---------- story sources ----------
+
+  var STORY_SOURCE_PREFILLS = [
+    {
+      title: "NASA Science: Star Basics",
+      url: "https://science.nasa.gov/universe/stars/",
+      excerpt: "Stars form inside molecular clouds of gas and dust. Cold cloud conditions help gas clump into denser pockets. As clumps gain mass, gravity can make them collapse."
+    },
+    {
+      title: "NASA Webb: Fiery Hourglass",
+      url: "https://science.nasa.gov/missions/webb/nasas-webb-catches-fiery-hourglass-as-new-star-forms/",
+      excerpt: "A forming protostar gathers material from its surrounding molecular cloud. Falling material spirals inward and forms an accretion disk. The disk feeds material onto the protostar."
+    },
+    {
+      title: "NASA Hubble: Planet-Forming Disks",
+      url: "https://science.nasa.gov/missions/hubble/hubbles-album-of-planet-forming-disks/",
+      excerpt: "Some falling material forms a rotating disk around the protostar. Jets from magnetic poles are part of star formation. Jets help carry away angular momentum so material can continue collecting."
+    }
+  ];
+  var STORY_MIN_SOURCES = 3;
+  var STORY_MAX_SOURCES = 5;
+
+  function sourceField(labelText, element) {
+    var label = createElement("label", "field");
+    label.appendChild(createElement("span", "", labelText));
+    label.appendChild(element);
+    return label;
+  }
+
+  function addSourceRow(prefill, open) {
+    var details = createElement("details", "source-group");
+    details.open = Boolean(open);
+    var summary = createElement("summary", "", "Source");
+    var titleInput = createElement("input", "text-input story-source-title");
+    titleInput.type = "text";
+    titleInput.value = (prefill && prefill.title) || "";
+    titleInput.addEventListener("input", renumberSources);
+    var urlInput = createElement("input", "text-input story-source-url");
+    urlInput.type = "url";
+    urlInput.value = (prefill && prefill.url) || "";
+    var excerptInput = createElement("textarea", "story-source-excerpt");
+    excerptInput.rows = 3;
+    excerptInput.value = (prefill && prefill.excerpt) || "";
+    var fields = createElement("div", "source-fields");
+    fields.appendChild(sourceField("Title", titleInput));
+    fields.appendChild(sourceField("URL", urlInput));
+    fields.appendChild(sourceField("Excerpt", excerptInput));
+    var removeButton = createElement("button", "plain compact-button", "Remove source");
+    removeButton.type = "button";
+    removeButton.addEventListener("click", function () {
+      if (sourceStack.children.length <= STORY_MIN_SOURCES) {
+        setStoryError(new Error("A story needs at least " + STORY_MIN_SOURCES + " sources"));
+        return;
+      }
+      details.remove();
+      renumberSources();
+    });
+    fields.appendChild(removeButton);
+    details.appendChild(summary);
+    details.appendChild(fields);
+    sourceStack.appendChild(details);
+    renumberSources();
+  }
+
+  function renumberSources() {
+    Array.prototype.forEach.call(sourceStack.children, function (details, index) {
+      var title = details.querySelector(".story-source-title").value.trim();
+      details.querySelector("summary").textContent = "Source " + (index + 1) + (title ? " · " + title : "");
+    });
+  }
+
+  function resetSources() {
+    sourceStack.textContent = "";
+    STORY_SOURCE_PREFILLS.forEach(function (prefill, index) {
+      addSourceRow(prefill, index === 0);
+    });
+  }
+
+  // ---------- story draft editor ----------
+
+  function discardDraft() {
+    storyDraft = null;
+    scriptEditor.hidden = true;
+    scriptLines.textContent = "";
+    scriptDraftMeta.textContent = "";
+    storyTitleInput.value = "";
+  }
+
+  function renderDraft(draft) {
+    storyDraft = draft;
+    storyTitleInput.value = draft.title || "";
+    scriptDraftMeta.textContent = (draft.script || []).length + " lines · " + (draft.fact_cards || []).length + " facts";
+    scriptLines.textContent = "";
+    (draft.script || []).forEach(function (line) {
+      var row = createElement("div", "script-line-row");
+      row.dataset.factIds = JSON.stringify(line.fact_ids || []);
+      var speakerSelect = createElement("select", "text-input script-speaker");
+      (draft.cast || []).forEach(function (member) {
+        var option = createElement("option", "", member.display_name || member.id);
+        option.value = member.id;
+        speakerSelect.appendChild(option);
+      });
+      speakerSelect.value = line.speaker_id;
+      var textArea = createElement("textarea", "script-text");
+      textArea.rows = 2;
+      textArea.value = line.text || "";
+      var facts = createElement("span", "script-facts", (line.fact_ids || []).join(", "));
+      row.appendChild(speakerSelect);
+      row.appendChild(textArea);
+      row.appendChild(facts);
+      scriptLines.appendChild(row);
+    });
+    scriptEditor.hidden = false;
+  }
+
+  function collectEditedScript() {
+    return Array.prototype.map.call(scriptLines.children, function (row) {
+      return {
+        speaker_id: row.querySelector(".script-speaker").value,
+        text: row.querySelector(".script-text").value.trim(),
+        fact_ids: JSON.parse(row.dataset.factIds || "[]")
+      };
+    }).filter(function (line) {
+      return line.text !== "";
+    });
+  }
+
+  function storyRequestBody() {
+    return {
+      subject: storySubjectInput.value.trim(),
+      target_seconds: Number(storySecondsInput.value || "90"),
+      source_mode: "curated",
+      voice_mode: storyVoiceSelect.value,
+      cast: collectCast(),
+      sources: collectStorySources()
+    };
+  }
+
+  async function draftStory() {
+    clearStoryError();
+    setRunning(true);
+    setBusy(storyDraftButton, "Writing...");
+    try {
+      discardDraft();
+      log("POST /v1/stories/draft");
+      var response = await fetch("/v1/stories/draft", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(storyRequestBody())
+      });
+      await ensureOk(response, "Story draft");
+      var draft = await response.json();
+      renderDraft(draft);
+      log("Draft ready: \"" + (draft.title || "") + "\", " + (draft.script || []).length + " lines");
+    } catch (error) {
+      setStoryError(error);
+    } finally {
+      clearBusy(storyDraftButton);
+      setRunning(false);
+    }
   }
 
   function persistSelectedVoice() {
@@ -1228,9 +1450,10 @@
         selectedVoiceId = "";
         persistSelectedVoice();
       }
+      libraryVoices = voices;
       renderVoiceLibrary(voices);
       renderVoiceSelect(voices);
-      renderStoryCastSelects(voices);
+      renderCastVoiceSelects();
     } catch (error) {
       setCloneError(error);
     } finally {
@@ -2180,6 +2403,9 @@
       saveStoryButton.disabled = true;
       storyFacts.textContent = "";
       clearStoryError();
+      discardDraft();
+      resetCast();
+      resetSources();
     }
 
     logOutput.textContent = "";
@@ -2278,6 +2504,25 @@
   submitOnCtrlEnter(designDescriptionInput, designForm);
 
   storyVoiceSelect.addEventListener("change", syncControls);
+  storyDraftButton.addEventListener("click", draftStory);
+  scriptDiscardButton.addEventListener("click", function () {
+    discardDraft();
+    log("Draft discarded");
+  });
+  castAddButton.addEventListener("click", function () {
+    if (castList.children.length >= STORY_MAX_CAST) {
+      setStoryError(new Error("A story can have at most " + STORY_MAX_CAST + " speakers"));
+      return;
+    }
+    addCastRow(null);
+  });
+  sourceAddButton.addEventListener("click", function () {
+    if (sourceStack.children.length >= STORY_MAX_SOURCES) {
+      setStoryError(new Error("A story can have at most " + STORY_MAX_SOURCES + " sources"));
+      return;
+    }
+    addSourceRow(null, true);
+  });
 
   liveButton.addEventListener("click", function () {
     if (live) {
@@ -2333,6 +2578,8 @@
     cloneRecordButton.textContent = "Recording unavailable";
   }
 
+  resetCast();
+  resetSources();
   renderEngineRack(null);
   log("Demo loaded");
   refreshHealth(false);

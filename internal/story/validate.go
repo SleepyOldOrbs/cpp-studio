@@ -12,11 +12,83 @@ type NormalizedRequest struct {
 	SourceMode    string
 	VoiceMode     string
 	Sources       []SourceInput
-	CastVoices    map[string]string
+	// Cast is the resolved speaker list (default trio when none supplied).
+	Cast []CastMember
+	// CastVoices maps cast member id -> stored voice id ("" absent means
+	// the studio default).
+	CastVoices map[string]string
+	// Title/Script, when Script is non-empty, bypass the script writer.
+	Title  string
+	Script []ScriptLine
 }
 
-// CastMemberIDs is the fixed speaker trio every story script uses.
-var CastMemberIDs = []string{"narrator", "nova", "dr-lumen"}
+// DefaultCast is the trio used when a request defines no cast.
+func DefaultCast() []CastMember {
+	return []CastMember{
+		{ID: "narrator", DisplayName: "Narrator", Role: "sets scenes and links ideas"},
+		{ID: "nova", DisplayName: "Nova", Role: "asks curious questions"},
+		{ID: "dr-lumen", DisplayName: "Dr. Lumen", Role: "explains clearly"},
+	}
+}
+
+// slugifyCastID turns a display name into a stable speaker id.
+func slugifyCastID(name string) string {
+	var b strings.Builder
+	lastDash := true
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func normalizeCast(inputs []CastInput) ([]CastMember, error) {
+	if len(inputs) == 0 {
+		return DefaultCast(), nil
+	}
+	if len(inputs) < MinCastMembers {
+		return nil, NewError(CodeInvalidRequest, fmt.Sprintf("cast must include at least %d members", MinCastMembers))
+	}
+	if len(inputs) > MaxCastMembers {
+		return nil, NewError(CodeInvalidRequest, fmt.Sprintf("cast must include at most %d members", MaxCastMembers))
+	}
+	seen := make(map[string]bool, len(inputs))
+	cast := make([]CastMember, 0, len(inputs))
+	for i, input := range inputs {
+		name := strings.TrimSpace(input.Name)
+		if name == "" {
+			return nil, NewError(CodeInvalidRequest, fmt.Sprintf("cast[%d].name is required", i))
+		}
+		if utf8.RuneCountInString(name) > MaxCastNameChars {
+			return nil, NewError(CodeInvalidRequest, fmt.Sprintf("cast[%d].name must be at most %d characters", i, MaxCastNameChars))
+		}
+		role := strings.TrimSpace(input.Role)
+		if utf8.RuneCountInString(role) > MaxCastRoleChars {
+			return nil, NewError(CodeInvalidRequest, fmt.Sprintf("cast[%d].role must be at most %d characters", i, MaxCastRoleChars))
+		}
+		id := strings.TrimSpace(input.ID)
+		if id == "" {
+			id = slugifyCastID(name)
+		}
+		if id == "" {
+			return nil, NewError(CodeInvalidRequest, fmt.Sprintf("cast[%d].name yields no usable speaker id", i))
+		}
+		if seen[id] {
+			return nil, NewError(CodeInvalidRequest, fmt.Sprintf("cast contains duplicate speaker id %q", id))
+		}
+		seen[id] = true
+		cast = append(cast, CastMember{ID: id, DisplayName: name, Role: role, VoiceID: strings.TrimSpace(input.VoiceID)})
+	}
+	return cast, nil
+}
 
 func ValidateCreateRequest(req CreateRequest) (NormalizedRequest, error) {
 	subject := strings.TrimSpace(req.Subject)
@@ -90,23 +162,48 @@ func ValidateCreateRequest(req CreateRequest) (NormalizedRequest, error) {
 		})
 	}
 
-	castVoices := make(map[string]string, len(req.CastVoices))
+	cast, err := normalizeCast(req.Cast)
+	if err != nil {
+		return NormalizedRequest{}, err
+	}
+	castIDs := make(map[string]bool, len(cast))
+	for _, member := range cast {
+		castIDs[member.ID] = true
+	}
+
+	// cast_voices entries land on the cast member with the matching id; the
+	// cast list's own voice_id values are the other way of saying the same
+	// thing.
+	castVoices := make(map[string]string, len(cast))
+	for i := range cast {
+		if cast[i].VoiceID != "" {
+			castVoices[cast[i].ID] = cast[i].VoiceID
+		}
+	}
 	for speakerID, voiceID := range req.CastVoices {
 		voiceID = strings.TrimSpace(voiceID)
 		if voiceID == "" {
 			continue
 		}
-		known := false
-		for _, id := range CastMemberIDs {
-			if speakerID == id {
-				known = true
-				break
-			}
-		}
-		if !known {
-			return NormalizedRequest{}, NewError(CodeInvalidRequest, fmt.Sprintf("cast_voices key %q must be one of %s", speakerID, strings.Join(CastMemberIDs, ", ")))
+		if !castIDs[speakerID] {
+			return NormalizedRequest{}, NewError(CodeInvalidRequest, fmt.Sprintf("cast_voices key %q is not a cast member id", speakerID))
 		}
 		castVoices[speakerID] = voiceID
+	}
+	for i := range cast {
+		if voiceID := castVoices[cast[i].ID]; voiceID != "" {
+			cast[i].VoiceID = voiceID
+		} else {
+			cast[i].VoiceID = "studio-default"
+		}
+	}
+
+	title := strings.TrimSpace(req.Title)
+	if utf8.RuneCountInString(title) > MaxSubjectChars {
+		return NormalizedRequest{}, NewError(CodeInvalidRequest, fmt.Sprintf("title must be at most %d characters", MaxSubjectChars))
+	}
+	if len(req.Script) > MaxScriptLines {
+		return NormalizedRequest{}, NewError(CodeInvalidRequest, fmt.Sprintf("script must have at most %d lines", MaxScriptLines))
 	}
 
 	return NormalizedRequest{
@@ -115,6 +212,9 @@ func ValidateCreateRequest(req CreateRequest) (NormalizedRequest, error) {
 		SourceMode:    sourceMode,
 		VoiceMode:     voiceMode,
 		Sources:       sources,
+		Cast:          cast,
 		CastVoices:    castVoices,
+		Title:         title,
+		Script:        req.Script,
 	}, nil
 }

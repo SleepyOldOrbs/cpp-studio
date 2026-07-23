@@ -286,6 +286,18 @@ try {
       [ordered]@{ id = "src-3"; title = "NASA Hubble: Planet-Forming Disks"; url = "https://science.nasa.gov/missions/hubble/"; excerpt = "Some falling material forms a rotating disk around the protostar. Jets from magnetic poles are part of star formation. Jets help carry away angular momentum so material can continue collecting." }
     )
   } | ConvertTo-Json -Depth 8
+
+  # Draft first: the fixture llama returns its canned script, which we edit
+  # and hand back for production (the draft -> edit -> produce flow).
+  $draft = Invoke-RestMethod -Uri "$base/v1/stories/draft" -Method Post -ContentType "application/json" -Body $storyBody
+  if ($draft.title -ne "Fixture Story" -or -not $draft.script -or $draft.script.Count -lt 4) {
+    throw "unexpected story draft: $($draft | ConvertTo-Json -Depth 6)"
+  }
+  $draft.script[0].text = "An edited opening line from the smoke."
+  $produce = $storyBody | ConvertFrom-Json
+  $produce | Add-Member -NotePropertyName title -NotePropertyValue "Edited Fixture Story"
+  $produce | Add-Member -NotePropertyName script -NotePropertyValue $draft.script
+  $storyBody = $produce | ConvertTo-Json -Depth 8
   $created = Invoke-RestMethod -Uri "$base/v1/stories" -Method Post -ContentType "application/json" -Body $storyBody
 
   $status = $null
@@ -300,8 +312,11 @@ try {
   if ($status.status -ne "complete") {
     throw "story did not complete: $($status | ConvertTo-Json -Depth 8)"
   }
-  if ($status.manifest.title -ne "Fixture Story") {
-    throw "expected the llama-scripted story path (fixture server title), got: $($status.manifest.title)"
+  if ($status.manifest.title -ne "Edited Fixture Story") {
+    throw "expected the edited draft title, got: $($status.manifest.title)"
+  }
+  if ($status.manifest.script[0].text -ne "An edited opening line from the smoke.") {
+    throw "expected the edited line to survive production"
   }
 
   $storyWav = Invoke-WebRequest -Uri "$base$($status.artifact_url)" -UseBasicParsing

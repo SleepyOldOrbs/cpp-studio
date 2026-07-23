@@ -883,6 +883,47 @@ progress::-moz-progress-bar {
   overflow-wrap: anywhere;
 }
 
+.cast-list {
+  display: grid;
+  gap: 8px;
+}
+
+.cast-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 1.5fr) minmax(120px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.script-editor {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 12px;
+}
+
+.script-lines {
+  display: grid;
+  gap: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.script-line-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 150px) 1fr auto;
+  gap: 8px;
+  align-items: start;
+}
+
+.script-facts {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  white-space: nowrap;
+  padding-top: 10px;
+}
+
 .voice-library {
   display: grid;
   gap: 8px;

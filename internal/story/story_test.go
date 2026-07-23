@@ -460,6 +460,132 @@ func TestManagerRejectsUngroundedScriptWriterOutput(t *testing.T) {
 	}
 }
 
+func TestManagerDraftWritesWithoutProducing(t *testing.T) {
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(),
+		Script: func(ctx context.Context, req ScriptRequest) (string, []ScriptLine, error) {
+			return "Drafted Tale", []ScriptLine{
+				{SpeakerID: req.Cast[0].ID, Text: "Drafted opening.", FactIDs: []string{req.Facts[0].ID}},
+				{SpeakerID: req.Cast[1].ID, Text: "Drafted middle.", FactIDs: []string{req.Facts[1].ID}},
+				{SpeakerID: req.Cast[0].ID, Text: "Drafted end.", FactIDs: []string{req.Facts[0].ID}},
+				{SpeakerID: req.Cast[1].ID, Text: "Drafted coda.", FactIDs: []string{req.Facts[1].ID}},
+			}, nil
+		},
+		Now: fixedNow,
+	})
+
+	draft, err := manager.Draft(context.Background(), validCreateRequest())
+	if err != nil {
+		t.Fatalf("Draft returned error: %v", err)
+	}
+	if draft.Title != "Drafted Tale" || len(draft.Script) != 4 {
+		t.Fatalf("unexpected draft %+v", draft)
+	}
+	if len(draft.FactCards) < 8 || len(draft.Cast) != 3 {
+		t.Fatalf("expected scaffold in draft, got %d facts, %d cast", len(draft.FactCards), len(draft.Cast))
+	}
+	// Draft leaves no stored story behind.
+	stories, err := manager.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(stories) != 0 {
+		t.Fatalf("expected no stored stories after draft, got %+v", stories)
+	}
+}
+
+func TestManagerProducesProvidedScript(t *testing.T) {
+	scriptCalled := false
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(),
+		Script: func(ctx context.Context, req ScriptRequest) (string, []ScriptLine, error) {
+			scriptCalled = true
+			return "", nil, NewError(CodeGroundingFailure, "should not be called")
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	req := validCreateRequest()
+	req.Title = "The Edited Tale"
+	req.Script = []ScriptLine{
+		{SpeakerID: "narrator", Text: "An edited opening.", FactIDs: []string{"fact-1"}},
+		{SpeakerID: "nova", Text: "An edited question?", FactIDs: []string{"fact-2"}},
+		{SpeakerID: "dr-lumen", Text: "An edited answer.", FactIDs: []string{"fact-3"}},
+	}
+	created, err := manager.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, created.ID, StatusComplete)
+	if status.Manifest == nil {
+		t.Fatalf("expected completed manifest, got %+v", status)
+	}
+	if scriptCalled {
+		t.Fatalf("provided script must bypass the script writer")
+	}
+	if status.Manifest.Title != "The Edited Tale" {
+		t.Fatalf("expected provided title, got %q", status.Manifest.Title)
+	}
+	if len(status.Manifest.Script) != 3 || status.Manifest.Script[0].Text != "An edited opening." {
+		t.Fatalf("expected provided script, got %+v", status.Manifest.Script)
+	}
+}
+
+func TestManagerRejectsUngroundedProvidedScript(t *testing.T) {
+	manager := NewManager(ManagerOptions{
+		RootDir:    t.TempDir(),
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	req := validCreateRequest()
+	req.Script = []ScriptLine{
+		{SpeakerID: "narrator", Text: "Cites an invented fact.", FactIDs: []string{"fact-999"}},
+	}
+	created, err := manager.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, created.ID, StatusFailed)
+	if status.Error == nil || status.Error.Code != CodeGroundingFailure {
+		t.Fatalf("expected grounding failure, got %+v", status.Error)
+	}
+}
+
+func TestValidateCreateRequestCustomCast(t *testing.T) {
+	req := validCreateRequest()
+	req.Cast = []CastInput{
+		{Name: "Captain Salt", Role: "gruff sea captain", VoiceID: "voice-1"},
+		{Name: "First Mate"},
+	}
+	normalized, err := ValidateCreateRequest(req)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(normalized.Cast) != 2 {
+		t.Fatalf("expected 2 cast members, got %+v", normalized.Cast)
+	}
+	if normalized.Cast[0].ID != "captain-salt" || normalized.Cast[0].VoiceID != "voice-1" || normalized.Cast[0].Role != "gruff sea captain" {
+		t.Fatalf("unexpected first member %+v", normalized.Cast[0])
+	}
+	if normalized.Cast[1].ID != "first-mate" || normalized.Cast[1].VoiceID != "studio-default" {
+		t.Fatalf("unexpected second member %+v", normalized.Cast[1])
+	}
+	if normalized.CastVoices["captain-salt"] != "voice-1" {
+		t.Fatalf("expected voice map from cast, got %+v", normalized.CastVoices)
+	}
+
+	req.Cast = []CastInput{{Name: "Solo"}}
+	if _, err := ValidateCreateRequest(req); !storyErrorIs(err, CodeInvalidRequest) {
+		t.Fatalf("expected too-few-cast error, got %v", err)
+	}
+	req.Cast = []CastInput{{Name: "Twin"}, {Name: "Twin"}}
+	if _, err := ValidateCreateRequest(req); !storyErrorIs(err, CodeInvalidRequest) {
+		t.Fatalf("expected duplicate-id error, got %v", err)
+	}
+}
+
 func TestValidateCreateRequestCastVoices(t *testing.T) {
 	req := validCreateRequest()
 	req.CastVoices = map[string]string{"narrator": "voice-1", "nova": " ", "dr-lumen": "voice-2"}

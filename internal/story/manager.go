@@ -297,11 +297,19 @@ const (
 	artifactPad = 250 * time.Millisecond
 )
 
-// writeScript produces the story's title and script via the injected
-// ScriptFunc, or the deterministic fixture script when none is wired.
+// writeScript produces the story's title and script: a user-supplied script
+// (the draft → edit → produce flow) wins, then the injected ScriptFunc, then
+// the deterministic fixture script.
 func (m *Manager) writeScript(ctx context.Context, req NormalizedRequest, scaffold Scaffold) (string, []ScriptLine, error) {
+	if len(req.Script) > 0 {
+		title := req.Title
+		if title == "" {
+			title = titleForSubject(req.Subject)
+		}
+		return title, req.Script, nil
+	}
 	if m.script == nil {
-		return titleForSubject(req.Subject), fixtureScript(req.Subject, scaffold.Facts), nil
+		return titleForSubject(req.Subject), fixtureScriptForCast(req.Subject, scaffold.Facts, scaffold.Cast), nil
 	}
 	return m.script(ctx, ScriptRequest{
 		Subject:       req.Subject,
@@ -309,6 +317,38 @@ func (m *Manager) writeScript(ctx context.Context, req NormalizedRequest, scaffo
 		Facts:         scaffold.Facts,
 		Cast:          scaffold.Cast,
 	})
+}
+
+// Draft writes a story without producing it: validate, scaffold, script —
+// no job, no audio reservation, no storage. Safe to run concurrently with
+// an active story job.
+func (m *Manager) Draft(ctx context.Context, req CreateRequest) (DraftResponse, error) {
+	normalized, err := ValidateCreateRequest(req)
+	if err != nil {
+		return DraftResponse{}, err
+	}
+	scaffold, err := BuildScaffold(normalized)
+	if err != nil {
+		return DraftResponse{}, err
+	}
+	title, script, err := m.writeScript(ctx, normalized, scaffold)
+	if err != nil {
+		return DraftResponse{}, err
+	}
+	// Ground the draft exactly as production would, so an edited version
+	// that keeps these lines is guaranteed to produce.
+	if _, err := AssembleManifest("draft", normalized, m.now(), scaffold, title, script); err != nil {
+		return DraftResponse{}, err
+	}
+	return DraftResponse{
+		Subject:     normalized.Subject,
+		Title:       title,
+		Sources:     scaffold.Sources,
+		SourceNotes: scaffold.Notes,
+		FactCards:   scaffold.Facts,
+		Cast:        scaffold.Cast,
+		Script:      script,
+	}, nil
 }
 
 // synthesizeScript speaks each script line through the injected synthesizer

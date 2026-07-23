@@ -118,11 +118,28 @@ Supported fields:
 - `source_mode` must be omitted or `curated`.
 - `voice_mode` must be omitted, `placeholder`, or `fixed`. `placeholder` (the
   default) produces the deterministic synthetic tone. `fixed` synthesizes
-  every script line through the configured `audio` engine in one voice and
-  stitches the clips (350 ms gaps) into the story WAV; the manifest's
-  `duration_seconds` is updated to the real stitched length, and synthesis
-  failures end the job with code `synthesis_failure`.
+  every script line through the configured `audio` engine and stitches the
+  clips (350 ms gaps) into the story WAV; the manifest's `duration_seconds`
+  is updated to the real stitched length, and synthesis failures end the job
+  with code `synthesis_failure`.
 - `sources[].url` is attribution metadata only.
+- `cast` (optional): 2-6 speakers, each `{"name", "role", "voice_id"}` (plus
+  optional explicit `id`; ids otherwise slug from names). Empty means the
+  default trio narrator/nova/dr-lumen. `role` steers the script writer;
+  `voice_id` names a stored voice from `/v1/voices` (validated at submit),
+  empty meaning the studio default voice. In `fixed` mode each line is
+  synthesized with its speaker's voice.
+- `cast_voices` (optional): `{speaker_id: voice_id}` — an alternative way to
+  assign voices to cast member ids.
+- `title` + `script` (optional): when `script` is non-empty the job produces
+  exactly this script (the draft → edit → produce flow) instead of writing
+  one. Lines must cite fact ids derived from the same `sources`, or the job
+  fails with `grounding_failure`. Max 60 lines.
+
+Script writing: with a `llama` engine configured, the story script is written
+by the model, grounded in the fact cards, with one corrective retry before
+failing with `grounding_failure`. Without `llama`, the deterministic fixture
+script is used.
 
 Immediate response:
 
@@ -140,6 +157,30 @@ Concurrency:
   `story_busy`.
 - A story job reserves the shared `audio` engine lock while it runs so direct
   `/v1/audio/speech` calls cannot race story synthesis.
+
+## POST /v1/stories/draft
+
+Writes a story without producing it: same request shape as `POST
+/v1/stories`, synchronous response, no audio engine reservation, no stored
+artifact. Runs fine while a story job is active.
+
+Response:
+
+```json
+{
+  "subject": "how stars are born",
+  "title": "The Birth of a Star",
+  "sources": [ ... ],
+  "source_notes": [ ... ],
+  "fact_cards": [ ... ],
+  "cast": [ ... ],
+  "script": [ {"speaker_id": "narrator", "text": "...", "fact_ids": ["fact-1"]} ]
+}
+```
+
+The intended flow: draft, let the user edit `title`/`script` (speakers and
+text; citations travel with each line), then `POST /v1/stories` with the
+edited `title` + `script` to produce audio.
 
 ## GET /v1/stories
 

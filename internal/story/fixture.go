@@ -41,21 +41,18 @@ func BuildScaffold(req NormalizedRequest) (Scaffold, error) {
 		return Scaffold{}, NewError(CodeInsufficientSources, fmt.Sprintf("Need at least %d usable source notes to generate a factual story.", MinSources))
 	}
 
-	voice := func(id string) string {
-		if v := req.CastVoices[id]; v != "" {
-			return v
+	cast := req.Cast
+	if len(cast) == 0 {
+		cast = DefaultCast()
+		for i := range cast {
+			cast[i].VoiceID = "studio-default"
 		}
-		return "studio-default"
 	}
 	return Scaffold{
 		Sources: sources,
 		Notes:   notes,
 		Facts:   factCardsFromNotes(notes),
-		Cast: []CastMember{
-			{ID: "narrator", DisplayName: "Narrator", VoiceID: voice("narrator")},
-			{ID: "nova", DisplayName: "Nova", VoiceID: voice("nova")},
-			{ID: "dr-lumen", DisplayName: "Dr. Lumen", VoiceID: voice("dr-lumen")},
-		},
+		Cast:    cast,
 	}, nil
 }
 
@@ -91,7 +88,7 @@ func BuildFixtureManifest(id string, req NormalizedRequest, createdAt time.Time)
 	if err != nil {
 		return Manifest{}, nil, err
 	}
-	manifest, err := AssembleManifest(id, req, createdAt, scaffold, titleForSubject(req.Subject), fixtureScript(req.Subject, scaffold.Facts))
+	manifest, err := AssembleManifest(id, req, createdAt, scaffold, titleForSubject(req.Subject), fixtureScriptForCast(req.Subject, scaffold.Facts, scaffold.Cast))
 	if err != nil {
 		return Manifest{}, nil, err
 	}
@@ -186,6 +183,26 @@ func factCardsFromNotes(notes []SourceNote) []FactCard {
 		})
 	}
 	return facts
+}
+
+// fixtureScriptForCast is the deterministic fixture dialogue reassigned to
+// whatever cast the request defined: line i speaks as cast[i % len(cast)],
+// so grounding holds for any speaker set.
+func fixtureScriptForCast(subject string, facts []FactCard, cast []CastMember) []ScriptLine {
+	script := fixtureScript(subject, facts)
+	if len(cast) == 0 {
+		return script
+	}
+	known := make(map[string]bool, len(cast))
+	for _, member := range cast {
+		known[member.ID] = true
+	}
+	for i := range script {
+		if !known[script[i].SpeakerID] {
+			script[i].SpeakerID = cast[i%len(cast)].ID
+		}
+	}
+	return script
 }
 
 func fixtureScript(subject string, facts []FactCard) []ScriptLine {
