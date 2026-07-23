@@ -316,16 +316,32 @@ func TestManagerSynthesizesFixedVoiceStories(t *testing.T) {
 	if len(synthesized) != len(status.Manifest.Script) {
 		t.Fatalf("expected %d synthesized lines, got %d", len(status.Manifest.Script), len(synthesized))
 	}
-	if synthesized[0] != status.Manifest.Script[0].Text {
-		t.Fatalf("expected first synthesized line to match script, got %q", synthesized[0])
-	}
 	// Cast voices route per speaker: narrator/dr-lumen lines carry their
-	// assigned voices, nova falls back to the default ("").
-	for i, line := range status.Manifest.Script {
+	// assigned voices, nova falls back to the default (""). Synthesis order
+	// is grouped by voice, so match on text rather than position.
+	voiceByText := make(map[string]string, len(synthesized))
+	for i, text := range synthesized {
+		voiceByText[text] = voices[i]
+	}
+	for _, line := range status.Manifest.Script {
 		want := map[string]string{"narrator": "voice-a", "dr-lumen": "voice-b", "nova": ""}[line.SpeakerID]
-		if voices[i] != want {
-			t.Fatalf("line %d (%s): expected voice %q, got %q", i, line.SpeakerID, want, voices[i])
+		if voiceByText[line.Text] != want {
+			t.Fatalf("line %q (%s): expected voice %q, got %q", line.Text, line.SpeakerID, want, voiceByText[line.Text])
 		}
+	}
+	// Grouped synthesis: each voice's lines are contiguous, so the voice
+	// sequence never revisits an earlier voice.
+	seen := make(map[string]bool)
+	current := "\x00none"
+	for _, v := range voices {
+		if v == current {
+			continue
+		}
+		if seen[v] {
+			t.Fatalf("voice %q synthesized in multiple groups: %v", v, voices)
+		}
+		seen[v] = true
+		current = v
 	}
 	for _, member := range status.Manifest.Cast {
 		want := map[string]string{"narrator": "voice-a", "dr-lumen": "voice-b", "nova": "studio-default"}[member.ID]

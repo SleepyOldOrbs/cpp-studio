@@ -353,22 +353,39 @@ func (m *Manager) Draft(ctx context.Context, req CreateRequest) (DraftResponse, 
 
 // synthesizeScript speaks each script line through the injected synthesizer
 // with the speaker's assigned voice, walking progress across the
-// synthesizing stage. It reports false when the job was cancelled or failed
+// synthesizing stage. Lines are synthesized grouped by voice — resident TTS
+// sessions keep a single-slot voice-prompt cache, so grouping re-conditions
+// once per voice instead of once per speaker change — while clips return in
+// script order. It reports false when the job was cancelled or failed
 // (status already updated).
 func (m *Manager) synthesizeScript(ctx context.Context, j *job, script []ScriptLine, castVoices map[string]string) ([][]byte, bool) {
-	clips := make([][]byte, 0, len(script))
+	byVoice := make(map[string][]int)
+	var voiceOrder []string
 	for i, line := range script {
-		if ctx.Err() != nil || m.isCancelled(j) {
-			m.cancelled(j)
-			return nil, false
+		voiceID := castVoices[line.SpeakerID]
+		if _, seen := byVoice[voiceID]; !seen {
+			voiceOrder = append(voiceOrder, voiceID)
 		}
-		m.setStage(j, StatusSynthesizing, 0.55+0.3*float64(i)/float64(len(script)))
-		clip, err := m.synthesize(ctx, line.Text, castVoices[line.SpeakerID])
-		if err != nil {
-			m.fail(j, NewError(CodeSynthesisFailure, fmt.Sprintf("synthesize script line %d: %v", i+1, err)))
-			return nil, false
+		byVoice[voiceID] = append(byVoice[voiceID], i)
+	}
+
+	clips := make([][]byte, len(script))
+	done := 0
+	for _, voiceID := range voiceOrder {
+		for _, idx := range byVoice[voiceID] {
+			if ctx.Err() != nil || m.isCancelled(j) {
+				m.cancelled(j)
+				return nil, false
+			}
+			m.setStage(j, StatusSynthesizing, 0.55+0.3*float64(done)/float64(len(script)))
+			clip, err := m.synthesize(ctx, script[idx].Text, voiceID)
+			if err != nil {
+				m.fail(j, NewError(CodeSynthesisFailure, fmt.Sprintf("synthesize script line %d: %v", idx+1, err)))
+				return nil, false
+			}
+			clips[idx] = clip
+			done++
 		}
-		clips = append(clips, clip)
 	}
 	return clips, true
 }
