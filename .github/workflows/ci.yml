@@ -55,6 +55,11 @@ jobs:
         shell: pwsh
         run: .\scripts\smoke-story-fixture.ps1
 
+      - name: local engine benchmark harness
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: .\scripts\test-benchmark-story-local.ps1
+
       - name: fixture demo UI smoke
         if: matrix.os == 'windows-latest'
         shell: pwsh

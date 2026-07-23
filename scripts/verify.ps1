@@ -15,6 +15,7 @@ go test ./... -count=1
 go vet ./...
 go run .\cmd\cpp-studio --config .\config.ci.json --check
 go run .\cmd\cpp-studio --config .\config.smoke.json --check
+.\scripts\test-benchmark-story-local.ps1 | Out-Null
 .\scripts\smoke-demo-ui.ps1
 
 if ($IncludeLocalAudio) {

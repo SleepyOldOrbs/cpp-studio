@@ -87,6 +87,16 @@ Deterministic browser-demo API check (every flow the demo page makes):
 .\scripts\smoke-demo-ui.ps1
 ```
 
+Local planner/narrator feasibility benchmark:
+
+```powershell
+.\scripts\benchmark-story-local.ps1 -PlanOnly
+.\scripts\test-benchmark-story-local.ps1
+```
+
+The measured local-engine policy and reproduction commands are recorded in
+[`docs/LOCAL_ENGINE_PROFILE.md`](docs/LOCAL_ENGINE_PROFILE.md).
+
 Build a release package:
 
 ```powershell

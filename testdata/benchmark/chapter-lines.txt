@@ -1,0 +1,10 @@
+Stars form inside cold molecular clouds made mostly of hydrogen, helium, and microscopic dust grains.
+Small density differences let gravity gather material into knots, while turbulence and magnetic fields resist collapse.
+When one knot becomes dense enough, its centre contracts into a protostar surrounded by a rotating disk.
+The contracting gas converts gravitational energy into heat, so the young object's core grows steadily hotter.
+Jets launched along the rotation axis carry away angular momentum and clear channels through the surrounding cloud.
+Material continues to fall from the disk onto the protostar, increasing both its mass and its internal pressure.
+Once the core reaches roughly ten million kelvin, hydrogen nuclei begin fusing into helium through nuclear reactions.
+Fusion releases energy that pushes outward, balancing the inward pull of gravity in a state called hydrostatic equilibrium.
+At that point the object has entered the main sequence, the long stable phase that occupies most of a star's life.
+The star's mass determines its temperature, brightness, fuel consumption, and eventual path after the main sequence.
