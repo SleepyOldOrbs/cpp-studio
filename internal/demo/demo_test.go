@@ -35,6 +35,36 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "storyLibraryButton") {
 		t.Fatalf("expected story library marker, got %q", body)
 	}
+	if !strings.Contains(body, "/v1/voices") {
+		t.Fatalf("expected voice clone route marker, got %q", body)
+	}
+	if !strings.Contains(body, "voiceLibrary") {
+		t.Fatalf("expected voice library marker, got %q", body)
+	}
+	if !strings.Contains(body, "voiceSelect") {
+		t.Fatalf("expected voice select marker, got %q", body)
+	}
+	if !strings.Contains(body, "cloneSpeakForm") {
+		t.Fatalf("expected speak form marker, got %q", body)
+	}
+	if !strings.Contains(body, "clearAllButton") {
+		t.Fatalf("expected clear all marker, got %q", body)
+	}
+	if !strings.Contains(body, "wavSaveButton") {
+		t.Fatalf("expected recording save marker, got %q", body)
+	}
+	if !strings.Contains(body, "describeImageButton") {
+		t.Fatalf("expected image description marker, got %q", body)
+	}
+	if !strings.Contains(body, "/v1/images/descriptions") {
+		t.Fatalf("expected image description route marker, got %q", body)
+	}
+	if !strings.Contains(body, "designForm") {
+		t.Fatalf("expected voice designer marker, got %q", body)
+	}
+	if !strings.Contains(body, "/v1/voices/design") {
+		t.Fatalf("expected voice design route marker, got %q", body)
+	}
 }
 
 func TestHandlerServesAssets(t *testing.T) {
@@ -51,10 +81,22 @@ func TestHandlerServesAssets(t *testing.T) {
 			needle:      "refreshStoryLibrary",
 		},
 		{
+			name:        "javascript voice clone",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "refreshVoices",
+		},
+		{
 			name:        "css",
 			path:        "/styles.css",
 			contentType: "text/css",
 			needle:      ".story-library-item",
+		},
+		{
+			name:        "css voice clone",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".voice-item",
 		},
 	}
 

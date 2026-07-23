@@ -1,6 +1,7 @@
 package wav
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -124,5 +125,70 @@ func TestConcatenateRejectsMismatchedFormats(t *testing.T) {
 	}
 	if _, err := Concatenate(nil, 0); err == nil {
 		t.Fatalf("expected empty clip list to fail")
+	}
+}
+
+func TestPadSilenceExtendsClip(t *testing.T) {
+	clip := SyntheticTone(ToneSampleRate) // 1 second
+
+	padded, err := PadSilence(clip, 250*time.Millisecond, 250*time.Millisecond)
+	if err != nil {
+		t.Fatalf("pad silence: %v", err)
+	}
+	duration, err := Duration(padded)
+	if err != nil {
+		t.Fatalf("duration: %v", err)
+	}
+	want := 1500 * time.Millisecond
+	if diff := duration - want; diff < -10*time.Millisecond || diff > 10*time.Millisecond {
+		t.Fatalf("expected ~%s of audio, got %s", want, duration)
+	}
+
+	format, pcm, err := Decode(padded)
+	if err != nil {
+		t.Fatalf("decode padded: %v", err)
+	}
+	_, originalPCM, err := Decode(clip)
+	if err != nil {
+		t.Fatalf("decode original: %v", err)
+	}
+	leadBytes := int(float64(format.SampleRate)*0.25) * int(format.Channels) * int(format.BitsPerSample) / 8
+	for i := 0; i < leadBytes; i++ {
+		if pcm[i] != 0 {
+			t.Fatalf("expected silence at lead byte %d", i)
+		}
+	}
+	if !bytes.Equal(pcm[leadBytes:leadBytes+len(originalPCM)], originalPCM) {
+		t.Fatalf("expected original PCM preserved after lead silence")
+	}
+	for i := leadBytes + len(originalPCM); i < len(pcm); i++ {
+		if pcm[i] != 0 {
+			t.Fatalf("expected silence at trail byte %d", i)
+		}
+	}
+}
+
+func TestPadSilenceZeroDurationsKeepPCM(t *testing.T) {
+	clip := SyntheticTone(160)
+	padded, err := PadSilence(clip, 0, 0)
+	if err != nil {
+		t.Fatalf("pad silence: %v", err)
+	}
+	_, pcm, err := Decode(padded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	_, originalPCM, err := Decode(clip)
+	if err != nil {
+		t.Fatalf("decode original: %v", err)
+	}
+	if !bytes.Equal(pcm, originalPCM) {
+		t.Fatalf("expected unchanged PCM with zero padding")
+	}
+}
+
+func TestPadSilenceRejectsNonWAV(t *testing.T) {
+	if _, err := PadSilence([]byte("RIFFtestWAVE"), time.Second, time.Second); err == nil {
+		t.Fatalf("expected header-only bytes to fail decode")
 	}
 }

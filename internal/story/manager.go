@@ -215,6 +215,12 @@ func (m *Manager) run(ctx context.Context, j *job) {
 		if duration, err := wav.Duration(stitched); err == nil {
 			manifest.DurationSeconds = int(duration.Round(time.Second) / time.Second)
 		}
+		// Pad the finished artifact with lead/trail silence so playback
+		// devices that swallow the first fraction of a second don't clip the
+		// opening line. Duration above stays the speech length.
+		if padded, err := wav.PadSilence(stitched, artifactPad, artifactPad); err == nil {
+			stitched = padded
+		}
 		audio = stitched
 	} else {
 		if !m.advance(ctx, j, StatusSynthesizing, 0.75) {
@@ -255,7 +261,11 @@ func (m *Manager) run(ctx context.Context, j *job) {
 }
 
 // lineGap is the silence inserted between spoken script lines.
-const lineGap = 350 * time.Millisecond
+const (
+	lineGap = 350 * time.Millisecond
+	// artifactPad is the lead/trail silence around the stitched story WAV.
+	artifactPad = 250 * time.Millisecond
+)
 
 // synthesizeScript speaks each script line through the injected synthesizer,
 // walking progress across the synthesizing stage. It reports false when the

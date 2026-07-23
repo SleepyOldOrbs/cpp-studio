@@ -36,6 +36,9 @@ type Request struct {
 	Message string
 	// History holds the prior turns, oldest first.
 	History []Turn
+	// Voice, when non-nil, is the cloned voice the spoken reply uses; nil
+	// means the config default voice.
+	Voice *engine.Voice
 }
 
 // Result is one full turn of the loop.
@@ -81,7 +84,7 @@ func (l *Loop) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, &engine.Error{Kind: engine.KindEngineFailure, Message: "chat returned no assistant reply"}
 	}
 
-	speech, err := l.Engines.Run(ctx, engine.SpeechSpec(reply))
+	speech, err := l.Engines.Run(ctx, engine.SpeechVoiceSpec(reply, req.Voice))
 	if err != nil {
 		return Result{}, err
 	}

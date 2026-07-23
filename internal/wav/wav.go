@@ -166,6 +166,36 @@ func Concatenate(clips [][]byte, gap time.Duration) ([]byte, error) {
 	return Encode(format, pcm.Bytes()), nil
 }
 
+// PadSilence returns the clip with lead and trail silence spliced around its
+// PCM data. Playback commonly swallows the first fraction of a second of a
+// clip (Bluetooth wake-up, autoplay ramp-in), which listeners hear as speech
+// clipped at the start or end; the padding absorbs that without touching the
+// speech itself.
+func PadSilence(data []byte, lead, trail time.Duration) ([]byte, error) {
+	format, pcm, err := Decode(data)
+	if err != nil {
+		return nil, err
+	}
+	blockAlign := int(format.Channels) * int(format.BitsPerSample) / 8
+	if blockAlign <= 0 {
+		return nil, fmt.Errorf("invalid WAV: zero block align")
+	}
+	silence := func(d time.Duration) []byte {
+		if d <= 0 {
+			return nil
+		}
+		n := int(float64(format.SampleRate)*d.Seconds()) * blockAlign
+		n -= n % blockAlign
+		return make([]byte, n)
+	}
+
+	var out bytes.Buffer
+	out.Write(silence(lead))
+	out.Write(pcm)
+	out.Write(silence(trail))
+	return Encode(format, out.Bytes()), nil
+}
+
 // ToneSampleRate is the sample rate of SyntheticTone output.
 const ToneSampleRate = 16000
 

@@ -37,6 +37,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runWhisper(args[1:], stdout, stderr)
 	case "speech":
 		return runSpeech(args[1:], stdout, stderr)
+	case "design":
+		return runDesign(args[1:], stdout, stderr)
 	case "image":
 		return runImage(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
@@ -54,7 +56,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  cpp-studio-fixture server --host 127.0.0.1 --port 8799")
 	fmt.Fprintln(w, "  cpp-studio-fixture whisper -f <wav>")
-	fmt.Fprintln(w, "  cpp-studio-fixture speech --text <text> --out <path>")
+	fmt.Fprintln(w, "  cpp-studio-fixture speech --text <text> --out <path> [--voice-ref <wav> --reference-text <text>]")
+	fmt.Fprintln(w, "  cpp-studio-fixture design --instruct <description> --text <text> --out <path>")
 	fmt.Fprintln(w, "  cpp-studio-fixture image --prompt <prompt> --output <path> [--width <px> --height <px>]")
 }
 
@@ -107,9 +110,40 @@ type chatRequest struct {
 	Messages []chatMessage `json:"messages"`
 }
 
+// chatMessage accepts both content shapes llama-server does: a plain string,
+// or an array of typed parts (text plus image_url for vision requests).
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+type chatContentPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// flattenContent extracts the text of a message and whether it carried an
+// image part.
+func flattenContent(raw json.RawMessage) (string, bool) {
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text, false
+	}
+	var parts []chatContentPart
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return "", false
+	}
+	hasImage := false
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "text":
+			texts = append(texts, part.Text)
+		case "image_url":
+			hasImage = true
+		}
+	}
+	return strings.Join(texts, " "), hasImage
 }
 
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -128,10 +162,15 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lastUser := ""
+	lastUserHasImage := false
 	for _, msg := range req.Messages {
 		if msg.Role == "user" {
-			lastUser = msg.Content
+			lastUser, lastUserHasImage = flattenContent(msg.Content)
 		}
+	}
+	reply := "fixture assistant reply to: " + lastUser
+	if lastUserHasImage {
+		reply = "fixture image description"
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -144,7 +183,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"index": 0,
 				"message": map[string]any{
 					"role":    "assistant",
-					"content": "fixture assistant reply to: " + lastUser,
+					"content": reply,
 				},
 				"finish_reason": "stop",
 			},
@@ -193,6 +232,8 @@ func runSpeech(args []string, stdout, stderr io.Writer) error {
 	text := flags.String("text", "", "fixture/test helper text to synthesize")
 	outPath := flags.String("out", "", "fixture/test helper WAV output path")
 	requireContains := flags.String("require-contains", "", "fixture/test helper assertion for speech input")
+	voiceRef := flags.String("voice-ref", "", "fixture/test helper cloned voice reference WAV")
+	referenceText := flags.String("reference-text", "", "fixture/test helper cloned voice transcript")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -202,6 +243,14 @@ func runSpeech(args []string, stdout, stderr io.Writer) error {
 	if *requireContains != "" && !strings.Contains(*text, *requireContains) {
 		return fmt.Errorf("speech --text must contain %q", *requireContains)
 	}
+	if *voiceRef != "" {
+		if err := validateWAVFile(*voiceRef); err != nil {
+			return fmt.Errorf("speech --voice-ref: %w", err)
+		}
+		if strings.TrimSpace(*referenceText) == "" {
+			return errors.New("speech --voice-ref requires --reference-text")
+		}
+	}
 	if *outPath == "" {
 		return errors.New("speech --out <path> is required")
 	}
@@ -209,6 +258,29 @@ func runSpeech(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	return nil
+}
+
+// runDesign mimics the Qwen3-TTS VoiceDesign task: an instruction plus text
+// in, a deterministic WAV out.
+func runDesign(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("design", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	instruct := flags.String("instruct", "", "fixture/test helper voice design instruction")
+	text := flags.String("text", "", "fixture/test helper text to synthesize")
+	outPath := flags.String("out", "", "fixture/test helper WAV output path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*instruct) == "" {
+		return errors.New("design --instruct must be non-empty")
+	}
+	if strings.TrimSpace(*text) == "" {
+		return errors.New("design --text must be non-empty")
+	}
+	if *outPath == "" {
+		return errors.New("design --out <path> is required")
+	}
+	return writeFixtureWAV(*outPath)
 }
 
 func writeFixtureWAV(path string) error {

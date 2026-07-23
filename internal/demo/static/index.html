@@ -17,6 +17,7 @@
       <div class="topbar-status">
         <span class="status-pill unknown" id="gatewayStatus">Unknown</span>
         <button class="secondary" id="healthButton" type="button">Refresh health</button>
+        <button class="clear-all-button" id="clearAllButton" type="button">Clear all</button>
       </div>
     </header>
 
@@ -48,8 +49,17 @@
           <div class="source-row">
             <span class="source-label">WAV source</span>
             <span id="wavStatus">None</span>
+            <button class="plain" id="wavSaveButton" type="button" disabled>Save WAV</button>
             <button class="plain icon-button" id="wavClearButton" type="button" title="Remove WAV" aria-label="Remove WAV">&times;</button>
           </div>
+
+          <label class="field compact-field">
+            <span>Reply voice</span>
+            <select class="text-input" id="voiceSelect">
+              <option value="" selected>Studio default</option>
+            </select>
+            <small class="hint">Clone a voice below to add options here.</small>
+          </label>
 
           <div class="action-row">
             <button class="primary" id="runButton" type="submit">Run voice loop</button>
@@ -88,6 +98,123 @@
       </div>
     </section>
 
+    <section class="module" aria-label="Voice clone">
+      <header class="module-head">
+        <h2>Voice clone</h2>
+        <span class="module-route">POST /v1/voices</span>
+        <span class="module-note">reference &rarr; transcribe &rarr; clone</span>
+      </header>
+      <div class="module-body workspace">
+        <form class="control-panel" id="cloneForm">
+          <label class="field">
+            <span>Voice name</span>
+            <input class="text-input" id="cloneNameInput" type="text" maxlength="80" placeholder="e.g. James">
+          </label>
+
+          <div class="record-row">
+            <button class="record-button" id="cloneRecordButton" type="button" aria-pressed="false">Push to record reference</button>
+            <label class="file-button">
+              <input id="cloneWavInput" type="file" accept=".wav,audio/wav,audio/x-wav">
+              <span>Choose WAV</span>
+            </label>
+          </div>
+          <div class="vu-meter" aria-hidden="true"><i id="cloneVuLevel"></i></div>
+          <small class="hint">Give 5&ndash;15 seconds of clean, natural speech. Saving transcribes the reference with whisper, then stores the voice.</small>
+
+          <div class="source-row">
+            <span class="source-label">Reference</span>
+            <span id="cloneWavStatus">None</span>
+            <button class="plain" id="cloneWavSaveButton" type="button" disabled>Save WAV</button>
+            <button class="plain icon-button" id="cloneWavClearButton" type="button" title="Remove reference" aria-label="Remove reference">&times;</button>
+          </div>
+
+          <div class="action-row">
+            <button class="primary" id="cloneSaveButton" type="submit">Save voice</button>
+          </div>
+
+          <p class="error-box" id="cloneErrorBox" hidden></p>
+        </form>
+
+        <section class="result-panel">
+          <div class="story-library-header">
+            <span class="source-label">Voice library</span>
+            <button class="secondary compact-button" id="voiceLibraryButton" type="button">Refresh</button>
+          </div>
+          <div class="voice-library" id="voiceLibrary"></div>
+          <div class="audio-panel">
+            <div class="panel-label-row">
+              <span>Reference playback</span>
+            </div>
+            <audio id="clonePreviewAudio" controls></audio>
+          </div>
+
+          <form class="speak-form" id="cloneSpeakForm">
+            <label class="field">
+              <span>Speak with <em id="speakVoiceLabel">the studio default voice</em></span>
+              <textarea id="speakTextInput" rows="3" placeholder="Type something for the selected voice to say&hellip;"></textarea>
+              <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> speaks. Pick a voice above with &ldquo;Use in loop&rdquo;.</small>
+            </label>
+            <div class="action-row">
+              <button class="primary" id="speakButton" type="submit">Speak</button>
+            </div>
+            <div class="audio-panel">
+              <div class="panel-label-row">
+                <span>Spoken text</span>
+                <button class="plain" id="saveSpeakButton" type="button" disabled>Save WAV</button>
+              </div>
+              <audio id="speakAudio" controls></audio>
+            </div>
+          </form>
+        </section>
+      </div>
+    </section>
+
+    <section class="module" aria-label="Voice designer">
+      <header class="module-head">
+        <h2>Voice designer</h2>
+        <span class="module-route">POST /v1/voices/design</span>
+        <span class="module-note">describe &rarr; generate &rarr; audition &rarr; save</span>
+      </header>
+      <div class="module-body workspace">
+        <form class="control-panel" id="designForm">
+          <label class="field">
+            <span>Describe a voice</span>
+            <textarea id="designDescriptionInput" rows="3" maxlength="500" placeholder="e.g. High pitched, singing voice &mdash; or &mdash; Deep gravelly cowboy&hellip;"></textarea>
+            <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> generates. Qwen3&#8209;TTS VoiceDesign invents the voice from your words &mdash; no recording needed.</small>
+          </label>
+
+          <div class="action-row">
+            <button class="primary" id="designGenerateButton" type="submit">Generate voice</button>
+          </div>
+
+          <p class="error-box" id="designErrorBox" hidden></p>
+        </form>
+
+        <section class="result-panel">
+          <div class="source-row">
+            <span class="source-label">Candidate</span>
+            <span id="designStatus">None yet</span>
+          </div>
+          <div class="audio-panel">
+            <div class="panel-label-row">
+              <span>Voice audition</span>
+              <button class="plain" id="saveDesignWavButton" type="button" disabled>Save WAV</button>
+            </div>
+            <audio id="designAudio" controls></audio>
+          </div>
+
+          <label class="field">
+            <span>Voice name</span>
+            <input class="text-input" id="designNameInput" type="text" maxlength="80" placeholder="e.g. Gravelly cowboy">
+          </label>
+          <div class="action-row">
+            <button class="secondary" id="designSaveButton" type="button" disabled>Save to voice library</button>
+          </div>
+          <small class="hint">Saving stores the audition clip as the voice's cloning reference, so the loop, speak box, and image describer can all use it.</small>
+        </section>
+      </div>
+    </section>
+
     <section class="module" aria-label="Image lab">
       <header class="module-head">
         <h2>Image lab</h2>
@@ -113,8 +240,13 @@
 
           <div class="action-row">
             <button class="primary" id="generateImageButton" type="submit">Generate image</button>
+            <label class="file-button">
+              <input id="imageFileInput" type="file" accept=".png,image/png">
+              <span>Choose PNG</span>
+            </label>
             <button class="secondary" id="clearImageButton" type="button">Clear image</button>
           </div>
+          <small class="hint">Generate an image or load a PNG, then let the vision engine describe what it sees.</small>
         </form>
 
         <section class="image-result" aria-live="polite">
@@ -126,6 +258,23 @@
             <span class="source-label">Image status</span>
             <span id="imageStatus">Idle</span>
             <button class="plain" id="saveImageButton" type="button" disabled>Save PNG</button>
+          </div>
+
+          <div class="action-row">
+            <button class="secondary" id="describeImageButton" type="button" disabled>Describe image</button>
+            <span class="module-route">POST /v1/images/descriptions</span>
+          </div>
+          <label class="field">
+            <span>Vision description &middot; spoken with <em id="describeVoiceLabel">the studio default voice</em></span>
+            <textarea id="imageDescriptionOutput" rows="3" readonly placeholder="What the vision model sees appears here"></textarea>
+            <small class="hint">True vision: the model only receives the image, never the prompt.</small>
+          </label>
+          <div class="audio-panel">
+            <div class="panel-label-row">
+              <span>Description playback</span>
+              <button class="plain" id="saveDescriptionButton" type="button" disabled>Save WAV</button>
+            </div>
+            <audio id="describeAudio" controls></audio>
           </div>
           <p class="error-box" id="imageErrorBox" hidden></p>
         </section>

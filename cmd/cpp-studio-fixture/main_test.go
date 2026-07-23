@@ -72,6 +72,35 @@ func TestServerHealthAndChat(t *testing.T) {
 	}
 }
 
+func TestServerChatDescribesImageContent(t *testing.T) {
+	server := httptest.NewServer(newFixtureHandler())
+	defer server.Close()
+
+	body := strings.NewReader(`{"messages":[{"role":"user","content":[{"type":"text","text":"Describe what you see."},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}]}`)
+	resp, err := http.Post(server.URL+"/v1/chat/completions", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST /v1/chat/completions: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var chat struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&chat); err != nil {
+		t.Fatalf("decode chat: %v", err)
+	}
+	if len(chat.Choices) != 1 || chat.Choices[0].Message.Content != "fixture image description" {
+		t.Fatalf("unexpected vision reply: %#v", chat)
+	}
+}
+
 func TestWhisperRejectsNonWAV(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "input.txt")
 	if err := os.WriteFile(path, []byte("not a wav"), 0o600); err != nil {
@@ -231,6 +260,87 @@ func TestSpeechRequireContains(t *testing.T) {
 
 	if err := run([]string{"speech", "--text", "fixture transcript", "--require-contains", "fixture transcript", "--out", path}, &stdout, &stderr); err != nil {
 		t.Fatalf("run speech with required text: %v", err)
+	}
+}
+
+func TestDesignWritesValidWAV(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "designed.wav")
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"design", "--instruct", "deep gravelly cowboy", "--text", "hello", "--out", path}, &stdout, &stderr); err != nil {
+		t.Fatalf("run design: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read wav: %v", err)
+	}
+	assertFixtureWAV(t, data)
+}
+
+func TestDesignRequiresInstruct(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "designed.wav")
+
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"design", "--instruct", " ", "--text", "hello", "--out", path}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run design succeeded with empty instruct")
+	}
+	if !strings.Contains(err.Error(), "--instruct") {
+		t.Fatalf("error = %q, want --instruct detail", err.Error())
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("output file exists after rejected design input: %v", statErr)
+	}
+}
+
+func TestSpeechAcceptsClonedVoiceReference(t *testing.T) {
+	dir := t.TempDir()
+	refPath := filepath.Join(dir, "reference.wav")
+	writeMinimalWAV(t, refPath)
+	outPath := filepath.Join(dir, "out.wav")
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"speech", "--text", "hello", "--out", outPath, "--voice-ref", refPath, "--reference-text", "fixture transcript"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run speech with voice ref: %v", err)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read wav: %v", err)
+	}
+	assertFixtureWAV(t, data)
+}
+
+func TestSpeechVoiceRefRequiresReferenceText(t *testing.T) {
+	dir := t.TempDir()
+	refPath := filepath.Join(dir, "reference.wav")
+	writeMinimalWAV(t, refPath)
+	outPath := filepath.Join(dir, "out.wav")
+
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"speech", "--text", "hello", "--out", outPath, "--voice-ref", refPath}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run speech succeeded without --reference-text")
+	}
+	if !strings.Contains(err.Error(), "--reference-text") {
+		t.Fatalf("error = %q, want --reference-text detail", err.Error())
+	}
+}
+
+func TestSpeechVoiceRefRejectsNonWAV(t *testing.T) {
+	dir := t.TempDir()
+	refPath := filepath.Join(dir, "reference.txt")
+	if err := os.WriteFile(refPath, []byte("not a wav"), 0o600); err != nil {
+		t.Fatalf("write reference: %v", err)
+	}
+	outPath := filepath.Join(dir, "out.wav")
+
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"speech", "--text", "hello", "--out", outPath, "--voice-ref", refPath, "--reference-text", "words"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run speech succeeded with a non-WAV voice reference")
+	}
+	if !strings.Contains(err.Error(), "invalid wav") {
+		t.Fatalf("error = %q, want invalid wav", err.Error())
 	}
 }
 

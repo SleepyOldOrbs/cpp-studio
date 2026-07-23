@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	stdpng "image/png"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -19,6 +21,7 @@ import (
 	"cpp-studio/internal/engine"
 	"cpp-studio/internal/lifecycle"
 	"cpp-studio/internal/story"
+	"cpp-studio/internal/wav"
 )
 
 func TestHealth(t *testing.T) {
@@ -873,6 +876,12 @@ func TestGatewayHelperProcess(t *testing.T) {
 		switch mode {
 		case "speech":
 			runSpeechHelper(helperArgs)
+		case "speech-tone":
+			runToneSpeechHelper(helperArgs)
+		case "design":
+			runDesignHelper(helperArgs)
+		case "speech-require-voice":
+			runVoiceRequiredSpeechHelper(helperArgs)
 		case "speech-slow":
 			time.Sleep(500 * time.Millisecond)
 			runSpeechHelper(helperArgs)
@@ -972,6 +981,23 @@ func runLargeSpeechHelper(args []string) {
 	os.Exit(0)
 }
 
+// runVoiceRequiredSpeechHelper fails unless the run carried a cloned voice:
+// --voice-ref must point at a readable file and --reference-text must be
+// non-empty.
+func runVoiceRequiredSpeechHelper(args []string) {
+	ref := helperArg(args, "--voice-ref")
+	refText := helperArg(args, "--reference-text")
+	if ref == "" || refText == "" {
+		fmt.Fprintf(os.Stderr, "missing cloned voice args voice-ref=%q reference-text=%q\n", ref, refText)
+		os.Exit(2)
+	}
+	if _, err := os.Stat(ref); err != nil {
+		fmt.Fprintf(os.Stderr, "voice-ref not readable: %v\n", err)
+		os.Exit(2)
+	}
+	runSpeechHelper(args)
+}
+
 func runSpeechHelper(args []string) {
 	text := helperArg(args, "--text")
 	out := helperArg(args, "--out")
@@ -984,6 +1010,38 @@ func runSpeechHelper(args []string) {
 		os.Exit(2)
 	}
 	fmt.Fprintln(os.Stdout, "speech ok")
+	os.Exit(0)
+}
+
+// runDesignHelper mimics the VoiceDesign task: it fails unless both the
+// instruction and sample text arrived, then writes a minimal WAV.
+func runDesignHelper(args []string) {
+	instruct := helperArg(args, "--instruct")
+	text := helperArg(args, "--text")
+	out := helperArg(args, "--out")
+	if instruct == "" || text == "" || out == "" {
+		fmt.Fprintf(os.Stderr, "missing design args instruct=%q text=%q out=%q\n", instruct, text, out)
+		os.Exit(2)
+	}
+	if err := os.WriteFile(out, []byte("RIFFtestWAVE"), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+// runToneSpeechHelper writes one second of decodable synthetic tone, for
+// tests that assert on the produced audio rather than raw bytes.
+func runToneSpeechHelper(args []string) {
+	out := helperArg(args, "--out")
+	if out == "" {
+		fmt.Fprintln(os.Stderr, "missing --out")
+		os.Exit(2)
+	}
+	if err := os.WriteFile(out, wav.SyntheticTone(wav.ToneSampleRate), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	os.Exit(0)
 }
 
@@ -1382,6 +1440,491 @@ func TestVoiceLoopChatUnavailable(t *testing.T) {
 	}
 }
 
+func TestVoiceCloneLifecycleAndClonedVoiceLoop(t *testing.T) {
+	t.Chdir(t.TempDir())
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"cloned reply"}}]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"whisper": helperEngine("transcribe"),
+		"audio":   helperEngine("speech-require-voice"),
+		"llama":   {Command: "llama-server", HealthURL: upstream.URL + "/health"},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	// Create: uploads the reference, transcribes it via whisper, stores the voice.
+	var createBody bytes.Buffer
+	writer := multipart.NewWriter(&createBody)
+	_ = writer.WriteField("name", "Test Voice")
+	part, err := writer.CreateFormFile("file", "reference.wav")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write(validWAVBytes()); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voices", &createBody)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected create status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created voiceCloneSummary
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.ID == "" || created.Name != "Test Voice" || created.Transcript != "transcribed text" {
+		t.Fatalf("unexpected created voice %+v", created)
+	}
+	if created.AudioURL != "/v1/voices/"+created.ID+"/audio" {
+		t.Fatalf("unexpected audio url %q", created.AudioURL)
+	}
+
+	// List includes the new voice.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/voices", nil)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected list status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var list voiceListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatalf("decode voice list: %v", err)
+	}
+	if len(list.Voices) != 1 || list.Voices[0].ID != created.ID {
+		t.Fatalf("unexpected voice list %+v", list)
+	}
+
+	// The reference WAV is served for playback.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, created.AudioURL, nil)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected audio status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if contentType := rec.Header().Get("Content-Type"); !strings.Contains(contentType, "audio/wav") {
+		t.Fatalf("expected audio/wav content type, got %q", contentType)
+	}
+	if body := rec.Body.String(); len(body) < 12 || body[:4] != "RIFF" {
+		t.Fatalf("expected WAV body, got %q", body)
+	}
+
+	// The voice loop speaks with the cloned voice: the speech helper exits
+	// non-zero unless --voice-ref/--reference-text arrived.
+	var loopBody bytes.Buffer
+	writer = multipart.NewWriter(&loopBody)
+	_ = writer.WriteField("message", "hello")
+	_ = writer.WriteField("voice", created.ID)
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/voice", &loopBody)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected cloned voice loop status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Direct speech accepts the cloned voice too.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"input":"hello","voice":"`+created.ID+`","format":"wav"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected cloned speech status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Unknown voices are rejected up front.
+	var badBody bytes.Buffer
+	writer = multipart.NewWriter(&badBody)
+	_ = writer.WriteField("message", "hello")
+	_ = writer.WriteField("voice", "voice_20990101_000000_ffffff")
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/voice", &badBody)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected unknown voice status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not found") {
+		t.Fatalf("expected not found detail, got %s", rec.Body.String())
+	}
+
+	// Delete removes the voice from the library.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/v1/voices/"+created.ID, nil)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected delete status 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/voices", nil)
+	router.ServeHTTP(rec, req)
+	list = voiceListResponse{}
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatalf("decode voice list after delete: %v", err)
+	}
+	if len(list.Voices) != 0 {
+		t.Fatalf("expected empty voice list after delete, got %+v", list)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/v1/voices/"+created.ID, nil)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected repeat delete status 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSpeechPadsGeneratedAudioWithSilence(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech-tone"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"input":"hello","format":"wav"}`))
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	duration, err := wav.Duration(rec.Body.Bytes())
+	if err != nil {
+		t.Fatalf("decode padded speech: %v", err)
+	}
+	// One second of tone plus 250ms lead and trail padding.
+	want := 1500 * time.Millisecond
+	if diff := duration - want; diff < -10*time.Millisecond || diff > 10*time.Millisecond {
+		t.Fatalf("expected ~%s of padded audio, got %s", want, duration)
+	}
+
+	format, pcm, err := wav.Decode(rec.Body.Bytes())
+	if err != nil {
+		t.Fatalf("decode padded speech: %v", err)
+	}
+	leadBytes := int(float64(format.SampleRate)*0.25) * int(format.Channels) * int(format.BitsPerSample) / 8
+	for i := 0; i < leadBytes; i++ {
+		if pcm[i] != 0 {
+			t.Fatalf("expected lead silence at byte %d", i)
+		}
+	}
+}
+
+func TestVoiceDesignReturnsPreviewAndReference(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"voicedesign": helperEngine("design"),
+	})
+	manager := lifecycle.NewManager(cfg)
+	router := NewRouter(cfg, manager)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voices/design", strings.NewReader(`{"description":"Deep gravelly cowboy"}`))
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response voiceDesignResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode design response: %v", err)
+	}
+	if response.Description != "Deep gravelly cowboy" {
+		t.Fatalf("unexpected description %q", response.Description)
+	}
+	if response.Transcript == "" {
+		t.Fatalf("expected sample transcript, got %+v", response)
+	}
+	reference, err := base64.StdEncoding.DecodeString(response.ReferenceB64)
+	if err != nil {
+		t.Fatalf("decode reference_b64: %v", err)
+	}
+	if string(reference) != "RIFFtestWAVE" {
+		t.Fatalf("unexpected reference wav %q", reference)
+	}
+	if response.PreviewB64 == "" {
+		t.Fatalf("expected preview audio, got %+v", response)
+	}
+	if manager.Health().Engines["voicedesign"].LastSuccessAt == nil {
+		t.Fatalf("expected voicedesign lastSuccessAt to be recorded")
+	}
+}
+
+func TestVoiceDesignBadRequest(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"voicedesign": helperEngine("design"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "missing description", body: `{}`, want: "description"},
+		{name: "oversized description", body: `{"description":"` + strings.Repeat("x", 501) + `"}`, want: "500"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/voices/design", strings.NewReader(tt.body))
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.want) {
+				t.Fatalf("expected %q detail, got %s", tt.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestVoiceDesignMissingEngine(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voices/design", strings.NewReader(`{"description":"a whispering ghost"}`))
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "voicedesign") {
+		t.Fatalf("expected missing voicedesign detail, got %s", rec.Body.String())
+	}
+}
+
+func TestImageDescriptionUsesVisionAndClonedVoice(t *testing.T) {
+	t.Chdir(t.TempDir())
+	var gotPayload []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/v1/chat/completions" {
+			t.Errorf("unexpected upstream path %q", req.URL.Path)
+		}
+		data, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Errorf("read vision request: %v", err)
+		}
+		gotPayload = data
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"a tiny red square on a plain background"}}]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"vision": {Command: "llama-server", HealthURL: upstream.URL + "/health"},
+		"audio":  helperEngine("speech-require-voice"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	// Store a voice with a supplied transcript so no whisper engine is needed.
+	var createBody bytes.Buffer
+	writer := multipart.NewWriter(&createBody)
+	_ = writer.WriteField("name", "Narrator")
+	_ = writer.WriteField("transcript", "narrator reference words")
+	part, err := writer.CreateFormFile("file", "reference.wav")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write(validWAVBytes()); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voices", &createBody)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected voice create status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created voiceCloneSummary
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode voice create response: %v", err)
+	}
+
+	imageB64 := base64.StdEncoding.EncodeToString(validPNGBytes())
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/images/descriptions", strings.NewReader(`{"image_b64":"`+imageB64+`","voice":"`+created.ID+`"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected description status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var response imageDescriptionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode description response: %v", err)
+	}
+	if response.Description != "a tiny red square on a plain background" {
+		t.Fatalf("unexpected description %q", response.Description)
+	}
+	audio, err := base64.StdEncoding.DecodeString(response.AudioB64)
+	if err != nil {
+		t.Fatalf("decode audio_b64: %v", err)
+	}
+	if string(audio) != "RIFFtestWAVE" {
+		t.Fatalf("unexpected wav bytes %q", audio)
+	}
+
+	// True vision: the upstream request carries the generic instruction and
+	// the image, and nothing else.
+	var visionPayload visionChatRequest
+	if err := json.Unmarshal(gotPayload, &visionPayload); err != nil {
+		t.Fatalf("decode vision payload: %v", err)
+	}
+	if len(visionPayload.Messages) != 1 || visionPayload.Messages[0].Role != "user" {
+		t.Fatalf("expected one user message, got %+v", visionPayload.Messages)
+	}
+	parts := visionPayload.Messages[0].Content
+	if len(parts) != 2 {
+		t.Fatalf("expected text and image parts, got %+v", parts)
+	}
+	if parts[0].Type != "text" || parts[0].Text != visionInstruction {
+		t.Fatalf("expected only the generic vision instruction, got %+v", parts[0])
+	}
+	if parts[1].Type != "image_url" || parts[1].ImageURL == nil || !strings.HasPrefix(parts[1].ImageURL.URL, "data:image/png;base64,") {
+		t.Fatalf("expected base64 PNG image part, got %+v", parts[1])
+	}
+}
+
+func TestImageDescriptionMissingVisionEngine(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	imageB64 := base64.StdEncoding.EncodeToString(validPNGBytes())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/descriptions", strings.NewReader(`{"image_b64":"`+imageB64+`"}`))
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "vision") {
+		t.Fatalf("expected missing vision detail, got %s", rec.Body.String())
+	}
+}
+
+func TestImageDescriptionBadRequest(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"vision": {Command: "llama-server", HealthURL: "http://127.0.0.1:1/health"},
+		"audio":  helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "missing image", body: `{}`, want: "image_b64"},
+		{name: "not base64", body: `{"image_b64":"not-base64!!"}`, want: "base64"},
+		{name: "not png", body: `{"image_b64":"` + base64.StdEncoding.EncodeToString([]byte("plain text")) + `"}`, want: "PNG"},
+		{name: "oversized dimensions", body: `{"image_b64":"` + base64.StdEncoding.EncodeToString(widePNGBytes(t, 4097)) + `"}`, want: "at most"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/images/descriptions", strings.NewReader(tt.body))
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.want) {
+				t.Fatalf("expected %q detail, got %s", tt.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestVoiceCloneCreateAcceptsSuppliedTranscript(t *testing.T) {
+	t.Chdir(t.TempDir())
+	// No whisper engine configured: a supplied transcript must skip transcription.
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("name", "Manual")
+	_ = writer.WriteField("transcript", "hand-written reference words")
+	part, err := writer.CreateFormFile("file", "reference.wav")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write(validWAVBytes()); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voices", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected create status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created voiceCloneSummary
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.Transcript != "hand-written reference words" {
+		t.Fatalf("unexpected transcript %q", created.Transcript)
+	}
+}
+
+func TestVoiceCloneCreateRejectsInvalidWAV(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"whisper": helperEngine("transcribe"),
+		"audio":   helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("transcript", "words")
+	part, err := writer.CreateFormFile("file", "reference.wav")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write([]byte("not a wav")); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voices", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "reference wav") {
+		t.Fatalf("expected reference wav detail, got %s", rec.Body.String())
+	}
+}
+
 func validWAVBytes() []byte {
 	return []byte{
 		'R', 'I', 'F', 'F',
@@ -1389,6 +1932,17 @@ func validWAVBytes() []byte {
 		'W', 'A', 'V', 'E',
 		'f', 'm', 't', ' ',
 	}
+}
+
+// widePNGBytes encodes a real 1-pixel-tall PNG of the given width, for
+// exercising the description dimension cap.
+func widePNGBytes(t *testing.T, width int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := stdpng.Encode(&buf, image.NewGray(image.Rect(0, 0, width, 1))); err != nil {
+		t.Fatalf("encode wide png: %v", err)
+	}
+	return buf.Bytes()
 }
 
 func validPNGBytes() []byte {

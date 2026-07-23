@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -72,6 +73,11 @@ type Spec struct {
 	ValidateOutput func(path string) error
 	// BuildArgs produces the extra CLI args; inPath/outPath are "" when unused.
 	BuildArgs func(inPath, outPath string) []string
+	// OverrideArgs replaces the value that follows a matching flag in the
+	// configured args, or appends the flag+value pair when the flag is absent.
+	// This is how a per-run value beats a config default even for engines
+	// whose parsers take the first occurrence of a flag (audiocpp_cli).
+	OverrideArgs map[string]string
 }
 
 // Result is the outcome of a successful run.
@@ -205,7 +211,7 @@ func (r *Runner) RunReserved(ctx context.Context, spec Spec) (Result, error) {
 		defer releaseGPU()
 	}
 
-	stdout, stderr, elapsed, err := runCommand(ctx, engineCfg, spec.Timeout, spec.BuildArgs(inPath, outPath))
+	stdout, stderr, elapsed, err := runCommand(ctx, engineCfg, spec.Timeout, spec.OverrideArgs, spec.BuildArgs(inPath, outPath))
 	if err != nil {
 		return Result{}, r.fail(spec, commandFailure(spec.Label+" failed", err, stdout, stderr))
 	}
@@ -241,11 +247,42 @@ func RequestTimeout(cfg config.EngineConfig, fallback time.Duration) time.Durati
 	return time.Duration(cfg.RequestTimeoutSeconds) * time.Second
 }
 
-func runCommand(ctx context.Context, engineCfg config.EngineConfig, fallback time.Duration, extraArgs []string) ([]byte, []byte, time.Duration, error) {
+// applyArgOverrides rewrites the value that follows each overridden flag in
+// args, then appends any override whose flag never appeared (sorted for
+// determinism). In-place replacement is required because audiocpp_cli takes
+// the first occurrence of a flag, so appending alone cannot beat a config
+// default.
+func applyArgOverrides(args []string, overrides map[string]string) []string {
+	out := append([]string{}, args...)
+	if len(overrides) == 0 {
+		return out
+	}
+	replaced := make(map[string]bool, len(overrides))
+	for i := 0; i+1 < len(out); i++ {
+		if value, ok := overrides[out[i]]; ok {
+			out[i+1] = value
+			replaced[out[i]] = true
+			i++
+		}
+	}
+	missing := make([]string, 0, len(overrides))
+	for flag := range overrides {
+		if !replaced[flag] {
+			missing = append(missing, flag)
+		}
+	}
+	sort.Strings(missing)
+	for _, flag := range missing {
+		out = append(out, flag, overrides[flag])
+	}
+	return out
+}
+
+func runCommand(ctx context.Context, engineCfg config.EngineConfig, fallback time.Duration, overrides map[string]string, extraArgs []string) ([]byte, []byte, time.Duration, error) {
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout(engineCfg, fallback))
 	defer cancel()
 
-	args := append([]string{}, engineCfg.Args...)
+	args := applyArgOverrides(engineCfg.Args, overrides)
 	args = append(args, extraArgs...)
 	cmd := exec.CommandContext(ctx, engineCfg.Command, args...)
 	cmd.Dir = engineCfg.WorkingDir

@@ -13,7 +13,9 @@
   var liveButton = document.getElementById("liveButton");
   var wavInput = document.getElementById("wavInput");
   var wavStatus = document.getElementById("wavStatus");
+  var wavSaveButton = document.getElementById("wavSaveButton");
   var wavClearButton = document.getElementById("wavClearButton");
+  var clearAllButton = document.getElementById("clearAllButton");
   var runButton = document.getElementById("runButton");
   var clearButton = document.getElementById("clearButton");
   var clearLogButton = document.getElementById("clearLogButton");
@@ -39,6 +41,12 @@
   var imagePlaceholder = document.getElementById("imagePlaceholder");
   var imageStatus = document.getElementById("imageStatus");
   var imageErrorBox = document.getElementById("imageErrorBox");
+  var imageFileInput = document.getElementById("imageFileInput");
+  var describeImageButton = document.getElementById("describeImageButton");
+  var describeVoiceLabel = document.getElementById("describeVoiceLabel");
+  var imageDescriptionOutput = document.getElementById("imageDescriptionOutput");
+  var saveDescriptionButton = document.getElementById("saveDescriptionButton");
+  var describeAudio = document.getElementById("describeAudio");
   var storyForm = document.getElementById("storyForm");
   var storySubjectInput = document.getElementById("storySubjectInput");
   var storySecondsInput = document.getElementById("storySecondsInput");
@@ -52,8 +60,37 @@
   var storyLibraryButton = document.getElementById("storyLibraryButton");
   var storyLibrary = document.getElementById("storyLibrary");
   var storyFacts = document.getElementById("storyFacts");
+  var voiceSelect = document.getElementById("voiceSelect");
+  var cloneForm = document.getElementById("cloneForm");
+  var cloneNameInput = document.getElementById("cloneNameInput");
+  var cloneRecordButton = document.getElementById("cloneRecordButton");
+  var cloneWavInput = document.getElementById("cloneWavInput");
+  var cloneWavStatus = document.getElementById("cloneWavStatus");
+  var cloneWavSaveButton = document.getElementById("cloneWavSaveButton");
+  var cloneWavClearButton = document.getElementById("cloneWavClearButton");
+  var cloneSaveButton = document.getElementById("cloneSaveButton");
+  var cloneErrorBox = document.getElementById("cloneErrorBox");
+  var cloneVuLevel = document.getElementById("cloneVuLevel");
+  var voiceLibraryButton = document.getElementById("voiceLibraryButton");
+  var voiceLibrary = document.getElementById("voiceLibrary");
+  var clonePreviewAudio = document.getElementById("clonePreviewAudio");
+  var designForm = document.getElementById("designForm");
+  var designDescriptionInput = document.getElementById("designDescriptionInput");
+  var designGenerateButton = document.getElementById("designGenerateButton");
+  var designErrorBox = document.getElementById("designErrorBox");
+  var designStatus = document.getElementById("designStatus");
+  var saveDesignWavButton = document.getElementById("saveDesignWavButton");
+  var designAudio = document.getElementById("designAudio");
+  var designNameInput = document.getElementById("designNameInput");
+  var designSaveButton = document.getElementById("designSaveButton");
+  var cloneSpeakForm = document.getElementById("cloneSpeakForm");
+  var speakVoiceLabel = document.getElementById("speakVoiceLabel");
+  var speakTextInput = document.getElementById("speakTextInput");
+  var speakButton = document.getElementById("speakButton");
+  var saveSpeakButton = document.getElementById("saveSpeakButton");
+  var speakAudio = document.getElementById("speakAudio");
 
-  var ENGINE_NAMES = ["llama", "whisper", "audio", "sd"];
+  var ENGINE_NAMES = ["llama", "whisper", "audio", "sd", "vision", "voicedesign"];
   var HEALTH_POLL_MS = 20000;
   var LIVE_TICK_MS = 2500;
   var LIVE_MAX_SECONDS = 90;
@@ -82,6 +119,23 @@
   var recordStartedAt = 0;
   var recordTimer = 0;
   var lastHealthStatus = "";
+  var cloneWavFile = null;
+  var cloneRecorder = null;
+  var cloneRecording = false;
+  var cloneSetupPending = false;
+  var cloneStopRequested = false;
+  var cloneStartedAt = 0;
+  var cloneTimer = 0;
+  var speakAudioUrl = "";
+  var describeAudioUrl = "";
+  var designAudioUrl = "";
+  var designCandidate = null;
+  var selectedVoiceId = "";
+  try {
+    selectedVoiceId = window.localStorage.getItem("cpp-studio-voice") || "";
+  } catch (error) {
+    selectedVoiceId = "";
+  }
 
   var apiControls = [
     wavInput,
@@ -96,7 +150,18 @@
     storySecondsInput,
     storyVoiceSelect,
     storyGenerateButton,
-    newConvoButton
+    newConvoButton,
+    voiceSelect,
+    cloneNameInput,
+    cloneWavInput,
+    cloneSaveButton,
+    speakTextInput,
+    speakButton,
+    clearAllButton,
+    imageFileInput,
+    designDescriptionInput,
+    designGenerateButton,
+    designNameInput
   ].concat(sizePresets);
 
   function log(message, level) {
@@ -161,15 +226,18 @@
   }
 
   function syncControls() {
-    var busy = running || recording || recordSetupPending || live;
+    var busy = running || recording || recordSetupPending || live || cloneRecording || cloneSetupPending;
     apiControls.forEach(function (control) {
       control.disabled = busy;
     });
     if (activeStoryID) {
       storyGenerateButton.disabled = true;
     }
-    recordButton.disabled = running || live || (!recording && !recordSetupPending && !canRecord());
-    liveButton.disabled = running || recording || recordSetupPending || (!live && !canRecord());
+    recordButton.disabled = running || live || cloneRecording || cloneSetupPending || (!recording && !recordSetupPending && !canRecord());
+    liveButton.disabled = running || recording || recordSetupPending || cloneRecording || cloneSetupPending || (!live && !canRecord());
+    cloneRecordButton.disabled = running || live || recording || recordSetupPending || (!cloneRecording && !cloneSetupPending && !canRecord());
+    describeImageButton.disabled = busy || imagePreview.hidden || !imagePreview.src;
+    designSaveButton.disabled = busy || !designCandidate;
   }
 
   function setRunning(value) {
@@ -250,6 +318,7 @@
   function setActiveWav(file, source) {
     activeWavFile = file;
     wavStatus.textContent = source + ": " + file.name + " (" + formatBytes(file.size) + ")";
+    wavSaveButton.disabled = false;
     log("WAV ready from " + source + ": " + file.name + ", " + formatBytes(file.size));
   }
 
@@ -257,6 +326,17 @@
     activeWavFile = null;
     wavInput.value = "";
     wavStatus.textContent = "None";
+    wavSaveButton.disabled = true;
+  }
+
+  // downloadFile saves an in-memory File (a recording or live take) through
+  // a temporary object URL.
+  function downloadFile(file, fallbackName) {
+    var url = URL.createObjectURL(file);
+    downloadURL(url, file.name || fallbackName);
+    window.setTimeout(function () {
+      URL.revokeObjectURL(url);
+    }, 10000);
   }
 
   function clearAudioUrl() {
@@ -276,13 +356,27 @@
     clearError();
   }
 
+  function clearDescribeAudio() {
+    if (describeAudioUrl) {
+      URL.revokeObjectURL(describeAudioUrl);
+      describeAudioUrl = "";
+    }
+    describeAudio.removeAttribute("src");
+    describeAudio.load();
+    saveDescriptionButton.disabled = true;
+  }
+
   function clearImageOutput() {
     imagePreview.removeAttribute("src");
     imagePreview.hidden = true;
     imagePlaceholder.hidden = false;
     imageStatus.textContent = "Idle";
     saveImageButton.disabled = true;
+    imageFileInput.value = "";
+    imageDescriptionOutput.value = "";
+    clearDescribeAudio();
     clearImageError();
+    syncControls();
   }
 
   function createElement(tag, className, text) {
@@ -731,6 +825,8 @@
       imagePreview.hidden = false;
       imagePlaceholder.hidden = true;
       saveImageButton.disabled = false;
+      imageDescriptionOutput.value = "";
+      clearDescribeAudio();
       imageStatus.textContent = size + " PNG, " + formatBytes(estimateBase64Bytes(b64));
       log("Image PNG received: " + imageStatus.textContent);
     } catch (error) {
@@ -738,6 +834,128 @@
       setImageError(error);
     } finally {
       clearBusy(generateImageButton);
+      setRunning(false);
+    }
+  }
+
+  function chooseImageFile(event) {
+    clearImageError();
+    var file = event.target.files && event.target.files[0];
+    if (!file) {
+      return;
+    }
+    var name = file.name || "image.png";
+    var looksLikePng = /\.png$/i.test(name) || /png/i.test(file.type || "");
+    if (!looksLikePng) {
+      event.target.value = "";
+      setImageError(new Error("Choose a PNG file"));
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function () {
+      imagePreview.src = reader.result;
+      imagePreview.hidden = false;
+      imagePlaceholder.hidden = true;
+      saveImageButton.disabled = false;
+      imageDescriptionOutput.value = "";
+      clearDescribeAudio();
+      imageStatus.textContent = "upload: " + name + " (" + formatBytes(file.size) + ")";
+      syncControls();
+      log("Image PNG loaded from upload: " + name + ", " + formatBytes(file.size));
+    };
+    reader.onerror = function () {
+      setImageError(new Error("Could not read the chosen PNG"));
+    };
+    reader.readAsDataURL(file);
+  }
+
+  var DESCRIBE_MAX_DIMENSION = 1536;
+
+  // describeImageSource re-encodes whatever is in the preview frame as a
+  // PNG no larger than DESCRIBE_MAX_DIMENSION on its longest side. The
+  // vision model does not need full-resolution input, and huge uploads
+  // otherwise blow past the request body limit.
+  function describeImageSource() {
+    var width = imagePreview.naturalWidth;
+    var height = imagePreview.naturalHeight;
+    if (!width || !height) {
+      return null;
+    }
+    var scale = Math.min(1, DESCRIBE_MAX_DIMENSION / Math.max(width, height));
+    var canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    var context = canvas.getContext("2d");
+    context.drawImage(imagePreview, 0, 0, canvas.width, canvas.height);
+    var prefix = "data:image/png;base64,";
+    var dataUrl;
+    try {
+      dataUrl = canvas.toDataURL("image/png");
+    } catch (error) {
+      return null;
+    }
+    if (!dataUrl.startsWith(prefix)) {
+      return null;
+    }
+    return {
+      b64: dataUrl.slice(prefix.length),
+      width: canvas.width,
+      height: canvas.height,
+      scaled: scale < 1
+    };
+  }
+
+  async function describeImage() {
+    clearImageError();
+    if (imagePreview.hidden || !imagePreview.src) {
+      setImageError(new Error("Generate an image or load a PNG first"));
+      return;
+    }
+    var source = describeImageSource();
+    if (!source) {
+      setImageError(new Error("Could not read the current image"));
+      return;
+    }
+    setRunning(true);
+    setBusy(describeImageButton, "Looking...");
+    try {
+      imageDescriptionOutput.value = "";
+      clearDescribeAudio();
+      if (source.scaled) {
+        log("Image downscaled to " + source.width + "x" + source.height + " for the vision engine");
+      }
+      log("POST /v1/images/descriptions" + (selectedVoiceId ? " with voice " + selectedVoiceId : ""));
+      var response = await fetch("/v1/images/descriptions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          image_b64: source.b64,
+          voice: selectedVoiceId
+        })
+      });
+      await ensureOk(response, "Image description");
+      var data = await response.json();
+      imageDescriptionOutput.value = data.description || "";
+      if (!data.audio_b64) {
+        throw new Error("Image description returned no audio");
+      }
+      var speech = base64ToBlob(data.audio_b64, "audio/wav");
+      log("Vision description spoken: " + formatBytes(speech.size) + " WAV");
+      describeAudioUrl = URL.createObjectURL(speech);
+      describeAudio.src = describeAudioUrl;
+      describeAudio.load();
+      saveDescriptionButton.disabled = false;
+      try {
+        await describeAudio.play();
+      } catch (error) {
+        log("Description playback is ready");
+      }
+    } catch (error) {
+      setImageError(error);
+    } finally {
+      clearBusy(describeImageButton);
       setRunning(false);
     }
   }
@@ -764,6 +982,11 @@
       }
       if (conversation.length > 0) {
         form.append("history", JSON.stringify(conversation));
+      }
+      if (voiceSelect.value) {
+        form.append("voice", voiceSelect.value);
+        var chosen = voiceSelect.options[voiceSelect.selectedIndex];
+        log("Speaking with cloned voice: " + (chosen ? chosen.textContent : voiceSelect.value));
       }
 
       log("POST /v1/voice");
@@ -799,6 +1022,372 @@
       setError(error);
     } finally {
       clearBusy(runButton);
+      setRunning(false);
+    }
+  }
+
+  function setCloneError(error) {
+    var message = error && error.message ? error.message : String(error);
+    cloneErrorBox.textContent = message;
+    cloneErrorBox.hidden = false;
+    log("Error: " + message, "error");
+  }
+
+  function clearCloneError() {
+    cloneErrorBox.textContent = "";
+    cloneErrorBox.hidden = true;
+  }
+
+  function setCloneWav(file, source) {
+    cloneWavFile = file;
+    cloneWavStatus.textContent = source + ": " + file.name + " (" + formatBytes(file.size) + ")";
+    cloneWavSaveButton.disabled = false;
+    log("Reference WAV ready from " + source + ": " + file.name + ", " + formatBytes(file.size));
+  }
+
+  function clearCloneWav() {
+    cloneWavFile = null;
+    cloneWavInput.value = "";
+    cloneWavStatus.textContent = "None";
+    cloneWavSaveButton.disabled = true;
+  }
+
+  function transcriptSnippet(text) {
+    if (!text) {
+      return "";
+    }
+    return text.length > 120 ? text.slice(0, 117) + "..." : text;
+  }
+
+  function renderVoiceLibrary(voices) {
+    voiceLibrary.textContent = "";
+    if (!voices || voices.length === 0) {
+      voiceLibrary.appendChild(createElement("span", "voice-library-empty", "No cloned voices yet"));
+      return;
+    }
+    voices.forEach(function (clone) {
+      var item = createElement("article", "voice-item" + (clone.id === selectedVoiceId ? " selected" : ""));
+      var head = createElement("div", "voice-item-head");
+      head.appendChild(createElement("span", "voice-item-name", clone.name || clone.id));
+      head.appendChild(createElement("span", "voice-item-detail", clone.created_at ? new Date(clone.created_at).toLocaleString() : ""));
+      item.appendChild(head);
+      item.appendChild(createElement("p", "voice-item-transcript", clone.transcript || ""));
+
+      var actions = createElement("div", "voice-item-actions");
+      var useButton = createElement("button", "secondary compact-button", clone.id === selectedVoiceId ? "In use" : "Use in loop");
+      useButton.type = "button";
+      useButton.addEventListener("click", function () {
+        selectVoice(clone.id === selectedVoiceId ? "" : clone.id);
+      });
+      var playButton = createElement("button", "secondary compact-button", "Play");
+      playButton.type = "button";
+      playButton.addEventListener("click", function () {
+        clonePreviewAudio.src = clone.audio_url;
+        clonePreviewAudio.load();
+        clonePreviewAudio.play().catch(function () {
+          log("Reference playback is ready");
+        });
+      });
+      var deleteButton = createElement("button", "plain compact-button", "Delete");
+      deleteButton.type = "button";
+      deleteButton.addEventListener("click", function () {
+        deleteVoice(clone.id, clone.name);
+      });
+      actions.appendChild(useButton);
+      actions.appendChild(playButton);
+      actions.appendChild(deleteButton);
+      item.appendChild(actions);
+      voiceLibrary.appendChild(item);
+    });
+  }
+
+  function renderVoiceSelect(voices) {
+    var previous = voiceSelect.value;
+    voiceSelect.textContent = "";
+    var fallback = createElement("option", "", "Studio default");
+    fallback.value = "";
+    voiceSelect.appendChild(fallback);
+    (voices || []).forEach(function (clone) {
+      var option = createElement("option", "", clone.name || clone.id);
+      option.value = clone.id;
+      voiceSelect.appendChild(option);
+    });
+    var wanted = selectedVoiceId || previous;
+    voiceSelect.value = wanted;
+    if (voiceSelect.value !== wanted) {
+      voiceSelect.value = "";
+      selectedVoiceId = "";
+      persistSelectedVoice();
+    }
+    updateSpeakVoiceLabel();
+  }
+
+  function persistSelectedVoice() {
+    try {
+      window.localStorage.setItem("cpp-studio-voice", selectedVoiceId);
+    } catch (error) {
+      // Private browsing: selection just doesn't survive a reload.
+    }
+  }
+
+  function selectVoice(id) {
+    selectedVoiceId = id || "";
+    persistSelectedVoice();
+    voiceSelect.value = selectedVoiceId;
+    if (voiceSelect.value !== selectedVoiceId) {
+      voiceSelect.value = "";
+    }
+    updateSpeakVoiceLabel();
+    refreshVoices(true);
+    log(selectedVoiceId ? "Voice loop will speak with " + selectedVoiceId : "Voice loop back to the studio default voice");
+  }
+
+  async function refreshVoices(silent) {
+    voiceLibraryButton.disabled = true;
+    try {
+      if (!silent) {
+        log("GET /v1/voices");
+      }
+      var response = await fetch("/v1/voices", { method: "GET" });
+      await ensureOk(response, "Voice library");
+      var data = await response.json();
+      var voices = data.voices || [];
+      if (selectedVoiceId && !voices.some(function (clone) { return clone.id === selectedVoiceId; })) {
+        selectedVoiceId = "";
+        persistSelectedVoice();
+      }
+      renderVoiceLibrary(voices);
+      renderVoiceSelect(voices);
+    } catch (error) {
+      setCloneError(error);
+    } finally {
+      voiceLibraryButton.disabled = false;
+    }
+  }
+
+  async function saveClone(event) {
+    if (event) {
+      event.preventDefault();
+    }
+    clearCloneError();
+    if (!cloneWavFile) {
+      setCloneError(new Error("Record or choose a reference WAV first"));
+      return;
+    }
+    setRunning(true);
+    setBusy(cloneSaveButton, "Transcribing & saving...");
+    try {
+      var form = new FormData();
+      form.append("file", cloneWavFile, cloneWavFile.name || "reference.wav");
+      var name = cloneNameInput.value.trim();
+      if (name) {
+        form.append("name", name);
+      }
+      log("POST /v1/voices");
+      var response = await fetch("/v1/voices", { method: "POST", body: form });
+      await ensureOk(response, "Voice clone");
+      var clone = await response.json();
+      log("Voice saved: " + clone.name + " — \"" + transcriptSnippet(clone.transcript) + "\"");
+      clearCloneWav();
+      cloneNameInput.value = "";
+      selectedVoiceId = clone.id;
+      persistSelectedVoice();
+      await refreshVoices(true);
+    } catch (error) {
+      setCloneError(error);
+    } finally {
+      clearBusy(cloneSaveButton);
+      setRunning(false);
+    }
+  }
+
+  async function deleteVoice(id, name) {
+    clearCloneError();
+    try {
+      log("DELETE /v1/voices/" + id);
+      var response = await fetch("/v1/voices/" + encodeURIComponent(id), { method: "DELETE" });
+      await ensureOk(response, "Voice delete");
+      if (selectedVoiceId === id) {
+        selectedVoiceId = "";
+        persistSelectedVoice();
+      }
+      log("Voice deleted: " + (name || id));
+      await refreshVoices(true);
+    } catch (error) {
+      setCloneError(error);
+    }
+  }
+
+  function updateSpeakVoiceLabel() {
+    var chosen = voiceSelect.options[voiceSelect.selectedIndex];
+    var label = voiceSelect.value && chosen ? chosen.textContent : "the studio default voice";
+    speakVoiceLabel.textContent = label;
+    describeVoiceLabel.textContent = label;
+  }
+
+  function clearSpeakAudio() {
+    if (speakAudioUrl) {
+      URL.revokeObjectURL(speakAudioUrl);
+      speakAudioUrl = "";
+    }
+    speakAudio.removeAttribute("src");
+    speakAudio.load();
+    saveSpeakButton.disabled = true;
+  }
+
+  async function speakText(event) {
+    if (event) {
+      event.preventDefault();
+    }
+    clearCloneError();
+    var text = speakTextInput.value.trim();
+    if (!text) {
+      setCloneError(new Error("Type something for the voice to say"));
+      return;
+    }
+    setRunning(true);
+    setBusy(speakButton, "Speaking...");
+    try {
+      clearSpeakAudio();
+      log("POST /v1/audio/speech" + (selectedVoiceId ? " with voice " + selectedVoiceId : ""));
+      var response = await fetch("/v1/audio/speech", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          input: text,
+          voice: selectedVoiceId,
+          format: "wav"
+        })
+      });
+      await ensureOk(response, "Speak");
+      var blob = await response.blob();
+      log("Spoken text ready: " + formatBytes(blob.size) + " WAV");
+      speakAudioUrl = URL.createObjectURL(blob);
+      speakAudio.src = speakAudioUrl;
+      speakAudio.load();
+      saveSpeakButton.disabled = false;
+      try {
+        await speakAudio.play();
+      } catch (error) {
+        log("Spoken audio playback is ready");
+      }
+    } catch (error) {
+      setCloneError(error);
+    } finally {
+      clearBusy(speakButton);
+      setRunning(false);
+    }
+  }
+
+  function setDesignError(error) {
+    var message = error && error.message ? error.message : String(error);
+    designErrorBox.textContent = message;
+    designErrorBox.hidden = false;
+    log("Error: " + message, "error");
+  }
+
+  function clearDesignError() {
+    designErrorBox.textContent = "";
+    designErrorBox.hidden = true;
+  }
+
+  function clearDesignCandidate() {
+    designCandidate = null;
+    designStatus.textContent = "None yet";
+    if (designAudioUrl) {
+      URL.revokeObjectURL(designAudioUrl);
+      designAudioUrl = "";
+    }
+    designAudio.removeAttribute("src");
+    designAudio.load();
+    saveDesignWavButton.disabled = true;
+    syncControls();
+  }
+
+  async function generateDesign(event) {
+    if (event) {
+      event.preventDefault();
+    }
+    clearDesignError();
+    var description = designDescriptionInput.value.trim();
+    if (!description) {
+      setDesignError(new Error("Describe the voice you want first"));
+      return;
+    }
+    setRunning(true);
+    setBusy(designGenerateButton, "Designing...");
+    try {
+      clearDesignCandidate();
+      log("POST /v1/voices/design: " + description);
+      var response = await fetch("/v1/voices/design", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ description: description })
+      });
+      await ensureOk(response, "Voice design");
+      var data = await response.json();
+      if (!data.reference_b64 || !data.preview_b64) {
+        throw new Error("Voice design returned no audio");
+      }
+      designCandidate = {
+        description: data.description || description,
+        reference: base64ToBlob(data.reference_b64, "audio/wav"),
+        transcript: data.transcript || ""
+      };
+      designStatus.textContent = "\"" + designCandidate.description + "\"";
+      if (!designNameInput.value.trim()) {
+        designNameInput.value = designCandidate.description.slice(0, 80);
+      }
+      var preview = base64ToBlob(data.preview_b64, "audio/wav");
+      log("Designed voice ready: " + formatBytes(preview.size) + " WAV audition");
+      designAudioUrl = URL.createObjectURL(preview);
+      designAudio.src = designAudioUrl;
+      designAudio.load();
+      saveDesignWavButton.disabled = false;
+      try {
+        await designAudio.play();
+      } catch (error) {
+        log("Voice audition playback is ready");
+      }
+    } catch (error) {
+      setDesignError(error);
+    } finally {
+      clearBusy(designGenerateButton);
+      setRunning(false);
+    }
+  }
+
+  async function saveDesign() {
+    clearDesignError();
+    if (!designCandidate) {
+      setDesignError(new Error("Generate a voice first"));
+      return;
+    }
+    setRunning(true);
+    setBusy(designSaveButton, "Saving...");
+    try {
+      var form = new FormData();
+      form.append("file", new File([designCandidate.reference], "designed-voice.wav", { type: "audio/wav" }));
+      var name = designNameInput.value.trim() || designCandidate.description.slice(0, 80);
+      form.append("name", name);
+      form.append("transcript", designCandidate.transcript);
+      log("POST /v1/voices (designed voice)");
+      var response = await fetch("/v1/voices", { method: "POST", body: form });
+      await ensureOk(response, "Voice save");
+      var clone = await response.json();
+      log("Designed voice saved to the library: " + clone.name);
+      selectedVoiceId = clone.id;
+      persistSelectedVoice();
+      designNameInput.value = "";
+      await refreshVoices(true);
+    } catch (error) {
+      setDesignError(error);
+    } finally {
+      clearBusy(designSaveButton);
       setRunning(false);
     }
   }
@@ -1003,6 +1592,185 @@
     recorder = null;
   }
 
+  function cloneRecordLabel() {
+    var elapsed = Math.max(0, (Date.now() - cloneStartedAt) / 1000);
+    var minutes = Math.floor(elapsed / 60);
+    var seconds = Math.floor(elapsed % 60);
+    return "Recording " + minutes + ":" + (seconds < 10 ? "0" : "") + seconds + " · release to stop";
+  }
+
+  function stopCloneTimer() {
+    if (cloneTimer) {
+      window.clearInterval(cloneTimer);
+      cloneTimer = 0;
+    }
+  }
+
+  function setCloneRecording(value) {
+    cloneRecording = value;
+    cloneRecordButton.classList.toggle("recording", value);
+    cloneRecordButton.setAttribute("aria-pressed", value ? "true" : "false");
+    if (value) {
+      cloneStartedAt = Date.now();
+      cloneRecordButton.textContent = cloneRecordLabel();
+      stopCloneTimer();
+      cloneTimer = window.setInterval(function () {
+        cloneRecordButton.textContent = cloneRecordLabel();
+      }, 250);
+    } else {
+      stopCloneTimer();
+      cloneRecordButton.textContent = "Push to record reference";
+    }
+    syncControls();
+  }
+
+  function setCloneSetupPending(value) {
+    cloneSetupPending = value;
+    if (value) {
+      cloneRecordButton.textContent = "Preparing...";
+    } else if (cloneRecording) {
+      cloneRecordButton.textContent = cloneRecordLabel();
+    } else {
+      cloneRecordButton.textContent = "Push to record reference";
+    }
+    syncControls();
+  }
+
+  async function startCloneRecording(event) {
+    if (event && cloneRecordButton.setPointerCapture && event.pointerId !== undefined) {
+      cloneRecordButton.setPointerCapture(event.pointerId);
+    }
+    clearCloneError();
+    if (!canRecord()) {
+      setCloneError(new Error("Audio recording is not available in this browser"));
+      return;
+    }
+    if (cloneRecording || recording || recordSetupPending || live || running) {
+      return;
+    }
+
+    cloneStopRequested = false;
+    setCloneSetupPending(true);
+    var stream = null;
+    var audioContext = null;
+    var source = null;
+    var processor = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      });
+      if (cloneStopRequested) {
+        await cleanupRecorderResources({ stream: stream });
+        cloneStopRequested = false;
+        setCloneSetupPending(false);
+        log("Reference recording cancelled before microphone setup completed");
+        return;
+      }
+      var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      audioContext = new AudioContextClass();
+      source = audioContext.createMediaStreamSource(stream);
+      processor = audioContext.createScriptProcessor(4096, 1, 1);
+      var chunks = [];
+      var length = 0;
+
+      processor.onaudioprocess = function (processEvent) {
+        if (!cloneRecording) {
+          return;
+        }
+        var input = processEvent.inputBuffer.getChannelData(0);
+        var copy = new Float32Array(input.length);
+        copy.set(input);
+        chunks.push(copy);
+        length += copy.length;
+        updateVuInto(cloneVuLevel, input);
+
+        processEvent.outputBuffer.getChannelData(0).fill(0);
+      };
+
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+      cloneRecorder = {
+        audioContext: audioContext,
+        chunks: chunks,
+        processor: processor,
+        sampleRate: audioContext.sampleRate,
+        source: source,
+        stream: stream
+      };
+      Object.defineProperty(cloneRecorder, "length", {
+        get: function () {
+          return length;
+        }
+      });
+
+      setCloneSetupPending(false);
+      setCloneRecording(true);
+      log("Reference recording started at " + audioContext.sampleRate + " Hz");
+      if (cloneStopRequested) {
+        await stopCloneRecording();
+      }
+    } catch (error) {
+      await cleanupRecorderResources({
+        audioContext: audioContext,
+        processor: processor,
+        source: source,
+        stream: stream
+      });
+      cloneStopRequested = false;
+      setCloneSetupPending(false);
+      setCloneRecording(false);
+      setCloneError(error);
+    }
+  }
+
+  async function stopCloneRecording() {
+    if (cloneSetupPending && !cloneRecording) {
+      cloneStopRequested = true;
+      return;
+    }
+    if (!cloneRecording || !cloneRecorder) {
+      return;
+    }
+
+    var current = cloneRecorder;
+    cloneStopRequested = false;
+    setCloneRecording(false);
+    resetVuInto(cloneVuLevel);
+    await cleanupRecorderResources(current);
+
+    var samples = mergeChunks(current.chunks, current.length);
+    if (samples.length < current.sampleRate) {
+      cloneRecorder = null;
+      setCloneError(new Error("Reference recording is too short; aim for 5-15 seconds"));
+      return;
+    }
+
+    var wavBlob = encodeWav(samples, current.sampleRate);
+    var file = new File([wavBlob], "reference.wav", { type: "audio/wav" });
+    setCloneWav(file, "recording");
+    cloneRecorder = null;
+  }
+
+  function chooseCloneWav(event) {
+    clearCloneError();
+    var file = event.target.files && event.target.files[0];
+    if (!file) {
+      return;
+    }
+    var name = file.name || "reference.wav";
+    var looksLikeWav = /\.wav$/i.test(name) || /wav/i.test(file.type || "");
+    if (!looksLikeWav) {
+      event.target.value = "";
+      setCloneError(new Error("Choose a WAV file"));
+      return;
+    }
+    setCloneWav(file, "upload");
+  }
+
   function downloadURL(url, filename) {
     var link = document.createElement("a");
     link.href = url;
@@ -1012,7 +1780,7 @@
     link.remove();
   }
 
-  function updateVuLevel(samples) {
+  function updateVuInto(element, samples) {
     var peak = 0;
     for (var i = 0; i < samples.length; i += 1) {
       var value = Math.abs(samples[i]);
@@ -1021,13 +1789,21 @@
       }
     }
     var percent = Math.min(100, Math.round(peak * 140));
-    vuLevel.style.width = percent + "%";
-    vuLevel.classList.toggle("hot", percent > 92);
+    element.style.width = percent + "%";
+    element.classList.toggle("hot", percent > 92);
+  }
+
+  function resetVuInto(element) {
+    element.style.width = "0%";
+    element.classList.remove("hot");
+  }
+
+  function updateVuLevel(samples) {
+    updateVuInto(vuLevel, samples);
   }
 
   function resetVuLevel() {
-    vuLevel.style.width = "0%";
-    vuLevel.classList.remove("hot");
+    resetVuInto(vuLevel);
   }
 
   function renderConversation() {
@@ -1290,6 +2066,46 @@
     log("Cleared workspace");
   }
 
+  // clearEverything resets every panel to a fresh page: inputs, outputs,
+  // conversation, and the session log. Stored voices and retained stories
+  // are library data, not page state, so they stay; a story mid-generation
+  // keeps running.
+  function clearEverything() {
+    clearActiveWav();
+    messageInput.value = "";
+    resetOutputs();
+    conversation = [];
+    renderConversation();
+
+    clearCloneWav();
+    cloneNameInput.value = "";
+    clearCloneError();
+    speakTextInput.value = "";
+    clearSpeakAudio();
+    clonePreviewAudio.removeAttribute("src");
+    clonePreviewAudio.load();
+
+    designDescriptionInput.value = "";
+    designNameInput.value = "";
+    clearDesignError();
+    clearDesignCandidate();
+
+    imagePromptInput.value = "";
+    clearImageOutput();
+
+    if (!activeStoryID) {
+      setStoryStatus("Idle", 0);
+      storyAudio.removeAttribute("src");
+      storyAudio.load();
+      saveStoryButton.disabled = true;
+      storyFacts.textContent = "";
+      clearStoryError();
+    }
+
+    logOutput.textContent = "";
+    log("Cleared the workspace");
+  }
+
   function syncSizePresets() {
     var current = imageSizeInput.value.trim();
     sizePresets.forEach(function (preset) {
@@ -1342,9 +2158,27 @@
     clearActiveWav();
     log("Removed WAV source");
   });
+  wavSaveButton.addEventListener("click", function () {
+    if (activeWavFile) {
+      downloadFile(activeWavFile, "recording.wav");
+    }
+  });
+  cloneWavSaveButton.addEventListener("click", function () {
+    if (cloneWavFile) {
+      downloadFile(cloneWavFile, "reference.wav");
+    }
+  });
+  clearAllButton.addEventListener("click", clearEverything);
   clearImageButton.addEventListener("click", function () {
     clearImageOutput();
     log("Cleared image");
+  });
+  imageFileInput.addEventListener("change", chooseImageFile);
+  describeImageButton.addEventListener("click", describeImage);
+  saveDescriptionButton.addEventListener("click", function () {
+    if (describeAudio.src) {
+      downloadURL(describeAudio.src, "image-description.wav");
+    }
   });
   clearLogButton.addEventListener("click", function () {
     logOutput.textContent = "";
@@ -1360,6 +2194,8 @@
 
   submitOnCtrlEnter(messageInput, voiceForm);
   submitOnCtrlEnter(imagePromptInput, imageForm);
+  submitOnCtrlEnter(speakTextInput, cloneSpeakForm);
+  submitOnCtrlEnter(designDescriptionInput, designForm);
 
   liveButton.addEventListener("click", function () {
     if (live) {
@@ -1374,16 +2210,52 @@
   recordButton.addEventListener("pointercancel", stopRecording);
   recordButton.addEventListener("lostpointercapture", stopRecording);
 
+  cloneForm.addEventListener("submit", saveClone);
+  designForm.addEventListener("submit", generateDesign);
+  designSaveButton.addEventListener("click", saveDesign);
+  saveDesignWavButton.addEventListener("click", function () {
+    if (designAudio.src) {
+      downloadURL(designAudio.src, "designed-voice.wav");
+    }
+  });
+  cloneSpeakForm.addEventListener("submit", speakText);
+  saveSpeakButton.addEventListener("click", function () {
+    if (speakAudio.src) {
+      downloadURL(speakAudio.src, "spoken-text.wav");
+    }
+  });
+  cloneWavInput.addEventListener("change", chooseCloneWav);
+  cloneWavClearButton.addEventListener("click", function () {
+    if (!cloneWavFile) {
+      return;
+    }
+    clearCloneWav();
+    log("Removed reference WAV");
+  });
+  voiceLibraryButton.addEventListener("click", function () {
+    refreshVoices(false);
+  });
+  voiceSelect.addEventListener("change", function () {
+    selectVoice(voiceSelect.value);
+  });
+  cloneRecordButton.addEventListener("pointerdown", startCloneRecording);
+  cloneRecordButton.addEventListener("pointerup", stopCloneRecording);
+  cloneRecordButton.addEventListener("pointercancel", stopCloneRecording);
+  cloneRecordButton.addEventListener("lostpointercapture", stopCloneRecording);
+
   if (!canRecord()) {
     recordButton.disabled = true;
     recordButton.textContent = "Recording unavailable";
     liveButton.disabled = true;
+    cloneRecordButton.disabled = true;
+    cloneRecordButton.textContent = "Recording unavailable";
   }
 
   renderEngineRack(null);
   log("Demo loaded");
   refreshHealth(false);
   refreshStoryLibrary(true);
+  refreshVoices(true);
   window.setInterval(function () {
     if (document.visibilityState === "visible") {
       refreshHealth(true);

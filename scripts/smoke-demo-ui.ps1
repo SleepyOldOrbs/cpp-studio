@@ -1,13 +1,15 @@
 param(
   [int]$GatewayPort = 8777,
   [int]$LlamaPort = 8798,
+  [int]$VisionPort = 8797,
   [string]$OutDir = ".\out\demo-ui-smoke"
 )
 
 # Exercises every API flow the browser demo (internal/demo/static/app.js)
 # makes, against the deterministic fixture engines: demo assets, health,
-# transcription, the voice loop with conversation history, image generation,
-# and a fixed-voice story with a stitched WAV artifact.
+# transcription, the voice loop with conversation history, voice cloning
+# (create / list / play / speak-with / delete), image generation, and a
+# fixed-voice story with a stitched WAV artifact.
 
 $ErrorActionPreference = "Stop"
 $env:Path = $env:Path + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
@@ -72,6 +74,8 @@ $fixtureCommand = (Resolve-Path $fixtureExe).Path
 Assert-PortFree -Port $GatewayPort -Label "gateway"
 Stop-FixtureListener -Port $LlamaPort -ExpectedPath $fixtureCommand
 Assert-PortFree -Port $LlamaPort -Label "fixture llama"
+Stop-FixtureListener -Port $VisionPort -ExpectedPath $fixtureCommand
+Assert-PortFree -Port $VisionPort -Label "fixture vision"
 & $fixtureExe speech --text "fixture input" --out $inputWav
 
 $config = [ordered]@{
@@ -89,6 +93,15 @@ $config = [ordered]@{
       shutdownTimeoutSeconds = 5
       requestTimeoutSeconds = 30
     }
+    vision = [ordered]@{
+      command = $fixtureCommand
+      args = @("server", "--host", "127.0.0.1", "--port", "$VisionPort")
+      mode = "server"
+      healthUrl = "http://127.0.0.1:$VisionPort/health"
+      startupTimeoutSeconds = 10
+      shutdownTimeoutSeconds = 5
+      requestTimeoutSeconds = 30
+    }
     whisper = [ordered]@{
       command = $fixtureCommand
       args = @("whisper")
@@ -98,6 +111,12 @@ $config = [ordered]@{
     audio = [ordered]@{
       command = $fixtureCommand
       args = @("speech")
+      mode = "subprocess"
+      requestTimeoutSeconds = 30
+    }
+    voicedesign = [ordered]@{
+      command = $fixtureCommand
+      args = @("design")
       mode = "subprocess"
       requestTimeoutSeconds = 30
     }
@@ -114,6 +133,7 @@ $config | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -Path $configPath
 $base = "http://127.0.0.1:$GatewayPort"
 $server = Start-Process -WindowStyle Hidden -PassThru -FilePath (Resolve-Path $gatewayExe).Path -ArgumentList @("--config", (Resolve-Path $configPath).Path)
 $llamaPid = $null
+$visionPid = $null
 try {
   $health = $null
   for ($i = 0; $i -lt 80 -and ($null -eq $health -or $health.status -ne "ready"); $i++) {
@@ -130,6 +150,7 @@ try {
     throw "gateway did not become ready"
   }
   $llamaPid = $health.engines.llama.pid
+  $visionPid = $health.engines.vision.pid
 
   # Demo assets, exactly as the browser fetches them.
   $index = Invoke-WebRequest -Uri "$base/demo/" -UseBasicParsing
@@ -169,6 +190,33 @@ try {
     }
   }
 
+  # Voice clone: create from the reference WAV (whisper transcribes it),
+  # list it, fetch the reference for playback, speak through it in the
+  # voice loop, then delete it so the smoke leaves no library entries.
+  $clone = Invoke-RestMethod -Uri "$base/v1/voices" -Method Post -Form @{ name = "Smoke Voice"; file = Get-Item $inputWav }
+  if (-not $clone.id -or $clone.transcript -ne "fixture transcript") {
+    throw "unexpected voice clone response: $($clone | ConvertTo-Json -Depth 4)"
+  }
+  $voices = Invoke-RestMethod "$base/v1/voices"
+  if (-not ($voices.voices | Where-Object { $_.id -eq $clone.id })) {
+    throw "voice list did not include cloned voice"
+  }
+  $refWav = Invoke-WebRequest -Uri "$base$($clone.audio_url)" -UseBasicParsing
+  Assert-WavBytes -Bytes $refWav.Content -Label "voice reference"
+  $clonedVoice = Invoke-RestMethod -Uri "$base/v1/voice" -Method Post -Form @{ message = "speak as the clone"; voice = $clone.id }
+  if (-not $clonedVoice.audio_b64) {
+    throw "cloned voice loop returned no audio"
+  }
+  Assert-WavBytes -Bytes ([Convert]::FromBase64String($clonedVoice.audio_b64)) -Label "cloned voice reply"
+  $speakBody = @{ input = "read this in the cloned voice"; voice = $clone.id; format = "wav" } | ConvertTo-Json
+  $spoken = Invoke-WebRequest -Uri "$base/v1/audio/speech" -Method Post -ContentType "application/json" -Body $speakBody -UseBasicParsing
+  Assert-WavBytes -Bytes $spoken.Content -Label "spoken text"
+  Invoke-RestMethod -Uri "$base/v1/voices/$($clone.id)" -Method Delete | Out-Null
+  $voices = Invoke-RestMethod "$base/v1/voices"
+  if ($voices.voices | Where-Object { $_.id -eq $clone.id }) {
+    throw "voice list still includes deleted voice"
+  }
+
   # Image generation.
   $imageBody = @{ prompt = "fixture image"; size = "64x64"; response_format = "b64_json" } | ConvertTo-Json
   $image = Invoke-RestMethod -Uri "$base/v1/images/generations" -Method Post -ContentType "application/json" -Body $imageBody
@@ -179,6 +227,32 @@ try {
       throw "image payload is not a PNG"
     }
   }
+
+  # Voice designer: describe a voice, audition it, save the audition as a
+  # library voice, speak with it, then delete it.
+  $design = Invoke-RestMethod -Uri "$base/v1/voices/design" -Method Post -ContentType "application/json" -Body (@{ description = "deep gravelly cowboy" } | ConvertTo-Json)
+  if (-not $design.reference_b64 -or -not $design.preview_b64 -or -not $design.transcript) {
+    throw "voice design response missing fields: $($design | ConvertTo-Json -Depth 4)"
+  }
+  Assert-WavBytes -Bytes ([Convert]::FromBase64String($design.preview_b64)) -Label "designed voice preview"
+  $designedRefPath = Join-Path (Resolve-Path $OutDir).Path "designed-ref.wav"
+  [IO.File]::WriteAllBytes($designedRefPath, [Convert]::FromBase64String($design.reference_b64))
+  $designedVoice = Invoke-RestMethod -Uri "$base/v1/voices" -Method Post -Form @{ name = "Designed Cowboy"; transcript = $design.transcript; file = Get-Item $designedRefPath }
+  if (-not $designedVoice.id) {
+    throw "designed voice save failed: $($designedVoice | ConvertTo-Json -Depth 4)"
+  }
+  $designedReply = Invoke-RestMethod -Uri "$base/v1/voice" -Method Post -Form @{ message = "speak as the designed voice"; voice = $designedVoice.id }
+  Assert-WavBytes -Bytes ([Convert]::FromBase64String($designedReply.audio_b64)) -Label "designed voice reply"
+  Invoke-RestMethod -Uri "$base/v1/voices/$($designedVoice.id)" -Method Delete | Out-Null
+
+  # Vision: describe the generated image; the fixture vision server answers
+  # with a fixed marker for any request carrying an image part.
+  $describeBody = @{ image_b64 = $image.data[0].b64_json; voice = "" } | ConvertTo-Json
+  $describe = Invoke-RestMethod -Uri "$base/v1/images/descriptions" -Method Post -ContentType "application/json" -Body $describeBody
+  if ($describe.description -ne "fixture image description") {
+    throw "unexpected image description: $($describe.description)"
+  }
+  Assert-WavBytes -Bytes ([Convert]::FromBase64String($describe.audio_b64)) -Label "image description"
 
   # Fixed-voice story: every line synthesized through the audio engine and
   # stitched into one WAV artifact.
@@ -220,7 +294,10 @@ try {
     health = $health.status
     transcript = $transcription.text
     voice_reply = $voice.reply
+    cloned_voice = $clone.id
+    designed_voice = $designedVoice.id
     image_bytes = $png.Length
+    image_description = $describe.description
     story = $created.id
     story_status = $status.status
     story_wav_bytes = $storyWav.Content.Length
@@ -230,9 +307,12 @@ finally {
   if ($server -and -not $server.HasExited) {
     Stop-Process -Id $server.Id -Force
   }
-  if ($llamaPid) {
+  foreach ($enginePid in @($llamaPid, $visionPid)) {
+    if (-not $enginePid) {
+      continue
+    }
     try {
-      $process = Get-Process -Id $llamaPid -ErrorAction Stop
+      $process = Get-Process -Id $enginePid -ErrorAction Stop
       if ($process.ProcessName -like "cpp-studio-fixture*") {
         Stop-Process -Id $process.Id -Force
       }
@@ -241,4 +321,5 @@ finally {
     }
   }
   Stop-FixtureListener -Port $LlamaPort -ExpectedPath $fixtureCommand
+  Stop-FixtureListener -Port $VisionPort -ExpectedPath $fixtureCommand
 }

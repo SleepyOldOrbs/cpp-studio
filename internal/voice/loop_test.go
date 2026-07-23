@@ -69,6 +69,34 @@ func TestLoopWithTypedMessage(t *testing.T) {
 	}
 }
 
+func TestLoopSpeaksWithClonedVoice(t *testing.T) {
+	loop, fake := testLoop(t)
+
+	clone := &engine.Voice{RefWAVPath: "ref.wav", RefText: "reference words"}
+	if _, err := loop.Run(context.Background(), Request{Message: "hello", Voice: clone}); err != nil {
+		t.Fatalf("run loop: %v", err)
+	}
+
+	calls := fake.Calls()
+	if len(calls) != 1 || calls[0].Engine != "audio" {
+		t.Fatalf("expected one audio call, got %+v", calls)
+	}
+	if calls[0].OverrideArgs["--voice-ref"] != "ref.wav" || calls[0].OverrideArgs["--reference-text"] != "reference words" {
+		t.Fatalf("expected cloned voice overrides, got %v", calls[0].OverrideArgs)
+	}
+}
+
+func TestLoopDefaultVoiceCarriesNoOverrides(t *testing.T) {
+	loop, fake := testLoop(t)
+
+	if _, err := loop.Run(context.Background(), Request{Message: "hello"}); err != nil {
+		t.Fatalf("run loop: %v", err)
+	}
+	if calls := fake.Calls(); len(calls) != 1 || calls[0].OverrideArgs != nil {
+		t.Fatalf("expected default voice to carry no overrides, got %+v", calls)
+	}
+}
+
 func TestLoopPassesHistoryToChat(t *testing.T) {
 	loop, _ := testLoop(t)
 	var gotHistory []Turn

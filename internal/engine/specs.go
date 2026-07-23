@@ -24,19 +24,43 @@ const (
 	maxImagePixels       = MaxImageDimension * MaxImageDimension
 )
 
+// Voice identifies a cloned voice reference for speech synthesis: the
+// reference WAV on disk plus its transcript. A nil *Voice means the config
+// default voice.
+type Voice struct {
+	RefWAVPath string
+	RefText    string
+}
+
 // SpeechSpec invokes the "audio" engine: --text <input> --out <wav path>.
 // The engine must produce a valid WAV of at most MaxSpeechOutputBytes.
 // The input is transliterated to ASCII first: audiocpp_cli parses argv via
 // the Windows ANSI codepage, so any non-ASCII byte in --text reaches the
 // engine as invalid UTF-8 and the request fails.
 func SpeechSpec(input string) Spec {
+	return SpeechVoiceSpec(input, nil)
+}
+
+// SpeechVoiceSpec is SpeechSpec speaking with a cloned voice: the voice's
+// reference WAV and transcript override the config default --voice-ref and
+// --reference-text. The transcript is sanitized like the spoken text (same
+// ANSI argv constraint).
+func SpeechVoiceSpec(input string, voice *Voice) Spec {
 	text := sanitizeSpeechText(input)
+	var overrides map[string]string
+	if voice != nil {
+		overrides = map[string]string{
+			"--voice-ref":      voice.RefWAVPath,
+			"--reference-text": sanitizeSpeechText(voice.RefText),
+		}
+	}
 	return Spec{
 		Engine:        "audio",
 		Label:         "audio speech command",
 		Timeout:       DefaultSpeechTimeout,
 		OutputPattern: "cpp-studio-speech-*.wav",
 		OutputLabel:   "generated wav",
+		OverrideArgs:  overrides,
 		BuildArgs: func(_, outPath string) []string {
 			return []string{"--text", text, "--out", outPath}
 		},
@@ -45,6 +69,35 @@ func SpeechSpec(input string) Spec {
 				return fmt.Errorf("produced invalid WAV: %v", err)
 			}
 			if err := validateFileSize(path, MaxSpeechOutputBytes, "generated wav"); err != nil {
+				return fmt.Errorf("produced oversized WAV: %v", err)
+			}
+			return nil
+		},
+	}
+}
+
+// VoiceDesignSpec invokes the "voicedesign" engine: --instruct <description>
+// --text <sample> --out <wav path>. The engine (Qwen3-TTS VoiceDesign)
+// creates a brand-new voice from the natural-language instruction and speaks
+// the sample text with it — no reference audio involved. Both text arguments
+// cross the same ANSI argv boundary as speech, so both are sanitized.
+func VoiceDesignSpec(instruct string, sampleText string) Spec {
+	instruction := sanitizeSpeechText(instruct)
+	sample := sanitizeSpeechText(sampleText)
+	return Spec{
+		Engine:        "voicedesign",
+		Label:         "voice design command",
+		Timeout:       DefaultSpeechTimeout,
+		OutputPattern: "cpp-studio-voice-design-*.wav",
+		OutputLabel:   "designed voice wav",
+		BuildArgs: func(_, outPath string) []string {
+			return []string{"--instruct", instruction, "--text", sample, "--out", outPath}
+		},
+		ValidateOutput: func(path string) error {
+			if err := wav.ValidateFile(path); err != nil {
+				return fmt.Errorf("produced invalid WAV: %v", err)
+			}
+			if err := validateFileSize(path, MaxSpeechOutputBytes, "designed voice wav"); err != nil {
 				return fmt.Errorf("produced oversized WAV: %v", err)
 			}
 			return nil

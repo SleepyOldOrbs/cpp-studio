@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -30,6 +31,7 @@ type router struct {
 	client  *http.Client
 	engines engine.Invoker
 	stories *story.Manager
+	voices  *voice.Store
 }
 
 const (
@@ -46,6 +48,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 		manager: manager,
 		client:  http.DefaultClient,
 		engines: engine.NewRunner(cfg.Engines, manager),
+		voices:  voice.NewStore(""),
 	}
 	r.stories = story.NewManager(story.ManagerOptions{
 		ReserveEngine: r.reserveEngine,
@@ -59,11 +62,15 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/health", r.handleHealth)
 	mux.HandleFunc("/v1/chat/completions", r.handleChatCompletions)
 	mux.HandleFunc("/v1/images/generations", r.handleImageGenerations)
+	mux.HandleFunc("/v1/images/descriptions", r.handleImageDescriptions)
 	mux.HandleFunc("/v1/stories", r.handleStories)
 	mux.HandleFunc("/v1/stories/", r.handleStory)
 	mux.HandleFunc("/v1/audio/speech", r.handleSpeech)
 	mux.HandleFunc("/v1/audio/transcriptions", r.handleTranscriptions)
 	mux.HandleFunc("/v1/voice", r.handleVoice)
+	mux.HandleFunc("/v1/voices", r.handleVoices)
+	mux.HandleFunc("/v1/voices/design", r.handleVoiceDesign)
+	mux.HandleFunc("/v1/voices/", r.handleVoiceClone)
 	return mux
 }
 
@@ -159,8 +166,13 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "only wav format is supported")
 		return
 	}
+	clonedVoice, err := r.resolveVoice(body.Voice)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	result, err := r.engines.Run(req.Context(), engine.SpeechSpec(body.Input))
+	result, err := r.engines.Run(req.Context(), engine.SpeechVoiceSpec(body.Input, clonedVoice))
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -168,7 +180,26 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 
 	w.Header().Set("Content-Type", "audio/wav")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(result.Output)
+	_, _ = w.Write(padSpeech(result.Output))
+}
+
+const (
+	// speechLeadPad / speechTrailPad wrap every spoken reply in silence:
+	// playback devices swallow the first fraction of a second of a clip
+	// (Bluetooth wake-up, autoplay ramp-in), which listeners hear as
+	// clipped speech.
+	speechLeadPad  = 250 * time.Millisecond
+	speechTrailPad = 250 * time.Millisecond
+)
+
+// padSpeech is best-effort: audio the wav package cannot decode is returned
+// unchanged rather than failing the request.
+func padSpeech(audio []byte) []byte {
+	padded, err := wav.PadSilence(audio, speechLeadPad, speechTrailPad)
+	if err != nil {
+		return audio
+	}
+	return padded
 }
 
 func (r *router) handleImageGenerations(w http.ResponseWriter, req *http.Request) {
@@ -213,6 +244,139 @@ func (r *router) handleImageGenerations(w http.ResponseWriter, req *http.Request
 			{B64JSON: base64.StdEncoding.EncodeToString(result.Output)},
 		},
 	})
+}
+
+const (
+	// maxImageDescriptionBodyBytes bounds the JSON body carrying a base64
+	// PNG for description.
+	maxImageDescriptionBodyBytes = 24 * 1024 * 1024
+	// maxDescribeImageDimension caps described images. Unlike generation,
+	// description accepts photos and screenshots, so the cap is looser than
+	// the SD limit; the browser additionally downscales before uploading.
+	maxDescribeImageDimension = 4096
+)
+
+// visionInstruction is the only text the vision model sees alongside the
+// image. Descriptions must come from the pixels: the generation prompt is
+// deliberately never part of this request, so the model cannot crib from it.
+const visionInstruction = "Describe what you see in this image in two or three short sentences of plain conversational text, with no markdown or lists."
+
+// handleImageDescriptions runs true vision-to-speech: the uploaded PNG goes
+// to the vision engine with a generic instruction, and the resulting
+// description is spoken with the requested cloned voice (or the default).
+func (r *router) handleImageDescriptions(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+
+	var body imageDescriptionRequest
+	req.Body = http.MaxBytesReader(w, req.Body, maxImageDescriptionBodyBytes)
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON request: %v", err))
+		return
+	}
+	if strings.TrimSpace(body.ImageB64) == "" {
+		writeJSONError(w, http.StatusBadRequest, "image_b64 is required")
+		return
+	}
+	imageBytes, err := base64.StdEncoding.DecodeString(body.ImageB64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "image_b64 must be base64 PNG data")
+		return
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(imageBytes))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "image_b64 must decode to a PNG image")
+		return
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxDescribeImageDimension || cfg.Height > maxDescribeImageDimension {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("image must be at most %dx%d pixels", maxDescribeImageDimension, maxDescribeImageDimension))
+		return
+	}
+	clonedVoice, err := r.resolveVoice(body.Voice)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	description, err := r.describeImage(req.Context(), imageBytes)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+
+	speech, err := r.engines.Run(req.Context(), engine.SpeechVoiceSpec(description, clonedVoice))
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(imageDescriptionResponse{
+		Description: description,
+		AudioFormat: "wav",
+		AudioB64:    base64.StdEncoding.EncodeToString(padSpeech(speech.Output)),
+	})
+}
+
+// describeImage asks the resident vision server what the PNG shows. The
+// request carries the image and visionInstruction only.
+func (r *router) describeImage(ctx context.Context, imageBytes []byte) (string, error) {
+	engineCfg, ok := r.engine("vision")
+	if !ok {
+		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "vision" is not configured`}
+	}
+	upstreamURL, ok := inferChatCompletionsURL(engineCfg.HealthURL)
+	if !ok {
+		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "vision" healthUrl must end in /health to infer /v1/chat/completions`}
+	}
+
+	payload, err := json.Marshal(visionChatRequest{
+		Model: "default",
+		Messages: []visionChatMessage{
+			{
+				Role: "user",
+				Content: []visionContentPart{
+					{Type: "text", Text: visionInstruction},
+					{Type: "image_url", ImageURL: &visionImageURL{URL: "data:image/png;base64," + base64.StdEncoding.EncodeToString(imageBytes)}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode vision request: %v", err)}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, engine.RequestTimeout(engineCfg, defaultChatTimeout))
+	defer cancel()
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(payload))
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
+	}
+	upstreamReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := r.client.Do(upstreamReq)
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("vision upstream request failed: %v", err)}
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxChatReplyBytes))
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read vision upstream response: %v", err)}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("vision upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))}
+	}
+
+	description, err := extractChatReply(respBody)
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: err.Error()}
+	}
+	if description == "" {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: "vision engine returned no description"}
+	}
+	r.manager.MarkSuccess("vision")
+	return description, nil
 }
 
 func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) {
@@ -340,12 +504,18 @@ func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	clonedVoice, err := r.resolveVoice(req.FormValue("voice"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	loop := voice.Loop{Engines: r.engines, Chat: r.chatOnce, Transcribe: r.transcribe}
 	result, err := loop.Run(req.Context(), voice.Request{
 		WAV:     wavBytes,
 		Message: req.FormValue("message"),
 		History: history,
+		Voice:   clonedVoice,
 	})
 	if err != nil {
 		writeEngineError(w, err)
@@ -357,8 +527,200 @@ func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
 		Transcript:  result.Transcript,
 		Reply:       result.Reply,
 		AudioFormat: "wav",
-		AudioB64:    base64.StdEncoding.EncodeToString(result.Audio),
+		AudioB64:    base64.StdEncoding.EncodeToString(padSpeech(result.Audio)),
 	})
+}
+
+// resolveVoice maps an optional voice id from a request to the stored cloned
+// voice the speech engine should reference; "" and "default" mean the config
+// default voice.
+func (r *router) resolveVoice(id string) (*engine.Voice, error) {
+	id = strings.TrimSpace(id)
+	if id == "" || id == "default" {
+		return nil, nil
+	}
+	clone, ok, err := r.voices.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("voice %q not found", id)
+	}
+	refPath, err := r.voices.ReferencePath(clone.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &engine.Voice{RefWAVPath: refPath, RefText: clone.Transcript}, nil
+}
+
+const (
+	// maxVoiceDesignInstructChars caps the natural-language voice description.
+	maxVoiceDesignInstructChars = 500
+	// voiceDesignSampleText is what a freshly designed voice says. It doubles
+	// as the cloning reference transcript when the voice is saved, so it is
+	// long enough to condition the Base model well.
+	voiceDesignSampleText = "Hello there! This is my brand new voice, created from just a written description. I hope you enjoy the way I sound, because I could talk like this all day long."
+)
+
+// handleVoiceDesign creates a voice from a natural-language description via
+// the Qwen3-TTS VoiceDesign engine. The response carries the spoken sample;
+// that same WAV is the cloning reference if the user saves the voice, so no
+// candidate state lives server-side.
+func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+
+	var body voiceDesignRequest
+	req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON request: %v", err))
+		return
+	}
+	description := strings.TrimSpace(body.Description)
+	if description == "" {
+		writeJSONError(w, http.StatusBadRequest, "description is required")
+		return
+	}
+	if len(description) > maxVoiceDesignInstructChars {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("description cannot exceed %d characters", maxVoiceDesignInstructChars))
+		return
+	}
+	sampleText := strings.TrimSpace(body.SampleText)
+	if sampleText == "" {
+		sampleText = voiceDesignSampleText
+	}
+	if len(sampleText) > maxVoiceHistoryTurnChars {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("sample_text cannot exceed %d characters", maxVoiceHistoryTurnChars))
+		return
+	}
+
+	result, err := r.engines.Run(req.Context(), engine.VoiceDesignSpec(description, sampleText))
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(voiceDesignResponse{
+		Description: description,
+		Transcript:  sampleText,
+		AudioFormat: "wav",
+		// The raw (unpadded) WAV is the cloning reference; the padded copy
+		// is for listening.
+		ReferenceB64: base64.StdEncoding.EncodeToString(result.Output),
+		PreviewB64:   base64.StdEncoding.EncodeToString(padSpeech(result.Output)),
+	})
+}
+
+// handleVoices lists the cloned voices or creates one. Creation uploads a
+// reference WAV; when no transcript is supplied, whisper transcribes the
+// reference first, so the clone is grounded in what the reference actually
+// says.
+func (r *router) handleVoices(w http.ResponseWriter, req *http.Request) {
+	switch req.Method {
+	case http.MethodGet:
+		clones, err := r.voices.List()
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(voiceListResponse{Voices: voiceSummaries(clones)})
+	case http.MethodPost:
+		req.Body = http.MaxBytesReader(w, req.Body, voice.MaxReferenceWAVBytes)
+		data, ok := readUploadedWAV(w, req)
+		if !ok {
+			return
+		}
+		name := strings.TrimSpace(req.FormValue("name"))
+		if name == "" {
+			name = "Voice " + time.Now().Format("15:04:05")
+		}
+		transcript := strings.TrimSpace(req.FormValue("transcript"))
+		if transcript == "" {
+			text, err := r.transcribe(req.Context(), data)
+			if err != nil {
+				writeEngineError(w, err)
+				return
+			}
+			transcript = strings.TrimSpace(text)
+			if transcript == "" {
+				writeJSONError(w, http.StatusBadRequest, "transcription of the reference wav returned no text; supply a transcript")
+				return
+			}
+		}
+		clone, err := r.voices.Save(name, transcript, data)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(voiceSummary(clone))
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// handleVoiceClone serves one cloned voice: DELETE /v1/voices/{id} removes
+// it, GET /v1/voices/{id}/audio streams the reference WAV for playback.
+func (r *router) handleVoiceClone(w http.ResponseWriter, req *http.Request) {
+	tail := strings.TrimPrefix(req.URL.Path, "/v1/voices/")
+	parts := strings.Split(tail, "/")
+	if len(parts) == 1 && parts[0] != "" {
+		if !requireMethod(w, req, http.MethodDelete) {
+			return
+		}
+		_, ok, err := r.voices.Load(parts[0])
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "voice not found")
+			return
+		}
+		if err := r.voices.Delete(parts[0]); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "audio" {
+		if !requireMethod(w, req, http.MethodGet) {
+			return
+		}
+		path, err := r.voices.ReferencePath(parts[0])
+		if err != nil {
+			writeJSONError(w, http.StatusNotFound, "voice reference not found")
+			return
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		http.ServeFile(w, req, path)
+		return
+	}
+	http.NotFound(w, req)
+}
+
+func voiceSummaries(clones []voice.Clone) []voiceCloneSummary {
+	summaries := make([]voiceCloneSummary, 0, len(clones))
+	for _, clone := range clones {
+		summaries = append(summaries, voiceSummary(clone))
+	}
+	return summaries
+}
+
+func voiceSummary(clone voice.Clone) voiceCloneSummary {
+	return voiceCloneSummary{
+		ID:         clone.ID,
+		Name:       clone.Name,
+		Transcript: clone.Transcript,
+		CreatedAt:  clone.CreatedAt,
+		AudioURL:   "/v1/voices/" + clone.ID + "/audio",
+	}
 }
 
 const (
@@ -752,6 +1114,62 @@ type imageGenerationData struct {
 type transcriptionResponse struct {
 	Text       string `json:"text"`
 	DurationMS int64  `json:"duration_ms"`
+}
+
+type voiceDesignRequest struct {
+	Description string `json:"description"`
+	SampleText  string `json:"sample_text"`
+}
+
+type voiceDesignResponse struct {
+	Description  string `json:"description"`
+	Transcript   string `json:"transcript"`
+	AudioFormat  string `json:"audio_format"`
+	ReferenceB64 string `json:"reference_b64"`
+	PreviewB64   string `json:"preview_b64"`
+}
+
+type imageDescriptionRequest struct {
+	ImageB64 string `json:"image_b64"`
+	Voice    string `json:"voice"`
+}
+
+type imageDescriptionResponse struct {
+	Description string `json:"description"`
+	AudioFormat string `json:"audio_format"`
+	AudioB64    string `json:"audio_b64"`
+}
+
+type visionChatRequest struct {
+	Model    string              `json:"model"`
+	Messages []visionChatMessage `json:"messages"`
+}
+
+type visionChatMessage struct {
+	Role    string              `json:"role"`
+	Content []visionContentPart `json:"content"`
+}
+
+type visionContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *visionImageURL `json:"image_url,omitempty"`
+}
+
+type visionImageURL struct {
+	URL string `json:"url"`
+}
+
+type voiceCloneSummary struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Transcript string    `json:"transcript"`
+	CreatedAt  time.Time `json:"created_at"`
+	AudioURL   string    `json:"audio_url"`
+}
+
+type voiceListResponse struct {
+	Voices []voiceCloneSummary `json:"voices"`
 }
 
 type voiceResponse struct {
