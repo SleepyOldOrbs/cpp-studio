@@ -164,10 +164,14 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	lastUser := ""
 	lastUserHasImage := false
 	isNormalizer := false
+	isStoryScript := false
 	for _, msg := range req.Messages {
 		text, hasImage := flattenContent(msg.Content)
 		if msg.Role == "system" && strings.Contains(text, "voice-design normalizer") {
 			isNormalizer = true
+		}
+		if msg.Role == "system" && strings.Contains(text, "audio stories as dialogue scripts") {
+			isStoryScript = true
 		}
 		if msg.Role == "user" {
 			lastUser, lastUserHasImage = text, hasImage
@@ -179,6 +183,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if isNormalizer {
 		reply = `{"prose": "A deep, gravelly middle-aged cowboy voice with a slow drawl.", "attributes": "male, middle-aged, low pitch, american accent"}`
+	}
+	if isStoryScript {
+		reply = fixtureStoryScriptJSON
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -203,6 +210,21 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 }
+
+// fixtureStoryScriptJSON is the canned reply to story-script prompts. It
+// cites only fact-1..fact-8, which every story request guarantees exists
+// (fact card generation always produces at least eight cards).
+const fixtureStoryScriptJSON = `{"title": "Fixture Story", "script": [
+{"speaker_id": "narrator", "text": "Our story opens inside the sources.", "fact_ids": ["fact-1"]},
+{"speaker_id": "nova", "text": "Where does it begin?", "fact_ids": ["fact-2"]},
+{"speaker_id": "dr-lumen", "text": "It begins with the first fact.", "fact_ids": ["fact-1", "fact-3"]},
+{"speaker_id": "narrator", "text": "One idea leads to the next.", "fact_ids": ["fact-4"]},
+{"speaker_id": "nova", "text": "And then what happens?", "fact_ids": ["fact-5"]},
+{"speaker_id": "dr-lumen", "text": "The sources explain it step by step.", "fact_ids": ["fact-6"]},
+{"speaker_id": "narrator", "text": "Each fact builds on the last.", "fact_ids": ["fact-7"]},
+{"speaker_id": "dr-lumen", "text": "Until the picture is complete.", "fact_ids": ["fact-8"]},
+{"speaker_id": "narrator", "text": "And that is the story the sources tell.", "fact_ids": ["fact-1", "fact-8"]}
+]}`
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

@@ -300,6 +300,9 @@ try {
   if ($status.status -ne "complete") {
     throw "story did not complete: $($status | ConvertTo-Json -Depth 8)"
   }
+  if ($status.manifest.title -ne "Fixture Story") {
+    throw "expected the llama-scripted story path (fixture server title), got: $($status.manifest.title)"
+  }
 
   $storyWav = Invoke-WebRequest -Uri "$base$($status.artifact_url)" -UseBasicParsing
   Assert-WavBytes -Bytes $storyWav.Content -Label "story artifact"

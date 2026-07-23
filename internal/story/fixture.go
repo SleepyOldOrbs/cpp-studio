@@ -8,7 +8,19 @@ import (
 	"cpp-studio/internal/wav"
 )
 
-func BuildFixtureManifest(id string, req NormalizedRequest, createdAt time.Time) (Manifest, []byte, error) {
+// Scaffold is the grounded skeleton of a story before any script exists:
+// the sources, their extracted notes, the fact cards, and the cast.
+type Scaffold struct {
+	Sources []Source
+	Notes   []SourceNote
+	Facts   []FactCard
+	Cast    []CastMember
+}
+
+// BuildScaffold extracts sources into notes and fact cards mechanically —
+// fact claims stay verbatim source sentences, so grounding never depends on
+// a model's paraphrase.
+func BuildScaffold(req NormalizedRequest) (Scaffold, error) {
 	sources := make([]Source, 0, len(req.Sources))
 	notes := make([]SourceNote, 0, len(req.Sources)*3)
 	for _, source := range req.Sources {
@@ -26,29 +38,42 @@ func BuildFixtureManifest(id string, req NormalizedRequest, createdAt time.Time)
 		}
 	}
 	if len(notes) < MinSources {
-		return Manifest{}, nil, NewError(CodeInsufficientSources, fmt.Sprintf("Need at least %d usable source notes to generate a factual story.", MinSources))
+		return Scaffold{}, NewError(CodeInsufficientSources, fmt.Sprintf("Need at least %d usable source notes to generate a factual story.", MinSources))
 	}
 
-	cast := []CastMember{
-		{ID: "narrator", DisplayName: "Narrator", VoiceID: "fixture-narrator"},
-		{ID: "nova", DisplayName: "Nova", VoiceID: "fixture-character-a"},
-		{ID: "dr-lumen", DisplayName: "Dr. Lumen", VoiceID: "fixture-character-b"},
+	voice := func(id string) string {
+		if v := req.CastVoices[id]; v != "" {
+			return v
+		}
+		return "studio-default"
 	}
-	facts := factCardsFromNotes(notes)
-	script := fixtureScript(req.Subject, facts)
+	return Scaffold{
+		Sources: sources,
+		Notes:   notes,
+		Facts:   factCardsFromNotes(notes),
+		Cast: []CastMember{
+			{ID: "narrator", DisplayName: "Narrator", VoiceID: voice("narrator")},
+			{ID: "nova", DisplayName: "Nova", VoiceID: voice("nova")},
+			{ID: "dr-lumen", DisplayName: "Dr. Lumen", VoiceID: voice("dr-lumen")},
+		},
+	}, nil
+}
 
+// AssembleManifest builds and grounds the final manifest from a scaffold
+// plus a title and script (model-written or fixture).
+func AssembleManifest(id string, req NormalizedRequest, createdAt time.Time, scaffold Scaffold, title string, script []ScriptLine) (Manifest, error) {
 	artifactURL := fmt.Sprintf("/v1/stories/%s/artifact/%s", id, StoryArtifactName)
 	manifest := Manifest{
 		ID:              id,
 		Subject:         req.Subject,
-		Title:           titleForSubject(req.Subject),
+		Title:           title,
 		Status:          StatusComplete,
 		CreatedAt:       createdAt.UTC(),
 		DurationSeconds: req.TargetSeconds,
-		Sources:         sources,
-		SourceNotes:     notes,
-		FactCards:       facts,
-		Cast:            cast,
+		Sources:         scaffold.Sources,
+		SourceNotes:     scaffold.Notes,
+		FactCards:       scaffold.Facts,
+		Cast:            scaffold.Cast,
 		Script:          script,
 		Audio: AudioRef{
 			Format: "wav",
@@ -56,6 +81,18 @@ func BuildFixtureManifest(id string, req NormalizedRequest, createdAt time.Time)
 		},
 	}
 	if err := ValidateManifestGrounding(manifest); err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
+func BuildFixtureManifest(id string, req NormalizedRequest, createdAt time.Time) (Manifest, []byte, error) {
+	scaffold, err := BuildScaffold(req)
+	if err != nil {
+		return Manifest{}, nil, err
+	}
+	manifest, err := AssembleManifest(id, req, createdAt, scaffold, titleForSubject(req.Subject), fixtureScript(req.Subject, scaffold.Facts))
+	if err != nil {
 		return Manifest{}, nil, err
 	}
 	return manifest, fixtureWAV(req.TargetSeconds), nil

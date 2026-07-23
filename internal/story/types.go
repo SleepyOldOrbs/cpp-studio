@@ -81,6 +81,10 @@ type CreateRequest struct {
 	SourceMode    string        `json:"source_mode,omitempty"`
 	VoiceMode     string        `json:"voice_mode,omitempty"`
 	Sources       []SourceInput `json:"sources"`
+	// CastVoices assigns a stored voice id per cast member id (narrator,
+	// nova, dr-lumen); missing or empty entries speak with the studio
+	// default voice. Only meaningful for voice_mode "fixed".
+	CastVoices map[string]string `json:"cast_voices,omitempty"`
 }
 
 type SourceInput struct {

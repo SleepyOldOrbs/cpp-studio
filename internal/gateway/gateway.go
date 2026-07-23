@@ -50,10 +50,17 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 		engines: engine.NewRunner(cfg.Engines, manager),
 		voices:  voice.NewStore(""),
 	}
-	r.stories = story.NewManager(story.ManagerOptions{
+	storyOptions := story.ManagerOptions{
 		ReserveEngine: r.reserveEngine,
 		Synthesize:    r.synthesizeSpeech,
-	})
+	}
+	// With a llama engine configured, stories are written by the model;
+	// without one (CI, pure-fixture setups) the deterministic fixture
+	// script keeps the pipeline runnable.
+	if _, ok := cfg.Engines["llama"]; ok {
+		storyOptions.Script = r.writeStoryScript
+	}
+	r.stories = story.NewManager(storyOptions)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", r.handleRoot)
@@ -763,7 +770,7 @@ func (r *router) handleVoices(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 		}
-		clone, err := r.voices.Save(name, transcript, data)
+		clone, err := r.voices.Save(name, transcript, data, req.FormValue("protected") == "true")
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
@@ -796,6 +803,10 @@ func (r *router) handleVoiceClone(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		if err := r.voices.Delete(parts[0]); err != nil {
+			if errors.Is(err, voice.ErrProtected) {
+				writeJSONError(w, http.StatusForbidden, err.Error())
+				return
+			}
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -832,6 +843,7 @@ func voiceSummary(clone voice.Clone) voiceCloneSummary {
 		Name:       clone.Name,
 		Transcript: clone.Transcript,
 		CreatedAt:  clone.CreatedAt,
+		Protected:  clone.Protected,
 		AudioURL:   "/v1/voices/" + clone.ID + "/audio",
 	}
 }
@@ -977,6 +989,17 @@ func (r *router) handleStories(w http.ResponseWriter, req *http.Request) {
 			writeStoryError(w, http.StatusBadRequest, story.CodeInvalidRequest, fmt.Sprintf("invalid JSON request: %v", err))
 			return
 		}
+		// Cast voices must exist before the job starts; a missing voice
+		// failing mid-synthesis would waste the whole run.
+		for speakerID, voiceID := range body.CastVoices {
+			if strings.TrimSpace(voiceID) == "" {
+				continue
+			}
+			if _, err := r.resolveVoice(voiceID); err != nil {
+				writeStoryError(w, http.StatusBadRequest, story.CodeInvalidRequest, fmt.Sprintf("cast_voices[%s]: %v", speakerID, err))
+				return
+			}
+		}
 		response, err := r.stories.Submit(req.Context(), body)
 		if err != nil {
 			writeStoryErrorFromError(w, err)
@@ -1052,13 +1075,119 @@ func (r *router) reserveEngine(ctx context.Context, name string) (func(), bool) 
 
 // synthesizeSpeech is the story pipeline's SynthesizeFunc. It crosses the
 // engine seam without re-reserving: the story manager already holds the
-// audio slot for the whole job.
-func (r *router) synthesizeSpeech(ctx context.Context, text string) ([]byte, error) {
-	res, err := r.engines.RunReserved(ctx, engine.SpeechSpec(text))
+// audio slot for the whole job. voiceID selects a stored cloned voice; ""
+// keeps the studio default.
+func (r *router) synthesizeSpeech(ctx context.Context, text string, voiceID string) ([]byte, error) {
+	clonedVoice, err := r.resolveVoice(voiceID)
+	if err != nil {
+		return nil, err
+	}
+	res, err := r.engines.RunReserved(ctx, engine.SpeechVoiceSpec(text, clonedVoice))
 	if err != nil {
 		return nil, err
 	}
 	return res.Output, nil
+}
+
+// storyScriptSystemPrompt instructs llama to write grounded audio stories
+// as dialogue scripts. The fixture chat server keys on the phrase "audio
+// stories as dialogue scripts" to return its canned script.
+const storyScriptSystemPrompt = `You write short, factual audio stories as dialogue scripts. Reply with ONLY a JSON object, no markdown, in this exact shape: {"title": "...", "script": [{"speaker_id": "...", "text": "...", "fact_ids": ["fact-1"]}]}
+Rules:
+- speaker_id must be exactly one of: narrator, nova, dr-lumen. The narrator sets scenes and links ideas, nova asks curious questions, dr-lumen explains clearly.
+- Every line must cite at least one fact id from the provided fact list in fact_ids, and may only state things those cited facts support. Do not invent information.
+- text is plain spoken language: one to three short sentences, no markdown, no stage directions, no emojis.
+- Give the story a beginning, a middle, and an ending line that lands.`
+
+// writeStoryScript is the story manager's ScriptFunc: facts in, a grounded
+// script out of llama, with one retry that feeds the validation error back.
+func (r *router) writeStoryScript(ctx context.Context, req story.ScriptRequest) (string, []story.ScriptLine, error) {
+	lines := req.TargetSeconds / 7
+	if lines < 8 {
+		lines = 8
+	}
+	if lines > 40 {
+		lines = 40
+	}
+	var prompt strings.Builder
+	fmt.Fprintf(&prompt, "Subject: %s\nTarget length: about %d spoken lines (%d seconds of audio).\nFacts:\n", req.Subject, lines, req.TargetSeconds)
+	for _, fact := range req.Facts {
+		if fact.Conflicting {
+			continue
+		}
+		fmt.Fprintf(&prompt, "%s: %s\n", fact.ID, fact.Claim)
+	}
+
+	messages := []chatMessage{
+		{Role: "system", Content: storyScriptSystemPrompt},
+		{Role: "user", Content: prompt.String()},
+	}
+	title, script, err := r.requestStoryScript(ctx, messages, req)
+	if err == nil {
+		return title, script, nil
+	}
+	// One retry with the failure explained; models usually fix cited ids
+	// and speaker names when told what was wrong.
+	retry := append(messages, chatMessage{Role: "user", Content: "Your previous reply was rejected: " + err.Error() + ". Reply again with ONLY the corrected JSON object."})
+	title, script, retryErr := r.requestStoryScript(ctx, retry, req)
+	if retryErr != nil {
+		return "", nil, story.NewError(story.CodeGroundingFailure, "story scripting failed: "+retryErr.Error())
+	}
+	return title, script, nil
+}
+
+// requestStoryScript runs one llama round and lightly validates the script
+// shape; the manager's grounding validator remains the final gate.
+func (r *router) requestStoryScript(ctx context.Context, messages []chatMessage, req story.ScriptRequest) (string, []story.ScriptLine, error) {
+	reply, err := r.llamaChat(ctx, messages)
+	if err != nil {
+		return "", nil, err
+	}
+	start := strings.Index(reply, "{")
+	end := strings.LastIndex(reply, "}")
+	if start < 0 || end <= start {
+		return "", nil, fmt.Errorf("reply contained no JSON object")
+	}
+	var decoded struct {
+		Title  string             `json:"title"`
+		Script []story.ScriptLine `json:"script"`
+	}
+	if err := json.Unmarshal([]byte(reply[start:end+1]), &decoded); err != nil {
+		return "", nil, fmt.Errorf("reply was not valid script JSON: %v", err)
+	}
+	if strings.TrimSpace(decoded.Title) == "" {
+		return "", nil, fmt.Errorf("reply had no title")
+	}
+	if len(decoded.Script) < 4 {
+		return "", nil, fmt.Errorf("script had %d lines, need at least 4", len(decoded.Script))
+	}
+	speakers := make(map[string]bool, len(req.Cast))
+	for _, member := range req.Cast {
+		speakers[member.ID] = true
+	}
+	validFacts := make(map[string]bool, len(req.Facts))
+	for _, fact := range req.Facts {
+		if !fact.Conflicting {
+			validFacts[fact.ID] = true
+		}
+	}
+	for i, line := range decoded.Script {
+		if !speakers[line.SpeakerID] {
+			return "", nil, fmt.Errorf("script line %d uses unknown speaker %q", i+1, line.SpeakerID)
+		}
+		if strings.TrimSpace(line.Text) == "" {
+			return "", nil, fmt.Errorf("script line %d has no text", i+1)
+		}
+		if len(line.FactIDs) == 0 {
+			return "", nil, fmt.Errorf("script line %d cites no fact ids", i+1)
+		}
+		for _, id := range line.FactIDs {
+			if !validFacts[id] {
+				return "", nil, fmt.Errorf("script line %d cites unknown fact id %q", i+1, id)
+			}
+		}
+	}
+	return strings.TrimSpace(decoded.Title), decoded.Script, nil
 }
 
 // readUploadedWAV pulls the multipart "file" field into memory, writing the
@@ -1291,6 +1420,7 @@ type voiceCloneSummary struct {
 	Name       string    `json:"name"`
 	Transcript string    `json:"transcript"`
 	CreatedAt  time.Time `json:"created_at"`
+	Protected  bool      `json:"protected,omitempty"`
 	AudioURL   string    `json:"audio_url"`
 }
 

@@ -479,6 +479,107 @@ func TestStoryCreateStatusArtifactAndList(t *testing.T) {
 	}
 }
 
+func TestStoryScriptedByLlamaWithCastVoices(t *testing.T) {
+	t.Chdir(t.TempDir())
+	scriptJSON := `{"title": "The Llama Tale", "script": [
+{"speaker_id": "narrator", "text": "An opening line.", "fact_ids": ["fact-1"]},
+{"speaker_id": "nova", "text": "A question?", "fact_ids": ["fact-2"]},
+{"speaker_id": "dr-lumen", "text": "An answer.", "fact_ids": ["fact-3"]},
+{"speaker_id": "narrator", "text": "A closing line.", "fact_ids": ["fact-1"]}
+]}`
+	var sawScriptPrompt bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var body chatCompletionRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		if len(body.Messages) > 0 && strings.Contains(body.Messages[0].Content, "audio stories as dialogue scripts") {
+			sawScriptPrompt = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": scriptJSON}}},
+		})
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"llama": {Command: "llama-server", HealthURL: upstream.URL + "/health"},
+		"audio": helperEngine("speech-tone-require-voice"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	// Store a voice for the cast.
+	var createBody bytes.Buffer
+	writer := multipart.NewWriter(&createBody)
+	_ = writer.WriteField("name", "Story Voice")
+	_ = writer.WriteField("transcript", "story voice reference words")
+	part, err := writer.CreateFormFile("file", "reference.wav")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write(validWAVBytes()); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voices", &createBody)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected voice create status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var voiceCreated voiceCloneSummary
+	if err := json.NewDecoder(rec.Body).Decode(&voiceCreated); err != nil {
+		t.Fatalf("decode voice create response: %v", err)
+	}
+
+	// Unknown cast voices are rejected up front.
+	badBody := strings.Replace(validStoryRequestJSON(), `"sources"`, `"cast_voices": {"narrator": "voice_20990101_000000_ffffff"}, "sources"`, 1)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(badBody))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected unknown cast voice status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Submit with every speaker on the stored voice; the audio helper fails
+	// any line missing --voice-ref, proving per-line cast synthesis.
+	storyBody := strings.Replace(validStoryRequestJSON(), `"voice_mode": "placeholder"`, `"voice_mode": "fixed"`, 1)
+	storyBody = strings.Replace(storyBody, `"sources"`, `"cast_voices": {"narrator": "`+voiceCreated.ID+`", "nova": "`+voiceCreated.ID+`", "dr-lumen": "`+voiceCreated.ID+`"}, "sources"`, 1)
+	var create story.CreateResponse
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(storyBody))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&create); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	status := waitGatewayStoryStatus(t, router, create.ID, story.StatusComplete)
+	if status.Manifest == nil {
+		t.Fatalf("expected completed manifest, got %+v", status)
+	}
+	if status.Manifest.Title != "The Llama Tale" {
+		t.Fatalf("expected llama-written title, got %q", status.Manifest.Title)
+	}
+	if len(status.Manifest.Script) != 4 || status.Manifest.Script[0].Text != "An opening line." {
+		t.Fatalf("expected llama-written script, got %+v", status.Manifest.Script)
+	}
+	if !sawScriptPrompt {
+		t.Fatalf("expected the story script prompt to reach llama")
+	}
+	for _, member := range status.Manifest.Cast {
+		if member.VoiceID != voiceCreated.ID {
+			t.Fatalf("cast %s: expected voice %q, got %q", member.ID, voiceCreated.ID, member.VoiceID)
+		}
+	}
+}
+
 func TestStoryValidationError(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cfg := testConfig(map[string]config.EngineConfig{
@@ -882,6 +983,8 @@ func TestGatewayHelperProcess(t *testing.T) {
 			runDesignHelper(helperArgs)
 		case "speech-require-voice":
 			runVoiceRequiredSpeechHelper(helperArgs)
+		case "speech-tone-require-voice":
+			runVoiceRequiredToneSpeechHelper(helperArgs)
 		case "speech-slow":
 			time.Sleep(500 * time.Millisecond)
 			runSpeechHelper(helperArgs)
@@ -1028,6 +1131,18 @@ func runDesignHelper(args []string) {
 		os.Exit(2)
 	}
 	os.Exit(0)
+}
+
+// runVoiceRequiredToneSpeechHelper is runVoiceRequiredSpeechHelper but with
+// decodable tone output, for flows that stitch the result.
+func runVoiceRequiredToneSpeechHelper(args []string) {
+	ref := helperArg(args, "--voice-ref")
+	refText := helperArg(args, "--reference-text")
+	if ref == "" || refText == "" {
+		fmt.Fprintf(os.Stderr, "missing cloned voice args voice-ref=%q reference-text=%q\n", ref, refText)
+		os.Exit(2)
+	}
+	runToneSpeechHelper(args)
 }
 
 // runToneSpeechHelper writes one second of decodable synthetic tone, for
@@ -2006,6 +2121,67 @@ func TestImageDescriptionBadRequest(t *testing.T) {
 				t.Fatalf("expected %q detail, got %s", tt.want, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestVoiceCloneProtectedRefusesDeletion(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("name", "Cox")
+	_ = writer.WriteField("transcript", "protected reference words")
+	_ = writer.WriteField("protected", "true")
+	part, err := writer.CreateFormFile("file", "reference.wav")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write(validWAVBytes()); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voices", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected create status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created voiceCloneSummary
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if !created.Protected {
+		t.Fatalf("expected protected summary, got %+v", created)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/v1/voices/"+created.ID, nil)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected delete status 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "protected") {
+		t.Fatalf("expected protected detail, got %s", rec.Body.String())
+	}
+
+	// Still listed and usable afterwards.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/voices", nil)
+	router.ServeHTTP(rec, req)
+	var list voiceListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatalf("decode voice list: %v", err)
+	}
+	if len(list.Voices) != 1 || !list.Voices[0].Protected {
+		t.Fatalf("expected protected voice to survive, got %+v", list)
 	}
 }
 

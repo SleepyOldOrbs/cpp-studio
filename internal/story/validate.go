@@ -12,7 +12,11 @@ type NormalizedRequest struct {
 	SourceMode    string
 	VoiceMode     string
 	Sources       []SourceInput
+	CastVoices    map[string]string
 }
+
+// CastMemberIDs is the fixed speaker trio every story script uses.
+var CastMemberIDs = []string{"narrator", "nova", "dr-lumen"}
 
 func ValidateCreateRequest(req CreateRequest) (NormalizedRequest, error) {
 	subject := strings.TrimSpace(req.Subject)
@@ -86,11 +90,31 @@ func ValidateCreateRequest(req CreateRequest) (NormalizedRequest, error) {
 		})
 	}
 
+	castVoices := make(map[string]string, len(req.CastVoices))
+	for speakerID, voiceID := range req.CastVoices {
+		voiceID = strings.TrimSpace(voiceID)
+		if voiceID == "" {
+			continue
+		}
+		known := false
+		for _, id := range CastMemberIDs {
+			if speakerID == id {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return NormalizedRequest{}, NewError(CodeInvalidRequest, fmt.Sprintf("cast_voices key %q must be one of %s", speakerID, strings.Join(CastMemberIDs, ", ")))
+		}
+		castVoices[speakerID] = voiceID
+	}
+
 	return NormalizedRequest{
 		Subject:       subject,
 		TargetSeconds: targetSeconds,
 		SourceMode:    sourceMode,
 		VoiceMode:     voiceMode,
 		Sources:       sources,
+		CastVoices:    castVoices,
 	}, nil
 }

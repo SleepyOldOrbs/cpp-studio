@@ -12,13 +12,29 @@ import (
 type ReserveEngineFunc func(ctx context.Context, name string) (func(), bool)
 
 // SynthesizeFunc speaks one script line through the audio engine while the
-// manager holds the engine's reservation. nil disables voice_mode "fixed".
-type SynthesizeFunc func(ctx context.Context, text string) ([]byte, error)
+// manager holds the engine's reservation; voiceID selects a stored cloned
+// voice ("" means the studio default). nil disables voice_mode "fixed".
+type SynthesizeFunc func(ctx context.Context, text string, voiceID string) ([]byte, error)
+
+// ScriptRequest is what a script writer needs: the subject, the pacing
+// target, the grounded facts to cite, and the cast to write for.
+type ScriptRequest struct {
+	Subject       string
+	TargetSeconds int
+	Facts         []FactCard
+	Cast          []CastMember
+}
+
+// ScriptFunc writes the story: a title plus script lines whose fact_ids
+// must cite the request's facts. nil falls back to the deterministic
+// fixture script.
+type ScriptFunc func(ctx context.Context, req ScriptRequest) (string, []ScriptLine, error)
 
 type ManagerOptions struct {
 	RootDir       string
 	ReserveEngine ReserveEngineFunc
 	Synthesize    SynthesizeFunc
+	Script        ScriptFunc
 	StageDelay    time.Duration
 	Now           func() time.Time
 }
@@ -28,6 +44,7 @@ type Manager struct {
 	store         *Store
 	reserveEngine ReserveEngineFunc
 	synthesize    SynthesizeFunc
+	script        ScriptFunc
 	stageDelay    time.Duration
 	now           func() time.Time
 	counter       int
@@ -56,6 +73,7 @@ func NewManager(opts ManagerOptions) *Manager {
 		store:         NewStore(opts.RootDir),
 		reserveEngine: opts.ReserveEngine,
 		synthesize:    opts.Synthesize,
+		script:        opts.Script,
 		stageDelay:    stageDelay,
 		now:           now,
 		jobs:          make(map[string]*job),
@@ -174,18 +192,29 @@ func (m *Manager) run(ctx context.Context, j *job) {
 		defer j.release()
 	}
 
-	stages := []struct {
-		status   Status
-		progress float64
-	}{
-		{StatusExtractingSources, 0.15},
-		{StatusPlanning, 0.35},
-		{StatusScripting, 0.55},
+	if !m.advance(ctx, j, StatusExtractingSources, 0.15) {
+		return
 	}
-	for _, stage := range stages {
-		if !m.advance(ctx, j, stage.status, stage.progress) {
-			return
-		}
+	scaffold, err := BuildScaffold(j.req)
+	if err != nil {
+		m.fail(j, err)
+		return
+	}
+	if !m.advance(ctx, j, StatusPlanning, 0.35) {
+		return
+	}
+	if !m.advance(ctx, j, StatusScripting, 0.55) {
+		return
+	}
+	if ctx.Err() != nil || m.isCancelled(j) {
+		m.cancelled(j)
+		return
+	}
+
+	title, script, err := m.writeScript(ctx, j.req, scaffold)
+	if err != nil {
+		m.fail(j, err)
+		return
 	}
 	if ctx.Err() != nil || m.isCancelled(j) {
 		m.cancelled(j)
@@ -193,14 +222,15 @@ func (m *Manager) run(ctx context.Context, j *job) {
 	}
 
 	createdAt := m.now()
-	manifest, audio, err := BuildFixtureManifest(j.id, j.req, createdAt)
+	manifest, err := AssembleManifest(j.id, j.req, createdAt, scaffold, title, script)
 	if err != nil {
 		m.fail(j, err)
 		return
 	}
+	audio := fixtureWAV(j.req.TargetSeconds)
 
 	if j.req.VoiceMode == "fixed" && m.synthesize != nil {
-		clips, ok := m.synthesizeScript(ctx, j, manifest.Script)
+		clips, ok := m.synthesizeScript(ctx, j, manifest.Script, j.req.CastVoices)
 		if !ok {
 			return
 		}
@@ -267,10 +297,25 @@ const (
 	artifactPad = 250 * time.Millisecond
 )
 
-// synthesizeScript speaks each script line through the injected synthesizer,
-// walking progress across the synthesizing stage. It reports false when the
-// job was cancelled or failed (status already updated).
-func (m *Manager) synthesizeScript(ctx context.Context, j *job, script []ScriptLine) ([][]byte, bool) {
+// writeScript produces the story's title and script via the injected
+// ScriptFunc, or the deterministic fixture script when none is wired.
+func (m *Manager) writeScript(ctx context.Context, req NormalizedRequest, scaffold Scaffold) (string, []ScriptLine, error) {
+	if m.script == nil {
+		return titleForSubject(req.Subject), fixtureScript(req.Subject, scaffold.Facts), nil
+	}
+	return m.script(ctx, ScriptRequest{
+		Subject:       req.Subject,
+		TargetSeconds: req.TargetSeconds,
+		Facts:         scaffold.Facts,
+		Cast:          scaffold.Cast,
+	})
+}
+
+// synthesizeScript speaks each script line through the injected synthesizer
+// with the speaker's assigned voice, walking progress across the
+// synthesizing stage. It reports false when the job was cancelled or failed
+// (status already updated).
+func (m *Manager) synthesizeScript(ctx context.Context, j *job, script []ScriptLine, castVoices map[string]string) ([][]byte, bool) {
 	clips := make([][]byte, 0, len(script))
 	for i, line := range script {
 		if ctx.Err() != nil || m.isCancelled(j) {
@@ -278,7 +323,7 @@ func (m *Manager) synthesizeScript(ctx context.Context, j *job, script []ScriptL
 			return nil, false
 		}
 		m.setStage(j, StatusSynthesizing, 0.55+0.3*float64(i)/float64(len(script)))
-		clip, err := m.synthesize(ctx, line.Text)
+		clip, err := m.synthesize(ctx, line.Text, castVoices[line.SpeakerID])
 		if err != nil {
 			m.fail(j, NewError(CodeSynthesisFailure, fmt.Sprintf("synthesize script line %d: %v", i+1, err)))
 			return nil, false

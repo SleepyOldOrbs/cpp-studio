@@ -289,10 +289,12 @@ func TestManagerSubmitBusyCancelAndComplete(t *testing.T) {
 
 func TestManagerSynthesizesFixedVoiceStories(t *testing.T) {
 	var synthesized []string
+	var voices []string
 	manager := NewManager(ManagerOptions{
 		RootDir: t.TempDir(),
-		Synthesize: func(ctx context.Context, text string) ([]byte, error) {
+		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
 			synthesized = append(synthesized, text)
+			voices = append(voices, voiceID)
 			return wav.SyntheticTone(wav.ToneSampleRate), nil // one second per line
 		},
 		StageDelay: time.Millisecond,
@@ -301,6 +303,7 @@ func TestManagerSynthesizesFixedVoiceStories(t *testing.T) {
 
 	req := validCreateRequest()
 	req.VoiceMode = "fixed"
+	req.CastVoices = map[string]string{"narrator": "voice-a", "dr-lumen": "voice-b"}
 	created, err := manager.Submit(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Submit returned error: %v", err)
@@ -315,6 +318,20 @@ func TestManagerSynthesizesFixedVoiceStories(t *testing.T) {
 	}
 	if synthesized[0] != status.Manifest.Script[0].Text {
 		t.Fatalf("expected first synthesized line to match script, got %q", synthesized[0])
+	}
+	// Cast voices route per speaker: narrator/dr-lumen lines carry their
+	// assigned voices, nova falls back to the default ("").
+	for i, line := range status.Manifest.Script {
+		want := map[string]string{"narrator": "voice-a", "dr-lumen": "voice-b", "nova": ""}[line.SpeakerID]
+		if voices[i] != want {
+			t.Fatalf("line %d (%s): expected voice %q, got %q", i, line.SpeakerID, want, voices[i])
+		}
+	}
+	for _, member := range status.Manifest.Cast {
+		want := map[string]string{"narrator": "voice-a", "dr-lumen": "voice-b", "nova": "studio-default"}[member.ID]
+		if member.VoiceID != want {
+			t.Fatalf("cast %s: expected voice id %q, got %q", member.ID, want, member.VoiceID)
+		}
 	}
 
 	// Stitched audio: len(script) seconds of clips plus 350ms gaps between.
@@ -343,7 +360,7 @@ func TestManagerSynthesizesFixedVoiceStories(t *testing.T) {
 func TestManagerFailsWhenSynthesisFails(t *testing.T) {
 	manager := NewManager(ManagerOptions{
 		RootDir: t.TempDir(),
-		Synthesize: func(ctx context.Context, text string) ([]byte, error) {
+		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
 			return nil, fmt.Errorf("audio engine exploded")
 		},
 		StageDelay: time.Millisecond,
@@ -359,6 +376,104 @@ func TestManagerFailsWhenSynthesisFails(t *testing.T) {
 	status := waitStoryStatus(t, manager, created.ID, StatusFailed)
 	if status.Error == nil || status.Error.Code != CodeSynthesisFailure {
 		t.Fatalf("expected synthesis failure, got %+v", status.Error)
+	}
+}
+
+func TestManagerUsesInjectedScriptWriter(t *testing.T) {
+	var gotRequest ScriptRequest
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(),
+		Script: func(ctx context.Context, req ScriptRequest) (string, []ScriptLine, error) {
+			gotRequest = req
+			return "A Custom Tale", []ScriptLine{
+				{SpeakerID: "narrator", Text: "A written opening.", FactIDs: []string{req.Facts[0].ID}},
+				{SpeakerID: "nova", Text: "A written question?", FactIDs: []string{req.Facts[1].ID}},
+				{SpeakerID: "dr-lumen", Text: "A written answer.", FactIDs: []string{req.Facts[2].ID}},
+				{SpeakerID: "narrator", Text: "A written ending.", FactIDs: []string{req.Facts[0].ID}},
+			}, nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	created, err := manager.Submit(context.Background(), validCreateRequest())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, created.ID, StatusComplete)
+	if status.Manifest == nil {
+		t.Fatalf("expected completed manifest, got %+v", status)
+	}
+	if status.Manifest.Title != "A Custom Tale" {
+		t.Fatalf("expected script writer title, got %q", status.Manifest.Title)
+	}
+	if len(status.Manifest.Script) != 4 || status.Manifest.Script[0].Text != "A written opening." {
+		t.Fatalf("expected script writer lines, got %+v", status.Manifest.Script)
+	}
+	if gotRequest.Subject != "how stars are born" || gotRequest.TargetSeconds != 90 {
+		t.Fatalf("unexpected script request %+v", gotRequest)
+	}
+	if len(gotRequest.Facts) < 8 || len(gotRequest.Cast) != 3 {
+		t.Fatalf("expected scaffold facts and cast in script request, got %d facts, %d cast", len(gotRequest.Facts), len(gotRequest.Cast))
+	}
+}
+
+func TestManagerFailsWhenScriptWriterFails(t *testing.T) {
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(),
+		Script: func(ctx context.Context, req ScriptRequest) (string, []ScriptLine, error) {
+			return "", nil, NewError(CodeGroundingFailure, "the writer had no ideas")
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	created, err := manager.Submit(context.Background(), validCreateRequest())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, created.ID, StatusFailed)
+	if status.Error == nil || status.Error.Code != CodeGroundingFailure {
+		t.Fatalf("expected grounding failure, got %+v", status.Error)
+	}
+}
+
+func TestManagerRejectsUngroundedScriptWriterOutput(t *testing.T) {
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(),
+		Script: func(ctx context.Context, req ScriptRequest) (string, []ScriptLine, error) {
+			return "Bad Tale", []ScriptLine{
+				{SpeakerID: "narrator", Text: "Cites nothing.", FactIDs: nil},
+			}, nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	created, err := manager.Submit(context.Background(), validCreateRequest())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, created.ID, StatusFailed)
+	if status.Error == nil || status.Error.Code != CodeGroundingFailure {
+		t.Fatalf("expected grounding failure, got %+v", status.Error)
+	}
+}
+
+func TestValidateCreateRequestCastVoices(t *testing.T) {
+	req := validCreateRequest()
+	req.CastVoices = map[string]string{"narrator": "voice-1", "nova": " ", "dr-lumen": "voice-2"}
+	normalized, err := ValidateCreateRequest(req)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(normalized.CastVoices) != 2 || normalized.CastVoices["narrator"] != "voice-1" || normalized.CastVoices["dr-lumen"] != "voice-2" {
+		t.Fatalf("unexpected normalized cast voices %+v", normalized.CastVoices)
+	}
+
+	req.CastVoices = map[string]string{"villain": "voice-3"}
+	if _, err := ValidateCreateRequest(req); !storyErrorIs(err, CodeInvalidRequest) {
+		t.Fatalf("expected invalid cast key error, got %v", err)
 	}
 }
 

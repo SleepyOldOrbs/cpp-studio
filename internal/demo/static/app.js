@@ -51,6 +51,7 @@
   var storySubjectInput = document.getElementById("storySubjectInput");
   var storySecondsInput = document.getElementById("storySecondsInput");
   var storyVoiceSelect = document.getElementById("storyVoiceSelect");
+  var storyCastSelects = Array.prototype.slice.call(document.querySelectorAll(".story-cast-select"));
   var storyGenerateButton = document.getElementById("storyGenerateButton");
   var storyCancelButton = document.getElementById("storyCancelButton");
   var storyErrorBox = document.getElementById("storyErrorBox");
@@ -241,6 +242,9 @@
     cloneRecordButton.disabled = running || live || recording || recordSetupPending || (!cloneRecording && !cloneSetupPending && !canRecord());
     describeImageButton.disabled = busy || imagePreview.hidden || !imagePreview.src;
     designSaveButton.disabled = busy || !designCandidate;
+    storyCastSelects.forEach(function (select) {
+      select.disabled = busy || storyVoiceSelect.value !== "fixed";
+    });
   }
 
   function setRunning(value) {
@@ -781,6 +785,7 @@
           target_seconds: targetSeconds,
           source_mode: "curated",
           voice_mode: storyVoiceSelect.value,
+          cast_voices: storyVoiceSelect.value === "fixed" ? collectCastVoices() : {},
           sources: collectStorySources()
         })
       });
@@ -1120,14 +1125,18 @@
           log("Reference playback is ready");
         });
       });
-      var deleteButton = createElement("button", "plain compact-button", "Delete");
-      deleteButton.type = "button";
-      deleteButton.addEventListener("click", function () {
-        deleteVoice(clone.id, clone.name);
-      });
       actions.appendChild(useButton);
       actions.appendChild(playButton);
-      actions.appendChild(deleteButton);
+      if (clone.protected) {
+        actions.appendChild(createElement("span", "voice-item-lock", "Protected"));
+      } else {
+        var deleteButton = createElement("button", "plain compact-button", "Delete");
+        deleteButton.type = "button";
+        deleteButton.addEventListener("click", function () {
+          deleteVoice(clone.id, clone.name);
+        });
+        actions.appendChild(deleteButton);
+      }
       item.appendChild(actions);
       voiceLibrary.appendChild(item);
     });
@@ -1152,6 +1161,37 @@
       persistSelectedVoice();
     }
     updateSpeakVoiceLabel();
+  }
+
+  // renderStoryCastSelects mirrors the voice library into the three story
+  // cast pickers, keeping each picker's selection when it still exists.
+  function renderStoryCastSelects(voices) {
+    storyCastSelects.forEach(function (select) {
+      var previous = select.value;
+      select.textContent = "";
+      var fallback = createElement("option", "", "Studio default");
+      fallback.value = "";
+      select.appendChild(fallback);
+      (voices || []).forEach(function (clone) {
+        var option = createElement("option", "", clone.name || clone.id);
+        option.value = clone.id;
+        select.appendChild(option);
+      });
+      select.value = previous;
+      if (select.value !== previous) {
+        select.value = "";
+      }
+    });
+  }
+
+  function collectCastVoices() {
+    var cast = {};
+    storyCastSelects.forEach(function (select) {
+      if (select.value) {
+        cast[select.dataset.speaker] = select.value;
+      }
+    });
+    return cast;
   }
 
   function persistSelectedVoice() {
@@ -1190,6 +1230,7 @@
       }
       renderVoiceLibrary(voices);
       renderVoiceSelect(voices);
+      renderStoryCastSelects(voices);
     } catch (error) {
       setCloneError(error);
     } finally {
@@ -2235,6 +2276,8 @@
   submitOnCtrlEnter(imagePromptInput, imageForm);
   submitOnCtrlEnter(speakTextInput, cloneSpeakForm);
   submitOnCtrlEnter(designDescriptionInput, designForm);
+
+  storyVoiceSelect.addEventListener("change", syncControls);
 
   liveButton.addEventListener("click", function () {
     if (live) {

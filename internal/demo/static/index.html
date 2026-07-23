@@ -315,11 +315,33 @@
             <label class="field compact-field">
               <span>Voice</span>
               <select class="text-input" id="storyVoiceSelect">
-                <option value="fixed" selected>Studio voice</option>
+                <option value="fixed" selected>Studio voices</option>
                 <option value="placeholder">Placeholder tone</option>
               </select>
             </label>
           </div>
+
+          <div class="story-controls story-cast-row">
+            <label class="field compact-field">
+              <span>Narrator</span>
+              <select class="text-input story-cast-select" id="castNarratorSelect" data-speaker="narrator">
+                <option value="" selected>Studio default</option>
+              </select>
+            </label>
+            <label class="field compact-field">
+              <span>Nova &middot; curious host</span>
+              <select class="text-input story-cast-select" id="castNovaSelect" data-speaker="nova">
+                <option value="" selected>Studio default</option>
+              </select>
+            </label>
+            <label class="field compact-field">
+              <span>Dr. Lumen &middot; expert</span>
+              <select class="text-input story-cast-select" id="castLumenSelect" data-speaker="dr-lumen">
+                <option value="" selected>Studio default</option>
+              </select>
+            </label>
+          </div>
+          <small class="hint">Give each speaker a voice from your library &mdash; cloned or designed. The script itself is written by llama from your sources.</small>
 
           <div class="source-stack">
             <details class="source-group" open>

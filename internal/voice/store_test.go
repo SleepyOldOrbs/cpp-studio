@@ -1,6 +1,7 @@
 package voice
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ func validWAVBytes() []byte {
 func TestStoreSaveListLoadDelete(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "voices"))
 
-	clone, err := store.Save("James", "the reference words", validWAVBytes())
+	clone, err := store.Save("James", "the reference words", validWAVBytes(), false)
 	if err != nil {
 		t.Fatalf("save voice: %v", err)
 	}
@@ -56,7 +57,7 @@ func TestStoreSaveListLoadDelete(t *testing.T) {
 		t.Fatalf("unexpected reference wav bytes %q", data)
 	}
 
-	second, err := store.Save("Other", "other words", validWAVBytes())
+	second, err := store.Save("Other", "other words", validWAVBytes(), false)
 	if err != nil {
 		t.Fatalf("save second voice: %v", err)
 	}
@@ -81,6 +82,30 @@ func TestStoreSaveListLoadDelete(t *testing.T) {
 
 	if _, ok, _ := store.Load(clone.ID); ok {
 		t.Fatalf("expected deleted voice to be gone")
+	}
+}
+
+func TestStoreProtectedVoiceRefusesDeletion(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "voices"))
+
+	clone, err := store.Save("Cox", "protected reference words", validWAVBytes(), true)
+	if err != nil {
+		t.Fatalf("save protected voice: %v", err)
+	}
+	if !clone.Protected {
+		t.Fatalf("expected protected clone, got %+v", clone)
+	}
+
+	loaded, ok, err := store.Load(clone.ID)
+	if err != nil || !ok || !loaded.Protected {
+		t.Fatalf("expected protected flag to persist, got ok=%v err=%v clone=%+v", ok, err, loaded)
+	}
+
+	if err := store.Delete(clone.ID); !errors.Is(err, ErrProtected) {
+		t.Fatalf("expected ErrProtected, got %v", err)
+	}
+	if _, ok, _ := store.Load(clone.ID); !ok {
+		t.Fatalf("expected protected voice to survive the delete attempt")
 	}
 }
 
@@ -114,7 +139,7 @@ func TestStoreSaveValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := store.Save(tt.voiceName, tt.transcript, tt.wav); err == nil || !strings.Contains(err.Error(), tt.want) {
+			if _, err := store.Save(tt.voiceName, tt.transcript, tt.wav, false); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("expected error containing %q, got %v", tt.want, err)
 			}
 		})

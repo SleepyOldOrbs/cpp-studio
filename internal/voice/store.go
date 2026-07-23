@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,13 +24,18 @@ const (
 )
 
 // Clone is one stored cloned voice: a reference WAV on disk plus the
-// transcript the TTS engine conditions on.
+// transcript the TTS engine conditions on. Protected voices refuse
+// deletion — for curated voices that should survive library housekeeping.
 type Clone struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
 	Transcript string    `json:"transcript"`
 	CreatedAt  time.Time `json:"created_at"`
+	Protected  bool      `json:"protected,omitempty"`
 }
+
+// ErrProtected reports a deletion attempt on a protected voice.
+var ErrProtected = errors.New("voice is protected and cannot be deleted")
 
 // Store persists cloned voices, one directory per voice holding ref.wav and
 // manifest.json, in the same shape as the story store.
@@ -46,7 +52,8 @@ func NewStore(rootDir string) *Store {
 
 // Save validates and persists a new cloned voice, returning it with a fresh
 // ID. The name and transcript arrive already trimmed by the caller.
-func (s *Store) Save(name string, transcript string, refWAV []byte) (Clone, error) {
+// Protected voices refuse later deletion.
+func (s *Store) Save(name string, transcript string, refWAV []byte, protected bool) (Clone, error) {
 	if name == "" {
 		return Clone{}, fmt.Errorf("voice name is required")
 	}
@@ -78,6 +85,7 @@ func (s *Store) Save(name string, transcript string, refWAV []byte) (Clone, erro
 		Name:       name,
 		Transcript: transcript,
 		CreatedAt:  time.Now().UTC(),
+		Protected:  protected,
 	}
 
 	tmpDir := filepath.Join(s.rootDir, "."+clone.ID+".tmp")
@@ -170,6 +178,11 @@ func (s *Store) ReferencePath(id string) (string, error) {
 func (s *Store) Delete(id string) error {
 	if err := validateVoiceID(id); err != nil {
 		return fmt.Errorf("voice not found")
+	}
+	if clone, ok, err := s.Load(id); err != nil {
+		return err
+	} else if ok && clone.Protected {
+		return ErrProtected
 	}
 	if err := os.RemoveAll(filepath.Join(s.rootDir, id)); err != nil {
 		return fmt.Errorf("delete voice dir: %w", err)

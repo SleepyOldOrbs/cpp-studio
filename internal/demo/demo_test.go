@@ -71,6 +71,9 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "designEngineInput") {
 		t.Fatalf("expected design engine input marker, got %q", body)
 	}
+	if !strings.Contains(body, "castNarratorSelect") {
+		t.Fatalf("expected story cast voice marker, got %q", body)
+	}
 }
 
 func TestHandlerServesAssets(t *testing.T) {
