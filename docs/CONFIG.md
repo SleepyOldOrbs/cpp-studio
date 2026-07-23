@@ -109,6 +109,11 @@ llama-server --host 127.0.0.1 --port 8733 `
 
 Prefer `127.0.0.1` for the first local demo. Use `0.0.0.0` only when you intentionally want LAN access.
 
+Cap the context with `-c` (e.g. `-c 16384`): left unset, llama-server sizes
+its KV cache from the model's maximum (80k+ tokens on recent models), which
+can cost several GB of VRAM that the voice loop's short conversations never
+use — VRAM that transient engines (sd, voice design) need.
+
 ### audio.cpp
 
 The verified local `audio.cpp` route uses the sibling checkout:
