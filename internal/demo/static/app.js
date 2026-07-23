@@ -914,7 +914,10 @@
     reader.readAsDataURL(file);
   }
 
-  var DESCRIBE_MAX_DIMENSION = 1536;
+  // 1024px keeps descriptions accurate while roughly halving the vision
+  // model's image-token load versus 1536px (faster encode, smaller VRAM
+  // scratch alongside the other resident engines).
+  var DESCRIBE_MAX_DIMENSION = 1024;
 
   // describeImageSource re-encodes whatever is in the preview frame as a
   // PNG no larger than DESCRIBE_MAX_DIMENSION on its longest side. The

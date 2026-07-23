@@ -1862,6 +1862,46 @@ func TestSpeechViaResidentAudioServer(t *testing.T) {
 	}
 }
 
+func TestImageDescriptionSpeaksViaResidentAudioServer(t *testing.T) {
+	var speechHits int
+	audioUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/v1/audio/speech" {
+			t.Errorf("unexpected audio path %q", req.URL.Path)
+		}
+		speechHits++
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(wav.SyntheticTone(160))
+	}))
+	defer audioUpstream.Close()
+	visionUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"a described scene"}}]}`))
+	}))
+	defer visionUpstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"vision": {Command: "llama-server", HealthURL: visionUpstream.URL + "/health"},
+		"audio": {
+			Command:         "audiocpp_server",
+			Mode:            "server",
+			HealthURL:       audioUpstream.URL + "/health",
+			DefaultVoiceRef: `C:\voices\default.wav`,
+		},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	imageB64 := base64.StdEncoding.EncodeToString(validPNGBytes())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/descriptions", strings.NewReader(`{"image_b64":"`+imageB64+`"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if speechHits != 1 {
+		t.Fatalf("expected description to speak through the resident server, got %d hits", speechHits)
+	}
+}
+
 func TestSpeechResidentServerFailure(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

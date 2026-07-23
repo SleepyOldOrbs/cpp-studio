@@ -410,7 +410,7 @@ func (r *router) handleImageDescriptions(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	speech, err := r.engines.Run(req.Context(), engine.SpeechVoiceSpec(description, clonedVoice))
+	speech, err := r.speak(req.Context(), description, clonedVoice, false)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -420,7 +420,7 @@ func (r *router) handleImageDescriptions(w http.ResponseWriter, req *http.Reques
 	_ = json.NewEncoder(w).Encode(imageDescriptionResponse{
 		Description: description,
 		AudioFormat: "wav",
-		AudioB64:    base64.StdEncoding.EncodeToString(padSpeech(speech.Output)),
+		AudioB64:    base64.StdEncoding.EncodeToString(padSpeech(speech)),
 	})
 }
 

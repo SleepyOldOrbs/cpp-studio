@@ -3,6 +3,36 @@
 ENG-T0 measured the real local planner and narrator before schema-v2 and
 checkpoint boundaries are frozen.
 
+## Resident Audio Update (2026-07-23)
+
+The `exclusive_restart` policy below predates the resident `audiocpp_server`.
+With the audio engine as `mode: "server"` (see CONFIG.md), the measured
+latencies on the same machine became:
+
+| Flow | Subprocess (before) | Resident, uncontended | Resident, GPU contended |
+|---|---|---|---|
+| Short speech reply | 7.7-10.5 s | 0.77-0.89 s | 2.2-2.7 s |
+| Voice loop (typed) | ~13-23 s | ~1.5 s | 6-8 s |
+| Multi-voice story (8 lines) | ~71 s | ~25 s (mostly llama scripting) | - |
+
+Supporting changes: story synthesis groups lines by voice (the qwen3_tts
+session keeps a single-slot voice-prompt cache, so grouping re-conditions
+once per voice); llama runs with `-c 8192 -b 512 -ub 256` and vision with
+`-c 4096 -b 512 -ub 256` (an uncapped llama KV cache alone cost ~5 GB);
+the demo downscales described images to 1024 px.
+
+Caveats:
+
+- "Contended" is the everything-warm state: llama + vision + TTS resident
+  plus desktop GPU users pushes the 16 GB card to ~15 GB and WDDM paging
+  sets in. Voice paths stay sub-second when vision is cold.
+- `qwen3_tts.mem_saver=true` was measured and rejected for the resident
+  server: it frees ~1.8 GB idle but re-stages graphs per request, taking
+  short speech from ~0.8 s to ~5.5 s.
+- Next levers if contention matters: a 2B vision model (halves the vision
+  footprint), or keeping the exclusive_restart policy for vision instead
+  of audio.
+
 ## Decision
 
 - Synthesis unit: chapter_batch_session.
