@@ -235,6 +235,87 @@ func TestImageGenerationSuccess(t *testing.T) {
 	}
 }
 
+func TestImageGenerationViaResidentSDServer(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/v1/images/generations" {
+			t.Errorf("unexpected upstream path %q", req.URL.Path)
+		}
+		raw, _ := io.ReadAll(req.Body)
+		// sd-server fatally rejects "n":null, so the upstream body must omit
+		// the n field entirely (regression guard).
+		if bytes.Contains(raw, []byte(`"n"`)) {
+			t.Errorf("upstream body must not contain an n field: %s", raw)
+		}
+		var body imageGenerationRequest
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		if body.Prompt != "a small cabin" {
+			t.Errorf("unexpected upstream prompt %q", body.Prompt)
+		}
+		if body.Size != "512x512" {
+			t.Errorf("unexpected upstream size %q", body.Size)
+		}
+		if body.ResponseFormat != "b64_json" {
+			t.Errorf("expected response_format b64_json, got %q", body.ResponseFormat)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"created":1,"data":[{"b64_json":%q}]}`, base64.StdEncoding.EncodeToString(validPNGBytes()))))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"sd": {Command: "sd-server", Mode: "server", HealthURL: upstream.URL + "/v1/models"},
+	})
+	manager := lifecycle.NewManager(cfg)
+	router := NewRouter(cfg, manager)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"a small cabin","size":"512x512","response_format":"b64_json"}`))
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response imageGenerationResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode image generation response: %v", err)
+	}
+	if len(response.Data) != 1 || response.Data[0].B64JSON == "" {
+		t.Fatalf("expected one b64_json image, got %+v", response)
+	}
+	image, err := base64.StdEncoding.DecodeString(response.Data[0].B64JSON)
+	if err != nil {
+		t.Fatalf("decode b64_json: %v", err)
+	}
+	if !bytes.Equal(image, validPNGBytes()) {
+		t.Fatalf("unexpected png bytes %v", image)
+	}
+	if manager.Health().Engines["sd"].LastSuccessAt == nil {
+		t.Fatalf("expected sd lastSuccessAt to be recorded")
+	}
+}
+
+func TestImageGenerationResidentSDServerFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		http.Error(w, "diffusion failed", http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"sd": {Command: "sd-server", Mode: "server", HealthURL: upstream.URL + "/v1/models"},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"a small cabin","size":"512x512"}`))
+	router.ServeHTTP(rec, req)
+
+	if rec.Code < 500 {
+		t.Fatalf("expected 5xx on upstream failure, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestImageGenerationMissingEngine(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{
 		"audio": helperEngine("speech"),

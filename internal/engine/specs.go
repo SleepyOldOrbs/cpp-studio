@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"image/png"
-	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -243,35 +242,35 @@ func ValidateImageDimensions(width int, height int) error {
 	return nil
 }
 
+var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+
 func validatePNGFile(path string) error {
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("open generated image: %v", err)
 	}
-	defer file.Close()
+	return ValidatePNGBytes(data)
+}
 
-	header := make([]byte, 8)
-	if _, err := io.ReadFull(file, header); err != nil {
+// ValidatePNGBytes enforces the same guarantees as the file-based output
+// validator on in-memory image bytes: within MaxImageOutputBytes, a genuine
+// PNG, and within the dimension caps. Server-mode image engines return bytes
+// over HTTP rather than a temp file, so they validate through here.
+func ValidatePNGBytes(data []byte) error {
+	if int64(len(data)) > MaxImageOutputBytes {
+		return fmt.Errorf("produced oversized PNG: %d bytes exceeds %d", len(data), MaxImageOutputBytes)
+	}
+	if len(data) < len(pngSignature) || !bytes.Equal(data[:len(pngSignature)], pngSignature) {
 		return fmt.Errorf("unsupported image file: expected PNG signature")
 	}
-	pngSignature := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
-	if !bytes.Equal(header, pngSignature) {
-		return fmt.Errorf("unsupported image file: expected PNG signature")
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("rewind generated image: %v", err)
-	}
-	cfg, err := png.DecodeConfig(file)
+	cfg, err := png.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("decode PNG metadata: %v", err)
 	}
 	if err := ValidateImageDimensions(cfg.Width, cfg.Height); err != nil {
 		return err
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("rewind generated image: %v", err)
-	}
-	if _, err := png.Decode(file); err != nil {
+	if _, err := png.Decode(bytes.NewReader(data)); err != nil {
 		return fmt.Errorf("decode PNG image: %v", err)
 	}
 	return nil

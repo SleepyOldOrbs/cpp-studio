@@ -336,7 +336,7 @@ func (r *router) handleImageGenerations(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	result, err := r.engines.Run(req.Context(), engine.ImageSpec(body.Prompt, width, height))
+	png, err := r.generateImage(req.Context(), body.Prompt, width, height)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -346,15 +346,102 @@ func (r *router) handleImageGenerations(w http.ResponseWriter, req *http.Request
 	_ = json.NewEncoder(w).Encode(imageGenerationResponse{
 		Created: time.Now().Unix(),
 		Data: []imageGenerationData{
-			{B64JSON: base64.StdEncoding.EncodeToString(result.Output)},
+			{B64JSON: base64.StdEncoding.EncodeToString(png)},
 		},
 	})
+}
+
+// generateImage produces a PNG for the prompt. Subprocess sd crosses the
+// engine seam (sd-cli reloads the model each run); server-mode sd posts to the
+// resident sd-server's OpenAI-compatible /v1/images/generations route so the
+// ~2.8GB model stays loaded between requests, mirroring the resident whisper
+// and audio proxies. Either way the returned bytes satisfy the same PNG caps.
+func (r *router) generateImage(ctx context.Context, prompt string, width, height int) ([]byte, error) {
+	engineCfg, ok := r.engine("sd")
+	if !ok {
+		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "sd" is not configured`}
+	}
+	if engineCfg.Mode != "server" {
+		res, err := r.engines.Run(ctx, engine.ImageSpec(prompt, width, height))
+		if err != nil {
+			return nil, err
+		}
+		return res.Output, nil
+	}
+
+	upstreamURL, ok := inferImageGenerationsURL(engineCfg.HealthURL)
+	if !ok {
+		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "sd" healthUrl must be an absolute http(s) URL to infer /v1/images/generations`}
+	}
+
+	// Build the upstream body explicitly rather than reusing
+	// imageGenerationRequest: its N field has no omitempty, so an unset N
+	// marshals to "n":null, which sd-server's JSON parser fatally rejects
+	// (fast-fail / 0xc0000409). Only send the fields sd-server needs.
+	upstreamBody := struct {
+		Prompt         string `json:"prompt"`
+		Size           string `json:"size,omitempty"`
+		ResponseFormat string `json:"response_format"`
+	}{Prompt: prompt, ResponseFormat: "b64_json"}
+	if width > 0 && height > 0 {
+		upstreamBody.Size = fmt.Sprintf("%dx%d", width, height)
+	}
+	payload, err := json.Marshal(upstreamBody)
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode image request: %v", err)}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, engine.RequestTimeout(engineCfg, engine.DefaultImageTimeout))
+	defer cancel()
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
+	}
+	upstreamReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := r.client.Do(upstreamReq)
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream request failed: %v", err)}
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxImageUpstreamBytes))
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read sd upstream response: %v", err)}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))}
+	}
+
+	var parsed struct {
+		Data []struct {
+			B64JSON string `json:"b64_json"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("decode sd upstream response: %v", err)}
+	}
+	if len(parsed.Data) == 0 || parsed.Data[0].B64JSON == "" {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: "sd upstream returned no image data"}
+	}
+	pngBytes, err := base64.StdEncoding.DecodeString(parsed.Data[0].B64JSON)
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("decode sd upstream image: %v", err)}
+	}
+	if err := engine.ValidatePNGBytes(pngBytes); err != nil {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream produced invalid PNG: %v", err)}
+	}
+	r.manager.MarkSuccess("sd")
+	return pngBytes, nil
 }
 
 const (
 	// maxImageDescriptionBodyBytes bounds the JSON body carrying a base64
 	// PNG for description.
 	maxImageDescriptionBodyBytes = 24 * 1024 * 1024
+	// maxImageUpstreamBytes bounds the sd-server response we read: a base64
+	// PNG (~1.34x the raw cap) wrapped in JSON, so it must exceed
+	// engine.MaxImageOutputBytes with room for the encoding overhead.
+	maxImageUpstreamBytes = 64 * 1024 * 1024
 	// maxDescribeImageDimension caps described images. Unlike generation,
 	// description accepts photos and screenshots, so the cap is looser than
 	// the SD limit; the browser additionally downscales before uploading.
@@ -1392,6 +1479,21 @@ func inferEngineURL(healthURL string, path string) (string, bool) {
 
 func inferChatCompletionsURL(healthURL string) (string, bool) {
 	return inferEngineURL(healthURL, "/v1/chat/completions")
+}
+
+// inferImageGenerationsURL derives sd-server's request route from its
+// healthUrl's origin. Unlike the /health-suffixed engines, sd-server has no
+// /health route (readiness is polled at /v1/models), so the path is taken from
+// the origin rather than by stripping a /health suffix.
+func inferImageGenerationsURL(healthURL string) (string, bool) {
+	if healthURL == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(healthURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", false
+	}
+	return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: "/v1/images/generations"}).String(), true
 }
 
 func parseImageSize(size string) (int, int, error) {
