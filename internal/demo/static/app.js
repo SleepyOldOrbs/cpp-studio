@@ -3166,6 +3166,22 @@
   var extractFilterRow = document.getElementById("extractFilterRow");
 
   var EXTRACT_MAX_SECONDS = 30 * 60;
+  // Whisper end-stamps chronically clip the final phoneme; every
+  // segment-derived region gets this much breathing room.
+  var EXTRACT_TAIL_PAD = 0.25;
+  // One shared AudioContext for decode and playback: browsers cap live
+  // contexts per tab, so creating one per Play dies after a few clicks.
+  var extractAudioCtx = null;
+  function extractCtx() {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!extractAudioCtx || extractAudioCtx.state === "closed") {
+      extractAudioCtx = new AC();
+    }
+    if (extractAudioCtx.state === "suspended") {
+      extractAudioCtx.resume();
+    }
+    return extractAudioCtx;
+  }
   var ex = {
     samples: null,      // mono Float32Array at ex.rate
     rate: 0,
@@ -3195,11 +3211,12 @@
     var spans = [];
     checkedIndices().forEach(function (index) {
       var segment = ex.segments[index];
+      var end = Math.min(segment.end + EXTRACT_TAIL_PAD, ex.duration);
       var last = spans[spans.length - 1];
       if (last && segment.start - last.end <= 0.3) {
-        last.end = Math.max(last.end, segment.end);
+        last.end = Math.max(last.end, end);
       } else {
-        spans.push({ start: segment.start, end: segment.end });
+        spans.push({ start: segment.start, end: end });
       }
     });
     return spans;
@@ -3244,14 +3261,7 @@
     extractFileStatus.textContent = "Decoding " + file.name + "…";
     try {
       var buffer = await file.arrayBuffer();
-      var AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      var ctx = new AudioContextClass();
-      var decoded;
-      try {
-        decoded = await ctx.decodeAudioData(buffer);
-      } finally {
-        ctx.close();
-      }
+      var decoded = await extractCtx().decodeAudioData(buffer);
       if (decoded.duration > EXTRACT_MAX_SECONDS) {
         extractFileStatus.textContent = "Nothing loaded";
         extractError("That file is " + fmtTime(decoded.duration) + " long; the in-browser editor caps at 30 minutes. Trim or split it first.");
@@ -3507,7 +3517,7 @@
     }
     try { ex.playback.source.stop(); } catch (err) { /* already stopped */ }
     window.cancelAnimationFrame(ex.playback.raf);
-    ex.playback.ctx.close();
+    // The shared context stays open for the next play.
     ex.playback = null;
     extractStopButton.disabled = true;
     drawExtractWave();
@@ -3533,8 +3543,7 @@
       }
     }
     extractStopPlayback();
-    var AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    var ctx = new AudioContextClass();
+    var ctx = extractCtx();
     var length = stitched ? stitched.length : Math.floor(((ex.region ? ex.region.end : ex.duration) - start) * ex.rate);
     var buffer = ctx.createBuffer(1, length, ex.rate);
     buffer.copyToChannel(stitched || ex.samples.subarray(Math.floor(start * ex.rate), Math.floor(start * ex.rate) + length), 0);
@@ -3741,7 +3750,15 @@
         head.appendChild(createElement("span", "extract-segment-speaker", segment.speaker));
       }
       var tags = createElement("span", "extract-segment-tags");
-      ["A", "B", "C"].forEach(function (name) {
+      // Offer every speaker present plus the manual defaults, so detected
+      // clusters (D, E, ...) can be corrected by hand too.
+      var tagNames = taggedSpeakers();
+      ["A", "B", "C"].forEach(function (n) {
+        if (tagNames.indexOf(n) < 0) {
+          tagNames.push(n);
+        }
+      });
+      tagNames.sort().forEach(function (name) {
         var tag = createElement("button", "plain tag-button" + (segment.speaker === name ? " active" : ""), name);
         tag.type = "button";
         tag.addEventListener("click", function (event) {
@@ -3752,9 +3769,24 @@
       });
       head.appendChild(tags);
       row.appendChild(head);
-      row.appendChild(createElement("div", "extract-segment-text", segment.text));
+      var textDiv = createElement("div", "extract-segment-text", segment.text);
+      // Transcripts are never 100%: lines are directly editable, and the
+      // edited text is what merge/export metadata carries forward.
+      textDiv.contentEditable = "true";
+      textDiv.spellcheck = false;
+      textDiv.addEventListener("blur", function () {
+        segment.text = textDiv.textContent.trim();
+      });
+      textDiv.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          textDiv.blur();
+        }
+        event.stopPropagation(); // typing digits must not retag the row
+      });
+      row.appendChild(textDiv);
       row.addEventListener("click", function () {
-        setExtractRegion(segment.start, segment.end, index);
+        setExtractRegion(segment.start, Math.min(segment.end + EXTRACT_TAIL_PAD, ex.duration), index);
       });
       row.addEventListener("keydown", function (event) {
         if (event.key === "1" || event.key === "2" || event.key === "3") {
@@ -3814,11 +3846,12 @@
       if (segment.speaker !== speaker) {
         return;
       }
+      var end = Math.min(segment.end + EXTRACT_TAIL_PAD, ex.duration);
       var last = spans[spans.length - 1];
       if (last && segment.start - last.end <= 0.3) {
-        last.end = Math.max(last.end, segment.end);
+        last.end = Math.max(last.end, end);
       } else {
-        spans.push({ start: segment.start, end: segment.end });
+        spans.push({ start: segment.start, end: end });
       }
     });
     var best = null;
@@ -3920,6 +3953,47 @@
       drawExtractWave();
     });
     extractFilterRow.appendChild(clearSel);
+
+    // Merge ticked: collapse a continuous run of lines into one segment —
+    // the human fix for whisper splitting one utterance (or diarization
+    // splitting one voice) across rows.
+    var mergeBtn = createElement("button", "plain compact-button", "Merge ticked");
+    mergeBtn.type = "button";
+    mergeBtn.id = "extractMergeButton";
+    mergeBtn.addEventListener("click", function () {
+      var indices = checkedIndices();
+      if (indices.length < 2) {
+        extractError("Tick two or more adjacent lines to merge.");
+        return;
+      }
+      for (var i = 1; i < indices.length; i += 1) {
+        if (indices[i] !== indices[i - 1] + 1) {
+          extractError("Merge needs a continuous run of lines — untick the gaps.");
+          return;
+        }
+      }
+      var speaker = "";
+      indices.forEach(function (i) {
+        if (!speaker && ex.segments[i].speaker) {
+          speaker = ex.segments[i].speaker;
+        }
+      });
+      var merged = {
+        start: ex.segments[indices[0]].start,
+        end: ex.segments[indices[indices.length - 1]].end,
+        text: indices.map(function (i) { return ex.segments[i].text; }).join(" "),
+        speaker: speaker
+      };
+      ex.segments.splice(indices[0], indices.length, merged);
+      ex.checked = {};
+      ex.selectedRow = -1;
+      renderExtractFilter();
+      renderExtractTimeline();
+      updateExtractRegionUI();
+      drawExtractWave();
+      log("Merged " + indices.length + " lines into one segment (" + fmtTime(merged.start) + " – " + fmtTime(merged.end) + ")");
+    });
+    extractFilterRow.appendChild(mergeBtn);
     extractFilterRow.hidden = ex.segments.length === 0;
     extractCastButton.disabled = taggedSpeakers().length === 0;
   }
