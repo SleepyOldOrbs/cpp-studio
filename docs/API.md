@@ -250,6 +250,28 @@ manual tags, and a future diarization engine fills it automatically. Segment
 output requires the `whisper` engine in `server` mode (the resident server's
 `verbose_json`); subprocess whisper returns `503` for this format.
 
+## POST /v1/audio/diarization
+
+Automatic "who spoke when": runs the uploaded WAV (multipart `file`, 64 MB
+cap — the whole recording in one piece, clustering cannot be chunked) through
+the config-gated `diarize` engine (sherpa-onnx offline speaker diarization)
+and returns anonymous speaker clusters with console-ready labels:
+
+```json
+{
+  "duration_ms": 1043,
+  "spans": [
+    { "start": 0.031, "end": 6.578, "speaker": "A" },
+    { "start": 8.401, "end": 14.408, "speaker": "B" },
+    { "start": 15.877, "end": 21.327, "speaker": "A" }
+  ]
+}
+```
+
+Without a configured `diarize` engine the route returns `503`; the
+Extractor's "Detect speakers" button appears only when the engine exists and
+fills the transcript's `speaker` tags by maximum overlap.
+
 ## POST /v1/audio/speech
 
 Runs the configured `audio` subprocess and returns WAV bytes.

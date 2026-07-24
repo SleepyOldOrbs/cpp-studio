@@ -63,6 +63,35 @@ The same recipe applies to the SD checkpoint (any SD 1.x-compatible
 coupled to their model families' CLI contracts — treat those as fixed unless
 you are also changing the audio.cpp invocation.
 
+## Speaker Diarization: the `diarize` engine
+
+Optional. Point a subprocess engine named `diarize` at sherpa-onnx's offline
+speaker diarization CLI with a pyannote segmentation model and a speaker
+embedding model (all from the sherpa-onnx GitHub releases; ~65 MB total,
+CPU-only — about 1 s per 22 s of audio):
+
+```json
+{
+  "diarize": {
+    "command": "${root}\\engines\\sherpa-onnx\\sherpa-onnx-v1.13.4-win-x64-shared-MD-Release\\bin\\sherpa-onnx-offline-speaker-diarization.exe",
+    "args": [
+      "--segmentation.pyannote-model=${root}\\engines\\sherpa-onnx\\sherpa-onnx-pyannote-segmentation-3-0\\model.onnx",
+      "--embedding.model=${root}\\engines\\sherpa-onnx\\nemo_en_titanet_small.onnx",
+      "--clustering.cluster-threshold=0.8"
+    ],
+    "mode": "subprocess",
+    "requestTimeoutSeconds": 300
+  }
+}
+```
+
+The gateway appends the input WAV as the positional argument and parses the
+`start -- end speaker_NN` stdout lines. Swap `--embedding.model` to compare
+embedding models (titanet_small beat CAM++ decisively on the reference
+bake-off); use `--clustering.num-clusters=N` instead of the threshold when
+the speaker count is known. Without this engine, `POST /v1/audio/diarization`
+returns `503` and the Extractor's "Detect speakers" button is hidden.
+
 ## VRAM Profiles: `profiles`
 
 Named engine sets for trading resident models against a fixed VRAM budget:

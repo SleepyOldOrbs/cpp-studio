@@ -468,6 +468,7 @@
           </label>
           <span id="extractFileStatus">Nothing loaded</span>
           <button class="secondary compact-button" id="extractTranscribeButton" type="button" disabled>Transcribe</button>
+          <button class="secondary compact-button" id="extractDiarizeButton" type="button" disabled hidden>Detect speakers</button>
           <span class="extract-zoom">
             <button class="plain compact-button" id="extractZoomOutButton" type="button" disabled>&minus;</button>
             <button class="plain compact-button" id="extractZoomInButton" type="button" disabled>+</button>
@@ -494,12 +495,7 @@
         <div class="story-library-header">
           <span class="source-label">Transcript</span>
           <span id="extractTranscribeStatus"></span>
-          <span class="extract-filter" id="extractFilterRow" hidden>
-            <button class="plain compact-button speaker-filter active" data-speaker="">All</button>
-            <button class="plain compact-button speaker-filter" data-speaker="A">A</button>
-            <button class="plain compact-button speaker-filter" data-speaker="B">B</button>
-            <button class="plain compact-button speaker-filter" data-speaker="C">C</button>
-          </span>
+          <span class="extract-filter" id="extractFilterRow" hidden></span>
         </div>
         <div class="extract-timeline" id="extractTimeline">No transcript yet &mdash; load a file and press Transcribe.</div>
         <small class="hint">Tag lines with the A / B / C buttons (or keys 1 / 2 / 3 after clicking a line) to mark who's speaking, then filter to hunt one voice. Automatic speaker detection lands here in a future milestone.</small>

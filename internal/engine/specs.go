@@ -16,6 +16,7 @@ const (
 	DefaultTranscriptionTimeout = 120 * time.Second
 	DefaultSpeechTimeout        = 180 * time.Second
 	DefaultImageTimeout         = 300 * time.Second
+	DefaultDiarizationTimeout   = 300 * time.Second
 
 	MaxSpeechOutputBytes = 32 * 1024 * 1024
 	MaxImageOutputBytes  = 32 * 1024 * 1024
@@ -154,6 +155,55 @@ func TranscriptionSpec(wavBytes []byte) Spec {
 			return []string{"-f", inPath}
 		},
 	}
+}
+
+// DiarizationSpec invokes the "diarize" engine (sherpa-onnx offline speaker
+// diarization): the model flags live in the config args and the input WAV is
+// the single positional argument. Stdout carries one line per speaker span.
+func DiarizationSpec(wavBytes []byte) Spec {
+	if wavBytes == nil {
+		wavBytes = []byte{}
+	}
+	return Spec{
+		Engine:        "diarize",
+		Label:         "speaker diarization command",
+		Timeout:       DefaultDiarizationTimeout,
+		Input:         wavBytes,
+		InputPattern:  "cpp-studio-diarize-*.wav",
+		ValidateInput: wav.ValidateFile,
+		BuildArgs: func(inPath, _ string) []string {
+			return []string{inPath}
+		},
+	}
+}
+
+// DiarizationSpan is one contiguous stretch of a single speaker's speech.
+// Speaker is the tool's anonymous cluster index (0, 1, 2, ...).
+type DiarizationSpan struct {
+	Start   float64
+	End     float64
+	Speaker int
+}
+
+// ParseDiarization extracts speaker spans from sherpa-onnx's stdout, which
+// interleaves log lines with spans shaped `0.031 -- 6.578 speaker_00`.
+// Unparseable lines are skipped rather than fatal: the tool logs freely.
+func ParseDiarization(stdout []byte) []DiarizationSpan {
+	var spans []DiarizationSpan
+	for _, line := range strings.Split(string(stdout), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) != 4 || fields[1] != "--" || !strings.HasPrefix(fields[3], "speaker_") {
+			continue
+		}
+		start, err1 := strconv.ParseFloat(fields[0], 64)
+		end, err2 := strconv.ParseFloat(fields[2], 64)
+		speaker, err3 := strconv.Atoi(strings.TrimPrefix(fields[3], "speaker_"))
+		if err1 != nil || err2 != nil || err3 != nil || end < start {
+			continue
+		}
+		spans = append(spans, DiarizationSpan{Start: start, End: end, Speaker: speaker})
+	}
+	return spans
 }
 
 // ImageSpec invokes the "sd" engine: --prompt <prompt> --output <png path>

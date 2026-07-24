@@ -1152,6 +1152,15 @@ func TestGatewayHelperProcess(t *testing.T) {
 			runCorruptImageHelper(helperArgs)
 		case "transcribe":
 			runTranscriptionHelper(helperArgs)
+		case "diarize":
+			// Mimics sherpa-onnx: config lines and noise on stdout around
+			// the speaker spans.
+			fmt.Fprintln(os.Stdout, "OfflineSpeakerDiarizationConfig(...)")
+			fmt.Fprintln(os.Stdout, "Started")
+			fmt.Fprintln(os.Stdout, "0.031 -- 6.578 speaker_00")
+			fmt.Fprintln(os.Stdout, "8.401 -- 14.408 speaker_01")
+			fmt.Fprintln(os.Stdout, "15.877 -- 21.327 speaker_00")
+			os.Exit(0)
 		case "transcribe-slow":
 			time.Sleep(500 * time.Millisecond)
 			runTranscriptionHelper(helperArgs)
@@ -1685,6 +1694,65 @@ func TestTranscriptionSegmentsNeedServerMode(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 for subprocess whisper, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDiarizationRoute(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"diarize": helperEngine("diarize"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "sample.wav")
+	_, _ = part.Write(validWAVBytes())
+	_ = writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/diarization", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Spans []struct {
+			Start   float64 `json:"start"`
+			End     float64 `json:"end"`
+			Speaker string  `json:"speaker"`
+		} `json:"spans"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Spans) != 3 {
+		t.Fatalf("expected 3 spans, got %+v", resp.Spans)
+	}
+	if resp.Spans[0].Speaker != "A" || resp.Spans[1].Speaker != "B" || resp.Spans[2].Speaker != "A" {
+		t.Fatalf("cluster labels wrong: %+v", resp.Spans)
+	}
+	if resp.Spans[1].Start != 8.401 || resp.Spans[1].End != 14.408 {
+		t.Fatalf("span timing wrong: %+v", resp.Spans[1])
+	}
+}
+
+func TestDiarizationRouteWithoutEngine(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"llama": {Command: "llama-server"}})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "sample.wav")
+	_, _ = part.Write(validWAVBytes())
+	_ = writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/diarization", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 without diarize engine, got %d", rec.Code)
 	}
 }
 

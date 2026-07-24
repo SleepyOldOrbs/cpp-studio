@@ -180,3 +180,27 @@ func TestApplyArgOverrides(t *testing.T) {
 		})
 	}
 }
+
+func TestParseDiarization(t *testing.T) {
+	stdout := []byte(`OfflineSpeakerDiarizationConfig(segmentation=...)
+Started
+0.031 -- 6.578 speaker_00
+8.401 -- 14.408 speaker_01
+not a span line
+9.9 -- 1.1 speaker_02
+15.877 -- 21.327 speaker_00
+`)
+	spans := ParseDiarization(stdout)
+	if len(spans) != 3 {
+		t.Fatalf("expected 3 spans (noise and inverted range skipped), got %+v", spans)
+	}
+	if spans[0].Speaker != 0 || spans[1].Speaker != 1 || spans[2].Speaker != 0 {
+		t.Fatalf("speakers wrong: %+v", spans)
+	}
+	if spans[1].Start != 8.401 || spans[1].End != 14.408 {
+		t.Fatalf("timing wrong: %+v", spans[1])
+	}
+	if got := ParseDiarization(nil); len(got) != 0 {
+		t.Fatalf("expected no spans from empty stdout, got %+v", got)
+	}
+}

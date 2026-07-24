@@ -131,17 +131,21 @@ today, getting 5–15 s of clean reference speech means external tools.
   files. A consent note about cloning real voices ships in the README with
   this milestone.
 
-### M6 — Speaker diarization  ·  *the destination*
+### M6 — Speaker diarization  ·  *shipped*
 
-Automatic "who spoke when": an optional, config-gated `diarize` engine in the
-established engine pattern — leading candidate **sherpa-onnx offline speaker
-diarization** (native C++, ONNX models, from k2-fsa, the OmniVoice team),
-which emits time-ranged anonymous speaker clusters. The Extractor's transcript
-auto-colours by cluster; the user auditions one line per cluster, names it,
-and extracts everything that speaker said. The M5 `speaker` field and tagging
-UI are exactly the surface this fills in — no rework, just less manual labour.
-pyannote (Python + HF token) is noted and rejected as the wrong shape for a
-native-engine studio.
+Automatic "who spoke when": the optional, config-gated `diarize` engine —
+**sherpa-onnx offline speaker diarization** (native C++, CPU-only, from
+k2-fsa, the OmniVoice team) with the pyannote segmentation 3.0 model and an
+English speaker-embedding model. `POST /v1/audio/diarization` returns
+anonymous clusters labelled A/B/C…; the Extractor's "Detect speakers" button
+(hidden without the engine) fills every transcript line's `speaker` tag by
+maximum overlap — exactly the surface M5 built, no rework. Embedding bake-off
+on a known two-voice file: **nemo_en_titanet_small** was perfect (clusters
+and boundaries exact, re-identified a returning speaker); CAM++_LM fragmented
+turns — titanet is the default, CAM++ kept in the manifest for comparison.
+Reference numbers: ~1 s per 22 s of audio, 6/6 lines tagged correctly.
+pyannote-the-Python-package (HF token, heavy deps) was rejected as the wrong
+shape for a native-engine studio.
 
 ### Cross-cutting — repo presentation  ·  *stars*
 

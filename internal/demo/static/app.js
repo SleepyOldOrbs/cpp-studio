@@ -466,6 +466,9 @@
     renderStatus(data.status);
     renderEngineRack(data.engines);
     updateDesignModels(data.engines);
+    // The Detect speakers button only exists when a diarize engine is
+    // configured; without one the Extractor stays manual-tagging only.
+    extractDiarizeButton.hidden = !(data.engines && data.engines.diarize);
     healthUpdated.textContent = data.updatedAt ? "Updated " + new Date(data.updatedAt).toLocaleString() : "Updated now";
     healthBody.textContent = "";
 
@@ -3224,6 +3227,7 @@
       ex.selectedRow = -1;
       extractFileStatus.textContent = file.name + " · " + fmtTime(decoded.duration) + " · " + decoded.sampleRate + " Hz";
       extractTranscribeButton.disabled = false;
+      extractDiarizeButton.disabled = false;
       extractZoomInButton.disabled = false;
       extractZoomOutButton.disabled = false;
       extractZoomFitButton.disabled = false;
@@ -3550,7 +3554,7 @@
         drawExtractWave();
       }
       extractTranscribeStatus.textContent = ex.segments.length + " segments";
-      extractFilterRow.hidden = ex.segments.length === 0;
+      renderExtractFilter();
       log("Extractor transcribed " + ex.sourceName + ": " + ex.segments.length + " segments");
     } catch (err) {
       extractError("Transcription failed: " + err.message);
@@ -3609,6 +3613,7 @@
   function tagExtractSegment(index, name) {
     var segment = ex.segments[index];
     segment.speaker = segment.speaker === name ? "" : name;
+    renderExtractFilter();
     renderExtractTimeline();
     drawExtractWave();
   }
@@ -3623,6 +3628,90 @@
       b.classList.toggle("active", b === button);
     });
     renderExtractTimeline();
+  });
+
+  // renderExtractFilter rebuilds the speaker chips from whatever speakers the
+  // segments actually carry — manual A/B/C tags or diarization's clusters.
+  function renderExtractFilter() {
+    var speakers = [];
+    ex.segments.forEach(function (segment) {
+      if (segment.speaker && speakers.indexOf(segment.speaker) < 0) {
+        speakers.push(segment.speaker);
+      }
+    });
+    speakers.sort();
+    extractFilterRow.textContent = "";
+    ["", "A", "B", "C"].concat(speakers).forEach(function (name, index, all) {
+      if (all.indexOf(name) !== index) {
+        return; // dedupe: manual defaults vs detected clusters
+      }
+      var chip = createElement("button", "plain compact-button speaker-filter" + (ex.filter === name ? " active" : ""), name === "" ? "All" : name);
+      chip.type = "button";
+      chip.setAttribute("data-speaker", name);
+      extractFilterRow.appendChild(chip);
+    });
+    extractFilterRow.hidden = ex.segments.length === 0;
+  }
+
+  // --- automatic speaker detection (the diarize engine) -------------------
+  var extractDiarizeButton = document.getElementById("extractDiarizeButton");
+
+  extractDiarizeButton.addEventListener("click", async function () {
+    if (!ex.samples) {
+      return;
+    }
+    if (!ex.segments.length) {
+      extractError("Transcribe first — speaker detection labels the transcript lines.");
+      return;
+    }
+    extractErrorBox.hidden = true;
+    extractDiarizeButton.disabled = true;
+    var original = extractDiarizeButton.textContent;
+    extractDiarizeButton.textContent = "Detecting…";
+    try {
+      var samples = ex.samples;
+      var rate = ex.rate;
+      if (rate > LIVE_TARGET_RATE) {
+        samples = downsampleForLive(samples, rate);
+        rate = LIVE_TARGET_RATE;
+      }
+      var form = new FormData();
+      form.append("file", new File([encodeWav(samples, rate)], "diarize.wav", { type: "audio/wav" }));
+      var response = await fetch("/v1/audio/diarization", { method: "POST", body: form });
+      if (!response.ok) {
+        throw new Error(await readErrorBody(response));
+      }
+      var payload = await response.json();
+      var spans = payload.spans || [];
+      // Assign each transcript line the speaker whose span overlaps it most;
+      // lines with no meaningful overlap keep their manual tag.
+      var tagged = 0;
+      ex.segments.forEach(function (segment) {
+        var best = null;
+        var bestOverlap = 0;
+        spans.forEach(function (span) {
+          var overlap = Math.min(segment.end, span.end) - Math.max(segment.start, span.start);
+          if (overlap > bestOverlap) {
+            bestOverlap = overlap;
+            best = span;
+          }
+        });
+        if (best && bestOverlap > 0.2 * (segment.end - segment.start)) {
+          segment.speaker = best.speaker;
+          tagged += 1;
+        }
+      });
+      var speakerCount = {};
+      spans.forEach(function (span) { speakerCount[span.speaker] = true; });
+      renderExtractFilter();
+      renderExtractTimeline();
+      drawExtractWave();
+      log("Speaker detection: " + Object.keys(speakerCount).length + " speakers, " + tagged + "/" + ex.segments.length + " lines tagged (" + payload.duration_ms + "ms)");
+    } catch (err) {
+      extractError("Speaker detection failed: " + err.message);
+    }
+    extractDiarizeButton.textContent = original;
+    extractDiarizeButton.disabled = false;
   });
 
   // --- Studio library & jobs -------------------------------------------

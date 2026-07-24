@@ -125,6 +125,9 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "format=segments") {
 		t.Fatalf("expected segments route marker, got %q", body)
 	}
+	if !strings.Contains(body, "extractDiarizeButton") {
+		t.Fatalf("expected diarization button marker, got %q", body)
+	}
 }
 
 func TestHandlerServesAssets(t *testing.T) {

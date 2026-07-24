@@ -120,6 +120,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/stories/", r.handleStory)
 	mux.HandleFunc("/v1/audio/speech", r.handleSpeech)
 	mux.HandleFunc("/v1/audio/transcriptions", r.handleTranscriptions)
+	mux.HandleFunc("/v1/audio/diarization", r.handleDiarization)
 	mux.HandleFunc("/v1/voice", r.handleVoice)
 	mux.HandleFunc("/v1/voices", r.handleVoices)
 	mux.HandleFunc("/v1/voices/design", r.handleVoiceDesign)
@@ -1136,6 +1137,61 @@ func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) 
 	_ = json.NewEncoder(w).Encode(transcriptionResponse{
 		Text:       strings.TrimSpace(text),
 		DurationMS: time.Since(started).Milliseconds(),
+	})
+}
+
+// maxDiarizationUploadBytes bounds the diarization WAV: clustering needs the
+// whole recording in one piece (chunking would break speaker identity across
+// chunks), and 64 MB holds ~35 minutes of 16 kHz mono — beyond the
+// Extractor's 30-minute editor cap.
+const maxDiarizationUploadBytes = 64 * 1024 * 1024
+
+// speakerLabel maps a cluster index to the console's tag alphabet: A, B, ...
+func speakerLabel(cluster int) string {
+	if cluster < 0 || cluster >= 26 {
+		return fmt.Sprintf("S%d", cluster)
+	}
+	return string(rune('A' + cluster))
+}
+
+// handleDiarization runs the uploaded WAV through the config-gated "diarize"
+// engine (sherpa-onnx speaker diarization) and returns anonymous speaker
+// spans with console-ready labels. This is the automation that fills the
+// Extractor's speaker tags.
+func (r *router) handleDiarization(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	if _, ok := r.engine("diarize"); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, `engine "diarize" is not configured; see docs/CONFIG.md for the sherpa-onnx setup`)
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxDiarizationUploadBytes)
+	data, ok := readUploadedWAV(w, req)
+	if !ok {
+		return
+	}
+
+	started := time.Now()
+	result, err := r.engines.Run(req.Context(), engine.DiarizationSpec(data))
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	spans := engine.ParseDiarization(result.Stdout)
+	type spanOut struct {
+		Start   float64 `json:"start"`
+		End     float64 `json:"end"`
+		Speaker string  `json:"speaker"`
+	}
+	out := make([]spanOut, 0, len(spans))
+	for _, s := range spans {
+		out = append(out, spanOut{Start: s.Start, End: s.End, Speaker: speakerLabel(s.Speaker)})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"duration_ms": time.Since(started).Milliseconds(),
+		"spans":       out,
 	})
 }
 
