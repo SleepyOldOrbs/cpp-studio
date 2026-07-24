@@ -3170,6 +3170,7 @@
     duration: 0,
     sourceName: "",
     view: { start: 0, end: 0 },
+    cursor: 0,          // playhead position when no region is marked
     region: null,       // {start, end} seconds
     segments: [],       // {start, end, text, speaker}
     filter: "",
@@ -3221,6 +3222,7 @@
       ex.duration = decoded.duration;
       ex.sourceName = file.name;
       ex.view = { start: 0, end: decoded.duration };
+      ex.cursor = 0;
       ex.region = null;
       ex.segments = [];
       ex.filter = "";
@@ -3313,7 +3315,7 @@
       g.fillRect(sx, 0, 2, segment.speaker ? 14 : 8);
     });
 
-    // Playhead.
+    // Playhead while playing; parked cursor otherwise.
     if (ex.playback) {
       var t = extractPlayheadTime();
       if (t >= viewStart && t <= ex.view.end) {
@@ -3325,6 +3327,14 @@
         g.lineTo(px, cssHeight);
         g.stroke();
       }
+    } else if (!ex.region && ex.cursor >= viewStart && ex.cursor <= ex.view.end) {
+      var cx = ((ex.cursor - viewStart) / viewLen) * cssWidth;
+      g.strokeStyle = "#8d97a6";
+      g.lineWidth = 1;
+      g.beginPath();
+      g.moveTo(cx + 0.5, 0);
+      g.lineTo(cx + 0.5, cssHeight);
+      g.stroke();
     }
 
     extractViewStart.textContent = fmtTime(viewStart);
@@ -3366,8 +3376,15 @@
       return;
     }
     if (!extractDrag.moved) {
-      // A plain click seeks: keep the region but show the cursor there.
-      extractCursor.textContent = "cursor " + fmtTime(canvasXToTime(event.clientX));
+      // A plain click behaves like any audio editor: clear the selection
+      // and park the playhead there — Play then plays from the cursor.
+      ex.cursor = canvasXToTime(event.clientX);
+      ex.region = null;
+      ex.selectedRow = -1;
+      extractCursor.textContent = "cursor " + fmtTime(ex.cursor);
+      updateExtractRegionUI();
+      renderExtractTimeline();
+      drawExtractWave();
     }
     extractDrag = null;
   });
@@ -3382,7 +3399,9 @@
 
   function updateExtractRegionUI() {
     var has = Boolean(ex.region && ex.region.end - ex.region.start > 0.05);
-    extractPlayButton.disabled = !has;
+    // Play works from the cursor even without a marked region; extraction
+    // needs an actual region to know what to cut.
+    extractPlayButton.disabled = !ex.samples;
     extractCloneButton.disabled = !has;
     extractLibraryButton.disabled = !has;
     extractRegionStatus.textContent = has
@@ -3427,19 +3446,26 @@
   }
 
   extractPlayButton.addEventListener("click", function () {
-    if (!ex.region || !ex.samples) {
+    if (!ex.samples) {
+      return;
+    }
+    // A marked region plays exactly; otherwise play from the cursor to the
+    // end of the file, like any audio editor.
+    var start = ex.region ? ex.region.start : Math.min(ex.cursor, ex.duration);
+    var end = ex.region ? ex.region.end : ex.duration;
+    if (end - start <= 0.01) {
       return;
     }
     extractStopPlayback();
     var AudioContextClass = window.AudioContext || window.webkitAudioContext;
     var ctx = new AudioContextClass();
-    var length = Math.floor((ex.region.end - ex.region.start) * ex.rate);
+    var length = Math.floor((end - start) * ex.rate);
     var buffer = ctx.createBuffer(1, length, ex.rate);
-    buffer.copyToChannel(ex.samples.subarray(Math.floor(ex.region.start * ex.rate), Math.floor(ex.region.start * ex.rate) + length), 0);
+    buffer.copyToChannel(ex.samples.subarray(Math.floor(start * ex.rate), Math.floor(start * ex.rate) + length), 0);
     var source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
-    ex.playback = { ctx: ctx, source: source, anchor: ctx.currentTime, offset: ex.region.start, raf: 0 };
+    ex.playback = { ctx: ctx, source: source, anchor: ctx.currentTime, offset: start, raf: 0 };
     source.onended = extractStopPlayback;
     source.start();
     extractStopButton.disabled = false;
