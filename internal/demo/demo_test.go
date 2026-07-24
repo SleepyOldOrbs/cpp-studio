@@ -116,6 +116,15 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "audiobookShelf") {
 		t.Fatalf("expected audiobook shelf marker, got %q", body)
 	}
+	if !strings.Contains(body, "extractCanvas") {
+		t.Fatalf("expected extractor waveform marker, got %q", body)
+	}
+	if !strings.Contains(body, "extractTimeline") {
+		t.Fatalf("expected extractor timeline marker, got %q", body)
+	}
+	if !strings.Contains(body, "format=segments") {
+		t.Fatalf("expected segments route marker, got %q", body)
+	}
 }
 
 func TestHandlerServesAssets(t *testing.T) {
@@ -190,6 +199,18 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/app.js",
 			contentType: "javascript",
 			needle:      "refreshAudiobooks",
+		},
+		{
+			name:        "javascript extractor",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "drawExtractWave",
+		},
+		{
+			name:        "css extractor",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".extract-segment",
 		},
 	}
 

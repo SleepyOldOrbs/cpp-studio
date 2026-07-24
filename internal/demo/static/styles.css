@@ -1440,3 +1440,148 @@ pre {
   display: flex;
   gap: 6px;
 }
+
+/* --- The Extractor ------------------------------------------------------ */
+
+.extract-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+#extractFileStatus {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.extract-zoom {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.extract-wave-wrap {
+  margin: 12px 0 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--well);
+  overflow: hidden;
+}
+
+.extract-canvas {
+  display: block;
+  width: 100%;
+  height: 140px;
+  cursor: crosshair;
+}
+
+.extract-timebar {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 10px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+
+.extract-region-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+#extractRegionStatus {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+#extractTranscribeStatus {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.extract-filter {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.speaker-filter.active {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+.extract-timeline {
+  display: grid;
+  gap: 6px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding-right: 4px;
+  color: var(--muted);
+}
+
+.extract-segment {
+  padding: 8px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--well);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.extract-segment:hover {
+  border-color: var(--line);
+}
+
+.extract-segment.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.extract-segment-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.extract-segment-time {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.extract-segment-speaker {
+  font-family: var(--display);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--accent-strong);
+}
+
+.extract-segment-tags {
+  display: flex;
+  gap: 3px;
+  margin-left: auto;
+}
+
+.tag-button {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 0.72rem;
+}
+
+.tag-button.active {
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+
+.extract-segment-text {
+  font-size: 0.9rem;
+  line-height: 1.4;
+}

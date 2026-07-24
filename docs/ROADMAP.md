@@ -103,6 +103,46 @@ The magical outcome, riding on M1–M3.
   voice, as a cancellable Job in the Library; a user-supplied GGUF chat model
   loads and serves.
 
+### M5 — The Extractor  ·  *payoff + the diarization foundation*
+
+A sampler deck for voices: submit audio/video, find the voice you want, mark
+it, extract it, clone it. Closes the loop on the studio's strongest feature —
+today, getting 5–15 s of clean reference speech means external tools.
+
+- **Client-side core.** Browsers natively decode MP3/OGG/FLAC/WAV/MP4-AAC via
+  Web Audio; the app already builds WAVs in JS. Drop a file → waveform canvas
+  → scrub, zoom, drag a region → play it → slice PCM → WAV clip. Soft cap
+  ~30 min (decoded PCM memory); MPEG-1/2 and CDs are "convert first".
+- **Whisper transcript timeline (the soul of the tool).** Chunked 16 kHz
+  upload → resident whisper-server `verbose_json` → timestamped segments
+  beside the waveform. Read to find the moment, click a line to seek, search
+  the text. *Verified: whisper-server returns `segments:[{start,end,text}]`.*
+- **Speaker-first data model.** Every transcript segment carries a `speaker`
+  field from day one. v1 fills it by hand: click-to-audition + one-key
+  tagging (humans identify voices instantly; the tool makes the loop tight),
+  filter to a tagged speaker, extract their cleanest runs. The same field is
+  where automatic diarization lands later — same UI, less work.
+- **Clip destinations.** "Use as clone reference" feeds the existing clone
+  flow (which already whisper-transcribes references); "Save to library"
+  uses the existing library. Clips carry provenance metadata (source name,
+  time range, speaker tag).
+- **Deferred to v3:** a config-gated `yt-dlp` importer (user-supplied binary,
+  hidden when absent) for URL submission; ffmpeg importer for long/exotic
+  files. A consent note about cloning real voices ships in the README with
+  this milestone.
+
+### M6 — Speaker diarization  ·  *the destination*
+
+Automatic "who spoke when": an optional, config-gated `diarize` engine in the
+established engine pattern — leading candidate **sherpa-onnx offline speaker
+diarization** (native C++, ONNX models, from k2-fsa, the OmniVoice team),
+which emits time-ranged anonymous speaker clusters. The Extractor's transcript
+auto-colours by cluster; the user auditions one line per cluster, names it,
+and extracts everything that speaker said. The M5 `speaker` field and tagging
+UI are exactly the surface this fills in — no rework, just less manual labour.
+pyannote (Python + HF token) is noted and rejected as the wrong shape for a
+native-engine studio.
+
 ### Cross-cutting — repo presentation  ·  *stars*
 
 - **README** rebuilt around the vision, with a hero screenshot/GIF, honest

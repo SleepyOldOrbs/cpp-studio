@@ -25,6 +25,7 @@
         <a class="tab" href="#image" data-tab-link="image">Image</a>
         <a class="tab" href="#story" data-tab-link="story">Story</a>
         <a class="tab" href="#audiobook" data-tab-link="audiobook">Audiobook</a>
+        <a class="tab" href="#extract" data-tab-link="extract">Extract</a>
         <a class="tab" href="#library" data-tab-link="library">Library</a>
         <a class="tab" href="#models" data-tab-link="models">Models</a>
         <a class="tab" href="#engines" data-tab-link="engines">Engines</a>
@@ -450,6 +451,58 @@
           </div>
           <div class="story-library" id="audiobookShelf"></div>
         </section>
+      </div>
+    </section>
+
+    <section class="module" data-tab="extract" aria-label="The Extractor">
+      <header class="module-head">
+        <h2>Extract</h2>
+        <span class="module-route">POST /v1/audio/transcriptions?format=segments</span>
+        <span class="module-note">load &rarr; transcribe &rarr; mark &rarr; extract &rarr; clone</span>
+      </header>
+      <div class="module-body">
+        <div class="extract-toolbar">
+          <label class="file-button">
+            <input id="extractFileInput" type="file" accept=".wav,.mp3,.ogg,.flac,.m4a,.mp4,.webm,audio/*,video/mp4,video/webm">
+            <span>Load audio / video</span>
+          </label>
+          <span id="extractFileStatus">Nothing loaded</span>
+          <button class="secondary compact-button" id="extractTranscribeButton" type="button" disabled>Transcribe</button>
+          <span class="extract-zoom">
+            <button class="plain compact-button" id="extractZoomOutButton" type="button" disabled>&minus;</button>
+            <button class="plain compact-button" id="extractZoomInButton" type="button" disabled>+</button>
+            <button class="plain compact-button" id="extractZoomFitButton" type="button" disabled>Fit</button>
+          </span>
+        </div>
+        <small class="hint">Browser-decoded: WAV, MP3, OGG, FLAC, and MP4/WebM audio tracks. Drag on the waveform to mark a region; click a transcript line to jump to it. MPEG-1/2 and CDs: convert to a supported format first.</small>
+
+        <div class="extract-wave-wrap">
+          <canvas id="extractCanvas" class="extract-canvas"></canvas>
+          <div class="extract-timebar"><span id="extractViewStart">0:00</span><span id="extractCursor">&ndash;</span><span id="extractViewEnd">0:00</span></div>
+        </div>
+
+        <div class="extract-region-row">
+          <span class="source-label">Region</span>
+          <span id="extractRegionStatus">None &mdash; drag on the waveform or click a transcript line</span>
+          <button class="secondary compact-button" id="extractPlayButton" type="button" disabled>Play</button>
+          <button class="plain compact-button" id="extractStopButton" type="button" disabled>Stop</button>
+          <button class="primary compact-button" id="extractCloneButton" type="button" disabled>Use as clone reference</button>
+          <button class="secondary compact-button" id="extractLibraryButton" type="button" disabled>Save to library</button>
+        </div>
+        <p class="error-box" id="extractErrorBox" hidden></p>
+
+        <div class="story-library-header">
+          <span class="source-label">Transcript</span>
+          <span id="extractTranscribeStatus"></span>
+          <span class="extract-filter" id="extractFilterRow" hidden>
+            <button class="plain compact-button speaker-filter active" data-speaker="">All</button>
+            <button class="plain compact-button speaker-filter" data-speaker="A">A</button>
+            <button class="plain compact-button speaker-filter" data-speaker="B">B</button>
+            <button class="plain compact-button speaker-filter" data-speaker="C">C</button>
+          </span>
+        </div>
+        <div class="extract-timeline" id="extractTimeline">No transcript yet &mdash; load a file and press Transcribe.</div>
+        <small class="hint">Tag lines with the A / B / C buttons (or keys 1 / 2 / 3 after clicking a line) to mark who's speaking, then filter to hunt one voice. Automatic speaker detection lands here in a future milestone.</small>
       </div>
     </section>
 

@@ -229,6 +229,27 @@ Behavior:
 - Subprocess mode: only one transcription request can run at a time for this gateway process; concurrent requests return `429`. Command stdout becomes `text` after trimming whitespace. Command failure marks `whisper` crashed and returns `502` with bounded stdout/stderr details.
 - Server mode: segment newlines in the server's `text` are collapsed to single spaces; upstream failures return `502`.
 
+### Segments format
+
+`POST /v1/audio/transcriptions?format=segments` returns timestamped speech
+spans instead of one flat string — the Extractor's transcript timeline:
+
+```json
+{
+  "text": "Hello there. Second thought.",
+  "duration_ms": 640,
+  "segments": [
+    { "start": 0.0, "end": 2.5, "text": "Hello there.", "speaker": "" },
+    { "start": 4.0, "end": 6.0, "text": "Second thought.", "speaker": "" }
+  ]
+}
+```
+
+`speaker` is a first-class field, empty today: the console fills it with
+manual tags, and a future diarization engine fills it automatically. Segment
+output requires the `whisper` engine in `server` mode (the resident server's
+`verbose_json`); subprocess whisper returns `503` for this format.
+
 ## POST /v1/audio/speech
 
 Runs the configured `audio` subprocess and returns WAV bytes.

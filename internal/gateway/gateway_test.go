@@ -1604,6 +1604,90 @@ func TestTranscriptionsViaWhisperServer(t *testing.T) {
 	}
 }
 
+func TestTranscriptionSegmentsViaWhisperServer(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if err := req.ParseMultipartForm(32 << 20); err != nil {
+			t.Errorf("parse upstream multipart: %v", err)
+		}
+		if req.FormValue("response_format") != "verbose_json" {
+			t.Errorf("expected verbose_json, got %q", req.FormValue("response_format"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"a b","segments":[
+			{"id":0,"start":0.0,"end":2.5,"text":" Hello there. "},
+			{"id":1,"start":2.5,"end":4.0,"text":"  "},
+			{"id":2,"start":4.0,"end":6.0,"text":" Second thought."}
+		]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"whisper": {Command: "whisper-server", Mode: "server", HealthURL: upstream.URL + "/health"},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "sample.wav")
+	_, _ = part.Write(validWAVBytes())
+	_ = writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions?format=segments", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Text     string `json:"text"`
+		Segments []struct {
+			Start   float64 `json:"start"`
+			End     float64 `json:"end"`
+			Text    string  `json:"text"`
+			Speaker string  `json:"speaker"`
+		} `json:"segments"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The whitespace-only segment is dropped; text is trimmed; speaker is
+	// present (empty) as the first-class slot diarization fills later.
+	if len(resp.Segments) != 2 {
+		t.Fatalf("expected 2 segments, got %+v", resp.Segments)
+	}
+	if resp.Segments[0].Text != "Hello there." || resp.Segments[0].End != 2.5 {
+		t.Fatalf("unexpected first segment: %+v", resp.Segments[0])
+	}
+	if resp.Segments[1].Start != 4.0 || resp.Segments[1].Speaker != "" {
+		t.Fatalf("unexpected second segment: %+v", resp.Segments[1])
+	}
+	if resp.Text != "Hello there. Second thought." {
+		t.Fatalf("unexpected joined text: %q", resp.Text)
+	}
+}
+
+func TestTranscriptionSegmentsNeedServerMode(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"whisper": {Command: "whisper-cli", Mode: "subprocess"},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "sample.wav")
+	_, _ = part.Write(validWAVBytes())
+	_ = writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions?format=segments", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for subprocess whisper, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestVoiceLoopWithTypedMessage(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

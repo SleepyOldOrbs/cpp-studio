@@ -1104,6 +1104,28 @@ func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) 
 	}
 
 	started := time.Now()
+	if req.URL.Query().Get("format") == "segments" {
+		segments, err := r.transcribeSegments(req.Context(), data)
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+		var full strings.Builder
+		for _, s := range segments {
+			if full.Len() > 0 {
+				full.WriteByte(' ')
+			}
+			full.WriteString(s.Text)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"text":        full.String(),
+			"duration_ms": time.Since(started).Milliseconds(),
+			"segments":    segments,
+		})
+		return
+	}
+
 	text, err := r.transcribe(req.Context(), data)
 	if err != nil {
 		writeEngineError(w, err)
@@ -1115,6 +1137,95 @@ func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) 
 		Text:       strings.TrimSpace(text),
 		DurationMS: time.Since(started).Milliseconds(),
 	})
+}
+
+// transcriptSegment is one timestamped span of speech. Speaker is first-class
+// from day one: the Extractor's manual tagging fills it now, and automatic
+// diarization (a future config-gated engine) fills it later — same field,
+// same UI, less manual labour.
+type transcriptSegment struct {
+	Start   float64 `json:"start"`
+	End     float64 `json:"end"`
+	Text    string  `json:"text"`
+	Speaker string  `json:"speaker"`
+}
+
+// transcribeSegments asks the resident whisper-server for verbose_json and
+// returns clean timestamped segments. Timestamped output needs the resident
+// server; subprocess whisper (-nt) deliberately strips timestamps.
+func (r *router) transcribeSegments(ctx context.Context, wavBytes []byte) ([]transcriptSegment, error) {
+	engineCfg, ok := r.engine("whisper")
+	if !ok {
+		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "whisper" is not configured`}
+	}
+	if engineCfg.Mode != "server" {
+		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `segment transcription needs the "whisper" engine in server mode`}
+	}
+	if err := wav.ValidateBytes(wavBytes); err != nil {
+		return nil, &engine.Error{Kind: engine.KindInvalidInput, Message: err.Error()}
+	}
+	upstreamURL, ok := inferEngineURL(engineCfg.HealthURL, "/inference")
+	if !ok {
+		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "whisper" healthUrl must end in /health to infer /inference`}
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "input.wav")
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
+	}
+	if _, err := part.Write(wavBytes); err != nil {
+		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
+	}
+	if err := writer.WriteField("response_format", "verbose_json"); err != nil {
+		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, engine.RequestTimeout(engineCfg, engine.DefaultTranscriptionTimeout))
+	defer cancel()
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, &body)
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
+	}
+	upstreamReq.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := r.client.Do(upstreamReq)
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("whisper upstream request failed: %v", err)}
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxChatReplyBytes))
+	if err != nil {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read whisper upstream response: %v", err)}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("whisper upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))}
+	}
+
+	var parsed struct {
+		Segments []struct {
+			Start float64 `json:"start"`
+			End   float64 `json:"end"`
+			Text  string  `json:"text"`
+		} `json:"segments"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("decode whisper upstream response: %v", err)}
+	}
+	segments := make([]transcriptSegment, 0, len(parsed.Segments))
+	for _, s := range parsed.Segments {
+		text := strings.TrimSpace(s.Text)
+		if text == "" {
+			continue
+		}
+		segments = append(segments, transcriptSegment{Start: s.Start, End: s.End, Text: text})
+	}
+	r.manager.MarkSuccess("whisper")
+	return segments, nil
 }
 
 // transcribe produces the transcript for uploaded WAV bytes. Subprocess

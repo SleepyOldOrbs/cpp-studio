@@ -2719,7 +2719,7 @@
   // Every module carries data-tab; the router shows the active tab's
   // modules and hides the rest. The session log drawer sits outside the
   // tab system and stays visible everywhere.
-  var TABS = ["talk", "voices", "image", "story", "audiobook", "library", "models", "engines"];
+  var TABS = ["talk", "voices", "image", "story", "audiobook", "extract", "library", "models", "engines"];
   var tabLinks = document.querySelectorAll("[data-tab-link]");
   var tabModules = document.querySelectorAll(".module[data-tab]");
 
@@ -2752,6 +2752,10 @@
     }
     if (name === "audiobook") {
       refreshAudiobooks(true);
+    }
+    if (name === "extract" && ex.samples) {
+      // The canvas has zero width while its tab is hidden; repaint on entry.
+      window.setTimeout(drawExtractWave, 0);
     }
   }
 
@@ -3129,6 +3133,496 @@
 
   audiobookRefreshButton.addEventListener("click", function () {
     refreshAudiobooks(false);
+  });
+
+  // --- The Extractor -----------------------------------------------------
+  // Load audio/video, scrub a waveform, read a whisper transcript timeline,
+  // tag who's speaking, and extract clips for cloning. Speaker tags live on
+  // each segment's speaker field — the same slot automatic diarization will
+  // fill in a future milestone.
+  var extractFileInput = document.getElementById("extractFileInput");
+  var extractFileStatus = document.getElementById("extractFileStatus");
+  var extractTranscribeButton = document.getElementById("extractTranscribeButton");
+  var extractTranscribeStatus = document.getElementById("extractTranscribeStatus");
+  var extractZoomInButton = document.getElementById("extractZoomInButton");
+  var extractZoomOutButton = document.getElementById("extractZoomOutButton");
+  var extractZoomFitButton = document.getElementById("extractZoomFitButton");
+  var extractCanvas = document.getElementById("extractCanvas");
+  var extractViewStart = document.getElementById("extractViewStart");
+  var extractViewEnd = document.getElementById("extractViewEnd");
+  var extractCursor = document.getElementById("extractCursor");
+  var extractRegionStatus = document.getElementById("extractRegionStatus");
+  var extractPlayButton = document.getElementById("extractPlayButton");
+  var extractStopButton = document.getElementById("extractStopButton");
+  var extractCloneButton = document.getElementById("extractCloneButton");
+  var extractLibraryButton = document.getElementById("extractLibraryButton");
+  var extractErrorBox = document.getElementById("extractErrorBox");
+  var extractTimeline = document.getElementById("extractTimeline");
+  var extractFilterRow = document.getElementById("extractFilterRow");
+
+  var EXTRACT_MAX_SECONDS = 30 * 60;
+  var ex = {
+    samples: null,      // mono Float32Array at ex.rate
+    rate: 0,
+    duration: 0,
+    sourceName: "",
+    view: { start: 0, end: 0 },
+    region: null,       // {start, end} seconds
+    segments: [],       // {start, end, text, speaker}
+    filter: "",
+    playback: null,     // {ctx, source, anchor, offset, raf}
+    selectedRow: -1
+  };
+
+  function extractError(message) {
+    extractErrorBox.textContent = message;
+    extractErrorBox.hidden = false;
+    log("Extractor: " + message, "error");
+  }
+
+  function fmtTime(seconds) {
+    var m = Math.floor(seconds / 60);
+    var s = seconds - m * 60;
+    return m + ":" + (s < 10 ? "0" : "") + s.toFixed(1);
+  }
+
+  async function extractLoadFile(file) {
+    extractErrorBox.hidden = true;
+    extractFileStatus.textContent = "Decoding " + file.name + "…";
+    try {
+      var buffer = await file.arrayBuffer();
+      var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      var ctx = new AudioContextClass();
+      var decoded;
+      try {
+        decoded = await ctx.decodeAudioData(buffer);
+      } finally {
+        ctx.close();
+      }
+      if (decoded.duration > EXTRACT_MAX_SECONDS) {
+        extractFileStatus.textContent = "Nothing loaded";
+        extractError("That file is " + fmtTime(decoded.duration) + " long; the in-browser editor caps at 30 minutes. Trim or split it first.");
+        return;
+      }
+      // Mix down to mono once; every later operation reads this array.
+      var mono = new Float32Array(decoded.length);
+      for (var c = 0; c < decoded.numberOfChannels; c += 1) {
+        var channel = decoded.getChannelData(c);
+        for (var i = 0; i < channel.length; i += 1) {
+          mono[i] += channel[i] / decoded.numberOfChannels;
+        }
+      }
+      extractStopPlayback();
+      ex.samples = mono;
+      ex.rate = decoded.sampleRate;
+      ex.duration = decoded.duration;
+      ex.sourceName = file.name;
+      ex.view = { start: 0, end: decoded.duration };
+      ex.region = null;
+      ex.segments = [];
+      ex.filter = "";
+      ex.selectedRow = -1;
+      extractFileStatus.textContent = file.name + " · " + fmtTime(decoded.duration) + " · " + decoded.sampleRate + " Hz";
+      extractTranscribeButton.disabled = false;
+      extractZoomInButton.disabled = false;
+      extractZoomOutButton.disabled = false;
+      extractZoomFitButton.disabled = false;
+      extractTimeline.textContent = "No transcript yet — press Transcribe to map the speech.";
+      extractFilterRow.hidden = true;
+      extractTranscribeStatus.textContent = "";
+      updateExtractRegionUI();
+      drawExtractWave();
+      log("Extractor loaded " + file.name + " (" + fmtTime(decoded.duration) + ")");
+    } catch (err) {
+      extractFileStatus.textContent = "Nothing loaded";
+      extractError("Could not decode " + file.name + ": " + (err.message || "unsupported format") + ". Convert to WAV/MP3/OGG/FLAC first.");
+    }
+  }
+
+  extractFileInput.addEventListener("change", function () {
+    var file = extractFileInput.files && extractFileInput.files[0];
+    if (file) {
+      extractLoadFile(file);
+    }
+  });
+
+  // --- waveform rendering ------------------------------------------------
+  function drawExtractWave() {
+    var dpr = window.devicePixelRatio || 1;
+    var cssWidth = extractCanvas.clientWidth || extractCanvas.parentElement.clientWidth || 600;
+    var cssHeight = 140;
+    extractCanvas.width = Math.floor(cssWidth * dpr);
+    extractCanvas.height = Math.floor(cssHeight * dpr);
+    var g = extractCanvas.getContext("2d");
+    g.scale(dpr, dpr);
+    g.fillStyle = "#151a21";
+    g.fillRect(0, 0, cssWidth, cssHeight);
+    if (!ex.samples) {
+      g.fillStyle = "#5d6775";
+      g.font = "13px sans-serif";
+      g.fillText("Load a file to see its waveform", 16, cssHeight / 2);
+      return;
+    }
+
+    var viewStart = ex.view.start;
+    var viewLen = ex.view.end - ex.view.start;
+    var startSample = Math.floor(viewStart * ex.rate);
+    var samplesPerPx = Math.max(1, Math.floor((viewLen * ex.rate) / cssWidth));
+    var mid = cssHeight / 2;
+
+    // Region shading under the waveform.
+    if (ex.region) {
+      var rx0 = ((ex.region.start - viewStart) / viewLen) * cssWidth;
+      var rx1 = ((ex.region.end - viewStart) / viewLen) * cssWidth;
+      g.fillStyle = "rgba(240, 166, 75, 0.16)";
+      g.fillRect(rx0, 0, rx1 - rx0, cssHeight);
+    }
+
+    g.strokeStyle = "#f0a64b";
+    g.lineWidth = 1;
+    g.beginPath();
+    for (var x = 0; x < cssWidth; x += 1) {
+      var s0 = startSample + x * samplesPerPx;
+      if (s0 >= ex.samples.length) {
+        break;
+      }
+      var min = 1.0;
+      var max = -1.0;
+      var s1 = Math.min(s0 + samplesPerPx, ex.samples.length);
+      for (var i = s0; i < s1; i += 1) {
+        var v = ex.samples[i];
+        if (v < min) { min = v; }
+        if (v > max) { max = v; }
+      }
+      g.moveTo(x + 0.5, mid - max * (mid - 4));
+      g.lineTo(x + 0.5, mid - min * (mid - 4));
+    }
+    g.stroke();
+
+    // Segment boundary ticks along the top, tagged ones brighter.
+    ex.segments.forEach(function (segment) {
+      if (segment.end < viewStart || segment.start > ex.view.end) {
+        return;
+      }
+      var sx = ((segment.start - viewStart) / viewLen) * cssWidth;
+      g.fillStyle = segment.speaker ? "#ffbe73" : "#333c49";
+      g.fillRect(sx, 0, 2, segment.speaker ? 14 : 8);
+    });
+
+    // Playhead.
+    if (ex.playback) {
+      var t = extractPlayheadTime();
+      if (t >= viewStart && t <= ex.view.end) {
+        var px = ((t - viewStart) / viewLen) * cssWidth;
+        g.strokeStyle = "#58c97c";
+        g.lineWidth = 2;
+        g.beginPath();
+        g.moveTo(px, 0);
+        g.lineTo(px, cssHeight);
+        g.stroke();
+      }
+    }
+
+    extractViewStart.textContent = fmtTime(viewStart);
+    extractViewEnd.textContent = fmtTime(ex.view.end);
+  }
+
+  window.addEventListener("resize", function () {
+    if (ex.samples && activeTabFromHash() === "extract") {
+      drawExtractWave();
+    }
+  });
+
+  function canvasXToTime(clientX) {
+    var rect = extractCanvas.getBoundingClientRect();
+    var frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return ex.view.start + frac * (ex.view.end - ex.view.start);
+  }
+
+  var extractDrag = null;
+  extractCanvas.addEventListener("mousedown", function (event) {
+    if (!ex.samples) {
+      return;
+    }
+    extractDrag = { anchor: canvasXToTime(event.clientX), moved: false };
+    event.preventDefault();
+  });
+  window.addEventListener("mousemove", function (event) {
+    if (!extractDrag) {
+      return;
+    }
+    var t = canvasXToTime(event.clientX);
+    if (Math.abs(t - extractDrag.anchor) > 0.02) {
+      extractDrag.moved = true;
+      setExtractRegion(Math.min(extractDrag.anchor, t), Math.max(extractDrag.anchor, t), -1);
+    }
+  });
+  window.addEventListener("mouseup", function (event) {
+    if (!extractDrag) {
+      return;
+    }
+    if (!extractDrag.moved) {
+      // A plain click seeks: keep the region but show the cursor there.
+      extractCursor.textContent = "cursor " + fmtTime(canvasXToTime(event.clientX));
+    }
+    extractDrag = null;
+  });
+
+  function setExtractRegion(start, end, rowIndex) {
+    ex.region = { start: Math.max(0, start), end: Math.min(ex.duration, end) };
+    ex.selectedRow = rowIndex;
+    updateExtractRegionUI();
+    renderExtractTimeline();
+    drawExtractWave();
+  }
+
+  function updateExtractRegionUI() {
+    var has = Boolean(ex.region && ex.region.end - ex.region.start > 0.05);
+    extractPlayButton.disabled = !has;
+    extractCloneButton.disabled = !has;
+    extractLibraryButton.disabled = !has;
+    extractRegionStatus.textContent = has
+      ? fmtTime(ex.region.start) + " – " + fmtTime(ex.region.end) + " (" + (ex.region.end - ex.region.start).toFixed(1) + "s)"
+      : "None — drag on the waveform or click a transcript line";
+  }
+
+  // --- zoom --------------------------------------------------------------
+  function extractZoom(factor) {
+    var center = ex.region ? (ex.region.start + ex.region.end) / 2 : (ex.view.start + ex.view.end) / 2;
+    var half = ((ex.view.end - ex.view.start) * factor) / 2;
+    half = Math.max(0.5, Math.min(ex.duration / 2, half));
+    ex.view.start = Math.max(0, center - half);
+    ex.view.end = Math.min(ex.duration, center + half);
+    drawExtractWave();
+  }
+  extractZoomInButton.addEventListener("click", function () { extractZoom(0.5); });
+  extractZoomOutButton.addEventListener("click", function () { extractZoom(2); });
+  extractZoomFitButton.addEventListener("click", function () {
+    ex.view = { start: 0, end: ex.duration };
+    drawExtractWave();
+  });
+
+  // --- playback ----------------------------------------------------------
+  function extractPlayheadTime() {
+    if (!ex.playback) {
+      return 0;
+    }
+    return ex.playback.offset + (ex.playback.ctx.currentTime - ex.playback.anchor);
+  }
+
+  function extractStopPlayback() {
+    if (!ex.playback) {
+      return;
+    }
+    try { ex.playback.source.stop(); } catch (err) { /* already stopped */ }
+    window.cancelAnimationFrame(ex.playback.raf);
+    ex.playback.ctx.close();
+    ex.playback = null;
+    extractStopButton.disabled = true;
+    drawExtractWave();
+  }
+
+  extractPlayButton.addEventListener("click", function () {
+    if (!ex.region || !ex.samples) {
+      return;
+    }
+    extractStopPlayback();
+    var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    var ctx = new AudioContextClass();
+    var length = Math.floor((ex.region.end - ex.region.start) * ex.rate);
+    var buffer = ctx.createBuffer(1, length, ex.rate);
+    buffer.copyToChannel(ex.samples.subarray(Math.floor(ex.region.start * ex.rate), Math.floor(ex.region.start * ex.rate) + length), 0);
+    var source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    ex.playback = { ctx: ctx, source: source, anchor: ctx.currentTime, offset: ex.region.start, raf: 0 };
+    source.onended = extractStopPlayback;
+    source.start();
+    extractStopButton.disabled = false;
+    (function tick() {
+      if (!ex.playback) {
+        return;
+      }
+      drawExtractWave();
+      ex.playback.raf = window.requestAnimationFrame(tick);
+    }());
+  });
+  extractStopButton.addEventListener("click", extractStopPlayback);
+
+  // --- extraction --------------------------------------------------------
+  function extractRegionWav() {
+    var s0 = Math.floor(ex.region.start * ex.rate);
+    var s1 = Math.floor(ex.region.end * ex.rate);
+    return encodeWav(ex.samples.subarray(s0, s1), ex.rate);
+  }
+
+  function extractClipName() {
+    var base = ex.sourceName.replace(/\.[^.]+$/, "");
+    var speaker = ex.selectedRow >= 0 && ex.segments[ex.selectedRow] && ex.segments[ex.selectedRow].speaker;
+    return base + " " + fmtTime(ex.region.start) + "-" + fmtTime(ex.region.end) + (speaker ? " (" + speaker + ")" : "");
+  }
+
+  extractCloneButton.addEventListener("click", function () {
+    if (!ex.region) {
+      return;
+    }
+    var blob = extractRegionWav();
+    var file = new File([blob], extractClipName().replace(/[:]/g, ".") + ".wav", { type: "audio/wav" });
+    setCloneWav(file, "the Extractor");
+    window.location.hash = "#voices";
+    cloneNameInput.focus();
+    log("Extractor clip sent to voice clone: " + file.name);
+  });
+
+  extractLibraryButton.addEventListener("click", async function () {
+    if (!ex.region) {
+      return;
+    }
+    extractLibraryButton.disabled = true;
+    var original = extractLibraryButton.textContent;
+    extractLibraryButton.textContent = "Saving…";
+    try {
+      var b64 = await srcToB64(URL.createObjectURL(extractRegionWav()));
+      var meta = { source: ex.sourceName, start: ex.region.start.toFixed(2), end: ex.region.end.toFixed(2) };
+      if (ex.selectedRow >= 0 && ex.segments[ex.selectedRow] && ex.segments[ex.selectedRow].speaker) {
+        meta.speaker = ex.segments[ex.selectedRow].speaker;
+      }
+      var response = await fetch("/v1/library", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "audio", name: extractClipName(), data_b64: b64, meta: meta })
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorBody(response));
+      }
+      log("Extractor clip saved to library: " + extractClipName());
+      extractLibraryButton.textContent = "Saved ✓";
+      window.setTimeout(function () {
+        extractLibraryButton.textContent = original;
+        extractLibraryButton.disabled = false;
+      }, 1500);
+    } catch (err) {
+      extractError("Save failed: " + err.message);
+      extractLibraryButton.textContent = original;
+      extractLibraryButton.disabled = false;
+    }
+  });
+
+  // --- transcription -----------------------------------------------------
+  var EXTRACT_CHUNK_SECONDS = 600; // 10 min of 16k mono ≈ 19MB WAV, inside the upload cap
+
+  extractTranscribeButton.addEventListener("click", async function () {
+    if (!ex.samples) {
+      return;
+    }
+    extractErrorBox.hidden = true;
+    extractTranscribeButton.disabled = true;
+    ex.segments = [];
+    try {
+      var samples = ex.samples;
+      var rate = ex.rate;
+      if (rate > LIVE_TARGET_RATE) {
+        samples = downsampleForLive(samples, rate);
+        rate = LIVE_TARGET_RATE;
+      }
+      var chunkSamples = EXTRACT_CHUNK_SECONDS * rate;
+      var chunks = Math.max(1, Math.ceil(samples.length / chunkSamples));
+      for (var c = 0; c < chunks; c += 1) {
+        var offsetSeconds = (c * chunkSamples) / rate;
+        extractTranscribeStatus.textContent = "Transcribing " + fmtTime(offsetSeconds) + " – " + fmtTime(Math.min(ex.duration, offsetSeconds + EXTRACT_CHUNK_SECONDS)) + "…";
+        var blob = encodeWav(samples.subarray(c * chunkSamples, Math.min((c + 1) * chunkSamples, samples.length)), rate);
+        var form = new FormData();
+        form.append("file", new File([blob], "extract.wav", { type: "audio/wav" }));
+        var response = await fetch("/v1/audio/transcriptions?format=segments", { method: "POST", body: form });
+        if (!response.ok) {
+          throw new Error(await readErrorBody(response));
+        }
+        var payload = await response.json();
+        (payload.segments || []).forEach(function (segment) {
+          ex.segments.push({
+            start: segment.start + offsetSeconds,
+            end: segment.end + offsetSeconds,
+            text: segment.text,
+            speaker: segment.speaker || ""
+          });
+        });
+        renderExtractTimeline();
+        drawExtractWave();
+      }
+      extractTranscribeStatus.textContent = ex.segments.length + " segments";
+      extractFilterRow.hidden = ex.segments.length === 0;
+      log("Extractor transcribed " + ex.sourceName + ": " + ex.segments.length + " segments");
+    } catch (err) {
+      extractError("Transcription failed: " + err.message);
+      extractTranscribeStatus.textContent = "";
+    }
+    extractTranscribeButton.disabled = false;
+  });
+
+  // --- transcript timeline + speaker tagging ------------------------------
+  function renderExtractTimeline() {
+    extractTimeline.textContent = "";
+    if (!ex.segments.length) {
+      extractTimeline.textContent = "No transcript yet — load a file and press Transcribe.";
+      return;
+    }
+    ex.segments.forEach(function (segment, index) {
+      if (ex.filter && segment.speaker !== ex.filter) {
+        return;
+      }
+      var row = createElement("div", "extract-segment" + (index === ex.selectedRow ? " selected" : ""));
+      row.tabIndex = 0;
+      var head = createElement("div", "extract-segment-head");
+      head.appendChild(createElement("span", "extract-segment-time", fmtTime(segment.start)));
+      if (segment.speaker) {
+        head.appendChild(createElement("span", "extract-segment-speaker", segment.speaker));
+      }
+      var tags = createElement("span", "extract-segment-tags");
+      ["A", "B", "C"].forEach(function (name) {
+        var tag = createElement("button", "plain tag-button" + (segment.speaker === name ? " active" : ""), name);
+        tag.type = "button";
+        tag.addEventListener("click", function (event) {
+          event.stopPropagation();
+          tagExtractSegment(index, name);
+        });
+        tags.appendChild(tag);
+      });
+      head.appendChild(tags);
+      row.appendChild(head);
+      row.appendChild(createElement("div", "extract-segment-text", segment.text));
+      row.addEventListener("click", function () {
+        setExtractRegion(segment.start, segment.end, index);
+      });
+      row.addEventListener("keydown", function (event) {
+        if (event.key === "1" || event.key === "2" || event.key === "3") {
+          tagExtractSegment(index, ["A", "B", "C"][Number(event.key) - 1]);
+          event.preventDefault();
+        }
+      });
+      extractTimeline.appendChild(row);
+    });
+    if (!extractTimeline.childNodes.length) {
+      extractTimeline.textContent = "No segments tagged " + ex.filter + " yet.";
+    }
+  }
+
+  function tagExtractSegment(index, name) {
+    var segment = ex.segments[index];
+    segment.speaker = segment.speaker === name ? "" : name;
+    renderExtractTimeline();
+    drawExtractWave();
+  }
+
+  extractFilterRow.addEventListener("click", function (event) {
+    var button = event.target.closest(".speaker-filter");
+    if (!button) {
+      return;
+    }
+    ex.filter = button.getAttribute("data-speaker");
+    extractFilterRow.querySelectorAll(".speaker-filter").forEach(function (b) {
+      b.classList.toggle("active", b === button);
+    });
+    renderExtractTimeline();
   });
 
   // --- Studio library & jobs -------------------------------------------
