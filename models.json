@@ -1,0 +1,90 @@
+{
+  "models": [
+    {
+      "id": "qwen3-4b-instruct",
+      "engine": "llama",
+      "family": "llama-gguf",
+      "path": "engines/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "bytes": 2497281120,
+      "source": "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF",
+      "license": "Apache-2.0",
+      "description": "Chat model that drives the voice loop, stories, and voice-design normalizer."
+    },
+    {
+      "id": "qwen3-vl-4b-instruct",
+      "engine": "vision",
+      "family": "llama-gguf-vlm",
+      "path": "engines/models/Qwen3-VL-4B-Instruct-Q4_K_M.gguf",
+      "bytes": 2497282336,
+      "source": "https://huggingface.co/unsloth/Qwen3-VL-4B-Instruct-GGUF",
+      "license": "Apache-2.0",
+      "description": "Vision-language model behind image descriptions (describe-what-you-see)."
+    },
+    {
+      "id": "qwen3-vl-4b-mmproj",
+      "engine": "vision",
+      "family": "llama-mmproj",
+      "path": "engines/models/mmproj-F16.gguf",
+      "bytes": 836180640,
+      "source": "https://huggingface.co/unsloth/Qwen3-VL-4B-Instruct-GGUF",
+      "license": "Apache-2.0",
+      "description": "Multimodal projector paired with the vision model."
+    },
+    {
+      "id": "whisper-base-en",
+      "engine": "whisper",
+      "family": "whisper-ggml",
+      "path": "engines/models/ggml-base.en.bin",
+      "bytes": 147964211,
+      "source": "https://huggingface.co/ggerganov/whisper.cpp",
+      "license": "MIT",
+      "description": "English speech-to-text model for transcription and the voice loop."
+    },
+    {
+      "id": "sd-1.5-emaonly",
+      "engine": "sd",
+      "family": "stable-diffusion-1.x",
+      "path": "engines/models/v1-5-pruned-emaonly.safetensors",
+      "bytes": 4265146304,
+      "source": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5",
+      "license": "CreativeML-OpenRAIL-M",
+      "description": "Stable Diffusion 1.5 checkpoint for the image lab."
+    },
+    {
+      "id": "qwen3-tts-0.6b-base",
+      "engine": "audio",
+      "family": "qwen3-tts",
+      "path": "audio.cpp/models/Qwen3-TTS-12Hz-0.6B-Base",
+      "source": "https://huggingface.co/Qwen",
+      "license": "Apache-2.0",
+      "description": "Resident TTS base model for speech and voice cloning."
+    },
+    {
+      "id": "qwen3-tts-1.7b-voicedesign",
+      "engine": "voicedesign",
+      "family": "qwen3-tts-voicedesign",
+      "path": "audio.cpp/models/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+      "source": "https://huggingface.co/Qwen",
+      "license": "Apache-2.0",
+      "description": "Natural-language voice design (no reference WAV needed)."
+    },
+    {
+      "id": "omnivoice",
+      "engine": "omnivoice",
+      "family": "omnivoice",
+      "path": "audio.cpp/models/OmniVoice",
+      "source": "https://huggingface.co/k2-fsa",
+      "license": "Apache-2.0",
+      "description": "Precision English-accent voice design via a strict attribute vocabulary."
+    },
+    {
+      "id": "voxcpm2",
+      "engine": "voxcpm2",
+      "family": "voxcpm2",
+      "path": "audio.cpp/models/VoxCPM2",
+      "source": "https://huggingface.co/openbmb/VoxCPM2-2B",
+      "license": "Apache-2.0",
+      "description": "Default voice-design engine: realistic free-prose descriptions and real accents (48 kHz)."
+    }
+  ]
+}

@@ -14,6 +14,23 @@ import (
 type Config struct {
 	Gateway GatewayConfig           `json:"gateway"`
 	Engines map[string]EngineConfig `json:"engines"`
+	// Vars are user-defined substitutions expanded as ${name} across engine
+	// command/args/workingDir/healthUrl/defaultVoiceRef and the models block.
+	// The built-in ${configDir} (absolute directory of the config file) is
+	// always available, so a portable config can set e.g. root ${configDir}/..
+	// and reference ${root} everywhere else. Unset names fall back to the
+	// process environment. Absolute paths without ${} are unaffected.
+	Vars map[string]string `json:"vars,omitempty"`
+	// Models points at the tracked model manifest and the root its relative
+	// paths resolve against, powering the catalog/downloads surface.
+	Models *ModelsConfig `json:"models,omitempty"`
+}
+
+// ModelsConfig locates the model manifest and the root that its relative model
+// paths resolve against.
+type ModelsConfig struct {
+	Manifest string `json:"manifest"`
+	Root     string `json:"root"`
 }
 
 type GatewayConfig struct {
@@ -57,6 +74,12 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 
+	configDir := ""
+	if abs, err := filepath.Abs(path); err == nil {
+		configDir = filepath.Dir(abs)
+	}
+	cfg.expandVars(configDir)
+
 	if cfg.Gateway.Host == "" {
 		cfg.Gateway.Host = "127.0.0.1"
 	}
@@ -99,6 +122,49 @@ func Load(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// expandVars substitutes ${name} tokens across the config's path-like string
+// fields. Resolution order: the built-in ${configDir}, then user vars, then the
+// process environment; an unresolved token is left literal so a misconfigured
+// path surfaces plainly rather than silently emptying.
+func (c *Config) expandVars(configDir string) {
+	lookup := func(name string) (string, bool) {
+		if name == "configDir" {
+			return configDir, true
+		}
+		if v, ok := c.Vars[name]; ok {
+			return v, true
+		}
+		return os.LookupEnv(name)
+	}
+	expand := func(s string) string {
+		return os.Expand(s, func(name string) string {
+			if v, ok := lookup(name); ok {
+				return v
+			}
+			return "${" + name + "}"
+		})
+	}
+	// Vars may reference ${configDir} (and, in declaration order, each other via
+	// the environment); expand their values first so downstream fields see them.
+	for name, value := range c.Vars {
+		c.Vars[name] = expand(value)
+	}
+	for name, engine := range c.Engines {
+		engine.Command = expand(engine.Command)
+		engine.WorkingDir = expand(engine.WorkingDir)
+		engine.HealthURL = expand(engine.HealthURL)
+		engine.DefaultVoiceRef = expand(engine.DefaultVoiceRef)
+		for i, arg := range engine.Args {
+			engine.Args[i] = expand(arg)
+		}
+		c.Engines[name] = engine
+	}
+	if c.Models != nil {
+		c.Models.Manifest = expand(c.Models.Manifest)
+		c.Models.Root = expand(c.Models.Root)
+	}
 }
 
 // LoadChecked is Load plus the machine-local check that every engine command
@@ -149,8 +215,22 @@ func rejectUnknownKeys(data []byte) error {
 		return err
 	}
 	for key := range root {
-		if key != "gateway" && key != "engines" {
+		switch key {
+		case "gateway", "engines", "vars", "models":
+		default:
 			return fmt.Errorf("unknown top-level field %q", key)
+		}
+	}
+
+	if raw, ok := root["models"]; ok {
+		var models map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &models); err != nil {
+			return fmt.Errorf("models must be an object: %w", err)
+		}
+		for key := range models {
+			if key != "manifest" && key != "root" {
+				return fmt.Errorf("unknown models field %q", key)
+			}
 		}
 	}
 

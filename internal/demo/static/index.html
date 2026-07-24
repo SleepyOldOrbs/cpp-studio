@@ -19,9 +19,17 @@
         <button class="secondary" id="healthButton" type="button">Refresh health</button>
         <button class="clear-all-button" id="clearAllButton" type="button">Clear all</button>
       </div>
+      <nav class="tab-bar" id="tabBar" aria-label="Studio sections">
+        <a class="tab" href="#talk" data-tab-link="talk">Talk</a>
+        <a class="tab" href="#voices" data-tab-link="voices">Voices</a>
+        <a class="tab" href="#image" data-tab-link="image">Image</a>
+        <a class="tab" href="#story" data-tab-link="story">Story</a>
+        <a class="tab" href="#models" data-tab-link="models">Models</a>
+        <a class="tab" href="#engines" data-tab-link="engines">Engines</a>
+      </nav>
     </header>
 
-    <section class="module" aria-label="Voice loop">
+    <section class="module" data-tab="talk" aria-label="Voice loop">
       <header class="module-head">
         <h2>Voice loop</h2>
         <span class="module-route">POST /v1/voice</span>
@@ -98,7 +106,7 @@
       </div>
     </section>
 
-    <section class="module" aria-label="Voice clone">
+    <section class="module" data-tab="voices" aria-label="Voice clone">
       <header class="module-head">
         <h2>Voice clone</h2>
         <span class="module-route">POST /v1/voices</span>
@@ -169,7 +177,7 @@
       </div>
     </section>
 
-    <section class="module" aria-label="Voice designer">
+    <section class="module" data-tab="voices" aria-label="Voice designer">
       <header class="module-head">
         <h2>Voice designer</h2>
         <span class="module-route">POST /v1/voices/design</span>
@@ -227,7 +235,7 @@
       </div>
     </section>
 
-    <section class="module" aria-label="Image lab">
+    <section class="module" data-tab="image" aria-label="Image lab">
       <header class="module-head">
         <h2>Image lab</h2>
         <span class="module-route">POST /v1/images/generations</span>
@@ -293,7 +301,7 @@
       </div>
     </section>
 
-    <section class="module" aria-label="Story desk">
+    <section class="module" data-tab="story" aria-label="Story desk">
       <header class="module-head">
         <h2>Story desk</h2>
         <span class="module-route">POST /v1/stories</span>
@@ -380,7 +388,20 @@
       </div>
     </section>
 
-    <section class="module" aria-label="Engine rack">
+    <section class="module" data-tab="models" aria-label="Model catalog">
+      <header class="module-head">
+        <h2>Models</h2>
+        <span class="module-route">GET /v1/models/catalog</span>
+        <button class="secondary compact-button" id="modelsRefreshButton" type="button">Refresh</button>
+      </header>
+      <div class="module-body">
+        <div class="models-summary" id="modelsSummary">No catalog loaded yet.</div>
+        <div class="models-list" id="modelsList"></div>
+        <small class="hint">The manifest (models.json) declares every model the engines need; this view checks what is actually on disk under the configured root.</small>
+      </div>
+    </section>
+
+    <section class="module" data-tab="engines" aria-label="Engine rack">
       <header class="module-head">
         <h2>Engine rack</h2>
         <span class="module-route">GET /health</span>
@@ -391,12 +412,13 @@
       </div>
     </section>
 
-    <section class="module" aria-label="Session log">
-      <header class="module-head">
+    <section class="module log-drawer" aria-label="Session log">
+      <header class="module-head log-drawer-head" id="logDrawerHead">
         <h2>Session log</h2>
         <button class="plain" id="clearLogButton" type="button">Clear log</button>
+        <button class="plain" id="logToggleButton" type="button" aria-expanded="false">Show</button>
       </header>
-      <div class="module-body">
+      <div class="module-body" id="logDrawerBody" hidden>
         <pre id="logOutput" aria-live="polite"></pre>
       </div>
     </section>

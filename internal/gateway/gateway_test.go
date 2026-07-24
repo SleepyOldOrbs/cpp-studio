@@ -2710,3 +2710,63 @@ func testConfig(engines map[string]config.EngineConfig) config.Config {
 		Engines: engines,
 	}
 }
+
+func TestModelsCatalog(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "chat.gguf"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(root, "models.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"models":[
+		{"id":"chat","engine":"llama","path":"chat.gguf","bytes":5},
+		{"id":"art","engine":"sd","path":"missing.safetensors","bytes":100}
+	]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig(map[string]config.EngineConfig{"llama": {Command: "llama-server"}})
+	cfg.Models = &config.ModelsConfig{Manifest: manifestPath, Root: root}
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models/catalog", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Root   string `json:"root"`
+		Models []struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Root != root {
+		t.Errorf("root: got %q", resp.Root)
+	}
+	state := map[string]string{}
+	for _, m := range resp.Models {
+		state[m.ID] = m.State
+	}
+	if state["chat"] != "present" {
+		t.Errorf("chat state: got %q", state["chat"])
+	}
+	if state["art"] != "missing" {
+		t.Errorf("art state: got %q", state["art"])
+	}
+}
+
+func TestModelsCatalogEmptyWithoutManifest(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"llama": {Command: "llama-server"}})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models/catalog", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"models":[]`) {
+		t.Errorf("expected empty models array, got %s", rec.Body.String())
+	}
+}

@@ -2,6 +2,48 @@
 
 `cpp-studio` reads one JSON file. The gateway starts `mode: "server"` engines when it boots and treats `mode: "subprocess"` engines as request-time commands.
 
+## Portable Configs: `vars`
+
+Configs support `${name}` substitution across engine `command`, `args`,
+`workingDir`, `healthUrl`, `defaultVoiceRef`, and the `models` block, so a
+tracked config can avoid machine-specific absolute paths:
+
+```json
+{
+  "vars": { "root": "C:\\path\\to\\your\\studio" },
+  "engines": {
+    "llama": {
+      "command": "${root}\\engines\\llama.cpp\\llama-server.exe",
+      "args": ["-m", "${root}\\engines\\models\\chat.gguf"]
+    }
+  }
+}
+```
+
+Resolution order: the built-in `${configDir}` (absolute directory of the
+config file), then `vars`, then the process environment. An unresolved token
+is left literal so a typo surfaces plainly. Absolute paths without `${}` work
+unchanged. `config.example.json` uses this shape — a new machine edits one
+`root` value.
+
+## Model Manifest: `models`
+
+The optional `models` block points at the tracked model registry
+(`models.json`) and the root its relative paths resolve against:
+
+```json
+{
+  "models": { "manifest": "${configDir}/models.json", "root": "${root}" }
+}
+```
+
+`GET /v1/models/catalog` then reports every declared model with its live
+on-disk state (`present`, `missing`, `size-mismatch`, `unverified` for
+directory models without size checks), which powers the console's Models tab.
+Each manifest entry carries `id`, `engine`, `family`, relative `path`, and
+optionally `bytes`, `sha256`, `source`, `license`, and `description`. Without
+a `models` block the catalog is empty and everything else works unchanged.
+
 ## Engine Modes
 
 ### Server
@@ -186,6 +228,36 @@ Point `command` at your `sd-cli` binary and keep model/backend options in `args`
 The image route accepts `{ "prompt": "...", "size": "512x512", "response_format": "b64_json" }`, runs the configured `sd` subprocess, validates the generated PNG, and returns OpenAI-shaped `b64_json` data. Requested dimensions are capped at 2048 px per side and 4,194,304 total pixels. This is a narrow subset: one PNG only, `b64_json` only, `n` must be omitted or `1`, and request fields such as `model`, `quality`, `style`, and `user` are ignored.
 
 The gateway currently appends `--prompt`, `--output`, `--width`, and `--height`. The upstream `stable-diffusion.cpp` README describes the project as active development and notes that CLI options may change frequently, so run `sd-cli -h` against your exact binary before relying on a newer build.
+
+For fast repeated generation, prefer `sd-server` in server mode — the model
+stays loaded between requests (~2s per 512x512 on the reference machine vs
+~30-55s per subprocess run, which reloads the model every time):
+
+```json
+{
+  "command": "sd-server",
+  "args": [
+    "--listen-ip", "127.0.0.1",
+    "--listen-port", "8737",
+    "-m", "C:\\Temp\\v1-5-pruned-emaonly.safetensors",
+    "--type", "f16",
+    "--diffusion-fa",
+    "--vae-tiling"
+  ],
+  "mode": "server",
+  "healthUrl": "http://127.0.0.1:8737/v1/models",
+  "startupTimeoutSeconds": 60,
+  "requestTimeoutSeconds": 300
+}
+```
+
+`sd-server` has no `/health` route, so `healthUrl` points at `/v1/models`
+(returns 200 once listening); the gateway takes the URL's origin and posts to
+`/v1/images/generations`. `--type f16` halves resident VRAM with no visible
+quality loss on SD 1.5, and `--vae-tiling` bounds the decode spike so the
+model coexists with the other engines on a 16 GB card. One sharp edge: the
+gateway deliberately omits the `n` field from upstream requests — sd-server's
+JSON parser fatally rejects `"n":null`.
 
 ## Health Behavior
 

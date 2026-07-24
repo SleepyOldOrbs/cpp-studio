@@ -1193,3 +1193,121 @@ pre {
     gap: 4px;
   }
 }
+
+/* --- Tab bar ----------------------------------------------------------- */
+
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  flex-basis: 100%;
+  order: 10;
+  margin-top: 2px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 10px;
+  overflow-x: auto;
+}
+
+.tab {
+  display: inline-block;
+  padding: 7px 16px;
+  border: 1px solid transparent;
+  border-radius: 6px 6px 0 0;
+  color: var(--muted);
+  font-family: var(--display);
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  color: var(--ink);
+  background: var(--panel-head);
+}
+
+.tab.active {
+  color: var(--accent-strong);
+  border-color: var(--line);
+  border-bottom-color: var(--bg);
+  background: var(--panel);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+/* --- Models catalog ---------------------------------------------------- */
+
+.models-summary {
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.models-list {
+  display: grid;
+  gap: 10px;
+}
+
+.model-row {
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--well);
+  display: grid;
+  gap: 6px;
+}
+
+.model-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.model-name {
+  font-family: var(--display);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.model-meta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.model-path {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.model-desc {
+  font-size: 0.88rem;
+}
+
+.model-source {
+  font-size: 0.8rem;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+.status-pill.warn {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.status-pill.danger {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* --- Session log drawer ------------------------------------------------ */
+
+.log-drawer .module-head h2 {
+  margin-right: auto;
+}

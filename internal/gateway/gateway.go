@@ -21,18 +21,21 @@ import (
 	"cpp-studio/internal/demo"
 	"cpp-studio/internal/engine"
 	"cpp-studio/internal/lifecycle"
+	"cpp-studio/internal/models"
 	"cpp-studio/internal/story"
 	"cpp-studio/internal/voice"
 	"cpp-studio/internal/wav"
 )
 
 type router struct {
-	cfg     config.Config
-	manager *lifecycle.Manager
-	client  *http.Client
-	engines engine.Invoker
-	stories *story.Manager
-	voices  *voice.Store
+	cfg        config.Config
+	manager    *lifecycle.Manager
+	client     *http.Client
+	engines    engine.Invoker
+	stories    *story.Manager
+	voices     *voice.Store
+	catalog    models.Manifest
+	modelsRoot string
 }
 
 const (
@@ -63,11 +66,21 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	}
 	r.stories = story.NewManager(storyOptions)
 
+	// The model manifest is optional: a config without a models block (CI,
+	// fixture setups) simply serves an empty catalog rather than failing.
+	if cfg.Models != nil && cfg.Models.Manifest != "" {
+		if manifest, err := models.Load(cfg.Models.Manifest); err == nil {
+			r.catalog = manifest
+			r.modelsRoot = cfg.Models.Root
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", r.handleRoot)
 	mux.HandleFunc("/demo", r.handleDemoRedirect)
 	mux.Handle("/demo/", http.StripPrefix("/demo/", demo.Handler()))
 	mux.HandleFunc("/health", r.handleHealth)
+	mux.HandleFunc("/v1/models/catalog", r.handleModelsCatalog)
 	mux.HandleFunc("/v1/chat/completions", r.handleChatCompletions)
 	mux.HandleFunc("/v1/images/generations", r.handleImageGenerations)
 	mux.HandleFunc("/v1/images/descriptions", r.handleImageDescriptions)
@@ -110,6 +123,24 @@ func (r *router) handleHealth(w http.ResponseWriter, req *http.Request) {
 	if err := json.NewEncoder(w).Encode(r.manager.Health()); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 	}
+}
+
+// handleModelsCatalog reports the model manifest with each model's live on-disk
+// status (present / missing / size-mismatch), powering the Models tab. A config
+// without a models block serves an empty catalog rather than erroring.
+func (r *router) handleModelsCatalog(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodGet) {
+		return
+	}
+	statuses := r.catalog.Statuses(r.modelsRoot)
+	if statuses == nil {
+		statuses = []models.Status{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"root":   r.modelsRoot,
+		"models": statuses,
+	})
 }
 
 func (r *router) handleChatCompletions(w http.ResponseWriter, req *http.Request) {

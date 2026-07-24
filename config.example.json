@@ -3,30 +3,53 @@
     "host": "127.0.0.1",
     "port": 8765
   },
+  "vars": {
+    "root": "C:\\path\\to\\your\\studio"
+  },
+  "models": {
+    "manifest": "${configDir}/models.json",
+    "root": "${root}"
+  },
   "engines": {
     "llama": {
-      "command": "llama-server",
-      "args": ["--host", "127.0.0.1", "--port", "8733", "-m", "C:\\Temp\\model.gguf", "--jinja"],
+      "command": "${root}\\engines\\llama.cpp\\llama-server.exe",
+      "args": [
+        "--host", "127.0.0.1",
+        "--port", "8733",
+        "-m", "${root}\\engines\\models\\Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "--jinja",
+        "-ngl", "99",
+        "-c", "8192",
+        "-b", "512",
+        "-ub", "256"
+      ],
       "mode": "server",
       "healthUrl": "http://127.0.0.1:8733/health",
-      "startupTimeoutSeconds": 60,
+      "startupTimeoutSeconds": 120,
       "shutdownTimeoutSeconds": 10,
       "requestTimeoutSeconds": 120
     },
     "whisper": {
-      "command": "whisper-cli",
-      "args": ["-m", "C:\\Temp\\whisper.bin"],
-      "mode": "subprocess",
+      "command": "${root}\\engines\\whisper.cpp\\Release\\whisper-server.exe",
+      "args": [
+        "-m", "${root}\\engines\\models\\ggml-base.en.bin",
+        "--host", "127.0.0.1",
+        "--port", "8734"
+      ],
+      "mode": "server",
+      "healthUrl": "http://127.0.0.1:8734/health",
+      "startupTimeoutSeconds": 30,
+      "shutdownTimeoutSeconds": 5,
       "requestTimeoutSeconds": 120
     },
     "audio": {
-      "command": "audiocpp_cli",
+      "command": "${root}\\audio.cpp\\build\\windows-cuda-release\\bin\\audiocpp_cli.exe",
       "args": [
         "--task", "tts",
         "--family", "qwen3_tts",
-        "--model", "C:\\Temp\\Qwen3-TTS-12Hz-0.6B-Base",
+        "--model", "${root}\\audio.cpp\\models\\Qwen3-TTS-12Hz-0.6B-Base",
         "--backend", "cuda",
-        "--voice-ref", "C:\\Temp\\voice.wav",
+        "--voice-ref", "${root}\\audio.cpp\\assets\\resources\\b.wav",
         "--reference-text", "Reference voice transcript.",
         "--max-tokens", "256",
         "--session-option", "qwen3_tts.weight_type=q8_0"
@@ -36,11 +59,20 @@
       "gpu": true
     },
     "sd": {
-      "command": "sd-cli",
-      "args": ["-m", "C:\\Temp\\v1-5-pruned-emaonly.safetensors"],
-      "mode": "subprocess",
-      "requestTimeoutSeconds": 300,
-      "gpu": true
+      "command": "${root}\\engines\\sd.cpp-cuda\\sd-server.exe",
+      "args": [
+        "--listen-ip", "127.0.0.1",
+        "--listen-port", "8737",
+        "-m", "${root}\\engines\\models\\v1-5-pruned-emaonly.safetensors",
+        "--type", "f16",
+        "--diffusion-fa",
+        "--vae-tiling"
+      ],
+      "mode": "server",
+      "healthUrl": "http://127.0.0.1:8737/v1/models",
+      "startupTimeoutSeconds": 60,
+      "shutdownTimeoutSeconds": 10,
+      "requestTimeoutSeconds": 300
     }
   }
 }

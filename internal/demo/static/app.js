@@ -2581,9 +2581,172 @@
     cloneRecordButton.textContent = "Recording unavailable";
   }
 
+  // --- Tabs: hash-routed sections -------------------------------------
+  // Every module carries data-tab; the router shows the active tab's
+  // modules and hides the rest. The session log drawer sits outside the
+  // tab system and stays visible everywhere.
+  var TABS = ["talk", "voices", "image", "story", "models", "engines"];
+  var tabLinks = document.querySelectorAll("[data-tab-link]");
+  var tabModules = document.querySelectorAll(".module[data-tab]");
+
+  function activeTabFromHash() {
+    var name = (window.location.hash || "").replace("#", "");
+    return TABS.indexOf(name) >= 0 ? name : "talk";
+  }
+
+  function applyTab(name) {
+    tabModules.forEach(function (module) {
+      module.hidden = module.getAttribute("data-tab") !== name;
+    });
+    tabLinks.forEach(function (link) {
+      var active = link.getAttribute("data-tab-link") === name;
+      link.classList.toggle("active", active);
+      if (active) {
+        link.setAttribute("aria-current", "page");
+      } else {
+        link.removeAttribute("aria-current");
+      }
+    });
+    if (name === "models") {
+      refreshModels(true);
+    }
+  }
+
+  window.addEventListener("hashchange", function () {
+    applyTab(activeTabFromHash());
+  });
+
+  // --- Session log drawer ----------------------------------------------
+  var logToggleButton = document.getElementById("logToggleButton");
+  var logDrawerBody = document.getElementById("logDrawerBody");
+  logToggleButton.addEventListener("click", function () {
+    var open = logDrawerBody.hidden;
+    logDrawerBody.hidden = !open;
+    logToggleButton.textContent = open ? "Hide" : "Show";
+    logToggleButton.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+
+  // --- Models catalog ---------------------------------------------------
+  var modelsRefreshButton = document.getElementById("modelsRefreshButton");
+  var modelsSummary = document.getElementById("modelsSummary");
+  var modelsList = document.getElementById("modelsList");
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) {
+      return "–";
+    }
+    var units = ["B", "KB", "MB", "GB", "TB"];
+    var i = 0;
+    var v = bytes;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i += 1;
+    }
+    return (v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)) + " " + units[i];
+  }
+
+  function modelStateClass(state) {
+    if (state === "present") {
+      return "ready";
+    }
+    if (state === "unverified") {
+      return "warn";
+    }
+    return "danger";
+  }
+
+  function renderModels(payload) {
+    var models = (payload && payload.models) || [];
+    modelsList.textContent = "";
+    if (!models.length) {
+      modelsSummary.textContent = "No models declared. Add a models block to the gateway config to enable the catalog.";
+      return;
+    }
+    var present = models.filter(function (m) { return m.state === "present" || m.state === "unverified"; }).length;
+    var totalBytes = models.reduce(function (sum, m) { return sum + (m.bytes || m.actualBytes || 0); }, 0);
+    modelsSummary.textContent = present + " of " + models.length + " models on disk · " + formatBytes(totalBytes) + " total · root: " + (payload.root || "–");
+
+    models.forEach(function (model) {
+      var row = document.createElement("div");
+      row.className = "model-row";
+
+      var head = document.createElement("div");
+      head.className = "model-row-head";
+      var name = document.createElement("span");
+      name.className = "model-name";
+      name.textContent = model.id;
+      var state = document.createElement("span");
+      state.className = "status-pill " + modelStateClass(model.state);
+      state.textContent = model.state;
+      head.appendChild(name);
+      head.appendChild(state);
+
+      var meta = document.createElement("div");
+      meta.className = "model-meta";
+      var engineTag = document.createElement("span");
+      engineTag.textContent = model.engine + " · " + (model.family || "");
+      var sizeTag = document.createElement("span");
+      sizeTag.textContent = formatBytes(model.bytes || model.actualBytes);
+      meta.appendChild(engineTag);
+      meta.appendChild(sizeTag);
+      if (model.license) {
+        var licenseTag = document.createElement("span");
+        licenseTag.textContent = model.license;
+        meta.appendChild(licenseTag);
+      }
+
+      var pathLine = document.createElement("div");
+      pathLine.className = "model-path";
+      pathLine.textContent = model.path;
+
+      row.appendChild(head);
+      row.appendChild(meta);
+      row.appendChild(pathLine);
+      if (model.description) {
+        var desc = document.createElement("div");
+        desc.className = "model-desc";
+        desc.textContent = model.description;
+        row.appendChild(desc);
+      }
+      if (model.source) {
+        var source = document.createElement("a");
+        source.className = "model-source";
+        source.href = model.source;
+        source.target = "_blank";
+        source.rel = "noreferrer noopener";
+        source.textContent = model.source;
+        row.appendChild(source);
+      }
+      modelsList.appendChild(row);
+    });
+  }
+
+  async function refreshModels(silent) {
+    try {
+      var response = await fetch("/v1/models/catalog", { method: "GET" });
+      if (!response.ok) {
+        throw new Error("catalog returned " + response.status);
+      }
+      renderModels(await response.json());
+      if (!silent) {
+        log("Model catalog refreshed");
+      }
+    } catch (err) {
+      modelsSummary.textContent = "Catalog unavailable: " + err.message;
+      if (!silent) {
+        log("Model catalog failed: " + err.message, "error");
+      }
+    }
+  }
+
+  modelsRefreshButton.addEventListener("click", function () {
+    refreshModels(false);
+  });
+
   resetCast();
   resetSources();
   renderEngineRack(null);
+  applyTab(activeTabFromHash());
   log("Demo loaded");
   refreshHealth(false);
   refreshStoryLibrary(true);

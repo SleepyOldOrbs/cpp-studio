@@ -80,6 +80,18 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "scriptEditor") {
 		t.Fatalf("expected script editor marker, got %q", body)
 	}
+	if !strings.Contains(body, "tabBar") {
+		t.Fatalf("expected tab bar marker, got %q", body)
+	}
+	if !strings.Contains(body, "/v1/models/catalog") {
+		t.Fatalf("expected models catalog route marker, got %q", body)
+	}
+	if !strings.Contains(body, "modelsList") {
+		t.Fatalf("expected models list marker, got %q", body)
+	}
+	if !strings.Contains(body, "logToggleButton") {
+		t.Fatalf("expected log drawer marker, got %q", body)
+	}
 }
 
 func TestHandlerServesAssets(t *testing.T) {
@@ -112,6 +124,18 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/styles.css",
 			contentType: "text/css",
 			needle:      ".voice-item",
+		},
+		{
+			name:        "javascript models catalog",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "refreshModels",
+		},
+		{
+			name:        "css tab bar",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".tab-bar",
 		},
 	}
 
