@@ -1601,3 +1601,8 @@ pre {
   border-color: rgba(88, 201, 124, 0.5);
   background: rgba(88, 201, 124, 0.06);
 }
+
+.compact-number {
+  width: 64px;
+  min-height: 32px;
+}

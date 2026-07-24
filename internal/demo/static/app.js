@@ -468,7 +468,9 @@
     updateDesignModels(data.engines);
     // The Detect speakers button only exists when a diarize engine is
     // configured; without one the Extractor stays manual-tagging only.
-    extractDiarizeButton.hidden = !(data.engines && data.engines.diarize);
+    var hasDiarize = Boolean(data.engines && data.engines.diarize);
+    extractDiarizeButton.hidden = !hasDiarize;
+    document.getElementById("extractSpeakersInput").hidden = !hasDiarize;
     healthUpdated.textContent = data.updatedAt ? "Updated " + new Date(data.updatedAt).toLocaleString() : "Updated now";
     healthBody.textContent = "";
 
@@ -3946,7 +3948,10 @@
       }
       var form = new FormData();
       form.append("file", new File([encodeWav(samples, rate)], "diarize.wav", { type: "audio/wav" }));
-      var response = await fetch("/v1/audio/diarization", { method: "POST", body: form });
+      var speakersInput = document.getElementById("extractSpeakersInput");
+      var count = parseInt(speakersInput.value, 10);
+      var url = "/v1/audio/diarization" + (count >= 1 && count <= 26 ? "?speakers=" + count : "");
+      var response = await fetch(url, { method: "POST", body: form });
       if (!response.ok) {
         throw new Error(await readErrorBody(response));
       }

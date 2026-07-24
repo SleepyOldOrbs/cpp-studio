@@ -1172,8 +1172,18 @@ func (r *router) handleDiarization(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	numSpeakers := 0
+	if v := req.URL.Query().Get("speakers"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 26 {
+			writeJSONError(w, http.StatusBadRequest, "speakers must be an integer between 1 and 26")
+			return
+		}
+		numSpeakers = n
+	}
+
 	started := time.Now()
-	result, err := r.engines.Run(req.Context(), engine.DiarizationSpec(data))
+	result, err := r.engines.Run(req.Context(), engine.DiarizationSpec(data, numSpeakers))
 	if err != nil {
 		writeEngineError(w, err)
 		return

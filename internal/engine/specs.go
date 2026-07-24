@@ -160,7 +160,10 @@ func TranscriptionSpec(wavBytes []byte) Spec {
 // DiarizationSpec invokes the "diarize" engine (sherpa-onnx offline speaker
 // diarization): the model flags live in the config args and the input WAV is
 // the single positional argument. Stdout carries one line per speaker span.
-func DiarizationSpec(wavBytes []byte) Spec {
+// numSpeakers > 0 pins the cluster count (sherpa gives --clustering.num-clusters
+// precedence over the configured threshold), which tames real-world audio
+// where laughter and character voices shatter threshold clustering.
+func DiarizationSpec(wavBytes []byte, numSpeakers int) Spec {
 	if wavBytes == nil {
 		wavBytes = []byte{}
 	}
@@ -172,7 +175,11 @@ func DiarizationSpec(wavBytes []byte) Spec {
 		InputPattern:  "cpp-studio-diarize-*.wav",
 		ValidateInput: wav.ValidateFile,
 		BuildArgs: func(inPath, _ string) []string {
-			return []string{inPath}
+			var args []string
+			if numSpeakers > 0 {
+				args = append(args, fmt.Sprintf("--clustering.num-clusters=%d", numSpeakers))
+			}
+			return append(args, inPath)
 		},
 	}
 }

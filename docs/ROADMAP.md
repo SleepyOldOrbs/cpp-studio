@@ -156,12 +156,16 @@ Sequenced plan; each step starts only when the previous is done.
 1. **Cast extraction — DONE.** "Clone the cast" in the Extractor: one click
    after speaker tagging mints a library voice per speaker from their
    longest clean run (≤15 s, skipped under 2 s), named `<source> <speaker>`.
-2. **Real-episode shakedown.** Run a genuine episode (laughter, music,
-   overlapping speech) through transcribe → diarize → clone-the-cast; fix
-   what cracks. Known levers: a "number of speakers" input on Detect
-   (`--clustering.num-clusters` beats threshold guessing when the cast size
-   is known), the 30-minute editor cap vs 28-minute episodes, and segment
-   quality heuristics if laughter pollutes references.
+2. **Real-episode shakedown — DONE.** A 1968 Round the Horne episode
+   (28:55, laughter, music, character voices): MP3 decoded in-browser, 651
+   whisper segments, and the predicted crack appeared — threshold clustering
+   exploded into 59 "speakers". The planned lever fixed it: a "number of
+   speakers" input on Detect (`?speakers=N` →
+   `--clustering.num-clusters=N`, which sherpa prioritises over the
+   threshold) yields exactly 5 clusters, 610/651 lines tagged (94%), ~100 s
+   per 28 min. Remaining known limits, accepted for now: actors playing
+   several characters can split or blend clusters, and laughter-adjacent
+   references may need hand-picking over clone-the-cast's auto-pick.
 3. **Sketch mode for the Story Desk.** A freeform creative mode: premise +
    style notes + cast roles → banter, with the grounding validator and
    source requirements switched off. Story Desk's fact-card pipeline is
