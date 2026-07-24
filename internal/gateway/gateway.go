@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"cpp-studio/internal/audiobook"
@@ -43,6 +44,12 @@ type router struct {
 	jobs       *jobs.Registry
 	library    *library.Store
 	audiobooks *audiobook.Manager
+
+	// verifyMu guards the verify-all state: deep-check results overlay the
+	// catalog's fast stat states until the next gateway restart.
+	verifyMu      sync.Mutex
+	verifyStates  map[string]string
+	verifyRunning bool
 }
 
 const (
@@ -96,6 +103,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.Handle("/demo/", http.StripPrefix("/demo/", demo.Handler()))
 	mux.HandleFunc("/health", r.handleHealth)
 	mux.HandleFunc("/v1/models/catalog", r.handleModelsCatalog)
+	mux.HandleFunc("/v1/models/verify", r.handleModelsVerify)
 	mux.HandleFunc("/v1/engines/", r.handleEngines)
 	mux.HandleFunc("/v1/gpu", r.handleGPU)
 	mux.HandleFunc("/v1/jobs", r.handleJobs)
@@ -150,7 +158,8 @@ func (r *router) handleHealth(w http.ResponseWriter, req *http.Request) {
 
 // handleModelsCatalog reports the model manifest with each model's live on-disk
 // status (present / missing / size-mismatch), powering the Models tab. A config
-// without a models block serves an empty catalog rather than erroring.
+// without a models block serves an empty catalog rather than erroring. Deep
+// verification results from the last verify run overlay the fast stat states.
 func (r *router) handleModelsCatalog(w http.ResponseWriter, req *http.Request) {
 	if !requireMethod(w, req, http.MethodGet) {
 		return
@@ -159,10 +168,88 @@ func (r *router) handleModelsCatalog(w http.ResponseWriter, req *http.Request) {
 	if statuses == nil {
 		statuses = []models.Status{}
 	}
+	r.verifyMu.Lock()
+	for i := range statuses {
+		// Only overlay when the fast stat still agrees the model looks intact;
+		// a file that changed since verification must show its stat state.
+		if deep, ok := r.verifyStates[statuses[i].ID]; ok && statuses[i].State == models.StatePresent {
+			statuses[i].State = deep
+		}
+	}
+	verifying := r.verifyRunning
+	r.verifyMu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"root":   r.modelsRoot,
-		"models": statuses,
+		"root":      r.modelsRoot,
+		"models":    statuses,
+		"verifying": verifying,
+	})
+}
+
+// handleModelsVerify starts a deep verification of every model — full sha256
+// for checksummed files, exhaustive walks for directory models — as a tracked
+// job. Results overlay the catalog until the gateway restarts.
+func (r *router) handleModelsVerify(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	if len(r.catalog.Models) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "no model manifest configured")
+		return
+	}
+	r.verifyMu.Lock()
+	if r.verifyRunning {
+		r.verifyMu.Unlock()
+		writeJSONError(w, http.StatusConflict, "a verification run is already in progress")
+		return
+	}
+	r.verifyRunning = true
+	r.verifyMu.Unlock()
+
+	id := fmt.Sprintf("verify_%s", time.Now().UTC().Format("20060102_150405"))
+	ctx, cancel := context.WithCancel(context.Background())
+	r.jobs.Track(id, "verify", cancel)
+
+	go func() {
+		defer func() {
+			r.verifyMu.Lock()
+			r.verifyRunning = false
+			r.verifyMu.Unlock()
+		}()
+		statuses, err := r.catalog.VerifyAll(ctx, r.modelsRoot, func(done, total int, modelID string) {
+			r.jobs.Update(id, float64(done)/float64(total), "verifying "+modelID)
+		})
+		result := map[string]string{}
+		states := make(map[string]string, len(statuses))
+		counts := map[string]int{}
+		for _, s := range statuses {
+			states[s.ID] = s.State
+			counts[s.State]++
+			if s.State == models.StateCorrupt {
+				result["corrupt"] = strings.TrimSpace(result["corrupt"] + " " + s.ID)
+			}
+		}
+		r.verifyMu.Lock()
+		r.verifyStates = states
+		r.verifyMu.Unlock()
+		if err != nil {
+			if ctx.Err() != nil {
+				r.jobs.MarkCancelled(id)
+			} else {
+				r.jobs.Fail(id, err.Error())
+			}
+			return
+		}
+		result["verified"] = strconv.Itoa(counts[models.StateVerified])
+		result["total"] = strconv.Itoa(len(statuses))
+		r.jobs.Complete(id, result)
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"id":        id,
+		"statusUrl": "/v1/jobs/" + id,
 	})
 }
 

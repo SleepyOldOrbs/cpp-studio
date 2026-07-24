@@ -2789,7 +2789,7 @@
   }
 
   function modelStateClass(state) {
-    if (state === "present") {
+    if (state === "present" || state === "verified") {
       return "ready";
     }
     if (state === "unverified") {
@@ -2805,7 +2805,7 @@
       modelsSummary.textContent = "No models declared. Add a models block to the gateway config to enable the catalog.";
       return;
     }
-    var present = models.filter(function (m) { return m.state === "present" || m.state === "unverified"; }).length;
+    var present = models.filter(function (m) { return m.state === "present" || m.state === "verified" || m.state === "unverified"; }).length;
     var totalBytes = models.reduce(function (sum, m) { return sum + (m.bytes || m.actualBytes || 0); }, 0);
     modelsSummary.textContent = present + " of " + models.length + " models on disk · " + formatBytes(totalBytes) + " total · root: " + (payload.root || "–");
 
@@ -2884,6 +2884,63 @@
 
   modelsRefreshButton.addEventListener("click", function () {
     refreshModels(false);
+  });
+
+  // --- Verify all: deep integrity check as a tracked job ----------------
+  var modelsVerifyButton = document.getElementById("modelsVerifyButton");
+
+  function pollVerify(id) {
+    window.setTimeout(async function () {
+      try {
+        var response = await fetch("/v1/jobs/" + encodeURIComponent(id), { method: "GET" });
+        if (!response.ok) {
+          throw new Error(await readErrorBody(response));
+        }
+        var job = await response.json();
+        if (job.status === "complete") {
+          modelsVerifyButton.textContent = "Verify all";
+          modelsVerifyButton.disabled = false;
+          var corrupt = job.result && job.result.corrupt;
+          log("Model verification: " + (job.result ? job.result.verified + "/" + job.result.total : "?") + " verified" + (corrupt ? "; CORRUPT: " + corrupt : ""), corrupt ? "error" : undefined);
+          refreshModels(true);
+          return;
+        }
+        if (job.status === "failed" || job.status === "cancelled") {
+          modelsVerifyButton.textContent = "Verify all";
+          modelsVerifyButton.disabled = false;
+          modelsSummary.textContent = "Verification " + job.status + (job.error ? ": " + job.error : "");
+          log("Model verification " + job.status + (job.error ? ": " + job.error : ""), "error");
+          return;
+        }
+        modelsVerifyButton.textContent = "Verifying " + Math.round((job.progress || 0) * 100) + "%";
+        if (job.detail) {
+          modelsSummary.textContent = job.detail + "…";
+        }
+        pollVerify(id);
+      } catch (err) {
+        modelsVerifyButton.textContent = "Verify all";
+        modelsVerifyButton.disabled = false;
+        log("Verification status failed: " + err.message, "error");
+      }
+    }, 700);
+  }
+
+  modelsVerifyButton.addEventListener("click", async function () {
+    modelsVerifyButton.disabled = true;
+    modelsVerifyButton.textContent = "Verifying…";
+    try {
+      var response = await fetch("/v1/models/verify", { method: "POST" });
+      if (!response.ok) {
+        throw new Error(await readErrorBody(response));
+      }
+      var created = await response.json();
+      log("Model verification started (full checksums; this reads every model once)");
+      pollVerify(created.id);
+    } catch (err) {
+      modelsVerifyButton.textContent = "Verify all";
+      modelsVerifyButton.disabled = false;
+      log("Verification failed to start: " + err.message, "error");
+    }
   });
 
   // --- Audiobook desk ----------------------------------------------------

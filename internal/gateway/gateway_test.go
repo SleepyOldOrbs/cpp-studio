@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -3056,6 +3058,79 @@ func TestAudiobookRejectsBadUploads(t *testing.T) {
 	}
 	if rec := upload("book.txt", []byte("Fine text."), "voice_that_does_not_exist"); rec.Code != http.StatusBadRequest {
 		t.Errorf("unknown voice: got %d", rec.Code)
+	}
+}
+
+func TestModelsVerifyAllRunsAsJobAndOverlaysCatalog(t *testing.T) {
+	root := t.TempDir()
+	content := []byte("model bytes here")
+	if err := os.WriteFile(filepath.Join(root, "chat.gguf"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	if err := os.WriteFile(filepath.Join(root, "models.json"), fmt.Appendf(nil, `{"models":[
+		{"id":"chat","engine":"llama","path":"chat.gguf","bytes":%d,"sha256":%q},
+		{"id":"bad","engine":"sd","path":"chat.gguf","bytes":%d,"sha256":"deadbeef"}
+	]}`, len(content), hex.EncodeToString(sum[:]), len(content)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig(map[string]config.EngineConfig{"llama": {Command: "llama-server"}})
+	cfg.Models = &config.ModelsConfig{Manifest: filepath.Join(root, "models.json"), Root: root}
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/models/verify", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("verify: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var job struct {
+		Status string            `json:"status"`
+		Result map[string]string `json:"result"`
+	}
+	for time.Now().Before(deadline) {
+		rec = httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/jobs/"+created.ID, nil))
+		if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+			t.Fatalf("decode job: %v", err)
+		}
+		if job.Status == "complete" || job.Status == "failed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if job.Status != "complete" {
+		t.Fatalf("verify job did not complete: %+v", job)
+	}
+	if job.Result["verified"] != "1" || job.Result["total"] != "2" || !strings.Contains(job.Result["corrupt"], "bad") {
+		t.Fatalf("unexpected result: %+v", job.Result)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models/catalog", nil))
+	var catalog struct {
+		Models []struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&catalog); err != nil {
+		t.Fatalf("decode catalog: %v", err)
+	}
+	state := map[string]string{}
+	for _, m := range catalog.Models {
+		state[m.ID] = m.State
+	}
+	if state["chat"] != "verified" || state["bad"] != "corrupt" {
+		t.Fatalf("catalog overlay wrong: %+v", state)
 	}
 }
 

@@ -81,8 +81,22 @@ Returns the model manifest with each model's live on-disk state. Requires a
 }
 ```
 
-`state` is one of `present`, `missing`, `size-mismatch`, `unverified`
-(present, but the manifest declares no expected size — directory models).
+`state` is one of `present` (size — and file count for directory models —
+matches the manifest), `missing`, `size-mismatch`, `unverified` (present but
+the manifest declares nothing to check), `verified` (deep verification
+passed), or `corrupt` (deep verification failed). Directory models report
+`actualFiles` alongside `actualBytes`.
+
+## POST /v1/models/verify
+
+Starts a deep integrity check of every model as a tracked job (`kind:
+"verify"`): files with a manifest `sha256` are fully hashed; directory models
+are exhaustively walked against expected bytes and file count. Returns
+`202 {"id":"verify_...","statusUrl":"/v1/jobs/verify_..."}`; `409` while a
+run is active. Results overlay the catalog (`verified` / `corrupt`) until the
+gateway restarts; the catalog response also carries `"verifying":true` while
+a run is in flight. Reads every model once — seconds on NVMe, minutes on
+slow disks. Cancellable via the jobs surface.
 
 ## Engine Control
 

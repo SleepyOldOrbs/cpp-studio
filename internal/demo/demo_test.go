@@ -89,6 +89,9 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "modelsList") {
 		t.Fatalf("expected models list marker, got %q", body)
 	}
+	if !strings.Contains(body, "modelsVerifyButton") {
+		t.Fatalf("expected verify-all marker, got %q", body)
+	}
 	if !strings.Contains(body, "logToggleButton") {
 		t.Fatalf("expected log drawer marker, got %q", body)
 	}
