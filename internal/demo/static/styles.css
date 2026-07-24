@@ -1371,3 +1371,72 @@ pre {
     justify-self: start;
   }
 }
+
+/* --- Jobs & Library ----------------------------------------------------- */
+
+.jobs-list,
+.library-list {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  color: var(--muted);
+}
+
+.job-row,
+.library-item {
+  padding: 11px 13px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--well);
+  display: grid;
+  gap: 7px;
+  color: var(--ink);
+}
+
+.job-row-head,
+.library-item-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.job-kind,
+.library-item-name {
+  font-family: var(--display);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.job-id,
+.library-item-kind,
+.job-detail,
+.library-item-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.job-id {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.job-row-head .status-pill {
+  margin-left: auto;
+}
+
+.library-item-kind {
+  margin-left: auto;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.library-item-image {
+  max-width: 220px;
+  border-radius: 6px;
+  border: 1px solid var(--line-soft);
+}
+
+.library-item-actions {
+  display: flex;
+  gap: 6px;
+}

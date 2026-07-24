@@ -104,6 +104,35 @@ subprocess engines `400`, and lifecycle failures `409` with an error message.
   `{"profile":"chat","failures":[],"health":{...}}`; partial failures use
   HTTP `207` and list what went wrong while still applying the rest.
 
+## Jobs
+
+Every async pipeline (today: stories; next: audiobooks) registers with the
+job registry, so one surface lists, polls, and cancels long-running work.
+
+- `GET /v1/jobs` — all tracked jobs, newest first:
+  `{"jobs":[{"id":"story_...","kind":"story","status":"running","progress":0.7,"detail":"synthesizing","createdAt":"...","updatedAt":"..."}]}`
+- `GET /v1/jobs/{id}` — one job; completed jobs carry a `result` map (e.g.
+  `{"artifactUrl":"/v1/stories/.../artifact/story.wav","title":"..."}`).
+- `POST /v1/jobs/{id}/cancel` — asks the owning pipeline to stop; `409` when
+  the job is unknown or already terminal.
+
+Statuses: `queued`, `running`, `complete`, `failed`, `cancelled`. The
+registry is in-memory coordination state (finished jobs are capped at 100 and
+forgotten on restart); artifacts always persist in their pipeline's store.
+
+## Library
+
+The studio's persistent output shelf: audio and images saved from the
+console live in `out/library` on disk and survive restarts.
+
+- `GET /v1/library` — all saved items, newest first.
+- `POST /v1/library` — save one item:
+  `{"kind":"audio"|"image","name":"My take","data_b64":"...","meta":{"voice":"cox"}}`.
+  Bytes are validated against the kind (WAV header / PNG signature); the
+  artifact cap is 64 MB. Returns `201` with the item record.
+- `GET /v1/library/{id}/artifact` — the raw WAV/PNG.
+- `DELETE /v1/library/{id}` — remove an item (`204`).
+
 ## GET /v1/gpu
 
 Reports GPU memory via `nvidia-smi` when available, so profile effects are

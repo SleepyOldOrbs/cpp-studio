@@ -2821,6 +2821,135 @@ func TestEngineControlRoutes(t *testing.T) {
 	}
 }
 
+func TestLibrarySaveListServeDelete(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{"llama": {Command: "llama-server"}})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	body := fmt.Sprintf(`{"kind":"audio","name":"My take","data_b64":%q,"meta":{"voice":"cox"}}`,
+		base64.StdEncoding.EncodeToString(validWAVBytes()))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/library", strings.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("save: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var item struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&item); err != nil || item.ID == "" {
+		t.Fatalf("decode save response: %v %q", err, item.ID)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/library", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "My take") {
+		t.Fatalf("list: got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/library/"+item.ID+"/artifact", nil))
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), validWAVBytes()) {
+		t.Fatalf("artifact: got %d, %d bytes", rec.Code, rec.Body.Len())
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/library/"+item.ID, nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: got %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/library/"+item.ID+"/artifact", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("artifact after delete: got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/library", strings.NewReader(`{"kind":"video","name":"x","data_b64":"aGk="}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad kind: got %d", rec.Code)
+	}
+}
+
+func TestJobsSurfaceTracksStories(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var create story.CreateResponse
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(validStoryRequestJSON())))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("submit story: got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&create); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	waitGatewayStoryStatus(t, router, create.ID, story.StatusComplete)
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/jobs/"+create.ID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("job status: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var job struct {
+		Kind   string            `json:"kind"`
+		Status string            `json:"status"`
+		Result map[string]string `json:"result"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if job.Kind != "story" || job.Status != "complete" || job.Result["artifactUrl"] == "" {
+		t.Fatalf("unexpected job: %+v", job)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/jobs", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), create.ID) {
+		t.Fatalf("jobs list: got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Cancelling a finished job is a conflict.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/jobs/"+create.ID+"/cancel", nil))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("cancel finished: got %d", rec.Code)
+	}
+}
+
+func TestJobsCancelDelegatesToStory(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech-slow"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	storyBody := strings.Replace(validStoryRequestJSON(), `"voice_mode": "placeholder"`, `"voice_mode": "fixed"`, 1)
+	var create story.CreateResponse
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(storyBody)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("submit story: got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&create); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/jobs/"+create.ID+"/cancel", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cancel: got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	status := waitGatewayStoryStatus(t, router, create.ID, story.StatusCancelled)
+	if status.Status != story.StatusCancelled {
+		t.Fatalf("story not cancelled: %+v", status)
+	}
+}
+
 func TestModelsCatalogEmptyWithoutManifest(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{"llama": {Command: "llama-server"}})
 	router := NewRouter(cfg, lifecycle.NewManager(cfg))

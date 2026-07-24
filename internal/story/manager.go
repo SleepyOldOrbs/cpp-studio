@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"cpp-studio/internal/jobs"
 	"cpp-studio/internal/wav"
 )
 
@@ -37,6 +38,10 @@ type ManagerOptions struct {
 	Script        ScriptFunc
 	StageDelay    time.Duration
 	Now           func() time.Time
+	// Jobs, when set, mirrors every story job into the gateway-wide job
+	// registry so /v1/jobs lists and cancels stories alongside other async
+	// work. The story manager remains the source of truth.
+	Jobs *jobs.Registry
 }
 
 type Manager struct {
@@ -50,6 +55,7 @@ type Manager struct {
 	counter       int
 	activeID      string
 	jobs          map[string]*job
+	registry      *jobs.Registry
 }
 
 type job struct {
@@ -77,6 +83,7 @@ func NewManager(opts ManagerOptions) *Manager {
 		stageDelay:    stageDelay,
 		now:           now,
 		jobs:          make(map[string]*job),
+		registry:      opts.Jobs,
 	}
 }
 
@@ -119,6 +126,9 @@ func (m *Manager) Submit(ctx context.Context, req CreateRequest) (CreateResponse
 	}
 	m.jobs[id] = j
 	m.activeID = id
+	if m.registry != nil {
+		m.registry.Track(id, "story", func() { _, _ = m.Cancel(id) })
+	}
 
 	go m.run(jobCtx, j)
 
@@ -176,6 +186,9 @@ func (m *Manager) Cancel(id string) (StatusResponse, error) {
 	j.status.Progress = 0
 	j.status.Error = nil
 	j.status.RetryAfterMS = 0
+	if m.registry != nil {
+		m.registry.MarkCancelled(id)
+	}
 	return j.status, nil
 }
 
@@ -286,6 +299,9 @@ func (m *Manager) run(ctx context.Context, j *job) {
 	j.status.RetryAfterMS = 0
 	if m.activeID == j.id {
 		m.activeID = ""
+	}
+	if m.registry != nil {
+		m.registry.Complete(j.id, map[string]string{"artifactUrl": artifactURL, "title": manifest.Title})
 	}
 	m.mu.Unlock()
 }
@@ -402,6 +418,9 @@ func (m *Manager) setStage(j *job, stage Status, progress float64) {
 	j.status.Stage = stage
 	j.status.Progress = progress
 	j.status.RetryAfterMS = DefaultRetryAfterMillis
+	if m.registry != nil {
+		m.registry.Update(j.id, progress, string(stage))
+	}
 }
 
 func (m *Manager) advance(ctx context.Context, j *job, stage Status, progress float64) bool {
@@ -417,6 +436,9 @@ func (m *Manager) advance(ctx context.Context, j *job, stage Status, progress fl
 	j.status.Stage = stage
 	j.status.Progress = progress
 	j.status.RetryAfterMS = DefaultRetryAfterMillis
+	if m.registry != nil {
+		m.registry.Update(j.id, progress, string(stage))
+	}
 	m.mu.Unlock()
 
 	timer := time.NewTimer(m.stageDelay)
@@ -448,6 +470,9 @@ func (m *Manager) fail(j *job, err error) {
 	if m.activeID == j.id {
 		m.activeID = ""
 	}
+	if m.registry != nil {
+		m.registry.Fail(j.id, storyErr.Message)
+	}
 }
 
 func (m *Manager) isCancelled(j *job) bool {
@@ -465,5 +490,8 @@ func (m *Manager) cancelled(j *job) {
 	j.status.RetryAfterMS = 0
 	if m.activeID == j.id {
 		m.activeID = ""
+	}
+	if m.registry != nil {
+		m.registry.MarkCancelled(j.id)
 	}
 }

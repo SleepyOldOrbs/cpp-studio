@@ -98,6 +98,15 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "enginesErrorBox") {
 		t.Fatalf("expected engines error marker, got %q", body)
 	}
+	if !strings.Contains(body, "jobsList") {
+		t.Fatalf("expected jobs list marker, got %q", body)
+	}
+	if !strings.Contains(body, "libraryList") {
+		t.Fatalf("expected library list marker, got %q", body)
+	}
+	if !strings.Contains(body, "libraryImageButton") {
+		t.Fatalf("expected save-to-library marker, got %q", body)
+	}
 }
 
 func TestHandlerServesAssets(t *testing.T) {
@@ -154,6 +163,18 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/styles.css",
 			contentType: "text/css",
 			needle:      ".profiles-row",
+		},
+		{
+			name:        "javascript library",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "refreshLibrary",
+		},
+		{
+			name:        "css library",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".library-item",
 		},
 	}
 

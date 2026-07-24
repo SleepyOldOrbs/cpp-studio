@@ -24,6 +24,7 @@
         <a class="tab" href="#voices" data-tab-link="voices">Voices</a>
         <a class="tab" href="#image" data-tab-link="image">Image</a>
         <a class="tab" href="#story" data-tab-link="story">Story</a>
+        <a class="tab" href="#library" data-tab-link="library">Library</a>
         <a class="tab" href="#models" data-tab-link="models">Models</a>
         <a class="tab" href="#engines" data-tab-link="engines">Engines</a>
       </nav>
@@ -92,6 +93,7 @@
             <div class="panel-label-row">
               <span>Audio playback</span>
               <button class="plain" id="saveReplyButton" type="button" disabled>Save WAV</button>
+              <button class="plain" id="libraryReplyButton" type="button" disabled>To library</button>
             </div>
             <audio id="replyAudio" controls></audio>
           </div>
@@ -169,6 +171,7 @@
               <div class="panel-label-row">
                 <span>Spoken text</span>
                 <button class="plain" id="saveSpeakButton" type="button" disabled>Save WAV</button>
+                <button class="plain" id="librarySpeakButton" type="button" disabled>To library</button>
               </div>
               <audio id="speakAudio" controls></audio>
             </div>
@@ -278,6 +281,7 @@
             <span class="source-label">Image status</span>
             <span id="imageStatus">Idle</span>
             <button class="plain" id="saveImageButton" type="button" disabled>Save PNG</button>
+            <button class="plain" id="libraryImageButton" type="button" disabled>To library</button>
           </div>
 
           <div class="action-row">
@@ -385,6 +389,26 @@
           <div class="story-library" id="storyLibrary"></div>
           <div class="story-facts" id="storyFacts"></div>
         </section>
+      </div>
+    </section>
+
+    <section class="module" data-tab="library" aria-label="Studio library">
+      <header class="module-head">
+        <h2>Library</h2>
+        <span class="module-route">GET /v1/library &middot; GET /v1/jobs</span>
+        <button class="secondary compact-button" id="libraryRefreshButton" type="button">Refresh</button>
+      </header>
+      <div class="module-body">
+        <div class="story-library-header">
+          <span class="source-label">Jobs</span>
+        </div>
+        <div class="jobs-list" id="jobsList">No jobs yet.</div>
+        <div class="story-library-header">
+          <span class="source-label">Saved items</span>
+        </div>
+        <div class="library-list" id="libraryList">Nothing saved yet.</div>
+        <small class="hint">Saved audio and images live in out/library on disk and survive restarts. Stories keep their own shelf on the Story tab.</small>
+        <p class="error-box" id="libraryErrorBox" hidden></p>
       </div>
     </section>
 

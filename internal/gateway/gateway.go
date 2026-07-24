@@ -21,6 +21,8 @@ import (
 	"cpp-studio/internal/config"
 	"cpp-studio/internal/demo"
 	"cpp-studio/internal/engine"
+	"cpp-studio/internal/jobs"
+	"cpp-studio/internal/library"
 	"cpp-studio/internal/lifecycle"
 	"cpp-studio/internal/models"
 	"cpp-studio/internal/story"
@@ -37,6 +39,8 @@ type router struct {
 	voices     *voice.Store
 	catalog    models.Manifest
 	modelsRoot string
+	jobs       *jobs.Registry
+	library    *library.Store
 }
 
 const (
@@ -54,10 +58,13 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 		client:  http.DefaultClient,
 		engines: engine.NewRunner(cfg.Engines, manager),
 		voices:  voice.NewStore(""),
+		jobs:    jobs.NewRegistry(),
+		library: library.NewStore(""),
 	}
 	storyOptions := story.ManagerOptions{
 		ReserveEngine: r.reserveEngine,
 		Synthesize:    r.synthesizeSpeech,
+		Jobs:          r.jobs,
 	}
 	// With a llama engine configured, stories are written by the model;
 	// without one (CI, pure-fixture setups) the deterministic fixture
@@ -84,6 +91,10 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/models/catalog", r.handleModelsCatalog)
 	mux.HandleFunc("/v1/engines/", r.handleEngines)
 	mux.HandleFunc("/v1/gpu", r.handleGPU)
+	mux.HandleFunc("/v1/jobs", r.handleJobs)
+	mux.HandleFunc("/v1/jobs/", r.handleJob)
+	mux.HandleFunc("/v1/library", r.handleLibrary)
+	mux.HandleFunc("/v1/library/", r.handleLibraryItem)
 	mux.HandleFunc("/v1/chat/completions", r.handleChatCompletions)
 	mux.HandleFunc("/v1/images/generations", r.handleImageGenerations)
 	mux.HandleFunc("/v1/images/descriptions", r.handleImageDescriptions)
@@ -309,6 +320,129 @@ func (r *router) handleGPU(w http.ResponseWriter, req *http.Request) {
 		gpus = append(gpus, gpuInfo{Name: strings.TrimSpace(fields[0]), TotalMiB: total, UsedMiB: used})
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"available": len(gpus) > 0, "gpus": gpus})
+}
+
+// handleJobs lists every tracked async job, newest first.
+func (r *router) handleJobs(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodGet) {
+		return
+	}
+	list := r.jobs.List()
+	if list == nil {
+		list = []jobs.Job{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"jobs": list})
+}
+
+// handleJob serves GET /v1/jobs/{id} and POST /v1/jobs/{id}/cancel.
+func (r *router) handleJob(w http.ResponseWriter, req *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(req.URL.Path, "/v1/jobs/"), "/")
+	parts := strings.Split(rest, "/")
+	switch {
+	case len(parts) == 1 && parts[0] != "":
+		if !requireMethod(w, req, http.MethodGet) {
+			return
+		}
+		job, ok := r.jobs.Get(parts[0])
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "job not found")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(job)
+	case len(parts) == 2 && parts[1] == "cancel":
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		job, err := r.jobs.Cancel(parts[0])
+		if err != nil {
+			writeJSONError(w, http.StatusConflict, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(job)
+	default:
+		http.NotFound(w, req)
+	}
+}
+
+// maxLibraryUploadBytes bounds the JSON body of a library save: the base64
+// payload (~1.34x the raw artifact cap) plus metadata headroom.
+const maxLibraryUploadBytes = 96 * 1024 * 1024
+
+// handleLibrary serves GET /v1/library (list) and POST /v1/library (save).
+func (r *router) handleLibrary(w http.ResponseWriter, req *http.Request) {
+	switch req.Method {
+	case http.MethodGet:
+		items, err := r.library.List()
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if items == nil {
+			items = []library.Item{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+	case http.MethodPost:
+		var body struct {
+			Kind    string            `json:"kind"`
+			Name    string            `json:"name"`
+			DataB64 string            `json:"data_b64"`
+			Meta    map[string]string `json:"meta"`
+		}
+		req.Body = http.MaxBytesReader(w, req.Body, maxLibraryUploadBytes)
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON request: %v", err))
+			return
+		}
+		data, err := base64.StdEncoding.DecodeString(body.DataB64)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("decode data_b64: %v", err))
+			return
+		}
+		item, err := r.library.Save(body.Kind, body.Name, data, body.Meta)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(item)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// handleLibraryItem serves GET /v1/library/{id}/artifact and DELETE /v1/library/{id}.
+func (r *router) handleLibraryItem(w http.ResponseWriter, req *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(req.URL.Path, "/v1/library/"), "/")
+	parts := strings.Split(rest, "/")
+	switch {
+	case len(parts) == 2 && parts[1] == "artifact":
+		if !requireMethod(w, req, http.MethodGet) {
+			return
+		}
+		path, _, err := r.library.ArtifactPath(parts[0])
+		if err != nil {
+			writeJSONError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		http.ServeFile(w, req, path)
+	case len(parts) == 1 && parts[0] != "":
+		if !requireMethod(w, req, http.MethodDelete) {
+			return
+		}
+		if err := r.library.Delete(parts[0]); err != nil {
+			writeJSONError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.NotFound(w, req)
+	}
 }
 
 func (r *router) handleChatCompletions(w http.ResponseWriter, req *http.Request) {

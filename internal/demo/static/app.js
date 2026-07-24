@@ -363,6 +363,7 @@
     replyAudio.removeAttribute("src");
     replyAudio.load();
     saveReplyButton.disabled = true;
+    libraryReplyButton.disabled = true;
   }
 
   function resetOutputs() {
@@ -388,6 +389,7 @@
     imagePlaceholder.hidden = false;
     imageStatus.textContent = "Idle";
     saveImageButton.disabled = true;
+    libraryImageButton.disabled = true;
     imageFileInput.value = "";
     imageDescriptionOutput.value = "";
     clearDescribeAudio();
@@ -996,6 +998,7 @@
       imagePreview.hidden = false;
       imagePlaceholder.hidden = true;
       saveImageButton.disabled = false;
+      libraryImageButton.disabled = false;
       imageDescriptionOutput.value = "";
       clearDescribeAudio();
       imageStatus.textContent = size + " PNG, " + formatBytes(estimateBase64Bytes(b64));
@@ -1028,6 +1031,7 @@
       imagePreview.hidden = false;
       imagePlaceholder.hidden = true;
       saveImageButton.disabled = false;
+      libraryImageButton.disabled = false;
       imageDescriptionOutput.value = "";
       clearDescribeAudio();
       imageStatus.textContent = "upload: " + name + " (" + formatBytes(file.size) + ")";
@@ -1187,6 +1191,7 @@
       replyAudio.src = activeAudioUrl;
       replyAudio.load();
       saveReplyButton.disabled = false;
+      libraryReplyButton.disabled = false;
       try {
         await replyAudio.play();
       } catch (error) {
@@ -1658,6 +1663,7 @@
     speakAudio.removeAttribute("src");
     speakAudio.load();
     saveSpeakButton.disabled = true;
+    librarySpeakButton.disabled = true;
   }
 
   async function speakText(event) {
@@ -1693,6 +1699,7 @@
       speakAudio.src = speakAudioUrl;
       speakAudio.load();
       saveSpeakButton.disabled = false;
+      librarySpeakButton.disabled = false;
       try {
         await speakAudio.play();
       } catch (error) {
@@ -2711,7 +2718,7 @@
   // Every module carries data-tab; the router shows the active tab's
   // modules and hides the rest. The session log drawer sits outside the
   // tab system and stays visible everywhere.
-  var TABS = ["talk", "voices", "image", "story", "models", "engines"];
+  var TABS = ["talk", "voices", "image", "story", "library", "models", "engines"];
   var tabLinks = document.querySelectorAll("[data-tab-link]");
   var tabModules = document.querySelectorAll(".module[data-tab]");
 
@@ -2738,6 +2745,9 @@
     }
     if (name === "engines") {
       refreshGPU();
+    }
+    if (name === "library") {
+      refreshLibrary(true);
     }
   }
 
@@ -2870,6 +2880,231 @@
 
   modelsRefreshButton.addEventListener("click", function () {
     refreshModels(false);
+  });
+
+  // --- Studio library & jobs -------------------------------------------
+  var libraryRefreshButton = document.getElementById("libraryRefreshButton");
+  var libraryErrorBox = document.getElementById("libraryErrorBox");
+  var jobsList = document.getElementById("jobsList");
+  var libraryList = document.getElementById("libraryList");
+  var libraryReplyButton = document.getElementById("libraryReplyButton");
+  var librarySpeakButton = document.getElementById("librarySpeakButton");
+  var libraryImageButton = document.getElementById("libraryImageButton");
+  var jobsPollTimer = null;
+
+  // srcToB64 turns an <audio>/<img> src (data: URL or blob: URL) back into
+  // raw base64 for a library save.
+  async function srcToB64(src) {
+    if (src.indexOf("data:") === 0) {
+      return src.split(",", 2)[1];
+    }
+    var response = await fetch(src);
+    var buffer = await response.arrayBuffer();
+    var bytes = new Uint8Array(buffer);
+    var chunks = [];
+    for (var i = 0; i < bytes.length; i += 32768) {
+      chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 32768)));
+    }
+    return btoa(chunks.join(""));
+  }
+
+  async function saveToLibrary(kind, name, src, meta, button) {
+    if (!src) {
+      return;
+    }
+    var original = button.textContent;
+    button.disabled = true;
+    button.textContent = "Saving…";
+    try {
+      var b64 = await srcToB64(src);
+      var response = await fetch("/v1/library", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: kind, name: name, data_b64: b64, meta: meta || {} })
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorBody(response));
+      }
+      log("Saved to library: " + name);
+      button.textContent = "Saved ✓";
+      window.setTimeout(function () {
+        button.textContent = original;
+        button.disabled = false;
+      }, 1500);
+    } catch (err) {
+      log("Library save failed: " + err.message, "error");
+      button.textContent = original;
+      button.disabled = false;
+    }
+  }
+
+  libraryReplyButton.addEventListener("click", function () {
+    var name = (replyOutput.value || "Voice reply").slice(0, 60);
+    saveToLibrary("audio", name, replyAudio.src, { source: "voice-loop" }, libraryReplyButton);
+  });
+  librarySpeakButton.addEventListener("click", function () {
+    var name = (speakTextInput.value || "Spoken text").slice(0, 60);
+    saveToLibrary("audio", name, speakAudio.src, { source: "speak" }, librarySpeakButton);
+  });
+  libraryImageButton.addEventListener("click", function () {
+    var name = (imagePromptInput.value || "Generated image").slice(0, 60);
+    saveToLibrary("image", name, imagePreview.src, { source: "image-lab" }, libraryImageButton);
+  });
+
+  function jobStateClass(status) {
+    if (status === "complete") {
+      return "ready";
+    }
+    if (status === "failed" || status === "cancelled") {
+      return "danger";
+    }
+    return "warn";
+  }
+
+  function renderJobs(jobs) {
+    jobsList.textContent = "";
+    if (!jobs.length) {
+      jobsList.textContent = "No jobs yet.";
+      return false;
+    }
+    var anyActive = false;
+    jobs.forEach(function (job) {
+      var row = createElement("div", "job-row");
+      var head = createElement("div", "job-row-head");
+      head.appendChild(createElement("span", "job-kind", job.kind));
+      head.appendChild(createElement("span", "job-id", job.id));
+      head.appendChild(createElement("span", "status-pill " + jobStateClass(job.status), job.status));
+      row.appendChild(head);
+
+      var active = job.status === "queued" || job.status === "running";
+      if (active) {
+        anyActive = true;
+        var progress = document.createElement("progress");
+        progress.max = 1;
+        progress.value = job.progress || 0;
+        row.appendChild(progress);
+        if (job.detail) {
+          row.appendChild(createElement("div", "job-detail", job.detail));
+        }
+        var cancelButton = createElement("button", "plain compact-button", "Cancel");
+        cancelButton.type = "button";
+        cancelButton.addEventListener("click", async function () {
+          cancelButton.disabled = true;
+          try {
+            var response = await fetch("/v1/jobs/" + encodeURIComponent(job.id) + "/cancel", { method: "POST" });
+            if (!response.ok) {
+              throw new Error(await readErrorBody(response));
+            }
+            refreshLibrary(true);
+          } catch (err) {
+            log("Cancel failed: " + err.message, "error");
+            cancelButton.disabled = false;
+          }
+        });
+        row.appendChild(cancelButton);
+      } else if (job.error) {
+        row.appendChild(createElement("div", "job-detail", job.error));
+      } else if (job.result && job.result.title) {
+        row.appendChild(createElement("div", "job-detail", job.result.title));
+      }
+      jobsList.appendChild(row);
+    });
+    return anyActive;
+  }
+
+  function renderLibraryItems(items) {
+    libraryList.textContent = "";
+    if (!items.length) {
+      libraryList.textContent = "Nothing saved yet.";
+      return;
+    }
+    items.forEach(function (item) {
+      var row = createElement("div", "library-item");
+      var head = createElement("div", "library-item-head");
+      head.appendChild(createElement("span", "library-item-name", item.name));
+      head.appendChild(createElement("span", "library-item-kind", item.kind));
+      row.appendChild(head);
+      row.appendChild(createElement("div", "library-item-meta",
+        new Date(item.createdAt).toLocaleString() + " · " + Math.round(item.bytes / 1024) + " KB"));
+
+      var artifactURL = "/v1/library/" + encodeURIComponent(item.id) + "/artifact";
+      if (item.kind === "audio") {
+        var audio = document.createElement("audio");
+        audio.controls = true;
+        audio.preload = "none";
+        audio.src = artifactURL;
+        row.appendChild(audio);
+      } else if (item.kind === "image") {
+        var img = document.createElement("img");
+        img.className = "library-item-image";
+        img.loading = "lazy";
+        img.alt = item.name;
+        img.src = artifactURL;
+        row.appendChild(img);
+      }
+
+      var actions = createElement("div", "library-item-actions");
+      var download = createElement("button", "plain compact-button", "Download");
+      download.type = "button";
+      download.addEventListener("click", function () {
+        downloadURL(artifactURL, item.name + (item.kind === "audio" ? ".wav" : ".png"));
+      });
+      actions.appendChild(download);
+      var remove = createElement("button", "plain compact-button", "Delete");
+      remove.type = "button";
+      remove.addEventListener("click", async function () {
+        remove.disabled = true;
+        try {
+          var response = await fetch("/v1/library/" + encodeURIComponent(item.id), { method: "DELETE" });
+          if (!response.ok && response.status !== 204) {
+            throw new Error(await readErrorBody(response));
+          }
+          refreshLibrary(true);
+        } catch (err) {
+          log("Delete failed: " + err.message, "error");
+          remove.disabled = false;
+        }
+      });
+      actions.appendChild(remove);
+      row.appendChild(actions);
+      libraryList.appendChild(row);
+    });
+  }
+
+  async function refreshLibrary(silent) {
+    libraryErrorBox.hidden = true;
+    try {
+      var results = await Promise.all([
+        fetch("/v1/jobs", { method: "GET" }),
+        fetch("/v1/library", { method: "GET" })
+      ]);
+      if (!results[0].ok || !results[1].ok) {
+        throw new Error("library endpoints returned " + results[0].status + "/" + results[1].status);
+      }
+      var jobsPayload = await results[0].json();
+      var libraryPayload = await results[1].json();
+      var anyActive = renderJobs(jobsPayload.jobs || []);
+      renderLibraryItems(libraryPayload.items || []);
+      if (!silent) {
+        log("Library refreshed");
+      }
+      window.clearTimeout(jobsPollTimer);
+      if (anyActive && activeTabFromHash() === "library") {
+        jobsPollTimer = window.setTimeout(function () {
+          refreshLibrary(true);
+        }, 1500);
+      }
+    } catch (err) {
+      libraryErrorBox.textContent = "Library unavailable: " + err.message;
+      libraryErrorBox.hidden = false;
+      if (!silent) {
+        log("Library refresh failed: " + err.message, "error");
+      }
+    }
+  }
+
+  libraryRefreshButton.addEventListener("click", function () {
+    refreshLibrary(false);
   });
 
   resetCast();
