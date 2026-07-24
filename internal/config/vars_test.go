@@ -70,6 +70,30 @@ func TestVarsFallBackToEnvAndAbsolutePathsUnaffected(t *testing.T) {
 	}
 }
 
+func TestProfilesValidated(t *testing.T) {
+	good := writeConfig(t, `{
+      "gateway":{"port":8765},
+      "profiles":{"chat":["llama"]},
+      "engines":{"llama":{"command":"x"}}
+    }`)
+	cfg, err := Load(good)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.Profiles["chat"]) != 1 {
+		t.Fatalf("profiles not loaded: %+v", cfg.Profiles)
+	}
+
+	bad := writeConfig(t, `{
+      "gateway":{"port":8765},
+      "profiles":{"chat":["nope"]},
+      "engines":{"llama":{"command":"x"}}
+    }`)
+	if _, err := Load(bad); err == nil {
+		t.Fatal("expected unknown profile engine to be rejected")
+	}
+}
+
 func TestUnknownModelsFieldRejected(t *testing.T) {
 	path := writeConfig(t, `{
       "gateway":{"port":8765},

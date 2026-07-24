@@ -24,6 +24,11 @@ type Config struct {
 	// Models points at the tracked model manifest and the root its relative
 	// paths resolve against, powering the catalog/downloads surface.
 	Models *ModelsConfig `json:"models,omitempty"`
+	// Profiles are named engine sets for VRAM management: applying a profile
+	// starts its server-mode engines and stops the rest, so heavy residents
+	// (llama, TTS, sd) can be traded against a fixed VRAM budget. Subprocess
+	// engines are unaffected — they hold no VRAM between requests.
+	Profiles map[string][]string `json:"profiles,omitempty"`
 }
 
 // ModelsConfig locates the model manifest and the root that its relative model
@@ -117,6 +122,17 @@ func Load(path string) (Config, error) {
 			parsed, err := url.Parse(engine.HealthURL)
 			if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 				return Config{}, fmt.Errorf("engine %q healthUrl must be an absolute HTTP(S) URL", name)
+			}
+		}
+	}
+
+	for profile, engines := range cfg.Profiles {
+		if profile == "" {
+			return Config{}, fmt.Errorf("profile name cannot be empty")
+		}
+		for _, engineName := range engines {
+			if _, ok := cfg.Engines[engineName]; !ok {
+				return Config{}, fmt.Errorf("profile %q references unknown engine %q", profile, engineName)
 			}
 		}
 	}
@@ -216,7 +232,7 @@ func rejectUnknownKeys(data []byte) error {
 	}
 	for key := range root {
 		switch key {
-		case "gateway", "engines", "vars", "models":
+		case "gateway", "engines", "vars", "models", "profiles":
 		default:
 			return fmt.Errorf("unknown top-level field %q", key)
 		}

@@ -1311,3 +1311,63 @@ pre {
 .log-drawer .module-head h2 {
   margin-right: auto;
 }
+
+/* --- Engine controls & VRAM profiles ----------------------------------- */
+
+.engine-row {
+  grid-template-columns: 130px 110px 1fr auto;
+}
+
+.engine-controls {
+  display: flex;
+  gap: 6px;
+  justify-self: end;
+}
+
+.engine-mode-tag {
+  color: var(--muted);
+  font-size: 0.78rem;
+  align-self: center;
+  white-space: nowrap;
+}
+
+.profiles-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--well);
+}
+
+.profiles-row .source-label {
+  white-space: nowrap;
+}
+
+#profilesButtons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.gpu-meter {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 820px) {
+  .engine-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .engine-controls {
+    justify-self: start;
+  }
+}

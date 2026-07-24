@@ -408,7 +408,14 @@
         <span class="module-note" id="healthUpdated">No health check yet</span>
       </header>
       <div class="module-body">
+        <div class="profiles-row" id="profilesRow" hidden>
+          <span class="source-label">VRAM profiles</span>
+          <span id="profilesButtons"></span>
+          <span class="gpu-meter" id="gpuMeter"></span>
+        </div>
+        <p class="error-box" id="enginesErrorBox" hidden></p>
         <div id="healthBody" class="health-body">No data</div>
+        <small class="hint">Start and stop resident engines to fit your VRAM budget; a profile applies a whole set at once. Subprocess engines load per request and need no control.</small>
       </div>
     </section>
 

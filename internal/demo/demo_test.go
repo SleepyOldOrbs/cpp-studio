@@ -92,6 +92,12 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "logToggleButton") {
 		t.Fatalf("expected log drawer marker, got %q", body)
 	}
+	if !strings.Contains(body, "profilesRow") {
+		t.Fatalf("expected VRAM profiles marker, got %q", body)
+	}
+	if !strings.Contains(body, "enginesErrorBox") {
+		t.Fatalf("expected engines error marker, got %q", body)
+	}
 }
 
 func TestHandlerServesAssets(t *testing.T) {
@@ -136,6 +142,18 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/styles.css",
 			contentType: "text/css",
 			needle:      ".tab-bar",
+		},
+		{
+			name:        "javascript engine controls",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "controlEngine",
+		},
+		{
+			name:        "css profiles row",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".profiles-row",
 		},
 	}
 

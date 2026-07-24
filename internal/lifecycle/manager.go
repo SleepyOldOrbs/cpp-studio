@@ -37,6 +37,7 @@ const (
 
 type EngineHealth struct {
 	Name          string     `json:"name"`
+	Mode          string     `json:"mode,omitempty"`
 	Status        Status     `json:"status"`
 	PID           int        `json:"pid,omitempty"`
 	Ready         bool       `json:"ready"`
@@ -72,8 +73,13 @@ type engineProcess struct {
 func NewManager(cfg config.Config) *Manager {
 	engines := make(map[string]*engineProcess, len(cfg.Engines))
 	for name, engineCfg := range cfg.Engines {
+		mode := engineCfg.Mode
+		if mode == "" {
+			mode = "server"
+		}
 		health := EngineHealth{
 			Name:      name,
+			Mode:      mode,
 			Status:    StatusConfigured,
 			UpdatedAt: time.Now().UTC(),
 		}
@@ -127,7 +133,12 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	}
 
 	engine.setStatusLocked(StatusStarting, "")
-	cmdCtx, cancel := context.WithCancel(ctx)
+	// The child's lifetime belongs to the manager, never to the caller: a
+	// request-scoped ctx is canceled when its HTTP handler returns, which
+	// would silently kill the engine moments after a successful start. The
+	// caller's ctx still bounds the readiness wait below; Stop and shutdown
+	// kill the process through the manager-owned cancel.
+	cmdCtx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(cmdCtx, engine.cfg.Command, engine.cfg.Args...)
 	cmd.Dir = engine.cfg.WorkingDir
 	stdout, err := cmd.StdoutPipe()
@@ -225,10 +236,15 @@ func (m *Manager) Stop(ctx context.Context, name string) error {
 	}
 
 	m.mu.Lock()
-	engine.setStatusLocked(StatusStopped, "")
-	engine.cmd = nil
-	engine.cancel = nil
-	engine.done = nil
+	// Only finalize if no newer process claimed the slot while this stop was
+	// waiting; watchExit clears the fields when the process exits, and a
+	// concurrent Start may already have installed a replacement.
+	if engine.cmd == nil || engine.cmd == cmd {
+		engine.setStatusLocked(StatusStopped, "")
+		engine.cmd = nil
+		engine.cancel = nil
+		engine.done = nil
+	}
 	m.mu.Unlock()
 	return nil
 }
@@ -246,7 +262,9 @@ func (m *Manager) Health() GatewayHealth {
 		engines[name] = health
 		if isDegradedStatus(health.Status) {
 			degraded = true
-		} else if !health.Ready {
+		} else if !health.Ready && health.Status != StatusStopped {
+			// A deliberately stopped engine (VRAM profiles) is neutral: it is
+			// neither on its way up nor degraded.
 			starting = true
 		}
 	}
@@ -337,6 +355,11 @@ func (m *Manager) watchExit(engine *engineProcess, cmd *exec.Cmd, done chan erro
 	if engine.cmd != cmd {
 		return
 	}
+	// The process is gone; release the slot so Start can relaunch a crashed
+	// or exited engine. Stop's captured cmd/done references stay valid.
+	engine.cmd = nil
+	engine.cancel = nil
+	engine.done = nil
 	if engine.health.Status == StatusStopped {
 		return
 	}

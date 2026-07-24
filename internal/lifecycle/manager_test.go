@@ -225,6 +225,77 @@ func TestHealthJSONShape(t *testing.T) {
 	}
 }
 
+func TestCrashedEngineCanBeRestarted(t *testing.T) {
+	cfg := config.Config{
+		Gateway: config.GatewayConfig{Host: "127.0.0.1", Port: 8765},
+		Engines: map[string]config.EngineConfig{
+			"crasher": {
+				Command:                os.Args[0],
+				Args:                   []string{"-test.run=TestHelperProcess", "--", "crash"},
+				StartupTimeoutSeconds:  2,
+				ShutdownTimeoutSeconds: 2,
+			},
+		},
+	}
+	manager := NewManager(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := manager.Start(ctx, "crasher"); err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+	waitForEngine(t, manager, "crasher", func(engine EngineHealth) bool {
+		return engine.Status == StatusCrashed
+	})
+
+	// The crash must release the process slot so a restart is accepted
+	// rather than rejected with "already started".
+	if err := manager.Start(ctx, "crasher"); err != nil {
+		t.Fatalf("restart after crash error = %v", err)
+	}
+	waitForEngine(t, manager, "crasher", func(engine EngineHealth) bool {
+		return engine.Status == StatusCrashed
+	})
+	if err := manager.StopAll(ctx); err != nil {
+		t.Fatalf("StopAll() error = %v", err)
+	}
+}
+
+func TestEngineSurvivesCallerContextCancellation(t *testing.T) {
+	cfg := config.Config{
+		Gateway: config.GatewayConfig{Host: "127.0.0.1", Port: 8765},
+		Engines: map[string]config.EngineConfig{
+			"helper": {
+				Command:                os.Args[0],
+				Args:                   []string{"-test.run=TestHelperProcess", "--", "sleep"},
+				StartupTimeoutSeconds:  2,
+				ShutdownTimeoutSeconds: 2,
+			},
+		},
+	}
+	manager := NewManager(cfg)
+
+	// An HTTP handler's request context is canceled the moment the response
+	// is written; the engine it started must keep running regardless.
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := manager.Start(ctx, "helper"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	cancel()
+
+	time.Sleep(300 * time.Millisecond)
+	engine := manager.Health().Engines["helper"]
+	if engine.Status != StatusRunning && engine.Status != StatusReady {
+		t.Fatalf("engine did not survive caller cancellation: %+v", engine)
+	}
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopCancel()
+	if err := manager.StopAll(stopCtx); err != nil {
+		t.Fatalf("StopAll() error = %v", err)
+	}
+}
+
 func TestHelperProcess(t *testing.T) {
 	args := os.Args
 	for i, arg := range args {
@@ -234,6 +305,9 @@ func TestHelperProcess(t *testing.T) {
 				fmt.Println("helper ready")
 				time.Sleep(30 * time.Second)
 				os.Exit(0)
+			case "crash":
+				fmt.Println("helper crashing")
+				os.Exit(1)
 			case "http":
 				if i+2 >= len(args) {
 					os.Exit(2)

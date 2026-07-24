@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -81,6 +82,8 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.Handle("/demo/", http.StripPrefix("/demo/", demo.Handler()))
 	mux.HandleFunc("/health", r.handleHealth)
 	mux.HandleFunc("/v1/models/catalog", r.handleModelsCatalog)
+	mux.HandleFunc("/v1/engines/", r.handleEngines)
+	mux.HandleFunc("/v1/gpu", r.handleGPU)
 	mux.HandleFunc("/v1/chat/completions", r.handleChatCompletions)
 	mux.HandleFunc("/v1/images/generations", r.handleImageGenerations)
 	mux.HandleFunc("/v1/images/descriptions", r.handleImageDescriptions)
@@ -141,6 +144,171 @@ func (r *router) handleModelsCatalog(w http.ResponseWriter, req *http.Request) {
 		"root":   r.modelsRoot,
 		"models": statuses,
 	})
+}
+
+// handleEngines routes the engine-control surface:
+//
+//	GET  /v1/engines/profiles          -> the configured VRAM profiles
+//	POST /v1/engines/profiles/{name}   -> apply a profile (start members, stop the rest)
+//	POST /v1/engines/{name}/{action}   -> start | stop | reload one engine
+//
+// Only server-mode engines hold VRAM between requests, so control acts on
+// them; subprocess engines are reported but never started or stopped.
+func (r *router) handleEngines(w http.ResponseWriter, req *http.Request) {
+	rest := strings.TrimPrefix(req.URL.Path, "/v1/engines/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+
+	if parts[0] == "profiles" {
+		switch {
+		case len(parts) == 1:
+			if !requireMethod(w, req, http.MethodGet) {
+				return
+			}
+			profiles := r.cfg.Profiles
+			if profiles == nil {
+				profiles = map[string][]string{}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"profiles": profiles})
+			return
+		case len(parts) == 2:
+			if !requireMethod(w, req, http.MethodPost) {
+				return
+			}
+			r.applyProfile(w, req, parts[1])
+			return
+		}
+		http.NotFound(w, req)
+		return
+	}
+
+	if len(parts) != 2 {
+		http.NotFound(w, req)
+		return
+	}
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	name, action := parts[0], parts[1]
+	engineCfg, ok := r.engine(name)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("unknown engine %q", name))
+		return
+	}
+	if !isServerEngine(engineCfg) {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("engine %q is not a server engine; subprocess engines hold no VRAM and need no control", name))
+		return
+	}
+
+	var err error
+	switch action {
+	case "start":
+		err = r.manager.Start(req.Context(), name)
+	case "stop":
+		err = r.manager.Stop(req.Context(), name)
+	case "reload":
+		if err = r.manager.Stop(req.Context(), name); err == nil {
+			err = r.manager.Start(req.Context(), name)
+		}
+	default:
+		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("unknown engine action %q", action))
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusConflict, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(r.manager.Health())
+}
+
+// applyProfile starts the profile's server-mode members and stops every other
+// server-mode engine, so the resident VRAM footprint matches the named set.
+// Failures are collected rather than aborting: a profile apply should leave
+// the system as close to the requested shape as it can get.
+func (r *router) applyProfile(w http.ResponseWriter, req *http.Request, name string) {
+	members, ok := r.cfg.Profiles[name]
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("unknown profile %q", name))
+		return
+	}
+	inProfile := make(map[string]bool, len(members))
+	for _, member := range members {
+		inProfile[member] = true
+	}
+
+	var failures []string
+	// Stop first so VRAM is free before new residents load.
+	for engineName, engineCfg := range r.cfg.Engines {
+		if !isServerEngine(engineCfg) || inProfile[engineName] {
+			continue
+		}
+		if err := r.manager.Stop(req.Context(), engineName); err != nil {
+			failures = append(failures, fmt.Sprintf("stop %s: %v", engineName, err))
+		}
+	}
+	for _, engineName := range members {
+		if !isServerEngine(r.cfg.Engines[engineName]) {
+			continue
+		}
+		if err := r.manager.Start(req.Context(), engineName); err != nil && !strings.Contains(err.Error(), "already started") {
+			failures = append(failures, fmt.Sprintf("start %s: %v", engineName, err))
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	status := http.StatusOK
+	if len(failures) > 0 {
+		status = http.StatusMultiStatus
+	}
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"profile":  name,
+		"failures": failures,
+		"health":   r.manager.Health(),
+	})
+}
+
+// isServerEngine reports whether an engine runs as a resident server. Mode ""
+// defaults to server, matching the lifecycle manager's interpretation.
+func isServerEngine(cfg config.EngineConfig) bool {
+	return cfg.Mode == "" || cfg.Mode == "server"
+}
+
+// handleGPU reports overall GPU memory via nvidia-smi when available, so the
+// Engines tab can show the VRAM effect of profile changes. Machines without
+// nvidia-smi report available:false rather than erroring.
+func (r *router) handleGPU(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodGet) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=name,memory.total,memory.used", "--format=csv,noheader,nounits").Output()
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"available": false})
+		return
+	}
+	type gpuInfo struct {
+		Name     string `json:"name"`
+		TotalMiB int    `json:"totalMiB"`
+		UsedMiB  int    `json:"usedMiB"`
+	}
+	var gpus []gpuInfo
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Split(line, ",")
+		if len(fields) != 3 {
+			continue
+		}
+		total, err1 := strconv.Atoi(strings.TrimSpace(fields[1]))
+		used, err2 := strconv.Atoi(strings.TrimSpace(fields[2]))
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		gpus = append(gpus, gpuInfo{Name: strings.TrimSpace(fields[0]), TotalMiB: total, UsedMiB: used})
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"available": len(gpus) > 0, "gpus": gpus})
 }
 
 func (r *router) handleChatCompletions(w http.ResponseWriter, req *http.Request) {

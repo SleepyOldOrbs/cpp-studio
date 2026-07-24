@@ -10,6 +10,11 @@
     "manifest": "${configDir}/models.json",
     "root": "${root}"
   },
+  "profiles": {
+    "everything": ["llama", "whisper", "audio", "sd"],
+    "chat": ["llama", "whisper", "audio"],
+    "art": ["sd"]
+  },
   "engines": {
     "llama": {
       "command": "${root}\\engines\\llama.cpp\\llama-server.exe",

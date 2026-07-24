@@ -44,6 +44,27 @@ Each manifest entry carries `id`, `engine`, `family`, relative `path`, and
 optionally `bytes`, `sha256`, `source`, `license`, and `description`. Without
 a `models` block the catalog is empty and everything else works unchanged.
 
+## VRAM Profiles: `profiles`
+
+Named engine sets for trading resident models against a fixed VRAM budget:
+
+```json
+{
+  "profiles": {
+    "everything": ["llama", "whisper", "audio", "sd"],
+    "chat": ["llama", "whisper", "audio"],
+    "art": ["sd"]
+  }
+}
+```
+
+`POST /v1/engines/profiles/{name}` stops every server-mode engine not in the
+set and starts the members (subprocess engines are unaffected — they hold no
+VRAM between requests). Individual engines can also be controlled with
+`POST /v1/engines/{name}/start|stop|reload`. The console's Engines tab
+surfaces both, along with `GET /v1/gpu`'s VRAM readout. Profile names must
+reference declared engines; validation rejects unknown names.
+
 ## Engine Modes
 
 ### Server

@@ -491,8 +491,134 @@
         detail += ", " + engine.lastError;
       }
       row.appendChild(createElement("span", "engine-detail", detail));
+      row.appendChild(buildEngineControls(name, engine));
       healthBody.appendChild(row);
     });
+  }
+
+  function buildEngineControls(name, engine) {
+    var controls = createElement("span", "engine-controls");
+    if (engine.mode !== "server") {
+      controls.appendChild(createElement("span", "engine-mode-tag", "per request"));
+      return controls;
+    }
+    var running = engine.status === "ready" || engine.status === "running" || engine.status === "starting";
+    var action = running ? "stop" : "start";
+    var button = createElement("button", "plain compact-button", running ? "Stop" : "Start");
+    button.type = "button";
+    button.addEventListener("click", function () {
+      controlEngine(name, action, button);
+    });
+    controls.appendChild(button);
+    if (running) {
+      var reload = createElement("button", "plain compact-button", "Reload");
+      reload.type = "button";
+      reload.addEventListener("click", function () {
+        controlEngine(name, "reload", reload);
+      });
+      controls.appendChild(reload);
+    }
+    return controls;
+  }
+
+  var enginesErrorBox = document.getElementById("enginesErrorBox");
+  var profilesRow = document.getElementById("profilesRow");
+  var profilesButtons = document.getElementById("profilesButtons");
+  var gpuMeter = document.getElementById("gpuMeter");
+
+  async function controlEngine(name, action, button) {
+    enginesErrorBox.hidden = true;
+    button.disabled = true;
+    button.textContent = action === "stop" ? "Stopping…" : action === "reload" ? "Reloading…" : "Starting…";
+    try {
+      var response = await fetch("/v1/engines/" + encodeURIComponent(name) + "/" + action, { method: "POST" });
+      if (!response.ok) {
+        throw new Error(await readErrorBody(response));
+      }
+      renderHealth(await response.json());
+      log("Engine " + name + ": " + action + " ok");
+    } catch (err) {
+      enginesErrorBox.textContent = name + " " + action + " failed: " + err.message;
+      enginesErrorBox.hidden = false;
+      log("Engine " + name + " " + action + " failed: " + err.message, "error");
+      refreshHealth(true);
+    }
+    refreshGPU();
+  }
+
+  async function applyProfile(name, button) {
+    enginesErrorBox.hidden = true;
+    button.disabled = true;
+    var original = button.textContent;
+    button.textContent = "Applying…";
+    try {
+      var response = await fetch("/v1/engines/profiles/" + encodeURIComponent(name), { method: "POST" });
+      var payload = await response.json();
+      if (payload.health) {
+        renderHealth(payload.health);
+      }
+      if (payload.failures && payload.failures.length) {
+        enginesErrorBox.textContent = "Profile " + name + ": " + payload.failures.join("; ");
+        enginesErrorBox.hidden = false;
+        log("Profile " + name + " applied with failures: " + payload.failures.join("; "), "error");
+      } else if (!response.ok) {
+        throw new Error(payload.error || response.status);
+      } else {
+        log("Profile " + name + " applied");
+      }
+    } catch (err) {
+      enginesErrorBox.textContent = "Profile " + name + " failed: " + err.message;
+      enginesErrorBox.hidden = false;
+      log("Profile " + name + " failed: " + err.message, "error");
+      refreshHealth(true);
+    }
+    button.disabled = false;
+    button.textContent = original;
+    refreshGPU();
+  }
+
+  async function loadProfiles() {
+    try {
+      var response = await fetch("/v1/engines/profiles", { method: "GET" });
+      if (!response.ok) {
+        return;
+      }
+      var payload = await response.json();
+      var names = Object.keys(payload.profiles || {}).sort();
+      if (!names.length) {
+        return;
+      }
+      profilesButtons.textContent = "";
+      names.forEach(function (name) {
+        var button = createElement("button", "secondary compact-button", name);
+        button.type = "button";
+        button.addEventListener("click", function () {
+          applyProfile(name, button);
+        });
+        profilesButtons.appendChild(button);
+      });
+      profilesRow.hidden = false;
+    } catch (err) {
+      /* profiles are optional */
+    }
+  }
+
+  async function refreshGPU() {
+    try {
+      var response = await fetch("/v1/gpu", { method: "GET" });
+      if (!response.ok) {
+        return;
+      }
+      var payload = await response.json();
+      if (!payload.available || !payload.gpus || !payload.gpus.length) {
+        gpuMeter.textContent = "";
+        return;
+      }
+      var gpu = payload.gpus[0];
+      gpuMeter.textContent = gpu.name + " · " + (gpu.usedMiB / 1024).toFixed(1) + " / " + (gpu.totalMiB / 1024).toFixed(1) + " GB VRAM";
+    } catch (err) {
+      /* meter is decorative */
+    }
   }
 
   async function readErrorBody(response) {
@@ -2610,6 +2736,9 @@
     if (name === "models") {
       refreshModels(true);
     }
+    if (name === "engines") {
+      refreshGPU();
+    }
   }
 
   window.addEventListener("hashchange", function () {
@@ -2751,6 +2880,8 @@
   refreshHealth(false);
   refreshStoryLibrary(true);
   refreshVoices(true);
+  loadProfiles();
+  refreshGPU();
   window.setInterval(function () {
     if (document.visibilityState === "visible") {
       refreshHealth(true);

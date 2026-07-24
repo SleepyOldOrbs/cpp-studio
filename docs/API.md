@@ -49,13 +49,66 @@ Returns gateway and engine lifecycle state.
 
 Top-level `status` is:
 
-- `ready` when all engines are ready.
-- `starting` when at least one engine is not ready yet.
+- `ready` when all engines are ready (deliberately stopped engines are neutral).
+- `starting` when at least one engine is on its way up.
 - `degraded` when any engine is failed, exited, missing, crashed, or blocked by a port conflict.
 
 `/health` still returns HTTP `200` when the JSON body status is `degraded`; clients should inspect the response body.
 
 Subprocess engines are marked ready after config validation and are launched per request.
+
+## GET /v1/models/catalog
+
+Returns the model manifest with each model's live on-disk state. Requires a
+`models` block in the config; without one the catalog is empty.
+
+```json
+{
+  "root": "C:\\studio",
+  "models": [
+    {
+      "id": "qwen3-4b-instruct",
+      "engine": "llama",
+      "family": "llama-gguf",
+      "path": "engines/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "bytes": 2497281120,
+      "absPath": "C:\\studio\\engines\\models\\Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "present": true,
+      "actualBytes": 2497281120,
+      "state": "present"
+    }
+  ]
+}
+```
+
+`state` is one of `present`, `missing`, `size-mismatch`, `unverified`
+(present, but the manifest declares no expected size — directory models).
+
+## Engine Control
+
+Server-mode engines can be started, stopped, and reloaded at runtime; this is
+how VRAM is managed on cards that cannot hold every resident model at once.
+Subprocess engines hold no VRAM between requests and are not controllable.
+
+- `POST /v1/engines/{name}/start` — start a stopped or crashed engine.
+- `POST /v1/engines/{name}/stop` — stop a running engine (frees its VRAM).
+- `POST /v1/engines/{name}/reload` — stop then start.
+
+Success returns the full `/health` payload. Unknown engines return `404`,
+subprocess engines `400`, and lifecycle failures `409` with an error message.
+
+- `GET /v1/engines/profiles` — the named engine sets from the config's
+  `profiles` block: `{"profiles":{"chat":["llama","whisper","audio"]}}`.
+- `POST /v1/engines/profiles/{name}` — apply a profile: stop every server
+  engine not in the set, then start the members. Returns
+  `{"profile":"chat","failures":[],"health":{...}}`; partial failures use
+  HTTP `207` and list what went wrong while still applying the rest.
+
+## GET /v1/gpu
+
+Reports GPU memory via `nvidia-smi` when available, so profile effects are
+visible: `{"available":true,"gpus":[{"name":"...","totalMiB":16303,"usedMiB":11949}]}`.
+Machines without `nvidia-smi` return `{"available":false}`.
 
 ## POST /v1/chat/completions
 

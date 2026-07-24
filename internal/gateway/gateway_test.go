@@ -2758,6 +2758,69 @@ func TestModelsCatalog(t *testing.T) {
 	}
 }
 
+func TestEngineControlRoutes(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"llama": {Command: "llama-server", Mode: "server", HealthURL: "http://127.0.0.1:1/health"},
+		"sd":    {Command: "sd-cli", Mode: "subprocess"},
+	})
+	cfg.Profiles = map[string][]string{"art": {"sd"}, "chat": {"llama"}}
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	do := func(method, path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+		return rec
+	}
+
+	if rec := do(http.MethodPost, "/v1/engines/nope/start"); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown engine: got %d", rec.Code)
+	}
+	if rec := do(http.MethodPost, "/v1/engines/sd/start"); rec.Code != http.StatusBadRequest {
+		t.Errorf("subprocess engine control: got %d", rec.Code)
+	}
+	if rec := do(http.MethodPost, "/v1/engines/llama/nonsense"); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown action: got %d", rec.Code)
+	}
+	// Stop on a never-started server engine is a clean no-op.
+	if rec := do(http.MethodPost, "/v1/engines/llama/stop"); rec.Code != http.StatusOK {
+		t.Errorf("stop: got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec := do(http.MethodGet, "/v1/engines/profiles")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("profiles: got %d", rec.Code)
+	}
+	var profiles struct {
+		Profiles map[string][]string `json:"profiles"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&profiles); err != nil {
+		t.Fatalf("decode profiles: %v", err)
+	}
+	if len(profiles.Profiles) != 2 || profiles.Profiles["art"][0] != "sd" {
+		t.Errorf("unexpected profiles: %+v", profiles.Profiles)
+	}
+
+	if rec := do(http.MethodPost, "/v1/engines/profiles/nope"); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown profile: got %d", rec.Code)
+	}
+	// "art" contains only a subprocess engine; applying it stops the (never
+	// started) llama server and starts nothing — a clean success.
+	rec = do(http.MethodPost, "/v1/engines/profiles/art")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply art: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var applied struct {
+		Profile  string   `json:"profile"`
+		Failures []string `json:"failures"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&applied); err != nil {
+		t.Fatalf("decode apply: %v", err)
+	}
+	if applied.Profile != "art" || len(applied.Failures) != 0 {
+		t.Errorf("unexpected apply result: %+v", applied)
+	}
+}
+
 func TestModelsCatalogEmptyWithoutManifest(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{"llama": {Command: "llama-server"}})
 	router := NewRouter(cfg, lifecycle.NewManager(cfg))
