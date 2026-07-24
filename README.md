@@ -3,13 +3,15 @@
 [![ci](https://github.com/SleepyOldOrbs/cpp-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/SleepyOldOrbs/cpp-studio/actions/workflows/ci.yml)
 
 **A fully local, private, GPU-native AI studio.** Talk to it, clone and design
-voices, narrate whole documents into audiobooks, describe what it sees, and
-generate art — entirely offline on your own machine. No cloud, no API keys,
-no telemetry. One Go gateway fronts the native `*.cpp` inference family —
+voices, mine voices out of any recording, narrate whole documents into
+audiobooks, describe what it sees, and generate art — entirely offline on
+your own machine. No cloud, no API keys, no telemetry. One Go gateway fronts
+the native inference family —
 [llama.cpp](https://github.com/ggml-org/llama.cpp),
 [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
-[audio.cpp](https://github.com/0xShug0/audio.cpp), and
-[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) —
+[audio.cpp](https://github.com/0xShug0/audio.cpp),
+[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) speaker diarization —
 behind OpenAI-shaped HTTP routes and a browser studio console.
 
 ## What it does
@@ -26,6 +28,15 @@ behind OpenAI-shaped HTTP routes and a browser studio console.
 - **Story desk** — grounded multi-speaker stories: paste sources, llama
   writes a fact-cited script for your cast, every line is spoken and
   stitched into a narrated piece.
+- **The Extractor** — a sampler deck for voices. Drop in any audio or video
+  the browser can decode (MP3/OGG/FLAC/WAV/MP4 — a podcast, an old radio
+  show), get a scrubbable waveform with a whisper transcript timeline, and
+  let **automatic speaker diarization** tag who says what (a 1968 radio
+  episode: 5 speakers, 94% of 651 lines tagged in ~100 s, on CPU). Filter to
+  one speaker, tick their lines, and export them as one WAV — or press
+  **Clone the cast** and mint a library voice per speaker in one click.
+  Transcript lines are editable and mergeable; every clip carries
+  source/time/speaker provenance.
 - **Image lab** — Stable Diffusion generation (~2 s per 512×512 resident),
   plus true vision: a VLM describes any image and speaks the description.
 - **Engine rack** — every engine has a power switch, and named VRAM profiles
@@ -84,6 +95,8 @@ OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
 | `POST /v1/audio/speech` | TTS, default or any stored voice |
 | `POST /v1/voice` | the whole voice loop in one call |
 | `POST /v1/voices` · `/v1/voices/design` | clone / design voices |
+| `POST /v1/audio/transcriptions?format=segments` | timestamped transcript segments |
+| `POST /v1/audio/diarization` | who-spoke-when speaker clusters (sherpa-onnx) |
 | `POST /v1/images/generations` | Stable Diffusion, resident sd-server |
 | `POST /v1/images/descriptions` | VLM describes an image, spoken aloud |
 | `POST /v1/stories` | grounded multi-voice story jobs |
@@ -107,6 +120,15 @@ latencies and policies: [`docs/LOCAL_ENGINE_PROFILE.md`](docs/LOCAL_ENGINE_PROFI
 
 Release packaging (`dist/`, no weights bundled): `.\scripts\package-release.ps1`
 — see [`docs/RELEASE.md`](docs/RELEASE.md).
+
+## A note on cloning voices
+
+The voice tools can reproduce a real person's voice from a few seconds of
+audio. That power is the point — and it comes with an obvious
+responsibility: **clone only voices you have the right to use** (your own,
+voices with the speaker's consent, or material whose licence permits it),
+and never present synthetic speech as a real person's words. Everything
+runs locally; what you make and how you use it is on you.
 
 ## Architecture in one paragraph
 
