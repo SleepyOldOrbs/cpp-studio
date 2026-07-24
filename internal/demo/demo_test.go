@@ -128,6 +128,9 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "extractDiarizeButton") {
 		t.Fatalf("expected diarization button marker, got %q", body)
 	}
+	if !strings.Contains(body, "extractCastButton") {
+		t.Fatalf("expected clone-the-cast marker, got %q", body)
+	}
 }
 
 func TestHandlerServesAssets(t *testing.T) {

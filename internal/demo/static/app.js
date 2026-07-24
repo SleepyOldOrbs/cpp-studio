@@ -3787,6 +3787,91 @@
     renderExtractTimeline();
   });
 
+  // --- Clone the cast -----------------------------------------------------
+  // One click after speaker tagging: for every tagged speaker, pick their
+  // best material (longest merged run, capped at 15s) and mint a library
+  // voice per speaker — cast extraction for making your own episodes.
+  var extractCastButton = document.getElementById("extractCastButton");
+
+  function taggedSpeakers() {
+    var speakers = [];
+    ex.segments.forEach(function (segment) {
+      if (segment.speaker && speakers.indexOf(segment.speaker) < 0) {
+        speakers.push(segment.speaker);
+      }
+    });
+    return speakers.sort();
+  }
+
+  // bestSpanFor merges one speaker's segments (joining ≤0.3s gaps) and
+  // returns their longest run, trimmed to at most 15s — clone references
+  // want 5–15s of clean single-speaker speech.
+  function bestSpanFor(speaker) {
+    var spans = [];
+    ex.segments.forEach(function (segment) {
+      if (segment.speaker !== speaker) {
+        return;
+      }
+      var last = spans[spans.length - 1];
+      if (last && segment.start - last.end <= 0.3) {
+        last.end = Math.max(last.end, segment.end);
+      } else {
+        spans.push({ start: segment.start, end: segment.end });
+      }
+    });
+    var best = null;
+    spans.forEach(function (span) {
+      if (!best || span.end - span.start > best.end - best.start) {
+        best = span;
+      }
+    });
+    if (best && best.end - best.start > 15) {
+      best = { start: best.start, end: best.start + 15 };
+    }
+    return best;
+  }
+
+  extractCastButton.addEventListener("click", async function () {
+    var speakers = taggedSpeakers();
+    if (!speakers.length) {
+      return;
+    }
+    extractErrorBox.hidden = true;
+    extractCastButton.disabled = true;
+    var original = extractCastButton.textContent;
+    var made = [];
+    var base = ex.sourceName.replace(/\.[^.]+$/, "");
+    try {
+      for (var i = 0; i < speakers.length; i += 1) {
+        var speaker = speakers[i];
+        var span = bestSpanFor(speaker);
+        if (!span || span.end - span.start < 2) {
+          log("Cast: skipping " + speaker + " — under 2s of usable speech");
+          continue;
+        }
+        extractCastButton.textContent = "Cloning " + speaker + " (" + (i + 1) + "/" + speakers.length + ")…";
+        var s0 = Math.floor(span.start * ex.rate);
+        var s1 = Math.floor(span.end * ex.rate);
+        var form = new FormData();
+        form.append("file", new File([encodeWav(ex.samples.subarray(s0, s1), ex.rate)], (base + " " + speaker + ".wav").replace(/[:]/g, "."), { type: "audio/wav" }));
+        form.append("name", base + " " + speaker);
+        var response = await fetch("/v1/voices", { method: "POST", body: form });
+        if (!response.ok) {
+          throw new Error(speaker + ": " + (await readErrorBody(response)));
+        }
+        var clone = await response.json();
+        made.push(clone.name);
+        log("Cast voice saved: " + clone.name + " (" + (span.end - span.start).toFixed(1) + "s reference)");
+      }
+      await refreshVoices(true);
+      log("Clone the cast: " + made.length + "/" + speakers.length + " voices ready" + (made.length ? " — rename them in the Voices tab after a listen" : ""));
+    } catch (err) {
+      extractError("Cast cloning failed: " + err.message);
+    }
+    extractCastButton.textContent = original;
+    extractCastButton.disabled = taggedSpeakers().length === 0;
+  });
+
   // renderExtractFilter rebuilds the speaker chips from whatever speakers the
   // segments actually carry — manual A/B/C tags or diarization's clusters.
   function renderExtractFilter() {
@@ -3834,6 +3919,7 @@
     });
     extractFilterRow.appendChild(clearSel);
     extractFilterRow.hidden = ex.segments.length === 0;
+    extractCastButton.disabled = taggedSpeakers().length === 0;
   }
 
   // --- automatic speaker detection (the diarize engine) -------------------
