@@ -1585,3 +1585,19 @@ pre {
   font-size: 0.9rem;
   line-height: 1.4;
 }
+
+/* --- Extractor multi-segment selection ---------------------------------- */
+
+.extract-segment-tick {
+  width: 15px;
+  height: 15px;
+  margin: 0 2px 0 0;
+  accent-color: var(--ready);
+  cursor: pointer;
+  flex: none;
+}
+
+.extract-segment.checked {
+  border-color: rgba(88, 201, 124, 0.5);
+  background: rgba(88, 201, 124, 0.06);
+}

@@ -3173,10 +3173,57 @@
     cursor: 0,          // playhead position when no region is marked
     region: null,       // {start, end} seconds
     segments: [],       // {start, end, text, speaker}
+    checked: {},        // segment index -> true: multi-segment selection
     filter: "",
     playback: null,     // {ctx, source, anchor, offset, raf}
     selectedRow: -1
   };
+
+  // checkedIndices returns the multi-selection in chronological order.
+  function checkedIndices() {
+    return Object.keys(ex.checked).map(Number).sort(function (a, b) {
+      return ex.segments[a].start - ex.segments[b].start;
+    });
+  }
+
+  // checkedSpans merges the selected segments into time spans, joining
+  // neighbours that touch (whisper often splits one utterance) so they
+  // export seamlessly; distinct spans get a short breath of silence.
+  function checkedSpans() {
+    var spans = [];
+    checkedIndices().forEach(function (index) {
+      var segment = ex.segments[index];
+      var last = spans[spans.length - 1];
+      if (last && segment.start - last.end <= 0.3) {
+        last.end = Math.max(last.end, segment.end);
+      } else {
+        spans.push({ start: segment.start, end: segment.end });
+      }
+    });
+    return spans;
+  }
+
+  // stitchSpans concatenates the spans' samples with a 200ms gap between
+  // non-adjacent spans, returning one continuous take.
+  function stitchSpans(spans) {
+    var gap = Math.floor(0.2 * ex.rate);
+    var total = 0;
+    spans.forEach(function (span, i) {
+      total += Math.floor((span.end - span.start) * ex.rate) + (i > 0 ? gap : 0);
+    });
+    var out = new Float32Array(total);
+    var offset = 0;
+    spans.forEach(function (span, i) {
+      if (i > 0) {
+        offset += gap;
+      }
+      var s0 = Math.floor(span.start * ex.rate);
+      var s1 = Math.floor(span.end * ex.rate);
+      out.set(ex.samples.subarray(s0, s1), offset);
+      offset += s1 - s0;
+    });
+    return out;
+  }
 
   function extractError(message) {
     extractErrorBox.textContent = message;
@@ -3225,6 +3272,7 @@
       ex.cursor = 0;
       ex.region = null;
       ex.segments = [];
+      ex.checked = {};
       ex.filter = "";
       ex.selectedRow = -1;
       extractFileStatus.textContent = file.name + " · " + fmtTime(decoded.duration) + " · " + decoded.sampleRate + " Hz";
@@ -3283,6 +3331,16 @@
       g.fillStyle = "rgba(240, 166, 75, 0.16)";
       g.fillRect(rx0, 0, rx1 - rx0, cssHeight);
     }
+    // Ticked-selection shading (green: what a combined export would take).
+    checkedSpans().forEach(function (span) {
+      if (span.end < viewStart || span.start > ex.view.end) {
+        return;
+      }
+      var cx0 = ((span.start - viewStart) / viewLen) * cssWidth;
+      var cx1 = ((span.end - viewStart) / viewLen) * cssWidth;
+      g.fillStyle = "rgba(88, 201, 124, 0.14)";
+      g.fillRect(cx0, 0, cx1 - cx0, cssHeight);
+    });
 
     g.strokeStyle = "#f0a64b";
     g.lineWidth = 1;
@@ -3398,15 +3456,23 @@
   }
 
   function updateExtractRegionUI() {
-    var has = Boolean(ex.region && ex.region.end - ex.region.start > 0.05);
+    var spans = checkedSpans();
+    var hasChecked = spans.length > 0;
+    var hasRegion = Boolean(ex.region && ex.region.end - ex.region.start > 0.05);
     // Play works from the cursor even without a marked region; extraction
-    // needs an actual region to know what to cut.
+    // needs a region or a ticked selection to know what to cut. A ticked
+    // selection wins over the region: it is the more deliberate act.
     extractPlayButton.disabled = !ex.samples;
-    extractCloneButton.disabled = !has;
-    extractLibraryButton.disabled = !has;
-    extractRegionStatus.textContent = has
-      ? fmtTime(ex.region.start) + " – " + fmtTime(ex.region.end) + " (" + (ex.region.end - ex.region.start).toFixed(1) + "s)"
-      : "None — drag on the waveform or click a transcript line";
+    extractCloneButton.disabled = !(hasChecked || hasRegion);
+    extractLibraryButton.disabled = !(hasChecked || hasRegion);
+    if (hasChecked) {
+      var seconds = spans.reduce(function (sum, span) { return sum + (span.end - span.start); }, 0);
+      extractRegionStatus.textContent = checkedIndices().length + " segments ticked · " + spans.length + " span" + (spans.length === 1 ? "" : "s") + " · " + seconds.toFixed(1) + "s as one WAV";
+    } else if (hasRegion) {
+      extractRegionStatus.textContent = fmtTime(ex.region.start) + " – " + fmtTime(ex.region.end) + " (" + (ex.region.end - ex.region.start).toFixed(1) + "s)";
+    } else {
+      extractRegionStatus.textContent = "None — drag on the waveform, click a transcript line, or tick segments";
+    }
   }
 
   // --- zoom --------------------------------------------------------------
@@ -3449,19 +3515,27 @@
     if (!ex.samples) {
       return;
     }
-    // A marked region plays exactly; otherwise play from the cursor to the
-    // end of the file, like any audio editor.
-    var start = ex.region ? ex.region.start : Math.min(ex.cursor, ex.duration);
-    var end = ex.region ? ex.region.end : ex.duration;
-    if (end - start <= 0.01) {
-      return;
+    // Priority: audition the ticked selection (stitched, exactly what would
+    // export), else the marked region, else play from the cursor to the end.
+    var spans = checkedSpans();
+    var stitched = null;
+    var start;
+    if (spans.length > 0) {
+      stitched = stitchSpans(spans);
+      start = spans[0].start;
+    } else {
+      start = ex.region ? ex.region.start : Math.min(ex.cursor, ex.duration);
+      var end = ex.region ? ex.region.end : ex.duration;
+      if (end - start <= 0.01) {
+        return;
+      }
     }
     extractStopPlayback();
     var AudioContextClass = window.AudioContext || window.webkitAudioContext;
     var ctx = new AudioContextClass();
-    var length = Math.floor((end - start) * ex.rate);
+    var length = stitched ? stitched.length : Math.floor(((ex.region ? ex.region.end : ex.duration) - start) * ex.rate);
     var buffer = ctx.createBuffer(1, length, ex.rate);
-    buffer.copyToChannel(ex.samples.subarray(Math.floor(start * ex.rate), Math.floor(start * ex.rate) + length), 0);
+    buffer.copyToChannel(stitched || ex.samples.subarray(Math.floor(start * ex.rate), Math.floor(start * ex.rate) + length), 0);
     var source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
@@ -3480,23 +3554,51 @@
   extractStopButton.addEventListener("click", extractStopPlayback);
 
   // --- extraction --------------------------------------------------------
-  function extractRegionWav() {
+  // extractSelectionWav builds the export: the ticked segments stitched into
+  // one take when any are ticked, otherwise the marked region.
+  function extractSelectionWav() {
+    var spans = checkedSpans();
+    if (spans.length > 0) {
+      return encodeWav(stitchSpans(spans), ex.rate);
+    }
     var s0 = Math.floor(ex.region.start * ex.rate);
     var s1 = Math.floor(ex.region.end * ex.rate);
     return encodeWav(ex.samples.subarray(s0, s1), ex.rate);
   }
 
+  // selectionSpeaker returns the single speaker every ticked segment shares,
+  // or "" when mixed/untagged.
+  function selectionSpeaker() {
+    var indices = checkedIndices();
+    if (!indices.length) {
+      var row = ex.selectedRow >= 0 && ex.segments[ex.selectedRow];
+      return (row && row.speaker) || "";
+    }
+    var speaker = ex.segments[indices[0]].speaker;
+    for (var i = 1; i < indices.length; i += 1) {
+      if (ex.segments[indices[i]].speaker !== speaker) {
+        return "";
+      }
+    }
+    return speaker || "";
+  }
+
   function extractClipName() {
     var base = ex.sourceName.replace(/\.[^.]+$/, "");
-    var speaker = ex.selectedRow >= 0 && ex.segments[ex.selectedRow] && ex.segments[ex.selectedRow].speaker;
+    var speaker = selectionSpeaker();
+    var indices = checkedIndices();
+    if (indices.length > 0) {
+      var spans = checkedSpans();
+      return base + " " + indices.length + " segments" + (speaker ? " (" + speaker + ")" : "") + " " + fmtTime(spans[0].start) + "-" + fmtTime(spans[spans.length - 1].end);
+    }
     return base + " " + fmtTime(ex.region.start) + "-" + fmtTime(ex.region.end) + (speaker ? " (" + speaker + ")" : "");
   }
 
   extractCloneButton.addEventListener("click", function () {
-    if (!ex.region) {
+    if (!ex.region && !checkedIndices().length) {
       return;
     }
-    var blob = extractRegionWav();
+    var blob = extractSelectionWav();
     var file = new File([blob], extractClipName().replace(/[:]/g, ".") + ".wav", { type: "audio/wav" });
     setCloneWav(file, "the Extractor");
     window.location.hash = "#voices";
@@ -3505,17 +3607,27 @@
   });
 
   extractLibraryButton.addEventListener("click", async function () {
-    if (!ex.region) {
+    var indices = checkedIndices();
+    if (!ex.region && !indices.length) {
       return;
     }
     extractLibraryButton.disabled = true;
     var original = extractLibraryButton.textContent;
     extractLibraryButton.textContent = "Saving…";
     try {
-      var b64 = await srcToB64(URL.createObjectURL(extractRegionWav()));
-      var meta = { source: ex.sourceName, start: ex.region.start.toFixed(2), end: ex.region.end.toFixed(2) };
-      if (ex.selectedRow >= 0 && ex.segments[ex.selectedRow] && ex.segments[ex.selectedRow].speaker) {
-        meta.speaker = ex.segments[ex.selectedRow].speaker;
+      var b64 = await srcToB64(URL.createObjectURL(extractSelectionWav()));
+      var meta = { source: ex.sourceName };
+      if (indices.length) {
+        var spans = checkedSpans();
+        meta.segments = String(indices.length);
+        meta.start = spans[0].start.toFixed(2);
+        meta.end = spans[spans.length - 1].end.toFixed(2);
+      } else {
+        meta.start = ex.region.start.toFixed(2);
+        meta.end = ex.region.end.toFixed(2);
+      }
+      if (selectionSpeaker()) {
+        meta.speaker = selectionSpeaker();
       }
       var response = await fetch("/v1/library", {
         method: "POST",
@@ -3600,9 +3712,28 @@
       if (ex.filter && segment.speaker !== ex.filter) {
         return;
       }
-      var row = createElement("div", "extract-segment" + (index === ex.selectedRow ? " selected" : ""));
+      var row = createElement("div", "extract-segment" + (index === ex.selectedRow ? " selected" : "") + (ex.checked[index] ? " checked" : ""));
       row.tabIndex = 0;
       var head = createElement("div", "extract-segment-head");
+      var tick = document.createElement("input");
+      tick.type = "checkbox";
+      tick.className = "extract-segment-tick";
+      tick.checked = Boolean(ex.checked[index]);
+      tick.title = "Include in a combined export";
+      tick.addEventListener("click", function (event) {
+        event.stopPropagation();
+      });
+      tick.addEventListener("change", function () {
+        if (tick.checked) {
+          ex.checked[index] = true;
+        } else {
+          delete ex.checked[index];
+        }
+        row.classList.toggle("checked", tick.checked);
+        updateExtractRegionUI();
+        drawExtractWave();
+      });
+      head.appendChild(tick);
       head.appendChild(createElement("span", "extract-segment-time", fmtTime(segment.start)));
       if (segment.speaker) {
         head.appendChild(createElement("span", "extract-segment-speaker", segment.speaker));
@@ -3676,6 +3807,32 @@
       chip.setAttribute("data-speaker", name);
       extractFilterRow.appendChild(chip);
     });
+
+    // Selection helpers: tick every visible line (respects the speaker
+    // filter, so filter-to-B + Select shown = all of B as one export).
+    var selectShown = createElement("button", "plain compact-button", "Select shown");
+    selectShown.type = "button";
+    selectShown.id = "extractSelectShownButton";
+    selectShown.addEventListener("click", function () {
+      ex.segments.forEach(function (segment, index) {
+        if (!ex.filter || segment.speaker === ex.filter) {
+          ex.checked[index] = true;
+        }
+      });
+      renderExtractTimeline();
+      updateExtractRegionUI();
+      drawExtractWave();
+    });
+    extractFilterRow.appendChild(selectShown);
+    var clearSel = createElement("button", "plain compact-button", "Clear");
+    clearSel.type = "button";
+    clearSel.addEventListener("click", function () {
+      ex.checked = {};
+      renderExtractTimeline();
+      updateExtractRegionUI();
+      drawExtractWave();
+    });
+    extractFilterRow.appendChild(clearSel);
     extractFilterRow.hidden = ex.segments.length === 0;
   }
 
