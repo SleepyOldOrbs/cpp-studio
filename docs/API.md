@@ -120,6 +120,26 @@ Statuses: `queued`, `running`, `complete`, `failed`, `cancelled`. The
 registry is in-memory coordination state (finished jobs are capped at 100 and
 forgotten on restart); artifacts always persist in their pipeline's store.
 
+## Audiobooks
+
+Single-narrator document narration: upload a document, pick a voice, get one
+stitched WAV. Runs as an `audiobook` job on the jobs surface.
+
+- `POST /v1/audiobooks` — multipart form: `file` (.txt, .md, or .epub; 16 MB
+  cap; PDFs are rejected with a pointer to export as text), optional `title`
+  (defaults to the file name), optional `voice` (a stored voice id; ""
+  narrates with the studio default). The document is chunked on paragraph and
+  sentence boundaries (~300 chars per spoken chunk, 600-chunk cap). Returns
+  `202 {"id":"book_...","chunks":42,"statusUrl":"/v1/jobs/book_..."}`; `409`
+  when another narration is running or the audio engine is busy.
+- `GET /v1/jobs/{id}` — narration progress (`"narrating chunk 12/42"`), and
+  `POST /v1/jobs/{id}/cancel` stops it.
+- `GET /v1/audiobooks` — finished narrations, newest first:
+  `{"audiobooks":[{"id":"book_...","title":"...","chunks":42,"durationSeconds":312,"artifactUrl":"/v1/audiobooks/book_.../artifact/book.wav"}]}`.
+- `GET /v1/audiobooks/{id}/artifact/book.wav` — the narration WAV.
+
+Finished audiobooks persist in `out/audiobooks` and survive restarts.
+
 ## Library
 
 The studio's persistent output shelf: audio and images saved from the

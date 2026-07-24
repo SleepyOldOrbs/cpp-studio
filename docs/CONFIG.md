@@ -44,6 +44,25 @@ Each manifest entry carries `id`, `engine`, `family`, relative `path`, and
 optionally `bytes`, `sha256`, `source`, `license`, and `description`. Without
 a `models` block the catalog is empty and everything else works unchanged.
 
+## Bring Your Own Model
+
+The chat (`llama`) and transcription (`whisper`) engines accept any model in
+their engines' native formats — a GGUF chat model for llama-server, a ggml
+`.bin` for whisper. Swapping takes three steps, no rebuild:
+
+1. Put the model file under your models root and add an entry to
+   `models.json` (id, engine, relative path, size) so the Models tab tracks it.
+2. Point the engine's `-m` arg at it in your config — with `vars`, that is
+   usually one line, e.g. `"-m", "${root}\\engines\\models\\my-model.gguf"`.
+3. Restart that engine: `POST /v1/engines/llama/reload` (or the Reload button
+   on the Engines tab) if the gateway is running with the updated config, or
+   restart the gateway.
+
+The same recipe applies to the SD checkpoint (any SD 1.x-compatible
+`.safetensors` for the bundled build). The TTS and voice-design engines are
+coupled to their model families' CLI contracts — treat those as fixed unless
+you are also changing the audio.cpp invocation.
+
 ## VRAM Profiles: `profiles`
 
 Named engine sets for trading resident models against a fixed VRAM budget:

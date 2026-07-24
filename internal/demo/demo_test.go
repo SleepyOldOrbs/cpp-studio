@@ -107,6 +107,12 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "libraryImageButton") {
 		t.Fatalf("expected save-to-library marker, got %q", body)
 	}
+	if !strings.Contains(body, "/v1/audiobooks") {
+		t.Fatalf("expected audiobook route marker, got %q", body)
+	}
+	if !strings.Contains(body, "audiobookShelf") {
+		t.Fatalf("expected audiobook shelf marker, got %q", body)
+	}
 }
 
 func TestHandlerServesAssets(t *testing.T) {
@@ -175,6 +181,12 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/styles.css",
 			contentType: "text/css",
 			needle:      ".library-item",
+		},
+		{
+			name:        "javascript audiobook",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "refreshAudiobooks",
 		},
 	}
 

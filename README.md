@@ -1,200 +1,121 @@
 # cpp-studio
 
-Local gateway and launcher for the native `*.cpp` inference family: `llama.cpp`, `whisper.cpp`, `audio.cpp`, and `stable-diffusion.cpp`.
+[![ci](https://github.com/SleepyOldOrbs/cpp-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/SleepyOldOrbs/cpp-studio/actions/workflows/ci.yml)
 
-Milestone 1 is intentionally narrow: load a config, manage native engine process lifecycle, expose `/health`, and provide the first OpenAI-shaped local routes for chat, transcription, speech, and image generation. Engines stay native subprocesses or local servers; the gateway owns orchestration.
+**A fully local, private, GPU-native AI studio.** Talk to it, clone and design
+voices, narrate whole documents into audiobooks, describe what it sees, and
+generate art — entirely offline on your own machine. No cloud, no API keys,
+no telemetry. One Go gateway fronts the native `*.cpp` inference family —
+[llama.cpp](https://github.com/ggml-org/llama.cpp),
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp),
+[audio.cpp](https://github.com/0xShug0/audio.cpp), and
+[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) —
+behind OpenAI-shaped HTTP routes and a browser studio console.
 
-## Quick Start
+## What it does
+
+- **Talk** — a multi-turn voice loop: record or type, whisper transcribes,
+  llama replies, TTS speaks the answer in ~1.5 s round trips. Live
+  transcription re-transcribes your growing take as you speak.
+- **Voices** — clone a voice from 5–15 seconds of reference audio, or design
+  one from a written description across three voice-design engines
+  (VoxCPM2, OmniVoice, Qwen3 TTS), audition it, and keep it in a library.
+- **Audiobook** — upload a `.txt`, `.md`, or `.epub`; it is chunked on
+  sentence boundaries, narrated chunk by chunk in any library voice, and
+  stitched into one WAV, with live progress and cancellation.
+- **Story desk** — grounded multi-speaker stories: paste sources, llama
+  writes a fact-cited script for your cast, every line is spoken and
+  stitched into a narrated piece.
+- **Image lab** — Stable Diffusion generation (~2 s per 512×512 resident),
+  plus true vision: a VLM describes any image and speaks the description.
+- **Engine rack** — every engine has a power switch, and named VRAM profiles
+  (chat / art / audiobook / everything) trade resident models against your
+  card's budget with one click, with a live VRAM meter.
+- **Library** — outputs you keep persist on disk with metadata; async work
+  (stories, audiobooks) runs as cancellable jobs with progress.
+
+## Requirements
+
+- Windows (primary; the gateway and tests are cross-platform Go, the engine
+  scripts and verified setup are Windows), Go 1.26+.
+- An NVIDIA GPU for the full experience — the reference machine is an RTX
+  5080 (16 GB). Engines also run on CPU builds, just slower.
+- Native engine binaries and model weights are **not** bundled: you bring
+  llama.cpp, whisper.cpp, audio.cpp, and stable-diffusion.cpp builds plus
+  models (~15 GB for the full reference setup). `models.json` declares every
+  model with its source; the Models tab shows what is present or missing.
+
+## Quick start
 
 ```powershell
+git clone https://github.com/SleepyOldOrbs/cpp-studio.git
+cd cpp-studio
 go test ./...
-go run .\cmd\cpp-studio --config .\config.smoke.json --check
 ```
 
-`config.example.json` is a shape example. Point `command`, `args`, and `healthUrl` at real local binaries before starting the gateway.
-`config.smoke.json` is a Windows-local smoke config that starts a harmless PowerShell process so the gateway can be tested end to end. Use `config.ci.json` for portable config validation.
-`config.audio-local.example.json` points at the sibling `..\audio.cpp` checkout and the verified Qwen3 TTS model from the proof note.
-
-After wiring real binaries into a copy of `config.example.json`, validate it with:
-
-```powershell
-go run .\cmd\cpp-studio --config .\config.example.json --check
-```
-
-Run the gateway:
-
-```powershell
-go run .\cmd\cpp-studio --config .\config.example.json
-```
-
-Smoke the gateway without native model binaries:
-
-```powershell
-go run .\cmd\cpp-studio --config .\config.smoke.json --run-seconds 5
-```
-
-That smoke config only proves lifecycle and `/health`; it does not configure the voice-loop engines.
-
-Health:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8765/health
-```
-
-Browser demo:
-
-```text
-http://127.0.0.1:8765/demo/
-```
-
-The demo is a studio-console page with a live engine-LED meter bridge. It can record or live-transcribe from the microphone (live mode re-transcribes the growing take every few seconds and keeps it as the WAV source), run the voice loop through the single `/v1/voice` route as a multi-turn conversation (the browser keeps the history; the gateway orchestrates transcription -> chat -> speech server-side), play and save the returned WAV, generate and save a PNG through `/v1/images/generations`, and create factual stories through `/v1/stories` — with `voice_mode: "fixed"` every script line is spoken through the `audio` engine and stitched into one narrated WAV.
-The voice loop requires configured `whisper`, `llama`, and `audio` engines. Image generation requires a configured `sd` engine. With `config.audio-local.example.json`, the demo can exercise health and the speech route; transcription, chat, and image generation still need local `whisper.cpp`, `llama.cpp`, and `stable-diffusion.cpp` paths.
-
-## Verification
-
-Portable checks:
-
-```powershell
-.\scripts\verify.ps1
-```
-
-The default verifier includes the deterministic browser-demo API smoke, so
-health, transcription, conversational voice, image generation, and narrated
-story flows are checked together on Windows.
-
-James-local audio route check:
-
-```powershell
-.\scripts\verify.ps1 -IncludeLocalAudio
-.\scripts\smoke-speech-route.ps1
-```
-
-Deterministic full-loop fixture check:
-
-```powershell
-.\scripts\smoke-voice-loop-fixture.ps1
-```
-
-Deterministic story fixture check:
-
-```powershell
-.\scripts\smoke-story-fixture.ps1
-```
-
-Deterministic browser-demo API check (every flow the demo page makes):
+Prove the whole pipeline with zero native binaries — the fixture engine
+fakes every engine deterministically:
 
 ```powershell
 .\scripts\smoke-demo-ui.ps1
 ```
 
-Local planner/narrator feasibility benchmark:
+Then wire real engines: copy `config.example.json`, set the single `root`
+var to where your engines and models live, and check it:
 
 ```powershell
-.\scripts\benchmark-story-local.ps1 -PlanOnly
-.\scripts\test-benchmark-story-local.ps1
+go run .\cmd\cpp-studio --config .\my-config.json --check
+go run .\cmd\cpp-studio --config .\my-config.json
 ```
 
-The measured local-engine policy and reproduction commands are recorded in
-[`docs/LOCAL_ENGINE_PROFILE.md`](docs/LOCAL_ENGINE_PROFILE.md).
+Open the studio console at `http://127.0.0.1:8765/demo/`. Config vars,
+engine modes, resident servers, VRAM profiles, and the bring-your-own-model
+recipe are documented in [`docs/CONFIG.md`](docs/CONFIG.md).
 
-Build a release package:
+## API
+
+OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
+(full reference in [`docs/API.md`](docs/API.md)):
+
+| Route | What it does |
+| --- | --- |
+| `POST /v1/chat/completions` | proxy to the resident llama-server |
+| `POST /v1/audio/transcriptions` | whisper transcription (resident or per-run) |
+| `POST /v1/audio/speech` | TTS, default or any stored voice |
+| `POST /v1/voice` | the whole voice loop in one call |
+| `POST /v1/voices` · `/v1/voices/design` | clone / design voices |
+| `POST /v1/images/generations` | Stable Diffusion, resident sd-server |
+| `POST /v1/images/descriptions` | VLM describes an image, spoken aloud |
+| `POST /v1/stories` | grounded multi-voice story jobs |
+| `POST /v1/audiobooks` | document → single-narrator audiobook job |
+| `GET /v1/jobs` · `POST /v1/jobs/{id}/cancel` | every async job, one surface |
+| `GET /v1/library` | persistent saved outputs |
+| `POST /v1/engines/{name}/{start,stop,reload}` · `/v1/engines/profiles/{name}` | engine power + VRAM profiles |
+| `GET /health` · `GET /v1/models/catalog` · `GET /v1/gpu` | health, model states, VRAM |
+
+## Verification
 
 ```powershell
-.\scripts\package-release.ps1 -Runtime windows-amd64
+.\scripts\verify.ps1
 ```
 
-The package is written under `dist\` and includes the gateway binary, fixture binary, example configs, README, and docs. It does not bundle native engine binaries or model weights. GitHub Actions also uploads Windows and Linux package archives from each CI run; see `docs\RELEASE.md` for artifact names and platform caveats.
+gofmt, `go test ./...`, vet, config checks, and the deterministic
+browser-demo smoke (voice loop, cloning, design, image, story) in one call.
+Individual fixture smokes: `smoke-voice-loop-fixture.ps1`,
+`smoke-story-fixture.ps1`, `smoke-demo-ui.ps1`. Measured local-engine
+latencies and policies: [`docs/LOCAL_ENGINE_PROFILE.md`](docs/LOCAL_ENGINE_PROFILE.md).
 
-Release checklist:
+Release packaging (`dist/`, no weights bundled): `.\scripts\package-release.ps1`
+— see [`docs/RELEASE.md`](docs/RELEASE.md).
 
-```text
-docs\RELEASE.md
-```
+## Architecture in one paragraph
 
-Configuration guide:
-
-```text
-docs\CONFIG.md
-```
-
-API reference:
-
-```text
-docs\API.md
-```
-
-Story API contract:
-
-```text
-docs\STORY_API.md
-```
-
-Fixture engine guide:
-
-```text
-docs\FIXTURE.md
-```
-
-## Routes
-
-- `GET /health`: gateway and engine state, process IDs, last errors, and log tails.
-- `POST /v1/chat/completions`: proxies JSON to the configured `llama` server. If `healthUrl` is `http://127.0.0.1:8733/health`, the gateway proxies to `http://127.0.0.1:8733/v1/chat/completions`.
-- `POST /v1/audio/transcriptions`: accepts multipart field `file` and returns `{ "text": "...", "duration_ms": 1234 }`. With a subprocess `whisper` engine the gateway runs it with `-f <temp-file>`; with `mode: "server"` it posts to the resident `whisper-server`'s `/inference` route (inferred from `healthUrl`), which keeps the model loaded between requests.
-- `POST /v1/voice`: multipart voice loop — field `file` (WAV) or `message` (text), plus optional `history` (JSON array of `{"role","text"}` turns, oldest first, max 40 turns) so replies stay grounded in the conversation. Returns transcript, reply, and the spoken reply as base64 WAV.
-- `POST /v1/audio/speech`: accepts `{ "input": "...", "voice": "default", "format": "wav" }`, runs the configured `audio` subprocess with `--text <input> --out <temp.wav>`, and returns `audio/wav`.
-- `POST /v1/images/generations`: accepts `{ "prompt": "...", "size": "512x512", "response_format": "b64_json" }`, runs the configured `sd` subprocess with `--prompt <prompt> --output <temp.png>` plus optional width and height flags, validates PNG output, and returns OpenAI-shaped `b64_json` image data. Requested dimensions are capped at 2048 px per side and 4,194,304 total pixels.
-- `/v1/stories`: deterministic fixture-backed factual story jobs from curated pasted excerpts. See `docs\STORY_API.md`.
-
-Milestone 1 supports WAV speech output and one PNG `b64_json` image output only. Streaming, MP3, WebRTC, URL image responses, multiple-image requests, and bundled native engines are still deferred. Image `n` must be omitted or `1`; request fields such as `model`, `quality`, `style`, and `user` are not honored yet.
-
-## Engine Modes
-
-Use `mode: "server"` for long-running services such as `llama-server` and `whisper-server`. These are started with the gateway and can use `healthUrl`.
-
-Use `mode: "subprocess"` for request-time tools such as `whisper-cli`, `audiocpp_cli`, and `sd-cli`. These are validated at startup, shown as ready in `/health`, and launched per request with cancellation and timeout inherited from the HTTP request.
-
-Mark heavy GPU subprocess engines (typically `audio` and `sd`) with `"gpu": true` so their runs are serialized across engines instead of racing for VRAM. See `docs\CONFIG.md`.
-
-## audio.cpp TTS Proof
-
-The local `audio.cpp` proof lives one directory up:
-
-```text
-..\AUDIO_CPP_TTS_PROOF.md
-```
-
-Confirmed working fallback:
-
-- `audio.cpp` branch `release-0.1`, commit `e74a2902d0ea309473a458e53718fe5b1170387c`
-- CUDA `audiocpp_cli.exe` build succeeded
-- Qwen3 TTS 0.6B Base model path: `..\audio.cpp\models\Qwen3-TTS-12Hz-0.6B-Base`
-- Direct CLI proof output: `..\audio.cpp\build\out\qwen3_tts_0_6b_smoke.wav`
-- Direct CLI proof runtime: `7.74s`
-- Output format: mono 16-bit 24 kHz WAV, `3.28s`
-- GPU detected: NVIDIA GeForce RTX 5080, 16 GB VRAM
-- Quality verdict: acceptable for the first local demo route; PocketTTS can be revisited once model access is available.
-- PocketTTS was blocked by Hugging Face 401 without a token
-
-Gateway speech route proof:
-
-```powershell
-$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
-$server = Start-Process -WindowStyle Hidden -PassThru -FilePath "go" -ArgumentList @("run", ".\cmd\cpp-studio", "--config", ".\config.audio-local.example.json")
-try {
-  do {
-    Start-Sleep -Milliseconds 500
-    try { $health = Invoke-RestMethod http://127.0.0.1:8765/health } catch { $health = $null }
-  } until ($health.status -eq "ready")
-
-  New-Item -ItemType Directory -Force -Path .\out | Out-Null
-  $out = ".\out\speech-route.wav"
-  $body = @{ input = 'Hello from cpp-studio.'; voice = 'default'; format = 'wav' } | ConvertTo-Json
-  Invoke-WebRequest -Uri http://127.0.0.1:8765/v1/audio/speech -Method Post -ContentType 'application/json' -Body $body -OutFile $out
-  py -3.11 -c "import wave, pathlib; p=pathlib.Path(r'$out'); w=wave.open(str(p),'rb'); print({'bytes': p.stat().st_size, 'channels': w.getnchannels(), 'sample_width_bytes': w.getsampwidth(), 'sample_rate': w.getframerate(), 'frames': w.getnframes(), 'duration_seconds': round(w.getnframes()/w.getframerate(), 3)})"
-}
-finally {
-  if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id }
-}
-```
-
-Verified route output: mono 16-bit 24 kHz WAV.
+The gateway loads one JSON config describing engines as either resident
+servers (started, health-checked, and proxied — llama, whisper, TTS, SD) or
+per-request subprocesses (voice design). A lifecycle manager owns every
+process; an engine-invocation seam owns CLI contracts, temp files, and
+validation; GPU-heavy runs are serialized so they never race for VRAM.
+Async pipelines (stories, audiobooks) register with a job registry and
+persist artifacts to on-disk stores. The console is vanilla JS embedded in
+the binary — rebuild to change it. Design notes live in
+[`docs/ROADMAP.md`](docs/ROADMAP.md) and [`CONTEXT.md`](CONTEXT.md).

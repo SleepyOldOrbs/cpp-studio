@@ -24,6 +24,7 @@
         <a class="tab" href="#voices" data-tab-link="voices">Voices</a>
         <a class="tab" href="#image" data-tab-link="image">Image</a>
         <a class="tab" href="#story" data-tab-link="story">Story</a>
+        <a class="tab" href="#audiobook" data-tab-link="audiobook">Audiobook</a>
         <a class="tab" href="#library" data-tab-link="library">Library</a>
         <a class="tab" href="#models" data-tab-link="models">Models</a>
         <a class="tab" href="#engines" data-tab-link="engines">Engines</a>
@@ -388,6 +389,66 @@
           </div>
           <div class="story-library" id="storyLibrary"></div>
           <div class="story-facts" id="storyFacts"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="module" data-tab="audiobook" aria-label="Audiobook desk">
+      <header class="module-head">
+        <h2>Audiobook</h2>
+        <span class="module-route">POST /v1/audiobooks</span>
+        <span class="module-note">document &rarr; chunks &rarr; narration &rarr; one WAV</span>
+      </header>
+      <div class="module-body workspace">
+        <form class="control-panel" id="audiobookForm">
+          <label class="field">
+            <span>Document</span>
+            <label class="file-button">
+              <input id="audiobookFileInput" type="file" accept=".txt,.md,.epub,text/plain">
+              <span>Choose document</span>
+            </label>
+            <small class="hint">.txt, .md, or .epub &mdash; the whole document becomes one narrated WAV. PDFs: export as text first.</small>
+          </label>
+          <div class="source-row">
+            <span class="source-label">Selected</span>
+            <span id="audiobookFileStatus">None</span>
+          </div>
+          <label class="field">
+            <span>Title</span>
+            <input class="text-input" id="audiobookTitleInput" type="text" maxlength="200" placeholder="Defaults to the file name">
+          </label>
+          <label class="field compact-field">
+            <span>Narrator voice</span>
+            <select class="text-input" id="audiobookVoiceSelect">
+              <option value="" selected>Studio default</option>
+            </select>
+            <small class="hint">Any voice from your library &mdash; cloned or designed.</small>
+          </label>
+          <div class="action-row">
+            <button class="primary" id="audiobookNarrateButton" type="submit">Narrate</button>
+            <button class="secondary" id="audiobookCancelButton" type="button" disabled>Cancel</button>
+          </div>
+          <p class="error-box" id="audiobookErrorBox" hidden></p>
+        </form>
+
+        <section class="result-panel">
+          <div class="source-row">
+            <span class="source-label">Narration status</span>
+            <span id="audiobookStatus">Idle</span>
+          </div>
+          <progress id="audiobookProgress" max="1" value="0"></progress>
+          <div class="audio-panel">
+            <div class="panel-label-row">
+              <span>Narration playback</span>
+              <button class="plain" id="audiobookSaveButton" type="button" disabled>Save WAV</button>
+            </div>
+            <audio id="audiobookAudio" controls></audio>
+          </div>
+          <div class="story-library-header">
+            <span class="source-label">Finished audiobooks</span>
+            <button class="secondary compact-button" id="audiobookRefreshButton" type="button">Refresh</button>
+          </div>
+          <div class="story-library" id="audiobookShelf"></div>
         </section>
       </div>
     </section>

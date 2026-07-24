@@ -2950,6 +2950,115 @@ func TestJobsCancelDelegatesToStory(t *testing.T) {
 	}
 }
 
+func TestAudiobookUploadNarratesAndServes(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech-tone"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "mybook.txt")
+	if err != nil {
+		t.Fatalf("create part: %v", err)
+	}
+	_, _ = part.Write([]byte("The lighthouse stood alone. It had guided ships for a century.\n\nEvery night the keeper climbed the stairs."))
+	_ = writer.WriteField("title", "The Keeper")
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audiobooks", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("submit: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID        string `json:"id"`
+		Chunks    int    `json:"chunks"`
+		StatusURL string `json:"statusUrl"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if created.Chunks < 2 || created.StatusURL != "/v1/jobs/"+created.ID {
+		t.Fatalf("unexpected create response: %+v", created)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	var job struct {
+		Status string            `json:"status"`
+		Error  string            `json:"error"`
+		Result map[string]string `json:"result"`
+	}
+	for time.Now().Before(deadline) {
+		rec = httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/jobs/"+created.ID, nil))
+		if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+			t.Fatalf("decode job: %v", err)
+		}
+		if job.Status == "complete" || job.Status == "failed" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if job.Status != "complete" {
+		t.Fatalf("narration did not complete: %+v", job)
+	}
+	if job.Result["title"] != "The Keeper" {
+		t.Fatalf("unexpected result: %+v", job.Result)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, job.Result["artifactUrl"], nil))
+	if rec.Code != http.StatusOK || rec.Body.Len() == 0 {
+		t.Fatalf("artifact: got %d, %d bytes", rec.Code, rec.Body.Len())
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/audiobooks", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "The Keeper") {
+		t.Fatalf("list: got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAudiobookRejectsBadUploads(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	upload := func(filename string, content []byte, voice string) *httptest.ResponseRecorder {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, _ := writer.CreateFormFile("file", filename)
+		_, _ = part.Write(content)
+		if voice != "" {
+			_ = writer.WriteField("voice", voice)
+		}
+		_ = writer.Close()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/audiobooks", &body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := upload("book.pdf", []byte("%PDF-1.4"), ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("pdf: got %d", rec.Code)
+	}
+	if rec := upload("book.exe", []byte("MZ"), ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("exe: got %d", rec.Code)
+	}
+	if rec := upload("book.txt", []byte("Fine text."), "voice_that_does_not_exist"); rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown voice: got %d", rec.Code)
+	}
+}
+
 func TestModelsCatalogEmptyWithoutManifest(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{"llama": {Command: "llama-server"}})
 	router := NewRouter(cfg, lifecycle.NewManager(cfg))

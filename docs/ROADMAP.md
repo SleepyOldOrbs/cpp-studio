@@ -89,12 +89,16 @@ The magical outcome, riding on M1–M3.
 
 - **Single-narrator Story mode.** One speaker, one source — straight narration
   rather than a multi-voice cast (a simplification of existing cast logic).
-- **Document ingest.** Upload `.txt` (trivial), `.epub` (medium), `.pdf`
-  (medium) → extract text → chunk → TTS per chunk → stitch via existing
-  `wav.Concatenate`, all as a Job with chapter progress.
-- **BYO model (the achievable slice).** Via the manifest: drop in your own GGUF
-  chat model or whisper model and select it. (SD/TTS swap is out of scope —
-  those engines' CLI contracts are tightly coupled; documented as future work.)
+- **Document ingest.** Upload `.txt`/`.md` (trivial) or `.epub` (spine-ordered
+  XHTML via stdlib zip+xml) → extract text → chunk → TTS per chunk → stitch via
+  existing `wav.Concatenate`, all as a Job with chunk progress. **PDF is
+  deferred**: honest extraction needs a third-party library in a deliberately
+  stdlib-only module; uploads are rejected with a pointer to export as text.
+- **BYO model (the achievable slice).** The manifest + config vars + engine
+  reload make swapping a chat/whisper/SD model a documented three-step recipe
+  (see CONFIG.md "Bring Your Own Model"). A picker UI that rewrites config is
+  future work. (TTS/voice-design swap stays out of scope — those engines' CLI
+  contracts are tightly coupled.)
 - **Acceptance:** a multi-page document becomes a stitched audiobook in a chosen
   voice, as a cancellable Job in the Library; a user-supplied GGUF chat model
   loads and serves.

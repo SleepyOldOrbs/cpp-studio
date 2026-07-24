@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"cpp-studio/internal/audiobook"
 	"cpp-studio/internal/config"
 	"cpp-studio/internal/demo"
 	"cpp-studio/internal/engine"
@@ -41,6 +42,7 @@ type router struct {
 	modelsRoot string
 	jobs       *jobs.Registry
 	library    *library.Store
+	audiobooks *audiobook.Manager
 }
 
 const (
@@ -73,6 +75,11 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 		storyOptions.Script = r.writeStoryScript
 	}
 	r.stories = story.NewManager(storyOptions)
+	r.audiobooks = audiobook.NewManager(audiobook.ManagerOptions{
+		ReserveEngine: r.reserveEngine,
+		Synthesize:    r.synthesizeSpeech,
+		Jobs:          r.jobs,
+	})
 
 	// The model manifest is optional: a config without a models block (CI,
 	// fixture setups) simply serves an empty catalog rather than failing.
@@ -95,6 +102,8 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/jobs/", r.handleJob)
 	mux.HandleFunc("/v1/library", r.handleLibrary)
 	mux.HandleFunc("/v1/library/", r.handleLibraryItem)
+	mux.HandleFunc("/v1/audiobooks", r.handleAudiobooks)
+	mux.HandleFunc("/v1/audiobooks/", r.handleAudiobook)
 	mux.HandleFunc("/v1/chat/completions", r.handleChatCompletions)
 	mux.HandleFunc("/v1/images/generations", r.handleImageGenerations)
 	mux.HandleFunc("/v1/images/descriptions", r.handleImageDescriptions)
@@ -443,6 +452,98 @@ func (r *router) handleLibraryItem(w http.ResponseWriter, req *http.Request) {
 	default:
 		http.NotFound(w, req)
 	}
+}
+
+// handleAudiobooks serves GET /v1/audiobooks (finished narrations) and
+// POST /v1/audiobooks (multipart upload: file + optional voice/title), which
+// starts a narration job trackable at /v1/jobs/{id}.
+func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
+	switch req.Method {
+	case http.MethodGet:
+		books, err := r.audiobooks.List()
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if books == nil {
+			books = []audiobook.Manifest{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"audiobooks": books})
+	case http.MethodPost:
+		req.Body = http.MaxBytesReader(w, req.Body, audiobook.MaxDocumentBytes+1024*1024)
+		file, header, err := req.FormFile("file")
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "multipart field file is required")
+			return
+		}
+		defer file.Close()
+		if header == nil || header.Filename == "" {
+			writeJSONError(w, http.StatusBadRequest, "uploaded file must include a filename")
+			return
+		}
+		data, err := io.ReadAll(io.LimitReader(file, audiobook.MaxDocumentBytes+1))
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("read uploaded file: %v", err))
+			return
+		}
+		text, err := audiobook.Extract(header.Filename, data)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		title := strings.TrimSpace(req.FormValue("title"))
+		if title == "" {
+			title = strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
+		}
+		voiceID := strings.TrimSpace(req.FormValue("voice"))
+		if voiceID != "" {
+			if _, ok, err := r.voices.Load(voiceID); err != nil || !ok {
+				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown voice %q", voiceID))
+				return
+			}
+		}
+
+		id, chunks, err := r.audiobooks.Submit(req.Context(), audiobook.Request{
+			Title:   title,
+			Text:    text,
+			VoiceID: voiceID,
+		})
+		if err != nil {
+			writeJSONError(w, http.StatusConflict, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":        id,
+			"chunks":    chunks,
+			"statusUrl": "/v1/jobs/" + id,
+		})
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// handleAudiobook serves GET /v1/audiobooks/{id}/artifact/book.wav.
+func (r *router) handleAudiobook(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodGet) {
+		return
+	}
+	rest := strings.Trim(strings.TrimPrefix(req.URL.Path, "/v1/audiobooks/"), "/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 3 || parts[1] != "artifact" {
+		http.NotFound(w, req)
+		return
+	}
+	path, err := r.audiobooks.ArtifactPath(parts[0], parts[2])
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	http.ServeFile(w, req, path)
 }
 
 func (r *router) handleChatCompletions(w http.ResponseWriter, req *http.Request) {
