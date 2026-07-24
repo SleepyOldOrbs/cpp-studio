@@ -147,6 +147,29 @@ Reference numbers: ~1 s per 22 s of audio, 6/6 lines tagged correctly.
 pyannote-the-Python-package (HF token, heavy deps) was rejected as the wrong
 shape for a native-engine studio.
 
+### M7 — The comedy pipeline  ·  *the destination James named*
+
+The studio's converging purpose: upload an audio comedy, extract and clone
+its cast, then write and produce original episodes with those voices.
+Sequenced plan; each step starts only when the previous is done.
+
+1. **Cast extraction — DONE.** "Clone the cast" in the Extractor: one click
+   after speaker tagging mints a library voice per speaker from their
+   longest clean run (≤15 s, skipped under 2 s), named `<source> <speaker>`.
+2. **Real-episode shakedown.** Run a genuine episode (laughter, music,
+   overlapping speech) through transcribe → diarize → clone-the-cast; fix
+   what cracks. Known levers: a "number of speakers" input on Detect
+   (`--clustering.num-clusters` beats threshold guessing when the cast size
+   is known), the 30-minute editor cap vs 28-minute episodes, and segment
+   quality heuristics if laughter pollutes references.
+3. **Sketch mode for the Story Desk.** A freeform creative mode: premise +
+   style notes + cast roles → banter, with the grounding validator and
+   source requirements switched off. Story Desk's fact-card pipeline is
+   deliberately anti-fiction today; comedy needs the opposite.
+4. **URL importer.** Config-gated `yt-dlp` (user-supplied binary, hidden
+   when absent): paste a URL, audio lands in the Extractor. Ships with the
+   README consent note about cloning real people's voices.
+
 ### Cross-cutting — repo presentation  ·  *stars*
 
 - **README** rebuilt around the vision, with a hero screenshot/GIF, honest
