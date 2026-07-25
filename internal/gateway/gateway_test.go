@@ -663,6 +663,120 @@ func TestStoryScriptedByLlamaWithCastVoices(t *testing.T) {
 	}
 }
 
+func TestSketchModeWritesUnsourcedComedy(t *testing.T) {
+	t.Chdir(t.TempDir())
+	// The model answers with no citations, and with one invented fact id to
+	// prove sketch mode drops rather than rejects it.
+	scriptJSON := `{"title": "The Apology Shop", "script": [
+{"speaker_id": "narrator", "text": "The shop was quiet, as apology shops tend to be."},
+{"speaker_id": "nova", "text": "I would like to return this apology, please."},
+{"speaker_id": "dr-lumen", "text": "Was it not sincere enough, madam?", "fact_ids": ["fact-1"]},
+{"speaker_id": "nova", "text": "It was far too sincere. It made the dog cry."}
+]}`
+	var sawSketchPrompt, sawGroundedPrompt bool
+	var sketchPrompt string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var body chatCompletionRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		if len(body.Messages) > 0 {
+			if strings.Contains(body.Messages[0].Content, "comedy sketch scripts") {
+				sawSketchPrompt = true
+			}
+			if strings.Contains(body.Messages[0].Content, "audio stories as dialogue scripts") {
+				sawGroundedPrompt = true
+			}
+		}
+		if len(body.Messages) > 1 {
+			sketchPrompt = body.Messages[1].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": scriptJSON}}},
+		})
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"llama": {Command: "llama-server", HealthURL: upstream.URL + "/health"},
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(validSketchRequestJSON()))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var create story.CreateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&create); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	status := waitGatewayStoryStatus(t, router, create.ID, story.StatusComplete)
+	if status.Manifest == nil {
+		t.Fatalf("expected completed manifest, got %+v", status)
+	}
+	if !sawSketchPrompt {
+		t.Fatalf("expected the sketch prompt to reach llama")
+	}
+	if sawGroundedPrompt {
+		t.Fatalf("sketch mode must not send the grounded story prompt")
+	}
+	if !strings.Contains(sketchPrompt, "A customer wants to return an apology") {
+		t.Fatalf("expected the premise in the user prompt, got %q", sketchPrompt)
+	}
+	if !strings.Contains(sketchPrompt, "1960s BBC radio comedy") {
+		t.Fatalf("expected the style in the user prompt, got %q", sketchPrompt)
+	}
+	if status.Manifest.Mode != story.ModeSketch {
+		t.Fatalf("expected a sketch manifest, got mode %q", status.Manifest.Mode)
+	}
+	if len(status.Manifest.FactCards) != 0 || len(status.Manifest.Sources) != 0 {
+		t.Fatalf("expected no facts or sources, got %d facts, %d sources", len(status.Manifest.FactCards), len(status.Manifest.Sources))
+	}
+	if status.Manifest.Title != "The Apology Shop" || len(status.Manifest.Script) != 4 {
+		t.Fatalf("unexpected sketch script %+v", status.Manifest)
+	}
+	for i, line := range status.Manifest.Script {
+		if len(line.FactIDs) != 0 {
+			t.Fatalf("sketch line %d kept invented fact ids %v", i, line.FactIDs)
+		}
+	}
+}
+
+func TestSketchModeRejectsSourcelessGroundedStory(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{"audio": helperEngine("speech")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	// The same body without the sketch mode is still an invalid story.
+	body := strings.Replace(validSketchRequestJSON(), `"mode": "sketch"`, `"mode": "grounded"`, 1)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(body))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), string(story.CodeInsufficientSources)) {
+		t.Fatalf("expected insufficient_sources, got %s", rec.Body.String())
+	}
+
+	// And an unknown mode is refused outright.
+	body = strings.Replace(validSketchRequestJSON(), `"mode": "sketch"`, `"mode": "documentary"`, 1)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(body))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), string(story.CodeUnsupportedMode)) {
+		t.Fatalf("expected unsupported_mode, got %s", rec.Body.String())
+	}
+}
+
 func TestStoryDraftThenProduceEditedScript(t *testing.T) {
 	t.Chdir(t.TempDir())
 	scriptJSON := `{"title": "Draft Title", "script": [
@@ -2776,6 +2890,17 @@ func multipartRequest(t *testing.T, filename string, data []byte) *http.Request 
 	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	return req
+}
+
+func validSketchRequestJSON() string {
+	return `{
+  "subject": "a shop that only sells apologies",
+  "mode": "sketch",
+  "premise": "A customer wants to return an apology that did not fit.",
+  "style": "1960s BBC radio comedy: fast, silly, groan-worthy puns.",
+  "target_seconds": 60,
+  "voice_mode": "placeholder"
+}`
 }
 
 func validStoryRequestJSON() string {

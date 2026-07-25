@@ -19,8 +19,12 @@ type Scaffold struct {
 
 // BuildScaffold extracts sources into notes and fact cards mechanically —
 // fact claims stay verbatim source sentences, so grounding never depends on
-// a model's paraphrase.
+// a model's paraphrase. A sketch has nothing to extract: its scaffold is the
+// cast alone.
 func BuildScaffold(req NormalizedRequest) (Scaffold, error) {
+	if req.Mode == ModeSketch {
+		return Scaffold{Cast: castOrDefault(req.Cast)}, nil
+	}
 	sources := make([]Source, 0, len(req.Sources))
 	notes := make([]SourceNote, 0, len(req.Sources)*3)
 	for _, source := range req.Sources {
@@ -41,28 +45,38 @@ func BuildScaffold(req NormalizedRequest) (Scaffold, error) {
 		return Scaffold{}, NewError(CodeInsufficientSources, fmt.Sprintf("Need at least %d usable source notes to generate a factual story.", MinSources))
 	}
 
-	cast := req.Cast
-	if len(cast) == 0 {
-		cast = DefaultCast()
-		for i := range cast {
-			cast[i].VoiceID = "studio-default"
-		}
-	}
 	return Scaffold{
 		Sources: sources,
 		Notes:   notes,
 		Facts:   factCardsFromNotes(notes),
-		Cast:    cast,
+		Cast:    castOrDefault(req.Cast),
 	}, nil
 }
 
-// AssembleManifest builds and grounds the final manifest from a scaffold
-// plus a title and script (model-written or fixture).
+// castOrDefault falls back to the default trio speaking in the studio
+// default voice when a request named no cast.
+func castOrDefault(cast []CastMember) []CastMember {
+	if len(cast) > 0 {
+		return cast
+	}
+	cast = DefaultCast()
+	for i := range cast {
+		cast[i].VoiceID = "studio-default"
+	}
+	return cast
+}
+
+// AssembleManifest builds and validates the final manifest from a scaffold
+// plus a title and script (model-written or fixture). The request's mode
+// decides which contract the script is held to.
 func AssembleManifest(id string, req NormalizedRequest, createdAt time.Time, scaffold Scaffold, title string, script []ScriptLine) (Manifest, error) {
 	artifactURL := fmt.Sprintf("/v1/stories/%s/artifact/%s", id, StoryArtifactName)
 	manifest := Manifest{
 		ID:              id,
 		Subject:         req.Subject,
+		Mode:            req.Mode,
+		Premise:         req.Premise,
+		Style:           req.Style,
 		Title:           title,
 		Status:          StatusComplete,
 		CreatedAt:       createdAt.UTC(),
@@ -77,7 +91,7 @@ func AssembleManifest(id string, req NormalizedRequest, createdAt time.Time, sca
 			URL:    artifactURL,
 		},
 	}
-	if err := ValidateManifestGrounding(manifest); err != nil {
+	if err := ValidateManifest(manifest); err != nil {
 		return Manifest{}, err
 	}
 	return manifest, nil
@@ -88,13 +102,57 @@ func BuildFixtureManifest(id string, req NormalizedRequest, createdAt time.Time)
 	if err != nil {
 		return Manifest{}, nil, err
 	}
-	manifest, err := AssembleManifest(id, req, createdAt, scaffold, titleForSubject(req.Subject), fixtureScriptForCast(req.Subject, scaffold.Facts, scaffold.Cast))
+	manifest, err := AssembleManifest(id, req, createdAt, scaffold, titleForRequest(req), FixtureScript(req, scaffold))
 	if err != nil {
 		return Manifest{}, nil, err
 	}
 	return manifest, fixtureWAV(req.TargetSeconds), nil
 }
 
+// FixtureScript is the deterministic script for a request with no model
+// behind it: grounded requests get the cited star-birth dialogue, sketches
+// get citation-free banter.
+func FixtureScript(req NormalizedRequest, scaffold Scaffold) []ScriptLine {
+	if req.Mode == ModeSketch {
+		return fixtureSketchScript(req.Subject, scaffold.Cast)
+	}
+	return fixtureScriptForCast(req.Subject, scaffold.Facts, scaffold.Cast)
+}
+
+// ValidateManifest is the final gate before a story is stored, dispatching
+// on the mode the story was written under. Sketches are held to the script's
+// shape alone; grounded stories additionally have to cite their facts.
+func ValidateManifest(manifest Manifest) error {
+	if manifest.Mode == ModeSketch {
+		return validateScriptShape(manifest, CodeInvalidScript)
+	}
+	return ValidateManifestGrounding(manifest)
+}
+
+// validateScriptShape is the floor both modes share: every line is speakable
+// and belongs to a cast member.
+func validateScriptShape(manifest Manifest, code ErrorCode) error {
+	speakers := make(map[string]bool, len(manifest.Cast))
+	for _, speaker := range manifest.Cast {
+		speakers[speaker.ID] = true
+	}
+	for i, line := range manifest.Script {
+		if strings.TrimSpace(line.Text) == "" {
+			return NewError(code, fmt.Sprintf("script[%d].text is required", i))
+		}
+		if len(line.Text) > MaxScriptLineTextChars {
+			return NewError(code, fmt.Sprintf("script[%d].text is too long", i))
+		}
+		if !speakers[line.SpeakerID] {
+			return NewError(code, fmt.Sprintf("script[%d].speaker_id is not in cast", i))
+		}
+	}
+	return nil
+}
+
+// ValidateManifestGrounding is the grounded-mode contract: on top of the
+// shared script shape, every line cites at least one known, non-conflicting
+// fact card.
 func ValidateManifestGrounding(manifest Manifest) error {
 	facts := make(map[string]FactCard, len(manifest.FactCards))
 	for _, fact := range manifest.FactCards {
@@ -103,20 +161,10 @@ func ValidateManifestGrounding(manifest Manifest) error {
 		}
 		facts[fact.ID] = fact
 	}
-	speakers := make(map[string]bool, len(manifest.Cast))
-	for _, speaker := range manifest.Cast {
-		speakers[speaker.ID] = true
+	if err := validateScriptShape(manifest, CodeGroundingFailure); err != nil {
+		return err
 	}
 	for i, line := range manifest.Script {
-		if strings.TrimSpace(line.Text) == "" {
-			return NewError(CodeGroundingFailure, fmt.Sprintf("script[%d].text is required", i))
-		}
-		if len(line.Text) > MaxScriptLineTextChars {
-			return NewError(CodeGroundingFailure, fmt.Sprintf("script[%d].text is too long", i))
-		}
-		if !speakers[line.SpeakerID] {
-			return NewError(CodeGroundingFailure, fmt.Sprintf("script[%d].speaker_id is not in cast", i))
-		}
 		if len(line.FactIDs) == 0 {
 			return NewError(CodeGroundingFailure, fmt.Sprintf("script[%d].fact_ids is required", i))
 		}
@@ -228,6 +276,42 @@ func fixtureScript(subject string, facts []FactCard) []ScriptLine {
 		{SpeakerID: "dr-lumen", Text: "Yes. When stable fusion can hold the core up, the object is no longer just a protostar. It has become a star.", FactIDs: []string{factID(7)}},
 		{SpeakerID: "narrator", Text: "What looked like darkness was a nursery. What looked like dust was the beginning of a future sun.", FactIDs: []string{factID(0), factID(3)}},
 	}
+}
+
+// fixtureSketchScript is the deterministic sketch dialogue: no fact ids,
+// speakers rotating through whatever cast the request defined, so the
+// fixture gateway can produce a sketch end to end without a model.
+func fixtureSketchScript(subject string, cast []CastMember) []ScriptLine {
+	if len(cast) == 0 {
+		cast = DefaultCast()
+	}
+	texts := []string{
+		"Right, I've been thinking about " + subject + ", and I've come to a conclusion.",
+		"Oh, this should be good. Go on then.",
+		"It's a scandal, is what it is. Nobody warned me.",
+		"Nobody warns anybody. That's the whole business model.",
+		"I did warn you. Twice. In writing.",
+		"Letters don't count if you post them to yourself.",
+		"They count double, actually. It's called planning.",
+		"Well. I suppose that settles it.",
+		"It settles nothing, and I shall be back tomorrow to say so again.",
+	}
+	script := make([]ScriptLine, 0, len(texts))
+	for i, text := range texts {
+		script = append(script, ScriptLine{
+			SpeakerID: cast[i%len(cast)].ID,
+			Text:      text,
+		})
+	}
+	return script
+}
+
+// titleForRequest names a story the way its mode would.
+func titleForRequest(req NormalizedRequest) string {
+	if req.Mode == ModeSketch {
+		return "A Sketch About " + req.Subject
+	}
+	return titleForSubject(req.Subject)
 }
 
 func titleForSubject(subject string) string {

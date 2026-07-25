@@ -165,13 +165,21 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	lastUserHasImage := false
 	isNormalizer := false
 	isStoryScript := false
+	isSketchScript := false
+	systemText := ""
 	for _, msg := range req.Messages {
 		text, hasImage := flattenContent(msg.Content)
-		if msg.Role == "system" && strings.Contains(text, "voice-design normalizer") {
-			isNormalizer = true
-		}
-		if msg.Role == "system" && strings.Contains(text, "audio stories as dialogue scripts") {
-			isStoryScript = true
+		if msg.Role == "system" {
+			systemText = text
+			if strings.Contains(text, "voice-design normalizer") {
+				isNormalizer = true
+			}
+			if strings.Contains(text, "audio stories as dialogue scripts") {
+				isStoryScript = true
+			}
+			if strings.Contains(text, "comedy sketch scripts") {
+				isSketchScript = true
+			}
 		}
 		if msg.Role == "user" {
 			lastUser, lastUserHasImage = text, hasImage
@@ -186,6 +194,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if isStoryScript {
 		reply = fixtureStoryScriptJSON
+	}
+	if isSketchScript {
+		reply = fixtureSketchScriptJSON(castIDsFromPrompt(systemText))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -225,6 +236,52 @@ const fixtureStoryScriptJSON = `{"title": "Fixture Story", "script": [
 {"speaker_id": "dr-lumen", "text": "Until the picture is complete.", "fact_ids": ["fact-8"]},
 {"speaker_id": "narrator", "text": "And that is the story the sources tell.", "fact_ids": ["fact-1", "fact-8"]}
 ]}`
+
+// castIDsFromPrompt reads the speaker ids back out of the gateway's cast
+// rule line ("- speaker_id must be exactly one of: a, b, c."), so a fixture
+// sketch is performable by whatever cast the request named — including a
+// cast cloned out of the Extractor.
+func castIDsFromPrompt(systemText string) []string {
+	const marker = "speaker_id must be exactly one of:"
+	start := strings.Index(systemText, marker)
+	if start < 0 {
+		return nil
+	}
+	rest := systemText[start+len(marker):]
+	if end := strings.IndexAny(rest, ".\n"); end >= 0 {
+		rest = rest[:end]
+	}
+	var ids []string
+	for _, part := range strings.Split(rest, ",") {
+		if id := strings.TrimSpace(part); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// fixtureSketchScriptJSON is the canned reply to sketch prompts: no fact
+// ids, lines dealt round the cast in order.
+func fixtureSketchScriptJSON(castIDs []string) string {
+	if len(castIDs) == 0 {
+		castIDs = []string{"narrator", "nova", "dr-lumen"}
+	}
+	texts := []string{
+		"I have been standing in this queue since Tuesday.",
+		"That is not a queue. That is a bus stop.",
+		"Then why is everyone holding a ticket?",
+		"Habit, mostly. This town does love a ticket.",
+		"Well I am not moving until somebody serves me.",
+		"Nobody is going to serve you at a bus stop.",
+		"Then I shall wait. I have brought sandwiches.",
+		"He has brought sandwiches. That settles it, we are all staying.",
+	}
+	lines := make([]string, 0, len(texts))
+	for i, text := range texts {
+		lines = append(lines, fmt.Sprintf(`{"speaker_id": %q, "text": %q}`, castIDs[i%len(castIDs)], text))
+	}
+	return `{"title": "Fixture Sketch", "script": [` + strings.Join(lines, ",\n") + `]}`
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

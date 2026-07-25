@@ -77,6 +77,12 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "storyDraftButton") {
 		t.Fatalf("expected story draft marker, got %q", body)
 	}
+	if !strings.Contains(body, "storyModeSwitch") {
+		t.Fatalf("expected story mode switch marker, got %q", body)
+	}
+	if !strings.Contains(body, "storyPremiseInput") {
+		t.Fatalf("expected sketch premise marker, got %q", body)
+	}
 	if !strings.Contains(body, "scriptEditor") {
 		t.Fatalf("expected script editor marker, got %q", body)
 	}

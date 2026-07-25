@@ -7,11 +7,17 @@ import (
 )
 
 type NormalizedRequest struct {
-	Subject       string
+	Subject string
+	// Mode is always resolved: ModeGrounded or ModeSketch, never empty.
+	Mode string
+	// Premise and Style are sketch-mode steering, empty in grounded mode.
+	Premise       string
+	Style         string
 	TargetSeconds int
 	SourceMode    string
 	VoiceMode     string
-	Sources       []SourceInput
+	// Sources is nil in sketch mode.
+	Sources []SourceInput
 	// Cast is the resolved speaker list (default trio when none supplied).
 	Cast []CastMember
 	// CastVoices maps cast member id -> stored voice id ("" absent means
@@ -90,6 +96,54 @@ func normalizeCast(inputs []CastInput) ([]CastMember, error) {
 	return cast, nil
 }
 
+// normalizeSources applies the grounded-mode source contract: 3-5 entries,
+// each with a title and an excerpt (URLs stay attribution metadata). Sketch
+// mode has no sources to check, so whatever the caller sent is dropped.
+func normalizeSources(mode string, inputs []SourceInput) ([]SourceInput, error) {
+	if mode == ModeSketch {
+		return nil, nil
+	}
+	if len(inputs) < MinSources {
+		return nil, NewError(CodeInsufficientSources, fmt.Sprintf("Need at least %d usable source excerpts to generate a factual story.", MinSources))
+	}
+	if len(inputs) > MaxSources {
+		return nil, NewError(CodeSourceLimitExceeded, fmt.Sprintf("sources must include at most %d entries", MaxSources))
+	}
+
+	sources := make([]SourceInput, 0, len(inputs))
+	for i, source := range inputs {
+		id := strings.TrimSpace(source.ID)
+		if id == "" {
+			id = fmt.Sprintf("src-%d", i+1)
+		}
+		title := strings.TrimSpace(source.Title)
+		if title == "" {
+			return nil, NewError(CodeSourceTitleRequired, fmt.Sprintf("sources[%d].title is required", i))
+		}
+		if utf8.RuneCountInString(title) > MaxSourceTitleChars {
+			return nil, NewError(CodeSourceTitleRequired, fmt.Sprintf("sources[%d].title must be at most %d characters", i, MaxSourceTitleChars))
+		}
+		url := strings.TrimSpace(source.URL)
+		if utf8.RuneCountInString(url) > MaxSourceURLChars {
+			return nil, NewError(CodeSourceURLTooLarge, fmt.Sprintf("sources[%d].url must be at most %d characters", i, MaxSourceURLChars))
+		}
+		excerpt := strings.TrimSpace(source.Excerpt)
+		if excerpt == "" {
+			return nil, NewError(CodeMissingSourceExcerpt, fmt.Sprintf("sources[%d].excerpt is required; URLs are metadata only in v1", i))
+		}
+		if utf8.RuneCountInString(excerpt) > MaxSourceExcerptChars {
+			return nil, NewError(CodeSourceExcerptTooLarge, fmt.Sprintf("sources[%d].excerpt must be at most %d characters", i, MaxSourceExcerptChars))
+		}
+		sources = append(sources, SourceInput{
+			ID:      id,
+			Title:   title,
+			URL:     url,
+			Excerpt: excerpt,
+		})
+	}
+	return sources, nil
+}
+
 func ValidateCreateRequest(req CreateRequest) (NormalizedRequest, error) {
 	subject := strings.TrimSpace(req.Subject)
 	if subject == "" {
@@ -97,6 +151,28 @@ func ValidateCreateRequest(req CreateRequest) (NormalizedRequest, error) {
 	}
 	if utf8.RuneCountInString(subject) > MaxSubjectChars {
 		return NormalizedRequest{}, NewError(CodeInvalidSubject, fmt.Sprintf("subject must be at most %d characters", MaxSubjectChars))
+	}
+
+	mode := strings.TrimSpace(req.Mode)
+	if mode == "" {
+		mode = ModeGrounded
+	}
+	if mode != ModeGrounded && mode != ModeSketch {
+		return NormalizedRequest{}, NewError(CodeUnsupportedMode, fmt.Sprintf("mode must be %s or %s", ModeGrounded, ModeSketch))
+	}
+
+	premise := strings.TrimSpace(req.Premise)
+	if utf8.RuneCountInString(premise) > MaxPremiseChars {
+		return NormalizedRequest{}, NewError(CodeInvalidRequest, fmt.Sprintf("premise must be at most %d characters", MaxPremiseChars))
+	}
+	style := strings.TrimSpace(req.Style)
+	if utf8.RuneCountInString(style) > MaxStyleChars {
+		return NormalizedRequest{}, NewError(CodeInvalidRequest, fmt.Sprintf("style must be at most %d characters", MaxStyleChars))
+	}
+	if mode == ModeGrounded {
+		// Grounded stories take their material from sources; carrying
+		// invention hints into the manifest would misdescribe them.
+		premise, style = "", ""
 	}
 
 	targetSeconds := req.TargetSeconds
@@ -108,11 +184,17 @@ func ValidateCreateRequest(req CreateRequest) (NormalizedRequest, error) {
 	}
 
 	sourceMode := strings.TrimSpace(req.SourceMode)
-	if sourceMode == "" {
-		sourceMode = "curated"
-	}
-	if sourceMode != "curated" {
-		return NormalizedRequest{}, NewError(CodeUnsupportedSourceMode, "source_mode must be curated")
+	if mode == ModeSketch {
+		// A sketch has no sources to run a mode on. Whatever the form left
+		// in the field, the answer is none.
+		sourceMode = "none"
+	} else {
+		if sourceMode == "" {
+			sourceMode = "curated"
+		}
+		if sourceMode != "curated" {
+			return NormalizedRequest{}, NewError(CodeUnsupportedSourceMode, "source_mode must be curated")
+		}
 	}
 
 	voiceMode := strings.TrimSpace(req.VoiceMode)
@@ -123,43 +205,9 @@ func ValidateCreateRequest(req CreateRequest) (NormalizedRequest, error) {
 		return NormalizedRequest{}, NewError(CodeUnsupportedVoiceMode, "voice_mode must be placeholder or fixed")
 	}
 
-	if len(req.Sources) < MinSources {
-		return NormalizedRequest{}, NewError(CodeInsufficientSources, fmt.Sprintf("Need at least %d usable source excerpts to generate a factual story.", MinSources))
-	}
-	if len(req.Sources) > MaxSources {
-		return NormalizedRequest{}, NewError(CodeSourceLimitExceeded, fmt.Sprintf("sources must include at most %d entries", MaxSources))
-	}
-
-	sources := make([]SourceInput, 0, len(req.Sources))
-	for i, source := range req.Sources {
-		id := strings.TrimSpace(source.ID)
-		if id == "" {
-			id = fmt.Sprintf("src-%d", i+1)
-		}
-		title := strings.TrimSpace(source.Title)
-		if title == "" {
-			return NormalizedRequest{}, NewError(CodeSourceTitleRequired, fmt.Sprintf("sources[%d].title is required", i))
-		}
-		if utf8.RuneCountInString(title) > MaxSourceTitleChars {
-			return NormalizedRequest{}, NewError(CodeSourceTitleRequired, fmt.Sprintf("sources[%d].title must be at most %d characters", i, MaxSourceTitleChars))
-		}
-		url := strings.TrimSpace(source.URL)
-		if utf8.RuneCountInString(url) > MaxSourceURLChars {
-			return NormalizedRequest{}, NewError(CodeSourceURLTooLarge, fmt.Sprintf("sources[%d].url must be at most %d characters", i, MaxSourceURLChars))
-		}
-		excerpt := strings.TrimSpace(source.Excerpt)
-		if excerpt == "" {
-			return NormalizedRequest{}, NewError(CodeMissingSourceExcerpt, fmt.Sprintf("sources[%d].excerpt is required; URLs are metadata only in v1", i))
-		}
-		if utf8.RuneCountInString(excerpt) > MaxSourceExcerptChars {
-			return NormalizedRequest{}, NewError(CodeSourceExcerptTooLarge, fmt.Sprintf("sources[%d].excerpt must be at most %d characters", i, MaxSourceExcerptChars))
-		}
-		sources = append(sources, SourceInput{
-			ID:      id,
-			Title:   title,
-			URL:     url,
-			Excerpt: excerpt,
-		})
+	sources, err := normalizeSources(mode, req.Sources)
+	if err != nil {
+		return NormalizedRequest{}, err
 	}
 
 	cast, err := normalizeCast(req.Cast)
@@ -208,6 +256,9 @@ func ValidateCreateRequest(req CreateRequest) (NormalizedRequest, error) {
 
 	return NormalizedRequest{
 		Subject:       subject,
+		Mode:          mode,
+		Premise:       premise,
+		Style:         style,
 		TargetSeconds: targetSeconds,
 		SourceMode:    sourceMode,
 		VoiceMode:     voiceMode,

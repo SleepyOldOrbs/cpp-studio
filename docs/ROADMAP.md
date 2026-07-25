@@ -166,10 +166,20 @@ Sequenced plan; each step starts only when the previous is done.
    per 28 min. Remaining known limits, accepted for now: actors playing
    several characters can split or blend clusters, and laughter-adjacent
    references may need hand-picking over clone-the-cast's auto-pick.
-3. **Sketch mode for the Story Desk.** A freeform creative mode: premise +
-   style notes + cast roles → banter, with the grounding validator and
-   source requirements switched off. Story Desk's fact-card pipeline is
-   deliberately anti-fiction today; comedy needs the opposite.
+3. **Sketch mode for the Story Desk — DONE.** `"mode": "sketch"` on
+   `POST /v1/stories`: premise + style notes + cast roles → banter, with
+   the source requirement and the grounding validator both off. One
+   resolved field carries the contract — `NormalizedRequest.Mode` decides
+   whether sources are required, whether the scaffold builds fact cards,
+   which system prompt llama gets, and which validator gates the manifest
+   — so grounded mode keeps every guarantee it had (its existing grounding
+   tests pass untouched). Sketch lines are still checked for shape
+   (speakable text, a speaker in the cast) under a new `invalid_script`
+   code, invented fact ids are stripped rather than rejected, and the mode
+   is stored in the manifest so a retained sketch says which rules wrote
+   it. The Story desk gets a two-option mode switch that swaps sources for
+   premise/style; the fixture chat server reads the cast out of the prompt
+   so a fixture sketch is performable by any cast.
 4. **URL importer.** Config-gated `yt-dlp` (user-supplied binary, hidden
    when absent): paste a URL, audio lands in the Extractor. Ships with the
    README consent note about cloning real people's voices.

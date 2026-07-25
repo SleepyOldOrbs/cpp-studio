@@ -698,6 +698,59 @@ audio {
 
 /* ---------- story desk ---------- */
 
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.mode-option {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--well);
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mode-option strong {
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+}
+
+.mode-option small {
+  font-size: 0.7rem;
+  line-height: 1.3;
+}
+
+.mode-option:hover {
+  border-color: var(--line);
+}
+
+.mode-option.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.mode-option.is-selected strong {
+  color: var(--accent);
+}
+
+.sketch-fields {
+  display: grid;
+  gap: 10px;
+}
+
+textarea.text-input {
+  resize: vertical;
+  font-family: inherit;
+}
+
 .story-controls {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) 130px 170px;

@@ -152,6 +152,236 @@ func TestValidateManifestGroundingRejectsBadFacts(t *testing.T) {
 	})
 }
 
+func TestValidateCreateRequestSketchMode(t *testing.T) {
+	t.Run("needs no sources", func(t *testing.T) {
+		got, err := ValidateCreateRequest(validSketchRequest())
+		if err != nil {
+			t.Fatalf("ValidateCreateRequest returned error: %v", err)
+		}
+		if got.Mode != ModeSketch {
+			t.Fatalf("expected sketch mode, got %q", got.Mode)
+		}
+		if got.SourceMode != "none" || len(got.Sources) != 0 {
+			t.Fatalf("expected no sources, got mode %q and %d sources", got.SourceMode, len(got.Sources))
+		}
+		if got.Premise == "" || got.Style == "" {
+			t.Fatalf("expected premise and style to survive, got %+v", got)
+		}
+	})
+
+	t.Run("ignores sources it was handed", func(t *testing.T) {
+		req := validSketchRequest()
+		req.Sources = validCreateRequest().Sources
+		req.SourceMode = "curated"
+		got, err := ValidateCreateRequest(req)
+		if err != nil {
+			t.Fatalf("ValidateCreateRequest returned error: %v", err)
+		}
+		if len(got.Sources) != 0 {
+			t.Fatalf("expected sketch to drop sources, got %d", len(got.Sources))
+		}
+	})
+
+	t.Run("grounded mode still demands sources", func(t *testing.T) {
+		req := validSketchRequest()
+		req.Mode = ModeGrounded
+		_, err := ValidateCreateRequest(req)
+		if !storyErrorIs(err, CodeInsufficientSources) {
+			t.Fatalf("expected insufficient sources, got %v", err)
+		}
+	})
+
+	t.Run("grounded mode drops premise and style", func(t *testing.T) {
+		req := validCreateRequest()
+		req.Premise = "not used here"
+		req.Style = "nor this"
+		got, err := ValidateCreateRequest(req)
+		if err != nil {
+			t.Fatalf("ValidateCreateRequest returned error: %v", err)
+		}
+		if got.Premise != "" || got.Style != "" {
+			t.Fatalf("expected grounded mode to drop premise/style, got %+v", got)
+		}
+	})
+
+	t.Run("rejects an unknown mode", func(t *testing.T) {
+		req := validSketchRequest()
+		req.Mode = "documentary"
+		_, err := ValidateCreateRequest(req)
+		if !storyErrorIs(err, CodeUnsupportedMode) {
+			t.Fatalf("expected unsupported mode, got %v", err)
+		}
+	})
+
+	t.Run("rejects an over-long premise", func(t *testing.T) {
+		req := validSketchRequest()
+		req.Premise = strings.Repeat("x", MaxPremiseChars+1)
+		_, err := ValidateCreateRequest(req)
+		if !storyErrorIs(err, CodeInvalidRequest) {
+			t.Fatalf("expected invalid request, got %v", err)
+		}
+	})
+}
+
+func TestBuildFixtureManifestSketch(t *testing.T) {
+	req, err := ValidateCreateRequest(validSketchRequest())
+	if err != nil {
+		t.Fatalf("validate request: %v", err)
+	}
+	manifest, audio, err := BuildFixtureManifest("story_20260706_130000_002", req, fixedNow())
+	if err != nil {
+		t.Fatalf("BuildFixtureManifest returned error: %v", err)
+	}
+	if manifest.Mode != ModeSketch {
+		t.Fatalf("expected sketch manifest, got mode %q", manifest.Mode)
+	}
+	if manifest.Premise == "" || manifest.Style == "" {
+		t.Fatalf("expected premise and style recorded, got %+v", manifest)
+	}
+	if len(manifest.Sources) != 0 || len(manifest.SourceNotes) != 0 || len(manifest.FactCards) != 0 {
+		t.Fatalf("expected an unsourced sketch, got %d sources, %d notes, %d facts", len(manifest.Sources), len(manifest.SourceNotes), len(manifest.FactCards))
+	}
+	if len(manifest.Script) < 4 {
+		t.Fatalf("expected a sketch script, got %d lines", len(manifest.Script))
+	}
+	for i, line := range manifest.Script {
+		if len(line.FactIDs) != 0 {
+			t.Fatalf("sketch line %d cites facts that do not exist: %v", i, line.FactIDs)
+		}
+	}
+	if len(audio) < 12 || string(audio[:4]) != "RIFF" {
+		t.Fatalf("expected fixture WAV bytes")
+	}
+}
+
+func TestValidateManifestSketchChecksShapeOnly(t *testing.T) {
+	req, err := ValidateCreateRequest(validSketchRequest())
+	if err != nil {
+		t.Fatalf("validate request: %v", err)
+	}
+	manifest, _, err := BuildFixtureManifest("story_20260706_130000_002", req, fixedNow())
+	if err != nil {
+		t.Fatalf("BuildFixtureManifest returned error: %v", err)
+	}
+
+	t.Run("uncited lines pass", func(t *testing.T) {
+		if err := ValidateManifest(manifest); err != nil {
+			t.Fatalf("expected sketch to validate, got %v", err)
+		}
+	})
+
+	t.Run("unknown speaker still fails", func(t *testing.T) {
+		bad := manifest
+		bad.Script = append([]ScriptLine{}, manifest.Script...)
+		bad.Script[0].SpeakerID = "nobody"
+		if err := ValidateManifest(bad); !storyErrorIs(err, CodeInvalidScript) {
+			t.Fatalf("expected invalid script, got %v", err)
+		}
+	})
+
+	t.Run("empty text still fails", func(t *testing.T) {
+		bad := manifest
+		bad.Script = append([]ScriptLine{}, manifest.Script...)
+		bad.Script[0].Text = "   "
+		if err := ValidateManifest(bad); !storyErrorIs(err, CodeInvalidScript) {
+			t.Fatalf("expected invalid script, got %v", err)
+		}
+	})
+}
+
+func TestManagerProducesSketchWithoutSources(t *testing.T) {
+	var gotRequest ScriptRequest
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(),
+		Script: func(ctx context.Context, req ScriptRequest) (string, []ScriptLine, error) {
+			gotRequest = req
+			return "The Apology Shop", []ScriptLine{
+				{SpeakerID: req.Cast[0].ID, Text: "I'd like to return this apology."},
+				{SpeakerID: req.Cast[1].ID, Text: "Was it not sincere enough, sir?"},
+				{SpeakerID: req.Cast[0].ID, Text: "It was far too sincere. It made my wife cry."},
+				{SpeakerID: req.Cast[1].ID, Text: "Ah. You'll be wanting the insincere counter, then."},
+			}, nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	created, err := manager.Submit(context.Background(), validSketchRequest())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, created.ID, StatusComplete)
+	if status.Manifest == nil {
+		t.Fatalf("expected completed manifest, got %+v", status)
+	}
+	if status.Manifest.Mode != ModeSketch || status.Manifest.Title != "The Apology Shop" {
+		t.Fatalf("unexpected sketch manifest %+v", status.Manifest)
+	}
+	if len(status.Manifest.Script) != 4 {
+		t.Fatalf("expected the writer's four lines, got %d", len(status.Manifest.Script))
+	}
+	// The writer is handed the premise and style instead of fact cards.
+	if gotRequest.Mode != ModeSketch || gotRequest.Premise == "" || gotRequest.Style == "" {
+		t.Fatalf("expected sketch steering in the script request, got %+v", gotRequest)
+	}
+	if len(gotRequest.Facts) != 0 {
+		t.Fatalf("expected no facts in a sketch script request, got %d", len(gotRequest.Facts))
+	}
+}
+
+func TestManagerSketchStillRejectsUnknownSpeaker(t *testing.T) {
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(),
+		Script: func(ctx context.Context, req ScriptRequest) (string, []ScriptLine, error) {
+			return "Bad Sketch", []ScriptLine{
+				{SpeakerID: "a-speaker-nobody-cast", Text: "Who am I?"},
+			}, nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	created, err := manager.Submit(context.Background(), validSketchRequest())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, created.ID, StatusFailed)
+	if status.Error == nil || status.Error.Code != CodeInvalidScript {
+		t.Fatalf("expected invalid script, got %+v", status.Error)
+	}
+}
+
+func TestManagerDraftsSketchWithCustomCast(t *testing.T) {
+	manager := NewManager(ManagerOptions{RootDir: t.TempDir(), Now: fixedNow})
+
+	req := validSketchRequest()
+	req.Cast = []CastInput{
+		{Name: "Kenneth", Role: "the browbeaten customer"},
+		{Name: "Hugh", Role: "the evasive shopkeeper"},
+	}
+	draft, err := manager.Draft(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Draft returned error: %v", err)
+	}
+	if draft.Mode != ModeSketch {
+		t.Fatalf("expected the draft to echo sketch mode, got %q", draft.Mode)
+	}
+	if len(draft.FactCards) != 0 || len(draft.Sources) != 0 {
+		t.Fatalf("expected an unsourced draft, got %d facts, %d sources", len(draft.FactCards), len(draft.Sources))
+	}
+	if len(draft.Cast) != 2 {
+		t.Fatalf("expected the two-hander cast, got %d", len(draft.Cast))
+	}
+	// The fixture script deals its lines round whatever cast was named.
+	speakers := map[string]bool{}
+	for _, line := range draft.Script {
+		speakers[line.SpeakerID] = true
+	}
+	if !speakers["kenneth"] || !speakers["hugh"] {
+		t.Fatalf("expected both cast members to speak, got %v", speakers)
+	}
+}
+
 func TestStoreSaveLoadListAndArtifactPath(t *testing.T) {
 	store := NewStore(t.TempDir())
 	req, err := ValidateCreateRequest(validCreateRequest())
@@ -630,6 +860,19 @@ func validCreateRequest() CreateRequest {
 			{ID: "src-2", Title: "NASA Webb: Fiery Hourglass", URL: "https://science.nasa.gov/missions/webb/nasas-webb-catches-fiery-hourglass-as-new-star-forms/", Excerpt: "A forming protostar gathers material from its surrounding molecular cloud. Falling material spirals inward and forms an accretion disk. The disk feeds material onto the protostar."},
 			{ID: "src-3", Title: "NASA Hubble: Planet-Forming Disks", URL: "https://science.nasa.gov/missions/hubble/hubbles-album-of-planet-forming-disks/", Excerpt: "Some falling material forms a rotating disk around the protostar. Jets from magnetic poles are part of star formation. Jets help carry away angular momentum so material can continue collecting."},
 		},
+	}
+}
+
+// validSketchRequest is the sketch-mode counterpart: a premise and a style,
+// no sources at all.
+func validSketchRequest() CreateRequest {
+	return CreateRequest{
+		Subject:       "a shop that only sells apologies",
+		Mode:          ModeSketch,
+		Premise:       "A customer wants to return an apology that did not fit.",
+		Style:         "1960s BBC radio comedy: fast, silly, groan-worthy puns.",
+		TargetSeconds: 60,
+		VoiceMode:     "placeholder",
 	}
 }
 

@@ -37,7 +37,8 @@ speech, and image JSON limits:
 - Request body: 512 KiB.
 - Subject: 1-200 characters after trimming.
 - Target seconds: 30-300 when supplied.
-- Sources: 3-5 entries.
+- Sources: 3-5 entries (grounded mode; sketch mode takes none).
+- Premise: max 2000 characters. Style notes: max 1000 characters.
 - Source title: 1-200 characters after trimming.
 - Source URL: optional metadata only, max 2048 characters.
 - Source excerpt: 1-12000 characters after trimming.
@@ -68,8 +69,9 @@ Story routes intentionally use a richer shape:
 
 Status codes:
 
-- `400`: invalid request, unsupported source mode, unsupported voice mode,
-  missing excerpts, insufficient sources, or over-limit input.
+- `400`: invalid request, unsupported mode, unsupported source mode,
+  unsupported voice mode, missing excerpts, insufficient sources, an
+  unusable script (`invalid_script`), or over-limit input.
 - `404`: story id or whitelisted artifact not found.
 - `405`: wrong method, with `Allow` set.
 - `409`: cancellation requested after a story is already complete or failed.
@@ -115,7 +117,14 @@ Request:
 
 Supported fields:
 
-- `source_mode` must be omitted or `curated`.
+- `mode` must be omitted, `grounded`, or `sketch`. `grounded` (the default)
+  is the contract above: 3-5 sources, fact cards, every line cited.
+  `sketch` is the opposite contract for fiction — see "Sketch mode" below.
+- `premise` and `style` (sketch only, both optional): the situation to play
+  and the tone to play it in. Max 2000 and 1000 characters. Ignored — and
+  dropped from the manifest — in grounded mode.
+- `source_mode` must be omitted or `curated` in grounded mode. Sketch mode
+  ignores the field and reports `none`.
 - `voice_mode` must be omitted, `placeholder`, or `fixed`. `placeholder` (the
   default) produces the deterministic synthetic tone. `fixed` synthesizes
   every script line through the configured `audio` engine and stitches the
@@ -140,6 +149,45 @@ Script writing: with a `llama` engine configured, the story script is written
 by the model, grounded in the fact cards, with one corrective retry before
 failing with `grounding_failure`. Without `llama`, the deterministic fixture
 script is used.
+
+### Sketch mode
+
+`"mode": "sketch"` swaps the writing contract so a cloned cast can perform
+new material. What changes:
+
+- **No sources.** `sources` is not required and any entries sent are
+  dropped; `source_mode` reports `none`. The manifest carries no sources,
+  no source notes, and no fact cards.
+- **No grounding.** Script lines carry no `fact_ids`; ids the model invents
+  out of habit are stripped rather than rejected. Lines are still checked
+  for shape — non-empty text, within the length limit, and a `speaker_id`
+  that is in the cast — failing with code `invalid_script`.
+- **Premise instead of facts.** The script prompt is built from `subject`
+  (the one-line premise), `premise` (extra detail), `style`, and the cast
+  roles.
+- **Stages.** A sketch never reports `extracting_sources`; it starts at
+  `planning`.
+- **The manifest records it.** `mode`, `premise`, and `style` are stored, so
+  a retained sketch still says which rules wrote it. Manifests written
+  before this field existed have no `mode` and read as grounded.
+
+Everything else is unchanged: cast, cast voices, `voice_mode`, the draft →
+edit → produce flow, jobs, cancellation, and the library.
+
+```json
+{
+  "subject": "a shop that only sells apologies",
+  "mode": "sketch",
+  "premise": "A customer wants to return an apology that did not fit.",
+  "style": "1960s BBC radio comedy: fast, silly, groan-worthy puns.",
+  "target_seconds": 60,
+  "voice_mode": "fixed",
+  "cast": [
+    {"name": "Kenneth", "role": "the browbeaten customer", "voice_id": "voice_20260724_090216_73ca8a"},
+    {"name": "Hugh", "role": "the evasive shopkeeper", "voice_id": "voice_20260723_150438_710ef0"}
+  ]
+}
+```
 
 Immediate response:
 
@@ -360,4 +408,6 @@ The store writes into a temporary directory and renames it to
 
 Every factual script line must reference existing, non-conflicting fact-card
 ids. The fixture planner is deterministic so CI can verify this without model
-downloads.
+downloads. A sketch manifest instead carries `"mode": "sketch"` with
+`premise`/`style`, empty `sources`/`source_notes`/`fact_cards`, and script
+lines with no `fact_ids`.

@@ -25,9 +25,11 @@ behind OpenAI-shaped HTTP routes and a browser studio console.
 - **Audiobook** — upload a `.txt`, `.md`, or `.epub`; it is chunked on
   sentence boundaries, narrated chunk by chunk in any library voice, and
   stitched into one WAV, with live progress and cancellation.
-- **Story desk** — grounded multi-speaker stories: paste sources, llama
-  writes a fact-cited script for your cast, every line is spoken and
-  stitched into a narrated piece.
+- **Story desk** — two modes, one desk. **Grounded**: paste sources, llama
+  writes a fact-cited script for your cast, and no line ships that a source
+  does not support. **Sketch**: give it a premise and a style instead, and
+  the grounding comes off — the writer invents, and your cloned cast
+  performs it. Either way every line is spoken and stitched into one piece.
 - **The Extractor** — a sampler deck for voices. Drop in any audio or video
   the browser can decode (MP3/OGG/FLAC/WAV/MP4 — a podcast, an old radio
   show), get a scrubbable waveform with a whisper transcript timeline, and
@@ -99,7 +101,7 @@ OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
 | `POST /v1/audio/diarization` | who-spoke-when speaker clusters (sherpa-onnx) |
 | `POST /v1/images/generations` | Stable Diffusion, resident sd-server |
 | `POST /v1/images/descriptions` | VLM describes an image, spoken aloud |
-| `POST /v1/stories` | grounded multi-voice story jobs |
+| `POST /v1/stories` | multi-voice story jobs, grounded or sketch |
 | `POST /v1/audiobooks` | document → single-narrator audiobook job |
 | `GET /v1/jobs` · `POST /v1/jobs/{id}/cancel` | every async job, one surface |
 | `GET /v1/library` | persistent saved outputs |

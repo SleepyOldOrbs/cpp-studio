@@ -18,17 +18,21 @@ type ReserveEngineFunc func(ctx context.Context, name string) (func(), bool)
 type SynthesizeFunc func(ctx context.Context, text string, voiceID string) ([]byte, error)
 
 // ScriptRequest is what a script writer needs: the subject, the pacing
-// target, the grounded facts to cite, and the cast to write for.
+// target, the cast to write for, and — depending on Mode — either the
+// grounded facts to cite or the premise and style to invent from.
 type ScriptRequest struct {
 	Subject       string
+	Mode          string
+	Premise       string
+	Style         string
 	TargetSeconds int
 	Facts         []FactCard
 	Cast          []CastMember
 }
 
 // ScriptFunc writes the story: a title plus script lines whose fact_ids
-// must cite the request's facts. nil falls back to the deterministic
-// fixture script.
+// must cite the request's facts in grounded mode. nil falls back to the
+// deterministic fixture script.
 type ScriptFunc func(ctx context.Context, req ScriptRequest) (string, []ScriptLine, error)
 
 type ManagerOptions struct {
@@ -205,8 +209,11 @@ func (m *Manager) run(ctx context.Context, j *job) {
 		defer j.release()
 	}
 
-	if !m.advance(ctx, j, StatusExtractingSources, 0.15) {
-		return
+	// A sketch has no sources to extract, so it never reports that stage.
+	if j.req.Mode != ModeSketch {
+		if !m.advance(ctx, j, StatusExtractingSources, 0.15) {
+			return
+		}
 	}
 	scaffold, err := BuildScaffold(j.req)
 	if err != nil {
@@ -325,10 +332,13 @@ func (m *Manager) writeScript(ctx context.Context, req NormalizedRequest, scaffo
 		return title, req.Script, nil
 	}
 	if m.script == nil {
-		return titleForSubject(req.Subject), fixtureScriptForCast(req.Subject, scaffold.Facts, scaffold.Cast), nil
+		return titleForRequest(req), FixtureScript(req, scaffold), nil
 	}
 	return m.script(ctx, ScriptRequest{
 		Subject:       req.Subject,
+		Mode:          req.Mode,
+		Premise:       req.Premise,
+		Style:         req.Style,
 		TargetSeconds: req.TargetSeconds,
 		Facts:         scaffold.Facts,
 		Cast:          scaffold.Cast,
@@ -358,6 +368,7 @@ func (m *Manager) Draft(ctx context.Context, req CreateRequest) (DraftResponse, 
 	}
 	return DraftResponse{
 		Subject:     normalized.Subject,
+		Mode:        normalized.Mode,
 		Title:       title,
 		Sources:     scaffold.Sources,
 		SourceNotes: scaffold.Notes,

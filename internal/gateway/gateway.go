@@ -2027,6 +2027,16 @@ Rules:
 - text is plain spoken language: one to three short sentences, no markdown, no stage directions, no emojis.
 - Give the story a beginning, a middle, and an ending line that lands.`
 
+// storySketchSystemPrompt is the anti-grounding prompt: invention is the
+// point, and there are no facts to cite. The fixture chat server keys on the
+// phrase "comedy sketch scripts" to return its canned sketch.
+const storySketchSystemPrompt = `You write comedy sketch scripts as dialogue. Reply with ONLY a JSON object, no markdown, in this exact shape: {"title": "...", "script": [{"speaker_id": "...", "text": "..."}]}
+Rules:
+%s- Invent freely. There are no sources and nothing to cite: the premise is yours to play with.
+- text is what the performer says out loud: one to three short sentences, no markdown, no stage directions, no character names as prefixes, no emojis.
+- Write for the ear. Characters interrupt, misunderstand each other, and talk past each other.
+- Build to something: a running joke that escalates, and a final line that lands the sketch.`
+
 // storyCastRules renders the dynamic speaker rules for the script prompt.
 func storyCastRules(cast []story.CastMember) string {
 	ids := make([]string, 0, len(cast))
@@ -2043,8 +2053,9 @@ func storyCastRules(cast []story.CastMember) string {
 	return rules.String()
 }
 
-// writeStoryScript is the story manager's ScriptFunc: facts in, a grounded
-// script out of llama, with one retry that feeds the validation error back.
+// writeStoryScript is the story manager's ScriptFunc: facts (or a premise)
+// in, a script out of llama, with one retry that feeds the validation error
+// back.
 func (r *router) writeStoryScript(ctx context.Context, req story.ScriptRequest) (string, []story.ScriptLine, error) {
 	lines := req.TargetSeconds / 7
 	if lines < 8 {
@@ -2053,17 +2064,33 @@ func (r *router) writeStoryScript(ctx context.Context, req story.ScriptRequest) 
 	if lines > 40 {
 		lines = 40
 	}
+	systemPrompt := storyScriptSystemPrompt
+	if req.Mode == story.ModeSketch {
+		systemPrompt = storySketchSystemPrompt
+	}
+
 	var prompt strings.Builder
-	fmt.Fprintf(&prompt, "Subject: %s\nTarget length: about %d spoken lines (%d seconds of audio).\nFacts:\n", req.Subject, lines, req.TargetSeconds)
-	for _, fact := range req.Facts {
-		if fact.Conflicting {
-			continue
+	if req.Mode == story.ModeSketch {
+		fmt.Fprintf(&prompt, "Premise: %s\n", req.Subject)
+		if req.Premise != "" {
+			fmt.Fprintf(&prompt, "Detail: %s\n", req.Premise)
 		}
-		fmt.Fprintf(&prompt, "%s: %s\n", fact.ID, fact.Claim)
+		if req.Style != "" {
+			fmt.Fprintf(&prompt, "Style: %s\n", req.Style)
+		}
+		fmt.Fprintf(&prompt, "Target length: about %d spoken lines (%d seconds of audio).\n", lines, req.TargetSeconds)
+	} else {
+		fmt.Fprintf(&prompt, "Subject: %s\nTarget length: about %d spoken lines (%d seconds of audio).\nFacts:\n", req.Subject, lines, req.TargetSeconds)
+		for _, fact := range req.Facts {
+			if fact.Conflicting {
+				continue
+			}
+			fmt.Fprintf(&prompt, "%s: %s\n", fact.ID, fact.Claim)
+		}
 	}
 
 	messages := []chatMessage{
-		{Role: "system", Content: fmt.Sprintf(storyScriptSystemPrompt, storyCastRules(req.Cast))},
+		{Role: "system", Content: fmt.Sprintf(systemPrompt, storyCastRules(req.Cast))},
 		{Role: "user", Content: prompt.String()},
 	}
 	title, script, err := r.requestStoryScript(ctx, messages, req)
@@ -2075,7 +2102,11 @@ func (r *router) writeStoryScript(ctx context.Context, req story.ScriptRequest) 
 	retry := append(messages, chatMessage{Role: "user", Content: "Your previous reply was rejected: " + err.Error() + ". Reply again with ONLY the corrected JSON object."})
 	title, script, retryErr := r.requestStoryScript(ctx, retry, req)
 	if retryErr != nil {
-		return "", nil, story.NewError(story.CodeGroundingFailure, "story scripting failed: "+retryErr.Error())
+		code := story.CodeGroundingFailure
+		if req.Mode == story.ModeSketch {
+			code = story.CodeInvalidScript
+		}
+		return "", nil, story.NewError(code, "story scripting failed: "+retryErr.Error())
 	}
 	return title, script, nil
 }
@@ -2115,12 +2146,19 @@ func (r *router) requestStoryScript(ctx context.Context, messages []chatMessage,
 			validFacts[fact.ID] = true
 		}
 	}
+	sketch := req.Mode == story.ModeSketch
 	for i, line := range decoded.Script {
 		if !speakers[line.SpeakerID] {
 			return "", nil, fmt.Errorf("script line %d uses unknown speaker %q", i+1, line.SpeakerID)
 		}
 		if strings.TrimSpace(line.Text) == "" {
 			return "", nil, fmt.Errorf("script line %d has no text", i+1)
+		}
+		if sketch {
+			// There are no fact cards behind a sketch, so any ids the model
+			// invented out of habit are dropped rather than rejected.
+			decoded.Script[i].FactIDs = nil
+			continue
 		}
 		if len(line.FactIDs) == 0 {
 			return "", nil, fmt.Errorf("script line %d cites no fact ids", i+1)

@@ -311,13 +311,24 @@
       <header class="module-head">
         <h2>Story desk</h2>
         <span class="module-route">POST /v1/stories</span>
-        <span class="module-note">sources &rarr; facts &rarr; script &rarr; audio</span>
+        <span class="module-note" id="storyModeNote">sources &rarr; facts &rarr; script &rarr; audio</span>
       </header>
       <div class="module-body story-panel">
         <form class="story-form" id="storyForm">
+          <div class="mode-switch" id="storyModeSwitch" role="radiogroup" aria-label="Story mode">
+            <button class="mode-option is-selected" id="storyModeGrounded" type="button" role="radio" aria-checked="true" data-mode="grounded">
+              <strong>Grounded</strong>
+              <small>Sourced, fact-checked documentary</small>
+            </button>
+            <button class="mode-option" id="storyModeSketch" type="button" role="radio" aria-checked="false" data-mode="sketch">
+              <strong>Sketch</strong>
+              <small>Invented comedy for your cast</small>
+            </button>
+          </div>
+
           <div class="story-controls">
             <label class="field">
-              <span>Story subject</span>
+              <span id="storySubjectLabel">Story subject</span>
               <input class="text-input" id="storySubjectInput" type="text" value="how stars are born">
             </label>
 
@@ -335,6 +346,18 @@
             </label>
           </div>
 
+          <div class="sketch-fields" id="sketchFields" hidden>
+            <label class="field">
+              <span>Premise</span>
+              <textarea class="text-input" id="storyPremiseInput" rows="3" maxlength="2000" placeholder="What happens? Who wants what, and what gets in the way?"></textarea>
+            </label>
+            <label class="field">
+              <span>Style notes</span>
+              <textarea class="text-input" id="storyStyleInput" rows="2" maxlength="1000" placeholder="Tone, era, references — e.g. 1960s BBC radio comedy, innuendo, groan-worthy puns."></textarea>
+            </label>
+            <small class="hint">No sources, no fact checking: the writer invents. Cast a cloned cast below and they perform it.</small>
+          </div>
+
           <div class="story-library-header">
             <span class="source-label">Cast</span>
             <button class="secondary compact-button" id="castAddButton" type="button">Add speaker</button>
@@ -342,12 +365,14 @@
           <div class="cast-list" id="castList"></div>
           <small class="hint">Each speaker has a name, a role the writer follows, and a voice from your library. Two to six speakers.</small>
 
-          <div class="story-library-header">
-            <span class="source-label">Sources</span>
-            <button class="secondary compact-button" id="sourceAddButton" type="button">Add source</button>
+          <div class="story-sources" id="storySources">
+            <div class="story-library-header">
+              <span class="source-label">Sources</span>
+              <button class="secondary compact-button" id="sourceAddButton" type="button">Add source</button>
+            </div>
+            <div class="source-stack" id="sourceStack"></div>
+            <small class="hint">Three to five sources. Excerpts are split into notes and fact cards; every script line must cite them.</small>
           </div>
-          <div class="source-stack" id="sourceStack"></div>
-          <small class="hint">Three to five sources. Excerpts are split into notes and fact cards; every script line must cite them.</small>
 
           <div class="action-row">
             <button class="secondary" id="storyDraftButton" type="button">Draft script</button>
@@ -367,7 +392,7 @@
               <input class="text-input" id="storyTitleInput" type="text" maxlength="200">
             </label>
             <div class="script-lines" id="scriptLines"></div>
-            <small class="hint">Edit any line's text or speaker; each line keeps its fact citations. Generate story produces exactly this script.</small>
+            <small class="hint" id="scriptEditorHint">Edit any line's text or speaker; each line keeps its fact citations. Generate story produces exactly this script.</small>
           </div>
         </form>
 

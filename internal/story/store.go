@@ -108,6 +108,7 @@ func (s *Store) List() ([]Summary, error) {
 		summaries = append(summaries, Summary{
 			ID:              manifest.ID,
 			Subject:         manifest.Subject,
+			Mode:            manifest.Mode,
 			Title:           manifest.Title,
 			Status:          manifest.Status,
 			CreatedAt:       manifest.CreatedAt,

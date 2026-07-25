@@ -48,10 +48,18 @@ The browser demo only records, uploads, and plays.
 
 ## Story (`internal/story`)
 
-The staged factual-story pipeline behind `/v1/stories`: source notes → fact
-cards → grounded script → synthesized audio, persisted atomically by the
+The staged story pipeline behind `/v1/stories`, persisted atomically by the
 story Store. Runs as a single-active-job state machine with injectable clock,
 stage delay, and engine reservation.
+
+**Mode** is the contract a story is written under, resolved once in
+validation and carried on `NormalizedRequest.Mode` through to the manifest.
+*Grounded* (the default) is the factual pipeline: source notes → fact cards →
+cited script → audio, where no line ships that a fact card does not support.
+*Sketch* is the fiction contract: premise + style + cast roles → script →
+audio, with no sources, no fact cards, and no citations — only the shared
+script shape (speakable text, a speaker in the cast) still gates it. One
+field decides all four differences, so neither mode can weaken the other.
 
 ## WAV knowledge (`internal/wav`)
 

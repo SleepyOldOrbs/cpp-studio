@@ -48,6 +48,14 @@
   var saveDescriptionButton = document.getElementById("saveDescriptionButton");
   var describeAudio = document.getElementById("describeAudio");
   var storyForm = document.getElementById("storyForm");
+  var storyModeSwitch = document.getElementById("storyModeSwitch");
+  var storyModeNote = document.getElementById("storyModeNote");
+  var storySubjectLabel = document.getElementById("storySubjectLabel");
+  var storySources = document.getElementById("storySources");
+  var sketchFields = document.getElementById("sketchFields");
+  var storyPremiseInput = document.getElementById("storyPremiseInput");
+  var storyStyleInput = document.getElementById("storyStyleInput");
+  var scriptEditorHint = document.getElementById("scriptEditorHint");
   var storySubjectInput = document.getElementById("storySubjectInput");
   var storySecondsInput = document.getElementById("storySecondsInput");
   var storyVoiceSelect = document.getElementById("storyVoiceSelect");
@@ -144,6 +152,7 @@
   var designCandidate = null;
   var libraryVoices = [];
   var storyDraft = null;
+  var storyMode = "grounded";
   var selectedVoiceId = "";
   try {
     selectedVoiceId = window.localStorage.getItem("cpp-studio-voice") || "";
@@ -161,6 +170,8 @@
     generateImageButton,
     clearImageButton,
     storySubjectInput,
+    storyPremiseInput,
+    storyStyleInput,
     storySecondsInput,
     storyVoiceSelect,
     storyGenerateButton,
@@ -770,6 +781,23 @@
       factsList.appendChild(createElement("li", "", (fact.id || "fact") + ": " + (fact.claim || "")));
     });
 
+    // A sketch has no sources and no fact cards; showing empty shelves for
+    // them would just look broken. It gets its premise instead.
+    if (manifest.mode === "sketch") {
+      var premiseBody = createElement("ul");
+      if (manifest.premise) {
+        premiseBody.appendChild(createElement("li", "", manifest.premise));
+      }
+      if (manifest.style) {
+        premiseBody.appendChild(createElement("li", "", "Style: " + manifest.style));
+      }
+      if (premiseBody.children.length > 0) {
+        appendSection(storyFacts, "Premise", premiseBody);
+      }
+      appendSection(storyFacts, "Cast", castList);
+      appendSection(storyFacts, "Script", scriptList);
+      return;
+    }
     appendSection(storyFacts, "Sources", sourcesList);
     appendSection(storyFacts, "Cast", castList);
     appendSection(storyFacts, "Script", scriptList);
@@ -788,7 +816,7 @@
       item.dataset.storyId = story.id || "";
       var title = story.title || story.subject || story.id || "Story";
       var created = story.created_at ? new Date(story.created_at).toLocaleString() : "";
-      var detail = [story.status || "unknown", story.duration_seconds ? story.duration_seconds + "s" : "", created].filter(Boolean).join(" / ");
+      var detail = [story.mode === "sketch" ? "sketch" : "", story.status || "unknown", story.duration_seconds ? story.duration_seconds + "s" : "", created].filter(Boolean).join(" / ");
       item.appendChild(createElement("span", "story-library-title", title));
       item.appendChild(createElement("span", "story-library-detail", detail));
       item.addEventListener("click", function () {
@@ -1470,6 +1498,51 @@
     });
   }
 
+  // ---------- story mode ----------
+
+  // The Story desk runs two contracts. Grounded wants sources and cites fact
+  // cards; sketch wants a premise and invents. Switching swaps which half of
+  // the form is on screen — the request body follows from storyMode alone.
+  var STORY_MODE_COPY = {
+    grounded: {
+      note: "sources → facts → script → audio",
+      subject: "Story subject",
+      subjectPlaceholder: "how stars are born",
+      scriptHint: "Edit any line's text or speaker; each line keeps its fact citations. Generate story produces exactly this script."
+    },
+    sketch: {
+      note: "premise → script → your cast performs it",
+      subject: "Sketch premise",
+      subjectPlaceholder: "a shop that only sells apologies",
+      scriptHint: "Edit any line's text or speaker. Nothing is fact-checked here. Generate story produces exactly this script."
+    }
+  };
+
+  function setStoryMode(mode, options) {
+    storyMode = mode === "sketch" ? "sketch" : "grounded";
+    var copy = STORY_MODE_COPY[storyMode];
+    Array.prototype.forEach.call(storyModeSwitch.querySelectorAll(".mode-option"), function (button) {
+      var selected = button.dataset.mode === storyMode;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-checked", selected ? "true" : "false");
+    });
+    storySources.hidden = storyMode === "sketch";
+    sketchFields.hidden = storyMode !== "sketch";
+    storyModeNote.textContent = copy.note;
+    storySubjectLabel.textContent = copy.subject;
+    storySubjectInput.placeholder = copy.subjectPlaceholder;
+    scriptEditorHint.textContent = copy.scriptHint;
+    if (options && options.silent) {
+      return;
+    }
+    // A draft written under one contract cannot be produced under the other.
+    discardDraft();
+    clearStoryError();
+    log(storyMode === "sketch"
+      ? "Story desk in sketch mode: no sources, no grounding — the writer invents"
+      : "Story desk in grounded mode: sourced facts, every line cited");
+  }
+
   // ---------- story draft editor ----------
 
   function discardDraft() {
@@ -1482,8 +1555,11 @@
 
   function renderDraft(draft) {
     storyDraft = draft;
+    var sketch = (draft.mode || "grounded") === "sketch";
     storyTitleInput.value = draft.title || "";
-    scriptDraftMeta.textContent = (draft.script || []).length + " lines · " + (draft.fact_cards || []).length + " facts";
+    scriptDraftMeta.textContent = sketch
+      ? (draft.script || []).length + " lines · sketch"
+      : (draft.script || []).length + " lines · " + (draft.fact_cards || []).length + " facts";
     scriptLines.textContent = "";
     (draft.script || []).forEach(function (line) {
       var row = createElement("div", "script-line-row");
@@ -1498,7 +1574,7 @@
       var textArea = createElement("textarea", "script-text");
       textArea.rows = 2;
       textArea.value = line.text || "";
-      var facts = createElement("span", "script-facts", (line.fact_ids || []).join(", "));
+      var facts = createElement("span", "script-facts", sketch ? "" : (line.fact_ids || []).join(", "));
       row.appendChild(speakerSelect);
       row.appendChild(textArea);
       row.appendChild(facts);
@@ -1520,8 +1596,20 @@
   }
 
   function storyRequestBody() {
+    if (storyMode === "sketch") {
+      return {
+        subject: storySubjectInput.value.trim(),
+        mode: "sketch",
+        premise: storyPremiseInput.value.trim(),
+        style: storyStyleInput.value.trim(),
+        target_seconds: Number(storySecondsInput.value || "90"),
+        voice_mode: storyVoiceSelect.value,
+        cast: collectCast()
+      };
+    }
     return {
       subject: storySubjectInput.value.trim(),
+      mode: "grounded",
       target_seconds: Number(storySecondsInput.value || "90"),
       source_mode: "curated",
       voice_mode: storyVoiceSelect.value,
@@ -2646,6 +2734,13 @@
   submitOnCtrlEnter(designDescriptionInput, designForm);
 
   storyVoiceSelect.addEventListener("change", syncControls);
+  Array.prototype.forEach.call(storyModeSwitch.querySelectorAll(".mode-option"), function (button) {
+    button.addEventListener("click", function () {
+      if (button.dataset.mode !== storyMode) {
+        setStoryMode(button.dataset.mode);
+      }
+    });
+  });
   storyDraftButton.addEventListener("click", draftStory);
   scriptDiscardButton.addEventListener("click", function () {
     discardDraft();
@@ -4289,6 +4384,7 @@
 
   resetCast();
   resetSources();
+  setStoryMode("grounded", { silent: true });
   renderEngineRack(null);
   applyTab(activeTabFromHash());
   log("Demo loaded");
