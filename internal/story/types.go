@@ -79,6 +79,7 @@ const (
 	CodeInvalidScript          ErrorCode = "invalid_script"
 	CodeLineNotFound           ErrorCode = "line_not_found"
 	CodeTakeNotFound           ErrorCode = "take_not_found"
+	CodeStaleTake              ErrorCode = "stale_take"
 	CodeNothingToRender        ErrorCode = "nothing_to_render"
 	CodeArtifactNotFound       ErrorCode = "artifact_not_found"
 	CodeUnsupportedArtifact    ErrorCode = "unsupported_artifact"
@@ -232,6 +233,22 @@ type Render struct {
 	DurationSeconds int       `json:"duration_seconds"`
 	Bytes           int       `json:"bytes"`
 	URL             string    `json:"url"`
+	// Recipe is exactly what went into this revision. The script stays
+	// editable after a render, so without a snapshot an "immutable" render
+	// would be immutable bytes with no surviving explanation of what they
+	// are. One entry per line that was actually used.
+	Recipe []RenderLine `json:"recipe,omitempty"`
+}
+
+// RenderLine is one line as it stood when a revision was published.
+type RenderLine struct {
+	LineID      string `json:"line_id"`
+	TakeID      string `json:"take_id"`
+	SpeakerID   string `json:"speaker_id"`
+	VoiceID     string `json:"voice_id,omitempty"`
+	Text        string `json:"text"`
+	GapBeforeMS int    `json:"gap_before_ms,omitempty"`
+	GapAfterMS  int    `json:"gap_after_ms,omitempty"`
 }
 
 type AudioRef struct {

@@ -3,6 +3,7 @@ package story
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"cpp-studio/internal/wav"
@@ -16,6 +17,10 @@ import (
 // LinePatch is an edit to one line's production settings. Nil fields are
 // left alone, so a caller can mute a line without restating its timing.
 type LinePatch struct {
+	// Text rewrites what the line says. Changing it deselects the current
+	// take — the recording no longer matches the words — so the line must
+	// be retaken or muted before the story can render again.
+	Text        *string `json:"text,omitempty"`
 	CurrentTake *string `json:"current_take,omitempty"`
 	Muted       *bool   `json:"muted,omitempty"`
 	GapBeforeMS *int    `json:"gap_before_ms,omitempty"`
@@ -67,22 +72,27 @@ func stitchTakes(clips [][]byte, script []ScriptLine) ([]byte, error) {
 	var (
 		kept []([]byte)
 		gaps []time.Duration
+		// previous is the last line actually kept, which is not always the
+		// line before this one: a muted line contributes nothing to the
+		// render, so its trailing nudge must not survive it either.
+		previous *ScriptLine
 	)
 	for i, line := range script {
 		if line.Muted || len(clips[i]) == 0 {
 			continue
 		}
 		gap := lineGap + time.Duration(line.GapBeforeMS)*time.Millisecond
-		if len(kept) > 0 {
-			// The previous line's trailing nudge and this line's leading
+		if previous != nil {
+			// The kept predecessor's trailing nudge and this line's leading
 			// nudge both apply to the single silence between them.
-			gap += time.Duration(script[i-1].GapAfterMS) * time.Millisecond
+			gap += time.Duration(previous.GapAfterMS) * time.Millisecond
 		}
 		if gap < 0 {
 			gap = 0
 		}
 		kept = append(kept, clips[i])
 		gaps = append(gaps, gap)
+		previous = &script[i]
 	}
 	if len(kept) == 0 {
 		return nil, NewError(CodeNothingToRender, "every line is muted or unrecorded")
@@ -152,6 +162,12 @@ func (m *Manager) Retake(ctx context.Context, storyID string, lineID string) (Ma
 	if m.synthesize == nil {
 		return Manifest{}, Take{}, NewError(CodeSynthesisFailure, "no audio engine is configured for synthesis")
 	}
+	// Held across the whole load-synthesize-save sequence: two concurrent
+	// retakes would otherwise both mint take-002 over each other.
+	lock := m.editLock(storyID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	manifest, ok, err := m.store.Load(storyID)
 	if err != nil {
 		return Manifest{}, Take{}, NewError(CodeStoreFailure, err.Error())
@@ -194,6 +210,10 @@ func (m *Manager) Retake(ctx context.Context, storyID string, lineID string) (Ma
 // EditLine applies a production edit to one line: which take is current,
 // whether it is muted, and its timing. It never touches audio.
 func (m *Manager) EditLine(storyID string, lineID string, patch LinePatch) (Manifest, error) {
+	lock := m.editLock(storyID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	manifest, ok, err := m.store.Load(storyID)
 	if err != nil {
 		return Manifest{}, NewError(CodeStoreFailure, err.Error())
@@ -207,11 +227,32 @@ func (m *Manager) EditLine(storyID string, lineID string, patch LinePatch) (Mani
 	}
 
 	line := &manifest.Script[index]
+	if patch.Text != nil {
+		text := strings.TrimSpace(*patch.Text)
+		if text == "" {
+			return Manifest{}, NewError(CodeInvalidRequest, "line text cannot be empty; mute the line instead")
+		}
+		if len(text) > MaxScriptLineTextChars {
+			return Manifest{}, NewError(CodeInvalidRequest, fmt.Sprintf("line text must be at most %d characters", MaxScriptLineTextChars))
+		}
+		if text != line.Text {
+			line.Text = text
+			// Every existing take says the old words. Deselect rather than
+			// silently render audio that contradicts the script; the takes
+			// stay on disk, and reselecting one is still possible if the
+			// text is changed back.
+			line.CurrentTake = ""
+		}
+	}
 	if patch.CurrentTake != nil {
-		if !hasTake(line.Takes, *patch.CurrentTake) {
+		take := takeByID(line.Takes, *patch.CurrentTake)
+		if take == nil {
 			return Manifest{}, NewError(CodeTakeNotFound, fmt.Sprintf("line %s has no take %q", lineID, *patch.CurrentTake))
 		}
-		line.CurrentTake = *patch.CurrentTake
+		if take.Text != line.Text {
+			return Manifest{}, NewError(CodeStaleTake, fmt.Sprintf("take %s was recorded against different words; retake line %s", take.ID, lineID))
+		}
+		line.CurrentTake = take.ID
 	}
 	if patch.Muted != nil {
 		line.Muted = *patch.Muted
@@ -239,6 +280,12 @@ func (m *Manager) EditLine(storyID string, lineID string, patch LinePatch) (Mani
 // result as a new revision. Earlier revisions stay on disk: what you already
 // shared keeps playing what you shared.
 func (m *Manager) Render(storyID string) (Manifest, Render, error) {
+	// Two concurrent renders would otherwise both claim the same revision
+	// number and overwrite an allegedly immutable file.
+	lock := m.editLock(storyID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	manifest, ok, err := m.store.Load(storyID)
 	if err != nil {
 		return Manifest{}, Render{}, NewError(CodeStoreFailure, err.Error())
@@ -248,15 +295,35 @@ func (m *Manager) Render(storyID string) (Manifest, Render, error) {
 	}
 
 	clips := make([][]byte, len(manifest.Script))
+	var recipe []RenderLine
 	for i, line := range manifest.Script {
 		if line.Muted || line.CurrentTake == "" {
 			continue
+		}
+		take := takeByID(line.Takes, line.CurrentTake)
+		if take == nil {
+			return Manifest{}, Render{}, NewError(CodeTakeNotFound, fmt.Sprintf("line %s selects take %q, which it does not have", line.ID, line.CurrentTake))
+		}
+		// A take recorded against different words is not this line any more.
+		// Rendering it would quietly publish audio that contradicts the
+		// script the manifest shows.
+		if take.Text != line.Text {
+			return Manifest{}, Render{}, NewError(CodeStaleTake, fmt.Sprintf("line %s was edited after take %s was recorded; retake it or mute the line", line.ID, take.ID))
 		}
 		audio, err := m.store.LoadTake(storyID, line.ID, line.CurrentTake)
 		if err != nil {
 			return Manifest{}, Render{}, err
 		}
 		clips[i] = audio
+		recipe = append(recipe, RenderLine{
+			LineID:      line.ID,
+			TakeID:      take.ID,
+			SpeakerID:   line.SpeakerID,
+			VoiceID:     take.VoiceID,
+			Text:        take.Text,
+			GapBeforeMS: line.GapBeforeMS,
+			GapAfterMS:  line.GapAfterMS,
+		})
 	}
 
 	stitched, err := stitchTakes(clips, manifest.Script)
@@ -281,6 +348,7 @@ func (m *Manager) Render(storyID string) (Manifest, Render, error) {
 		DurationSeconds: durationSeconds,
 		Bytes:           len(stitched),
 		URL:             RenderURL(storyID, revision),
+		Recipe:          recipe,
 	}
 	manifest.Renders = append(manifest.Renders, render)
 	manifest.DurationSeconds = durationSeconds
@@ -319,13 +387,13 @@ func lineIndex(script []ScriptLine, lineID string) int {
 	return -1
 }
 
-func hasTake(takes []Take, id string) bool {
-	for _, take := range takes {
-		if take.ID == id {
-			return true
+func takeByID(takes []Take, id string) *Take {
+	for i := range takes {
+		if takes[i].ID == id {
+			return &takes[i]
 		}
 	}
-	return false
+	return nil
 }
 
 func nextTakeID(takes []Take) string {

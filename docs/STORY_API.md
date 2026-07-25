@@ -325,10 +325,20 @@ replaced without regenerating the episode.
 - **Production settings.** `muted` drops a line from renders without
   deleting it; `gap_before_ms` / `gap_after_ms` adjust its timing on top of
   the default 350 ms inter-line gap (each between -500 and 3000).
-- **Renders are immutable.** Each render is a numbered revision under
-  `renders/`, listed in the manifest's `renders`. `story.wav` always mirrors
-  the latest, so existing clients keep working, and earlier revisions stay
-  fetchable.
+- **Renders are immutable, and they explain themselves.** Each render is a
+  numbered revision under `renders/`, listed in the manifest's `renders`
+  with a `recipe`: the exact take id, voice, words and timing of every line
+  that went into it. The script stays editable afterwards, so without the
+  snapshot an "immutable" revision would be immutable bytes with no
+  surviving account of what they are. `story.wav` always mirrors the latest.
+- **Editing the words invalidates the recording.** Changing a line's `text`
+  deselects its current take — every existing take says the old words. The
+  takes stay on disk, but the line contributes nothing to a render until it
+  is retaken. Selecting or rendering a take whose recorded text no longer
+  matches its line fails with `stale_take`.
+- **Mutations are serialized per story.** Retake, line edits and renders
+  take a per-story lock, so two retakes cannot mint the same take id and two
+  renders cannot claim the same revision.
 
 Placeholder-tone stories have no per-line audio, so they have no takes.
 
@@ -341,22 +351,25 @@ Unknown line ids return `400` with `line_not_found`.
 
 ### PATCH /v1/stories/{id}/lines/{line_id}
 
-Edits one line's production settings without touching audio. Omitted fields
-are left alone:
+Edits one line without touching audio. Omitted fields are left alone:
 
 ```json
-{ "current_take": "take-002", "muted": false, "gap_after_ms": 250 }
+{ "text": "A better joke.", "current_take": "take-002", "muted": false, "gap_after_ms": 250 }
 ```
 
-Returns `{"manifest": ...}`. Selecting a take the line does not have returns
-`400` with `take_not_found`; out-of-range timing returns `invalid_request`.
+Returns `{"manifest": ...}`. Changing `text` clears `current_take` (see
+above). Selecting a take the line does not have returns `400` with
+`take_not_found`; selecting one recorded against different words returns
+`stale_take`; empty text or out-of-range timing returns `invalid_request`.
 
 ### POST /v1/stories/{id}/render
 
 Restitches the story from every line's current take, honouring mutes and
-per-line timing, and publishes it as the next revision. Returns
-`{"render": ..., "manifest": ...}`. A story with nothing left to render
-(every line muted or unrecorded) returns `400` with `nothing_to_render`.
+per-line timing, and publishes it as the next revision with its recipe.
+Returns `{"render": ..., "manifest": ...}`. A muted line contributes
+nothing at all — not its audio and not its timing. A story with nothing
+left to render returns `400` with `nothing_to_render`; a line whose selected
+take was recorded against different words returns `stale_take`.
 
 ## GET /v1/stories/{id}/artifact/{path}
 

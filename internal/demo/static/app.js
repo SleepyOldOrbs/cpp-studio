@@ -870,8 +870,30 @@
     });
     head.appendChild(gapInput);
 
+    // A line whose takes all predate an edit has nothing renderable until
+    // it is retaken. Say so where the retake button is, not in an error.
+    if (!line.muted && !line.current_take) {
+      var stale = createElement("span", "take-line-stale", takes.length ? "Retake needed" : "No take");
+      head.appendChild(stale);
+      row.classList.add("is-stale");
+    }
+
     row.appendChild(head);
-    row.appendChild(createElement("p", "take-line-text", line.text || ""));
+
+    // Editing the words is the other half of fixing a line: if the joke is
+    // wrong rather than the read, retaking the same text cannot help.
+    var text = createElement("textarea", "take-line-text");
+    text.rows = 2;
+    text.value = line.text || "";
+    text.addEventListener("change", function () {
+      var edited = text.value.trim();
+      if (!edited || edited === line.text) {
+        text.value = line.text || "";
+        return;
+      }
+      patchTakeLine(line.id, { text: edited }).catch(setStoryError);
+    });
+    row.appendChild(text);
     return row;
   }
 

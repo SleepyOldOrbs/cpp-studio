@@ -60,6 +60,25 @@ type Manager struct {
 	activeID      string
 	jobs          map[string]*job
 	registry      *jobs.Registry
+	// edits serializes take-room mutations per story. Retake, EditLine and
+	// Render each load the manifest, change it and save it back; without
+	// this, two retakes both read one take, both mint "take-002", and one
+	// overwrites the other's audio and manifest entry.
+	edits   map[string]*sync.Mutex
+	editsMu sync.Mutex
+}
+
+// editLock returns the mutation lock for one story, creating it on first
+// use. Locks are keyed by story id and outlive individual requests.
+func (m *Manager) editLock(storyID string) *sync.Mutex {
+	m.editsMu.Lock()
+	defer m.editsMu.Unlock()
+	if lock, ok := m.edits[storyID]; ok {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	m.edits[storyID] = lock
+	return lock
 }
 
 type job struct {
@@ -88,6 +107,7 @@ func NewManager(opts ManagerOptions) *Manager {
 		now:           now,
 		jobs:          make(map[string]*job),
 		registry:      opts.Jobs,
+		edits:         make(map[string]*sync.Mutex),
 	}
 }
 

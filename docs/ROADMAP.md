@@ -247,6 +247,54 @@ resident `audiocpp_server` (2026-07-23) already took an 8-line story from
 that decision still worth having, and M8 takes it. Revisit batching only
 against a fresh measurement.
 
+### M9 — What the second review settled
+
+A second round of five candidates, drawn from what related tools do
+(podcast mastering to -16 LUFS, delivery/emotion control, music beds,
+MP3 delivery), went through the same independent review. The verdict that
+mattered was that none of them should come first:
+
+- **Take-room integrity — DONE, and it outranked all five.** The take room
+  shipped with the *appearance* of immutable revisioning and not the
+  transactional integrity to back it. Two concurrent retakes both computed
+  `take-002` and overwrote each other; two renders both claimed one
+  revision number; and `stitchTakes` charged a muted line's trailing gap to
+  its neighbours, so muting a line changed the timing around it. All three
+  are fixed, with tests, plus a render `recipe` — take ids, voices, words
+  and timing — so a published revision can still explain itself after the
+  script moves on.
+- **Edit the line, then retake — DONE.** Ranked first of the five: the take
+  room could re-record a line but not change what it says, which left the
+  original problem intact one level up. `text` is now patchable, and
+  changing it deselects every take recorded against the old words. A
+  `stale_take` error refuses to select or render one.
+- **ffmpeg import/export — next.** A config-gated `ffmpeg` tool in the
+  `ytdlp` mould: MP3/Opus delivery, plus the long-and-exotic-file importer
+  M5 deferred. Note the traps: `engine.Spec` is a whole-buffer API that
+  would copy a large file through memory repeatedly, artifact serving
+  hardcodes `audio/wav`, and capability probing must confirm the encoders
+  actually exist in the operator's build.
+- **Mastering — later, and through ffmpeg `loudnorm`, not pure Go.** The
+  measurement standard is BS.1770; -16 LUFS is the podcast delivery target,
+  not "EBU R128", whose programme target is -23. Two constraints also
+  cannot always both hold: if linear gain to -16 would breach the true-peak
+  ceiling, the honest outcome is a quieter render and a recorded actual
+  value, never a claim that both were met. Level per speaker on aggregate
+  material rather than per take, or intentional whispers and shouts get
+  flattened.
+- **Per-line delivery direction — CUT.** Not reachable: the resident audio
+  server takes `{model, input, voice_ref, reference_text}`, `SynthesizeFunc`
+  is `(ctx, text, voiceID)`, and `--instruct` belongs to the voice *design*
+  engines, not cloned speech. A direction field would be inert metadata
+  pretending to be a feature.
+- **Resumable production — later, and bigger than it looks.** Story
+  synthesis still holds every clip in memory and writes takes only after the
+  story is stored, so resume needs a work-in-progress layout first. Line id
+  plus text is not a sufficient cache key either: an engine or model change
+  between runs would splice an inconsistent episode together silently.
+  Audiobooks have no take layout at all, so story resume would not help the
+  long-form case that motivates it.
+
 ## Cross-cutting — repo presentation  ·  *stars*
 
 - **README — DONE.** Rebuilt around the vision, with honest hardware

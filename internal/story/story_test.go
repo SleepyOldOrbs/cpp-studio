@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -608,6 +609,228 @@ func TestStatusReflectsTakeRoomEdits(t *testing.T) {
 	}
 	if status, _, _ = manager.Status(manifest.ID); len(status.Manifest.Renders) != 2 {
 		t.Fatalf("status reports %d renders after re-rendering", len(status.Manifest.Renders))
+	}
+}
+
+// A muted line contributes nothing to the render — not its audio and not
+// its timing. The first version of stitchTakes reached for script[i-1]
+// rather than the last line it actually kept, so a muted middle line still
+// donated its trailing gap to the silence around it.
+func TestEditLineTextDeselectsTheStaleTake(t *testing.T) {
+	manager, manifest := producedStory(t)
+	lineID := manifest.Script[0].ID
+
+	newText := "A completely different joke."
+	updated, err := manager.EditLine(manifest.ID, lineID, LinePatch{Text: &newText})
+	if err != nil {
+		t.Fatalf("EditLine returned error: %v", err)
+	}
+	line := updated.Script[0]
+	if line.Text != newText {
+		t.Fatalf("text was not applied: %q", line.Text)
+	}
+	if line.CurrentTake != "" {
+		t.Fatalf("the take recorded against the old words is still selected: %q", line.CurrentTake)
+	}
+	// The recording itself is kept — only the selection was dropped.
+	if len(line.Takes) != 1 {
+		t.Fatalf("editing text destroyed take history: %+v", line.Takes)
+	}
+
+	t.Run("the stale take cannot be reselected", func(t *testing.T) {
+		stale := "take-001"
+		if _, err := manager.EditLine(manifest.ID, lineID, LinePatch{CurrentTake: &stale}); !storyErrorIs(err, CodeStaleTake) {
+			t.Fatalf("expected stale_take, got %v", err)
+		}
+	})
+
+	t.Run("rendering refuses to publish words nobody spoke", func(t *testing.T) {
+		// The line has no current take, so it contributes nothing; that is
+		// fine. But reselecting is blocked above, and a take whose text
+		// drifted must never reach a render.
+		bad := updated
+		bad.Script[0].CurrentTake = "take-001"
+		if err := manager.store.SaveManifest(bad); err != nil {
+			t.Fatalf("SaveManifest returned error: %v", err)
+		}
+		if _, _, err := manager.Render(manifest.ID); !storyErrorIs(err, CodeStaleTake) {
+			t.Fatalf("expected stale_take from Render, got %v", err)
+		}
+	})
+
+	t.Run("a retake makes the line renderable again", func(t *testing.T) {
+		if _, _, err := manager.Retake(context.Background(), manifest.ID, lineID); err != nil {
+			t.Fatalf("Retake returned error: %v", err)
+		}
+		after, _, err := manager.Status(manifest.ID)
+		if err != nil {
+			t.Fatalf("Status returned error: %v", err)
+		}
+		take := after.Manifest.Script[0]
+		if take.CurrentTake == "" {
+			t.Fatalf("retake did not select the new recording")
+		}
+		if got := takeByID(take.Takes, take.CurrentTake); got == nil || got.Text != newText {
+			t.Fatalf("the new take was not recorded against the new words: %+v", got)
+		}
+		if _, _, err := manager.Render(manifest.ID); err != nil {
+			t.Fatalf("Render returned error after retake: %v", err)
+		}
+	})
+}
+
+// Two retakes of the same line arriving together used to compute the same
+// take id, overwrite each other's audio, and race the manifest write. Same
+// for two renders claiming one revision number.
+func TestConcurrentTakeRoomEditsDoNotCollide(t *testing.T) {
+	manager, manifest := producedStory(t)
+	lineID := manifest.Script[0].ID
+
+	const retakes = 6
+	var wg sync.WaitGroup
+	errs := make(chan error, retakes)
+	for i := 0; i < retakes; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, err := manager.Retake(context.Background(), manifest.ID, lineID); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent retake failed: %v", err)
+	}
+
+	stored, ok, err := manager.store.Load(manifest.ID)
+	if err != nil || !ok {
+		t.Fatalf("load story: %v (ok=%v)", err, ok)
+	}
+	takes := stored.Script[0].Takes
+	if len(takes) != retakes+1 {
+		t.Fatalf("expected %d takes after %d concurrent retakes, got %d", retakes+1, retakes, len(takes))
+	}
+	seen := map[string]bool{}
+	for _, take := range takes {
+		if seen[take.ID] {
+			t.Fatalf("duplicate take id %s — one retake overwrote another", take.ID)
+		}
+		seen[take.ID] = true
+		if _, err := manager.store.LoadTake(manifest.ID, lineID, take.ID); err != nil {
+			t.Fatalf("take %s has no audio on disk: %v", take.ID, err)
+		}
+	}
+
+	const renders = 4
+	wg = sync.WaitGroup{}
+	rerrs := make(chan error, renders)
+	for i := 0; i < renders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, err := manager.Render(manifest.ID); err != nil {
+				rerrs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(rerrs)
+	for err := range rerrs {
+		t.Fatalf("concurrent render failed: %v", err)
+	}
+
+	stored, _, err = manager.store.Load(manifest.ID)
+	if err != nil {
+		t.Fatalf("load story: %v", err)
+	}
+	revisions := map[int]bool{}
+	for _, render := range stored.Renders {
+		if revisions[render.Revision] {
+			t.Fatalf("duplicate render revision %d — one render overwrote another", render.Revision)
+		}
+		revisions[render.Revision] = true
+		if _, err := manager.ArtifactPath(manifest.ID, "renders", fmt.Sprintf("render-%03d.wav", render.Revision)); err != nil {
+			t.Fatalf("revision %d is not on disk: %v", render.Revision, err)
+		}
+	}
+	if len(stored.Renders) != renders+1 {
+		t.Fatalf("expected %d revisions, got %d", renders+1, len(stored.Renders))
+	}
+}
+
+func TestRenderRecordsItsRecipe(t *testing.T) {
+	manager, manifest := producedStory(t)
+
+	muted := true
+	if _, err := manager.EditLine(manifest.ID, manifest.Script[0].ID, LinePatch{Muted: &muted}); err != nil {
+		t.Fatalf("EditLine returned error: %v", err)
+	}
+	updated, render, err := manager.Render(manifest.ID)
+	if err != nil {
+		t.Fatalf("Render returned error: %v", err)
+	}
+	if len(render.Recipe) != len(manifest.Script)-1 {
+		t.Fatalf("expected one recipe line per rendered line, got %d for %d lines", len(render.Recipe), len(manifest.Script)-1)
+	}
+	for _, entry := range render.Recipe {
+		if entry.LineID == manifest.Script[0].ID {
+			t.Fatalf("the muted line appears in the recipe: %+v", entry)
+		}
+		if entry.TakeID == "" || entry.Text == "" {
+			t.Fatalf("recipe entry is not self-describing: %+v", entry)
+		}
+	}
+
+	// The recipe is a snapshot: editing the script afterwards must not
+	// rewrite what an already-published revision says it was.
+	newText := "rewritten after the fact"
+	if _, err := manager.EditLine(manifest.ID, updated.Script[1].ID, LinePatch{Text: &newText}); err != nil {
+		t.Fatalf("EditLine returned error: %v", err)
+	}
+	reloaded, _, err := manager.store.Load(manifest.ID)
+	if err != nil {
+		t.Fatalf("load story: %v", err)
+	}
+	for _, entry := range reloaded.Renders[len(reloaded.Renders)-1].Recipe {
+		if entry.Text == newText {
+			t.Fatalf("a published render's recipe changed under it: %+v", entry)
+		}
+	}
+}
+
+func TestStitchIgnoresTimingOfMutedLines(t *testing.T) {
+	clip := wav.SyntheticTone(wav.ToneSampleRate / 4)
+	script := []ScriptLine{
+		{ID: "line-001", SpeakerID: "a", Text: "one"},
+		{ID: "line-002", SpeakerID: "b", Text: "two", Muted: true, GapAfterMS: MaxGapMS},
+		{ID: "line-003", SpeakerID: "a", Text: "three"},
+	}
+	withMutedGap, err := stitchTakes([][]byte{clip, clip, clip}, script)
+	if err != nil {
+		t.Fatalf("stitchTakes returned error: %v", err)
+	}
+
+	// The same render with the muted line carrying no nudge at all must be
+	// identical: a muted line's timing is not part of the piece.
+	script[1].GapAfterMS = 0
+	withoutMutedGap, err := stitchTakes([][]byte{clip, clip, clip}, script)
+	if err != nil {
+		t.Fatalf("stitchTakes returned error: %v", err)
+	}
+	if len(withMutedGap) != len(withoutMutedGap) {
+		t.Fatalf("a muted line's gap leaked into the render: %d bytes vs %d", len(withMutedGap), len(withoutMutedGap))
+	}
+
+	// And the surviving neighbour's own nudge still applies.
+	script[0].GapAfterMS = 500
+	louder, err := stitchTakes([][]byte{clip, clip, clip}, script)
+	if err != nil {
+		t.Fatalf("stitchTakes returned error: %v", err)
+	}
+	if len(louder) <= len(withoutMutedGap) {
+		t.Fatalf("the kept line's own gap was dropped: %d bytes vs %d", len(louder), len(withoutMutedGap))
 	}
 }
 
