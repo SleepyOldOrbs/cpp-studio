@@ -1405,8 +1405,14 @@
     cloneErrorBox.hidden = true;
   }
 
-  function setCloneWav(file, source) {
+  // cloneWavSource is the provenance of whatever is currently staged as a
+  // reference: set when the clip came from the Extractor (which knows the
+  // recording, the seconds and the speaker), null for a mic take or upload.
+  var cloneWavSource = null;
+
+  function setCloneWav(file, source, provenance) {
     cloneWavFile = file;
+    cloneWavSource = provenance || null;
     cloneWavStatus.textContent = source + ": " + file.name + " (" + formatBytes(file.size) + ")";
     cloneWavSaveButton.disabled = false;
     log("Reference WAV ready from " + source + ": " + file.name + ", " + formatBytes(file.size));
@@ -1414,6 +1420,7 @@
 
   function clearCloneWav() {
     cloneWavFile = null;
+    cloneWavSource = null;
     cloneWavInput.value = "";
     cloneWavStatus.textContent = "None";
     cloneWavSaveButton.disabled = true;
@@ -1439,6 +1446,18 @@
       head.appendChild(createElement("span", "voice-item-detail", clone.created_at ? new Date(clone.created_at).toLocaleString() : ""));
       item.appendChild(head);
       item.appendChild(createElement("p", "voice-item-transcript", clone.transcript || ""));
+      if (clone.source && clone.source.name) {
+        // Where this voice came from. A voice outlives its clip, so this is
+        // the only place the question can still be answered.
+        var from = "From " + clone.source.name;
+        if (clone.source.speaker) {
+          from += " · speaker " + clone.source.speaker;
+        }
+        if (clone.source.end_sec) {
+          from += " · " + fmtTime(clone.source.start_sec || 0) + "–" + fmtTime(clone.source.end_sec);
+        }
+        item.appendChild(createElement("p", "voice-item-source", from));
+      }
 
       var actions = createElement("div", "voice-item-actions");
       var useButton = createElement("button", "secondary compact-button", clone.id === selectedVoiceId ? "In use" : "Use in loop");
@@ -1862,6 +1881,7 @@
       if (name) {
         form.append("name", name);
       }
+      appendCloneSource(form, cloneWavSource);
       log("POST /v1/voices");
       var response = await fetch("/v1/voices", { method: "POST", body: form });
       await ensureOk(response, "Voice clone");
@@ -3931,7 +3951,12 @@
     }
     var blob = extractSelectionWav();
     var file = new File([blob], extractClipName().replace(/[:]/g, ".") + ".wav", { type: "audio/wav" });
-    setCloneWav(file, "the Extractor");
+    setCloneWav(file, "the Extractor", {
+      name: ex.sourceName,
+      start: ex.region ? ex.region.start : undefined,
+      end: ex.region ? ex.region.end : undefined,
+      speaker: ex.filter && ex.filter !== "all" ? ex.filter : ""
+    });
     window.location.hash = "#voices";
     cloneNameInput.focus();
     log("Extractor clip sent to voice clone: " + file.name);
@@ -4141,6 +4166,24 @@
     renderExtractTimeline();
   });
 
+  // appendCloneSource attaches a voice's provenance to a clone upload:
+  // which recording, which seconds, which speaker.
+  function appendCloneSource(form, source) {
+    if (!source || !source.name) {
+      return;
+    }
+    form.append("source_name", source.name);
+    if (source.speaker) {
+      form.append("source_speaker", source.speaker);
+    }
+    if (Number.isFinite(source.start)) {
+      form.append("source_start_sec", String(source.start.toFixed(2)));
+    }
+    if (Number.isFinite(source.end)) {
+      form.append("source_end_sec", String(source.end.toFixed(2)));
+    }
+  }
+
   // --- Clone the cast -----------------------------------------------------
   // One click after speaker tagging: for every tagged speaker, pick their
   // best material (longest merged run, capped at 15s) and mint a library
@@ -4210,6 +4253,9 @@
         var form = new FormData();
         form.append("file", new File([encodeWav(ex.samples.subarray(s0, s1), ex.rate)], (base + " " + speaker + ".wav").replace(/[:]/g, "."), { type: "audio/wav" }));
         form.append("name", base + " " + speaker);
+        // A voice outlives every clip it was cut from, so the library only
+        // gets to record where it came from at this moment.
+        appendCloneSource(form, { name: ex.sourceName, start: span.start, end: span.end, speaker: speaker });
         var response = await fetch("/v1/voices", { method: "POST", body: form });
         if (!response.ok) {
           throw new Error(speaker + ": " + (await readErrorBody(response)));

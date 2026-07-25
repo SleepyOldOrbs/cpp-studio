@@ -1758,7 +1758,7 @@ func (r *router) handleVoices(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 		}
-		clone, err := r.voices.Save(name, transcript, data, req.FormValue("protected") == "true")
+		clone, err := r.voices.SaveWithSource(name, transcript, data, req.FormValue("protected") == "true", parseCloneSource(req))
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
@@ -1832,8 +1832,30 @@ func voiceSummary(clone voice.Clone) voiceCloneSummary {
 		Transcript: clone.Transcript,
 		CreatedAt:  clone.CreatedAt,
 		Protected:  clone.Protected,
+		Source:     clone.Source,
 		AudioURL:   "/v1/voices/" + clone.ID + "/audio",
 	}
+}
+
+// parseCloneSource reads the optional provenance fields off a clone upload.
+// The Extractor knows the recording, the seconds, and the speaker at the
+// moment it mints a voice; a hand-uploaded reference knows none of it, so
+// every field is optional and an empty source is left off entirely.
+func parseCloneSource(req *http.Request) *voice.CloneSource {
+	name := strings.TrimSpace(req.FormValue("source_name"))
+	speaker := strings.TrimSpace(req.FormValue("source_speaker"))
+	start, _ := strconv.ParseFloat(req.FormValue("source_start_sec"), 64)
+	end, _ := strconv.ParseFloat(req.FormValue("source_end_sec"), 64)
+	if name == "" && speaker == "" {
+		return nil
+	}
+	if len(name) > 200 {
+		name = name[:200]
+	}
+	if len(speaker) > 40 {
+		speaker = speaker[:40]
+	}
+	return &voice.CloneSource{Name: name, StartSec: start, EndSec: end, Speaker: speaker}
 }
 
 const (
@@ -2560,12 +2582,13 @@ type visionImageURL struct {
 }
 
 type voiceCloneSummary struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Transcript string    `json:"transcript"`
-	CreatedAt  time.Time `json:"created_at"`
-	Protected  bool      `json:"protected,omitempty"`
-	AudioURL   string    `json:"audio_url"`
+	ID         string             `json:"id"`
+	Name       string             `json:"name"`
+	Transcript string             `json:"transcript"`
+	CreatedAt  time.Time          `json:"created_at"`
+	Protected  bool               `json:"protected,omitempty"`
+	Source     *voice.CloneSource `json:"source,omitempty"`
+	AudioURL   string             `json:"audio_url"`
 }
 
 type voiceListResponse struct {

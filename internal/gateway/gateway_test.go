@@ -1654,6 +1654,88 @@ func helperEngine(mode string) config.EngineConfig {
 	}
 }
 
+func TestVoiceCloneRecordsProvenance(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{"whisper": helperEngine("transcribe")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("name", "Round the Horne B")
+	_ = writer.WriteField("transcript", "a reference line of speech")
+	_ = writer.WriteField("source_name", "round-the-horne-s3e1.mp3")
+	_ = writer.WriteField("source_speaker", "B")
+	_ = writer.WriteField("source_start_sec", "412.50")
+	_ = writer.WriteField("source_end_sec", "424.25")
+	part, err := writer.CreateFormFile("file", "reference.wav")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write(validWAVBytes()); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voices", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created voiceCloneSummary
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.Source == nil {
+		t.Fatalf("expected provenance on the created voice, got %+v", created)
+	}
+	if created.Source.Name != "round-the-horne-s3e1.mp3" || created.Source.Speaker != "B" {
+		t.Fatalf("unexpected provenance %+v", created.Source)
+	}
+	if created.Source.StartSec != 412.50 || created.Source.EndSec != 424.25 {
+		t.Fatalf("unexpected provenance times %+v", created.Source)
+	}
+
+	// It survives a reload: provenance is stored, not just echoed.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/voices", nil))
+	var list voiceListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(list.Voices) != 1 || list.Voices[0].Source == nil || list.Voices[0].Source.Speaker != "B" {
+		t.Fatalf("provenance did not persist: %+v", list.Voices)
+	}
+
+	t.Run("a hand-uploaded reference carries none", func(t *testing.T) {
+		var plain bytes.Buffer
+		w := multipart.NewWriter(&plain)
+		_ = w.WriteField("name", "Hand upload")
+		_ = w.WriteField("transcript", "another reference line")
+		p, _ := w.CreateFormFile("file", "reference.wav")
+		_, _ = p.Write(validWAVBytes())
+		_ = w.Close()
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/voices", &plain)
+		req.Header.Set("Content-Type", w.FormDataContentType())
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var plainClone voiceCloneSummary
+		if err := json.NewDecoder(rec.Body).Decode(&plainClone); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if plainClone.Source != nil {
+			t.Fatalf("expected no invented provenance, got %+v", plainClone.Source)
+		}
+	})
+}
+
 func TestAudioImportFetchesThroughYtdlp(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{"ytdlp": helperEngine("import")})
 	router := NewRouter(cfg, lifecycle.NewManager(cfg))

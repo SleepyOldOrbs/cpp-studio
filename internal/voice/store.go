@@ -32,6 +32,22 @@ type Clone struct {
 	Transcript string    `json:"transcript"`
 	CreatedAt  time.Time `json:"created_at"`
 	Protected  bool      `json:"protected,omitempty"`
+	// Source says where this voice came from, when the studio knows: the
+	// recording, the seconds inside it, and the speaker tag. A voice
+	// outlives every clip it was cut from, so the one place this can be
+	// answered later is here.
+	Source *CloneSource `json:"source,omitempty"`
+}
+
+// CloneSource is the provenance of a cloned voice. The Extractor already
+// knows all of it at the moment it mints a voice; recording it is the
+// difference between a library that can say whose voice this is and one
+// that cannot.
+type CloneSource struct {
+	Name     string  `json:"name"`
+	StartSec float64 `json:"start_sec,omitempty"`
+	EndSec   float64 `json:"end_sec,omitempty"`
+	Speaker  string  `json:"speaker,omitempty"`
 }
 
 // ErrProtected reports a deletion attempt on a protected voice.
@@ -54,6 +70,13 @@ func NewStore(rootDir string) *Store {
 // ID. The name and transcript arrive already trimmed by the caller.
 // Protected voices refuse later deletion.
 func (s *Store) Save(name string, transcript string, refWAV []byte, protected bool) (Clone, error) {
+	return s.SaveWithSource(name, transcript, refWAV, protected, nil)
+}
+
+// SaveWithSource is Save with the voice's provenance attached. Callers that
+// know where the reference came from — the Extractor, above all — should use
+// this so the library can answer the question later.
+func (s *Store) SaveWithSource(name string, transcript string, refWAV []byte, protected bool, source *CloneSource) (Clone, error) {
 	if name == "" {
 		return Clone{}, fmt.Errorf("voice name is required")
 	}
@@ -86,6 +109,7 @@ func (s *Store) Save(name string, transcript string, refWAV []byte, protected bo
 		Transcript: transcript,
 		CreatedAt:  time.Now().UTC(),
 		Protected:  protected,
+		Source:     source,
 	}
 
 	tmpDir := filepath.Join(s.rootDir, "."+clone.ID+".tmp")
