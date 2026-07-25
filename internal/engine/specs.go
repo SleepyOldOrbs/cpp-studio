@@ -21,6 +21,10 @@ const (
 	// DefaultImportTimeout is generous because it covers a network download
 	// of a whole episode, not a local inference run.
 	DefaultImportTimeout = 900 * time.Second
+	// DefaultTranscodeTimeout covers encoding a long audiobook; spoken-word
+	// audio encodes far faster than real time, so this is slack, not a
+	// target.
+	DefaultTranscodeTimeout = 600 * time.Second
 
 	MaxSpeechOutputBytes = 32 * 1024 * 1024
 	MaxImageOutputBytes  = 32 * 1024 * 1024
@@ -235,6 +239,128 @@ func ImportAudioSpec(sourceURL string) Spec {
 			return nil
 		},
 	}
+}
+
+// AudioFormat is a delivery format the optional "ffmpeg" engine can encode.
+// WAV is what the studio produces; these are what you can actually send to
+// someone.
+type AudioFormat struct {
+	// ID is the wire name and the file extension.
+	ID string `json:"id"`
+	// Encoder is the ffmpeg encoder that must exist in the operator's
+	// build. A binary without it is a binary that cannot make this format,
+	// which is worth knowing before a long job rather than after it.
+	Encoder string `json:"encoder"`
+	// ContentType serves the finished file.
+	ContentType string `json:"content_type"`
+	// DefaultBitrate is used when a request names no bitrate.
+	DefaultBitrate string `json:"default_bitrate"`
+	Label          string `json:"label"`
+}
+
+// AudioFormats are the delivery formats the studio offers. Both are widely
+// playable and both cut a spoken-word WAV by more than an order of
+// magnitude; opus is smaller at equal quality, mp3 plays absolutely
+// everywhere.
+var AudioFormats = []AudioFormat{
+	{ID: "mp3", Encoder: "libmp3lame", ContentType: "audio/mpeg", DefaultBitrate: "128k", Label: "MP3"},
+	{ID: "opus", Encoder: "libopus", ContentType: "audio/ogg", DefaultBitrate: "64k", Label: "Opus"},
+}
+
+// LookupAudioFormat finds a delivery format by id.
+func LookupAudioFormat(id string) (AudioFormat, bool) {
+	for _, format := range AudioFormats {
+		if format.ID == id {
+			return format, true
+		}
+	}
+	return AudioFormat{}, false
+}
+
+// ValidateBitrate keeps the bitrate argument to something ffmpeg will
+// accept and a listener would want: 32k to 320k.
+func ValidateBitrate(bitrate string) error {
+	if !strings.HasSuffix(bitrate, "k") {
+		return fmt.Errorf("bitrate must be given in k, e.g. 128k")
+	}
+	value, err := strconv.Atoi(strings.TrimSuffix(bitrate, "k"))
+	if err != nil {
+		return fmt.Errorf("bitrate must be given in k, e.g. 128k")
+	}
+	if value < 32 || value > 320 {
+		return fmt.Errorf("bitrate must be between 32k and 320k")
+	}
+	return nil
+}
+
+// TranscodeSpec invokes the optional "ffmpeg" engine to turn a produced WAV
+// into a delivery format. Both paths are real files: a transcode is the one
+// operation here whose payload can be a whole half-hour recording.
+//
+// -nostdin stops ffmpeg consuming the parent's stdin, -y overwrites the temp
+// file the caller has already created, and -vn drops any cover art rather
+// than failing on it.
+func TranscodeSpec(inPath string, outPath string, format AudioFormat, bitrate string) Spec {
+	return Spec{
+		Engine:     "ffmpeg",
+		Label:      "ffmpeg transcode command",
+		Timeout:    DefaultTranscodeTimeout,
+		InputPath:  inPath,
+		OutputPath: outPath,
+		BuildArgs: func(in, out string) []string {
+			return []string{
+				"-nostdin", "-y",
+				"-i", in,
+				"-vn",
+				"-c:a", format.Encoder,
+				"-b:a", bitrate,
+				out,
+			}
+		},
+		ValidateOutput: func(path string) error {
+			info, err := os.Stat(path)
+			if err != nil {
+				return fmt.Errorf("stat encoded audio: %v", err)
+			}
+			if info.Size() == 0 {
+				return fmt.Errorf("produced an empty file")
+			}
+			return nil
+		},
+	}
+}
+
+// EncodersSpec asks ffmpeg what it can encode. "ffmpeg is configured" and
+// "ffmpeg can make an MP3" are different claims: builds vary, and finding
+// out after a job is worse than finding out before one.
+func EncodersSpec() Spec {
+	return Spec{
+		Engine:  "ffmpeg",
+		Label:   "ffmpeg encoder probe",
+		Timeout: 30 * time.Second,
+		BuildArgs: func(_, _ string) []string {
+			return []string{"-nostdin", "-hide_banner", "-encoders"}
+		},
+	}
+}
+
+// ParseEncoders picks encoder names out of `ffmpeg -encoders` output, whose
+// rows look like " A....D libmp3lame           MP3 (MPEG audio layer 3)".
+func ParseEncoders(stdout []byte) map[string]bool {
+	found := make(map[string]bool)
+	for _, line := range strings.Split(string(stdout), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 || len(fields[0]) < 2 {
+			continue
+		}
+		// The first column is the capability flag block; a row that is not
+		// flags followed by a name is a heading or the legend.
+		if strings.ContainsAny(fields[0], " ") || !strings.HasPrefix(fields[0], "A") && !strings.HasPrefix(fields[0], "V") && !strings.HasPrefix(fields[0], "S") {
+			continue
+		}
+		found[fields[1]] = true
+	}
+	return found
 }
 
 // audioSignature matches a container by the bytes it starts with. offset is

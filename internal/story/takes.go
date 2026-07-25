@@ -3,6 +3,7 @@ package story
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -376,6 +377,89 @@ func (m *Manager) publishManifest(manifest Manifest) {
 		artifactURL := url
 		j.status.ArtifactURL = &artifactURL
 	}
+}
+
+// TranscodeFunc encodes the WAV at inPath into outPath. It is injected so
+// the story package stays unaware of ffmpeg: the gateway owns the engine,
+// the manager owns which revision is being encoded and how it is recorded.
+type TranscodeFunc func(ctx context.Context, inPath string, outPath string, format string, bitrate string) error
+
+// Export encodes one render revision into a delivery format and records it
+// against that revision. Revision 0 means "the latest". Re-exporting the
+// same format replaces the file and its entry rather than accumulating
+// duplicates — an export is derived data, not a take.
+func (m *Manager) Export(ctx context.Context, storyID string, revision int, format string, bitrate string) (Manifest, Export, error) {
+	if m.transcode == nil {
+		return Manifest{}, Export{}, NewError(CodeExportUnavailable, `engine "ffmpeg" is not configured; see docs/CONFIG.md for the export setup`)
+	}
+	lock := m.editLock(storyID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	manifest, ok, err := m.store.Load(storyID)
+	if err != nil {
+		return Manifest{}, Export{}, NewError(CodeStoreFailure, err.Error())
+	}
+	if !ok {
+		return Manifest{}, Export{}, NewError(CodeNotFound, "story not found")
+	}
+	if len(manifest.Renders) == 0 {
+		return Manifest{}, Export{}, NewError(CodeNotFound, "this story predates render revisions; re-render it first")
+	}
+	index := len(manifest.Renders) - 1
+	if revision > 0 {
+		index = -1
+		for i, render := range manifest.Renders {
+			if render.Revision == revision {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return Manifest{}, Export{}, NewError(CodeNotFound, fmt.Sprintf("story has no render revision %d", revision))
+		}
+	}
+	target := &manifest.Renders[index]
+
+	sourcePath, err := m.store.RenderPath(storyID, target.Revision)
+	if err != nil {
+		return Manifest{}, Export{}, err
+	}
+	outPath, err := m.store.ExportPath(storyID, target.Revision, format)
+	if err != nil {
+		return Manifest{}, Export{}, err
+	}
+	if err := m.transcode(ctx, sourcePath, outPath, format, bitrate); err != nil {
+		return Manifest{}, Export{}, err
+	}
+	info, err := os.Stat(outPath)
+	if err != nil {
+		return Manifest{}, Export{}, NewError(CodeStoreFailure, fmt.Sprintf("stat exported audio: %v", err))
+	}
+
+	export := Export{
+		Format:    format,
+		Bitrate:   bitrate,
+		Bytes:     int(info.Size()),
+		CreatedAt: m.now().UTC(),
+		URL:       ExportURL(storyID, target.Revision, format),
+	}
+	replaced := false
+	for i, existing := range target.Exports {
+		if existing.Format == format {
+			target.Exports[i] = export
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		target.Exports = append(target.Exports, export)
+	}
+	if err := m.store.SaveManifest(manifest); err != nil {
+		return Manifest{}, Export{}, NewError(CodeStoreFailure, err.Error())
+	}
+	m.publishManifest(manifest)
+	return manifest, export, nil
 }
 
 func lineIndex(script []ScriptLine, lineID string) int {

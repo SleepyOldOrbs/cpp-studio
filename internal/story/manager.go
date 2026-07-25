@@ -40,8 +40,11 @@ type ManagerOptions struct {
 	ReserveEngine ReserveEngineFunc
 	Synthesize    SynthesizeFunc
 	Script        ScriptFunc
-	StageDelay    time.Duration
-	Now           func() time.Time
+	// Transcode, when set, enables delivery exports (MP3/Opus) of render
+	// revisions. nil means the optional ffmpeg engine is not configured.
+	Transcode  TranscodeFunc
+	StageDelay time.Duration
+	Now        func() time.Time
 	// Jobs, when set, mirrors every story job into the gateway-wide job
 	// registry so /v1/jobs lists and cancels stories alongside other async
 	// work. The story manager remains the source of truth.
@@ -54,6 +57,7 @@ type Manager struct {
 	reserveEngine ReserveEngineFunc
 	synthesize    SynthesizeFunc
 	script        ScriptFunc
+	transcode     TranscodeFunc
 	stageDelay    time.Duration
 	now           func() time.Time
 	counter       int
@@ -103,6 +107,7 @@ func NewManager(opts ManagerOptions) *Manager {
 		reserveEngine: opts.ReserveEngine,
 		synthesize:    opts.Synthesize,
 		script:        opts.Script,
+		transcode:     opts.Transcode,
 		stageDelay:    stageDelay,
 		now:           now,
 		jobs:          make(map[string]*job),

@@ -773,6 +773,13 @@ audio {
   gap: 6px;
 }
 
+.take-room-actions,
+.export-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .take-line {
   border: 1px solid var(--line-soft);
   border-radius: 7px;

@@ -81,6 +81,7 @@
   var takeRoomMeta = document.getElementById("takeRoomMeta");
   var takeRoomRenderButton = document.getElementById("takeRoomRenderButton");
   var takeLines = document.getElementById("takeLines");
+  var storyExportRow = document.getElementById("storyExportRow");
   var storyFacts = document.getElementById("storyFacts");
   var voiceSelect = document.getElementById("voiceSelect");
   var cloneForm = document.getElementById("cloneForm");
@@ -757,6 +758,8 @@
     takeRoom.hidden = true;
     takeLines.textContent = "";
     takeRoomMeta.textContent = "";
+    storyExportRow.textContent = "";
+    storyExportRow.hidden = true;
   }
 
   async function patchTakeLine(lineID, patch) {
@@ -897,6 +900,75 @@
     return row;
   }
 
+  // Delivery formats this machine can actually encode. Probed once: the
+  // answer depends on the operator's ffmpeg build, which does not change
+  // while the gateway runs.
+  var exportFormats = null;
+
+  async function loadExportFormats() {
+    if (exportFormats) {
+      return exportFormats;
+    }
+    try {
+      var response = await fetch("/v1/audio/formats");
+      await ensureOk(response, "Export formats");
+      var data = await response.json();
+      exportFormats = (data.formats || []).filter(function (format) { return format.available; });
+    } catch (error) {
+      exportFormats = [];
+    }
+    return exportFormats;
+  }
+
+  async function exportStory(format, button) {
+    clearStoryError();
+    setBusy(button, "Encoding...");
+    try {
+      log("POST /v1/stories/" + takeRoomStoryID + "/export " + format.id);
+      var response = await fetch("/v1/stories/" + encodeURIComponent(takeRoomStoryID) + "/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ format: format.id })
+      });
+      await ensureOk(response, "Export");
+      var data = await response.json();
+      log("Exported " + format.label + ": " + Math.round(data.export.bytes / 1024) + " KB");
+      renderTakeRoom(data.manifest);
+      // Hand it straight over — an export exists to leave the machine.
+      downloadURL(data.export.url, (takeRoomStoryID || "story") + "." + format.id);
+    } catch (error) {
+      setStoryError(error);
+    } finally {
+      clearBusy(button);
+    }
+  }
+
+  async function renderExportRow(manifest) {
+    var formats = await loadExportFormats();
+    storyExportRow.textContent = "";
+    if (!formats.length || !manifest || !(manifest.renders || []).length) {
+      storyExportRow.hidden = true;
+      return;
+    }
+    var latest = manifest.renders[manifest.renders.length - 1];
+    var existing = {};
+    (latest.exports || []).forEach(function (item) { existing[item.format] = item; });
+
+    formats.forEach(function (format) {
+      var made = existing[format.id];
+      var button = createElement("button", "secondary compact-button", made ? format.label + " ✓" : format.label);
+      button.type = "button";
+      button.title = made
+        ? "Re-encode revision " + latest.revision + " as " + format.label + " (" + Math.round(made.bytes / 1024) + " KB)"
+        : "Encode revision " + latest.revision + " as " + format.label;
+      button.addEventListener("click", function () {
+        exportStory(format, button);
+      });
+      storyExportRow.appendChild(button);
+    });
+    storyExportRow.hidden = false;
+  }
+
   function renderTakeRoom(manifest) {
     takeLines.textContent = "";
     var lines = (manifest && manifest.script) || [];
@@ -913,6 +985,7 @@
       takeLines.appendChild(takeLineRow(line));
     });
     takeRoom.hidden = false;
+    renderExportRow(manifest);
   }
 
   function renderStoryManifest(manifest) {

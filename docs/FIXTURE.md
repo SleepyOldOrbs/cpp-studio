@@ -44,6 +44,16 @@ way `--print` does, and writes fixture audio):
 .\bin\cpp-studio-fixture.exe import --no-simulate --print "%(title)s" --force-overwrites --no-playlist -o .\imported.wav https://example.com/episode
 ```
 
+Stand in for ffmpeg so delivery exports can be tested without one installed.
+It answers the encoder probe and performs a transcode real enough to hold
+the contract — it reads the named input, refuses an encoder it does not
+claim, and writes a smaller file to the named output:
+
+```powershell
+.\bin\cpp-studio-fixture.exe ffmpeg -encoders
+.\bin\cpp-studio-fixture.exe ffmpeg -nostdin -y -i .\story.wav -vn -c:a libmp3lame -b:a 128k .\story.mp3
+```
+
 ## Smoke Test
 
 Run the complete loop through the real gateway:

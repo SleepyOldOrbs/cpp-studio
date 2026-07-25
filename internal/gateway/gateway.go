@@ -45,6 +45,11 @@ type router struct {
 	library    *library.Store
 	audiobooks *audiobook.Manager
 
+	// encodersMu guards the one-time probe of what the operator's ffmpeg can
+	// encode. The binary does not change under a running gateway.
+	encodersMu sync.Mutex
+	encoders   map[string]bool
+
 	// verifyMu guards the verify-all state: deep-check results overlay the
 	// catalog's fast stat states until the next gateway restart.
 	verifyMu      sync.Mutex
@@ -80,6 +85,11 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	// script keeps the pipeline runnable.
 	if _, ok := cfg.Engines["llama"]; ok {
 		storyOptions.Script = r.writeStoryScript
+	}
+	// Delivery exports need the operator's own ffmpeg. Without it the story
+	// manager has no transcoder and the export route says so.
+	if _, ok := cfg.Engines["ffmpeg"]; ok {
+		storyOptions.Transcode = r.transcodeAudio
 	}
 	r.stories = story.NewManager(storyOptions)
 	r.audiobooks = audiobook.NewManager(audiobook.ManagerOptions{
@@ -122,6 +132,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/audio/transcriptions", r.handleTranscriptions)
 	mux.HandleFunc("/v1/audio/diarization", r.handleDiarization)
 	mux.HandleFunc("/v1/audio/import", r.handleAudioImport)
+	mux.HandleFunc("/v1/audio/formats", r.handleAudioFormats)
 	mux.HandleFunc("/v1/voice", r.handleVoice)
 	mux.HandleFunc("/v1/voices", r.handleVoices)
 	mux.HandleFunc("/v1/voices/design", r.handleVoiceDesign)
@@ -1215,6 +1226,14 @@ type audioImportRequest struct {
 	URL string `json:"url"`
 }
 
+// storyExportRequest asks for a delivery encoding of one render revision.
+// Revision 0 means the latest, which is what the console always wants.
+type storyExportRequest struct {
+	Format   string `json:"format"`
+	Bitrate  string `json:"bitrate,omitempty"`
+	Revision int    `json:"revision,omitempty"`
+}
+
 // validateImportURL keeps the importer to what a person can paste in a
 // browser. yt-dlp happily accepts local paths, batch files, and anything
 // starting with "-" is argv-parsed as a flag, so the scheme check is the
@@ -1290,6 +1309,74 @@ func (r *router) handleAudioImport(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Access-Control-Expose-Headers", "X-Import-Title")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(result.Output)
+}
+
+// transcodeAudio is the story manager's TranscodeFunc: it runs the operator's
+// ffmpeg over real files, so a half-hour recording is never held in memory.
+func (r *router) transcodeAudio(ctx context.Context, inPath string, outPath string, formatID string, bitrate string) error {
+	format, ok := engine.LookupAudioFormat(formatID)
+	if !ok {
+		return story.NewError(story.CodeUnsupportedArtifact, fmt.Sprintf("unsupported export format %q", formatID))
+	}
+	if err := engine.ValidateBitrate(bitrate); err != nil {
+		return story.NewError(story.CodeInvalidRequest, err.Error())
+	}
+	// A configured ffmpeg is not necessarily an ffmpeg that can make this
+	// format. Ask before spending the job, not after.
+	available, err := r.audioEncoders(ctx)
+	if err != nil {
+		return story.NewError(story.CodeExportUnavailable, err.Error())
+	}
+	if !available[format.Encoder] {
+		return story.NewError(story.CodeExportUnavailable, fmt.Sprintf("this ffmpeg build has no %s encoder, so it cannot make %s", format.Encoder, format.Label))
+	}
+	if _, err := r.engines.Run(ctx, engine.TranscodeSpec(inPath, outPath, format, bitrate)); err != nil {
+		return story.NewError(story.CodeStoreFailure, err.Error())
+	}
+	return nil
+}
+
+// audioEncoders reports what the configured ffmpeg can encode, probing once
+// and caching: the answer cannot change while the binary does not.
+func (r *router) audioEncoders(ctx context.Context) (map[string]bool, error) {
+	r.encodersMu.Lock()
+	defer r.encodersMu.Unlock()
+	if r.encoders != nil {
+		return r.encoders, nil
+	}
+	if _, ok := r.engine("ffmpeg"); !ok {
+		return nil, fmt.Errorf(`engine "ffmpeg" is not configured; see docs/CONFIG.md for the export setup`)
+	}
+	result, err := r.engines.Run(ctx, engine.EncodersSpec())
+	if err != nil {
+		return nil, fmt.Errorf("could not ask ffmpeg what it can encode: %v", err)
+	}
+	r.encoders = engine.ParseEncoders(result.Stdout)
+	return r.encoders, nil
+}
+
+// handleAudioFormats reports which delivery formats this machine can
+// actually produce, so the console offers only what will work.
+func (r *router) handleAudioFormats(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodGet) {
+		return
+	}
+	type formatOut struct {
+		engine.AudioFormat
+		Available bool `json:"available"`
+	}
+	available := map[string]bool{}
+	if _, ok := r.engine("ffmpeg"); ok {
+		if found, err := r.audioEncoders(req.Context()); err == nil {
+			available = found
+		}
+	}
+	out := make([]formatOut, 0, len(engine.AudioFormats))
+	for _, format := range engine.AudioFormats {
+		out = append(out, formatOut{AudioFormat: format, Available: available[format.Encoder]})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"formats": out})
 }
 
 // firstLine is yt-dlp's --print output: the title, ahead of whatever progress
@@ -2112,8 +2199,36 @@ func (r *router) handleStory(w http.ResponseWriter, req *http.Request) {
 			writeStoryErrorFromError(w, err)
 			return
 		}
-		w.Header().Set("Content-Type", "audio/wav")
+		w.Header().Set("Content-Type", story.ArtifactContentType(path))
 		http.ServeFile(w, req, path)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "export" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		req.Body = http.MaxBytesReader(w, req.Body, story.MaxRequestBodyBytes)
+		var body storyExportRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil && err != io.EOF {
+			writeStoryError(w, http.StatusBadRequest, story.CodeInvalidRequest, "invalid export request body")
+			return
+		}
+		format, ok := engine.LookupAudioFormat(strings.TrimSpace(body.Format))
+		if !ok {
+			writeStoryError(w, http.StatusBadRequest, story.CodeUnsupportedArtifact, "format must be mp3 or opus")
+			return
+		}
+		bitrate := strings.TrimSpace(body.Bitrate)
+		if bitrate == "" {
+			bitrate = format.DefaultBitrate
+		}
+		manifest, export, err := r.stories.Export(req.Context(), parts[0], body.Revision, format.ID, bitrate)
+		if err != nil {
+			writeStoryErrorFromError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"export": export, "manifest": manifest})
 		return
 	}
 	// The take room: retake one line, edit its production settings, or

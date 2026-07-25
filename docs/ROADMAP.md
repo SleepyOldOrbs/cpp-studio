@@ -268,12 +268,19 @@ mattered was that none of them should come first:
   original problem intact one level up. `text` is now patchable, and
   changing it deselects every take recorded against the old words. A
   `stale_take` error refuses to select or render one.
-- **ffmpeg import/export — next.** A config-gated `ffmpeg` tool in the
-  `ytdlp` mould: MP3/Opus delivery, plus the long-and-exotic-file importer
-  M5 deferred. Note the traps: `engine.Spec` is a whole-buffer API that
-  would copy a large file through memory repeatedly, artifact serving
-  hardcodes `audio/wav`, and capability probing must confirm the encoders
-  actually exist in the operator's build.
+- **ffmpeg export — DONE.** `POST /v1/stories/{id}/export` encodes a render
+  revision to MP3 or Opus through the operator's own ffmpeg, config-gated
+  in the `ytdlp` mould. Every trap the review named was taken seriously:
+  `engine.Spec` gained `InputPath`/`OutputPath` so a transcode never
+  round-trips a whole recording through memory; artifact serving now derives
+  its content type instead of hardcoding `audio/wav`; and the gateway probes
+  `-encoders` once, so `GET /v1/audio/formats` can tell the console what
+  this machine will actually produce rather than discovering it mid-job.
+  Exports hang off the revision they encode, and re-exporting a format
+  replaces it. Measured on a real 43 s two-hander: 2.0 MB WAV → 687 KB MP3
+  → 348 KB Opus. **The ffmpeg *importer* (long and exotic files for the
+  Extractor, deferred at M5) is still open** — it needs a multipart upload
+  path, not the URL-shaped contract the yt-dlp route uses.
 - **Mastering — later, and through ffmpeg `loudnorm`, not pure Go.** The
   measurement standard is BS.1770; -16 LUFS is the podcast delivery target,
   not "EBU R128", whose programme target is -23. Two constraints also

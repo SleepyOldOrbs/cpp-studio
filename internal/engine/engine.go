@@ -62,6 +62,14 @@ type Spec struct {
 	Input []byte
 	// InputPattern names the temp input file (os.CreateTemp pattern).
 	InputPattern string
+	// InputPath and OutputPath name real files the engine reads and writes
+	// directly, instead of round-tripping their contents through Input and
+	// Result.Output. Use them when the payload is a whole recording rather
+	// than a sentence: transcoding a half-hour audiobook has no reason to
+	// hold it in memory twice. When OutputPath is set the runner leaves the
+	// file where it is and Result.Output stays nil.
+	InputPath  string
+	OutputPath string
 	// ValidateInput rejects bad input before the engine runs (KindInvalidInput).
 	ValidateInput func(path string) error
 	// OutputPattern, when non-empty, creates a temp output file whose bytes
@@ -167,7 +175,13 @@ func (r *Runner) RunReserved(ctx context.Context, spec Spec) (Result, error) {
 		return Result{}, &Error{Kind: KindNotConfigured, Message: fmt.Sprintf("engine %q is not configured", spec.Engine)}
 	}
 
-	inPath := ""
+	// A spec that names its own files skips the byte seam entirely. Every
+	// other spec hands over small payloads — a sentence of speech, one WAV
+	// to transcribe — but a transcode reads and writes whole recordings, and
+	// buffering those through memory twice is a cost with no purpose.
+	inPath := spec.InputPath
+	outPath := spec.OutputPath
+
 	if spec.Input != nil {
 		in, err := os.CreateTemp("", spec.InputPattern)
 		if err != nil {
@@ -189,7 +203,6 @@ func (r *Runner) RunReserved(ctx context.Context, spec Spec) (Result, error) {
 		}
 	}
 
-	outPath := ""
 	if spec.OutputPattern != "" {
 		out, err := os.CreateTemp("", spec.OutputPattern)
 		if err != nil {
@@ -222,7 +235,8 @@ func (r *Runner) RunReserved(ctx context.Context, spec Spec) (Result, error) {
 	}
 
 	result := Result{Stdout: stdout, Stderr: stderr, Elapsed: elapsed}
-	if outPath != "" {
+	// A spec that named its own OutputPath wanted the file, not the bytes.
+	if outPath != "" && spec.OutputPath == "" {
 		data, err := os.ReadFile(outPath)
 		if err != nil {
 			return Result{}, r.fail(spec, fmt.Sprintf("read %s: %v", spec.OutputLabel, err))

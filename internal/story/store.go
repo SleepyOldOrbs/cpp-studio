@@ -187,6 +187,58 @@ func renderFileName(revision int) string {
 	return fmt.Sprintf("render-%03d.wav", revision)
 }
 
+// renderExportName is the delivery encoding beside its revision, e.g.
+// render-002.mp3 next to render-002.wav.
+func renderExportName(revision int, format string) string {
+	return fmt.Sprintf("render-%03d.%s", revision, format)
+}
+
+// RenderPath is the on-disk WAV of one revision, for callers that hand a
+// path to an external tool rather than reading the bytes.
+func (s *Store) RenderPath(storyID string, revision int) (string, error) {
+	return s.ArtifactPath(storyID, "renders", renderFileName(revision))
+}
+
+// ExportPath is where a delivery encoding of one revision lives. The file
+// need not exist yet: this is also the destination an encoder writes to.
+func (s *Store) ExportPath(storyID string, revision int, format string) (string, error) {
+	if err := validateStoryID(storyID); err != nil {
+		return "", NewError(CodeNotFound, "story not found")
+	}
+	if revision < 1 {
+		return "", NewError(CodeInvalidRequest, "render revision must be positive")
+	}
+	if !isExportFormat(format) {
+		return "", NewError(CodeUnsupportedArtifact, "unsupported export format")
+	}
+	dir := filepath.Join(s.rootDir, storyID, "renders")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create renders dir: %w", err)
+	}
+	return filepath.Join(dir, renderExportName(revision, format)), nil
+}
+
+// ExportURL is the route a delivery encoding is served from.
+func ExportURL(storyID string, revision int, format string) string {
+	return fmt.Sprintf("/v1/stories/%s/artifact/renders/%s", storyID, renderExportName(revision, format))
+}
+
+// isExportFormat keeps the artifact whitelist and the export destination
+// agreeing on exactly which extensions exist.
+func isExportFormat(format string) bool {
+	for _, allowed := range exportFormats {
+		if format == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// exportFormats mirrors engine.AudioFormats. It is duplicated rather than
+// imported because the store's job is to police filenames, and it should
+// not gain a dependency on the engine package to do it.
+var exportFormats = []string{"mp3", "opus"}
+
 // TakeURL and RenderURL are the routes the console fetches audio from.
 func TakeURL(storyID, lineID, takeID string) string {
 	return fmt.Sprintf("/v1/stories/%s/artifact/lines/%s/%s.wav", storyID, lineID, takeID)
@@ -270,10 +322,27 @@ func (s *Store) ArtifactPath(id string, segments ...string) (string, error) {
 		return "", err
 	}
 	defer file.Close()
-	if err := wav.ValidateHeader(file); err != nil {
-		return "", NewError(CodeArtifactNotFound, "story artifact is not a valid WAV")
+	// Only the studio's own WAVs get a header check; a delivery encoding is
+	// whatever the encoder made of one, and this store has no business
+	// second-guessing an MP3 frame.
+	if strings.HasSuffix(path, ".wav") {
+		if err := wav.ValidateHeader(file); err != nil {
+			return "", NewError(CodeArtifactNotFound, "story artifact is not a valid WAV")
+		}
 	}
 	return path, nil
+}
+
+// ArtifactContentType names what an artifact path serves as.
+func ArtifactContentType(path string) string {
+	switch {
+	case strings.HasSuffix(path, ".mp3"):
+		return "audio/mpeg"
+	case strings.HasSuffix(path, ".opus"):
+		return "audio/ogg"
+	default:
+		return "audio/wav"
+	}
 }
 
 func (s *Store) Delete(id string) error {
@@ -310,11 +379,18 @@ func artifactRelPath(segments []string) ([]string, error) {
 
 	case len(segments) == 2 && segments[0] == "renders":
 		name := segments[1]
-		if !strings.HasPrefix(name, "render-") || !strings.HasSuffix(name, ".wav") {
+		if !strings.HasPrefix(name, "render-") {
 			return nil, NewError(CodeUnsupportedArtifact, "unsupported story artifact")
 		}
-		digits := strings.TrimSuffix(strings.TrimPrefix(name, "render-"), ".wav")
-		if digits == "" {
+		// render-NNN.wav is the revision itself; render-NNN.mp3 and
+		// render-NNN.opus are its delivery encodings.
+		rest := strings.TrimPrefix(name, "render-")
+		dot := strings.LastIndex(rest, ".")
+		if dot <= 0 {
+			return nil, NewError(CodeUnsupportedArtifact, "unsupported story artifact")
+		}
+		digits, ext := rest[:dot], rest[dot+1:]
+		if ext != "wav" && !isExportFormat(ext) {
 			return nil, NewError(CodeUnsupportedArtifact, "unsupported story artifact")
 		}
 		for _, r := range digits {

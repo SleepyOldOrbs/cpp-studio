@@ -43,6 +43,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runImage(args[1:], stdout, stderr)
 	case "import":
 		return runImport(args[1:], stdout, stderr)
+	case "ffmpeg":
+		return runFFmpeg(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		printUsage(stdout)
 		return nil
@@ -62,6 +64,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  cpp-studio-fixture design --instruct <description> --text <text> --out <path>")
 	fmt.Fprintln(w, "  cpp-studio-fixture image --prompt <prompt> --output <path> [--width <px> --height <px>]")
 	fmt.Fprintln(w, "  cpp-studio-fixture import --no-simulate --print <template> -o <path> <url>")
+	fmt.Fprintln(w, "  cpp-studio-fixture ffmpeg -encoders")
+	fmt.Fprintln(w, "  cpp-studio-fixture ffmpeg -i <wav> -c:a <encoder> -b:a <rate> <out>")
 }
 
 func runServer(args []string, stderr io.Writer) error {
@@ -349,6 +353,69 @@ func runImport(args []string, stdout, stderr io.Writer) error {
 	}
 	return writeFixtureWAV(*outPath)
 }
+
+// runFFmpeg stands in for the operator's ffmpeg. It answers the encoder
+// probe and performs a transcode that is real enough to test the contract:
+// it reads the named input, refuses an encoder it does not claim to have,
+// and writes a plausibly-shaped file to the named output.
+func runFFmpeg(args []string, stdout, stderr io.Writer) error {
+	for _, arg := range args {
+		if arg == "-encoders" {
+			_, err := fmt.Fprint(stdout, fixtureEncoderList)
+			return err
+		}
+	}
+
+	var inPath, outPath, codec string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-i":
+			if i+1 < len(args) {
+				inPath = args[i+1]
+			}
+		case "-c:a":
+			if i+1 < len(args) {
+				codec = args[i+1]
+			}
+		}
+	}
+	// ffmpeg's output path is the last positional argument.
+	if len(args) > 0 {
+		outPath = args[len(args)-1]
+	}
+	if inPath == "" || outPath == "" || strings.HasPrefix(outPath, "-") {
+		return errors.New("ffmpeg needs -i <input> and an output path")
+	}
+	if codec == "" {
+		return errors.New("ffmpeg needs -c:a <encoder>")
+	}
+	if !strings.Contains(fixtureEncoderList, codec) {
+		return fmt.Errorf("ffmpeg has no encoder %q", codec)
+	}
+	source, err := os.ReadFile(inPath)
+	if err != nil {
+		return fmt.Errorf("ffmpeg could not read %s: %w", inPath, err)
+	}
+	if err := validateWAVFile(inPath); err != nil {
+		return fmt.Errorf("ffmpeg input: %w", err)
+	}
+	// Stand in for compression: a header the sniffer recognises plus a
+	// fraction of the source, so callers see a smaller, non-empty file.
+	encoded := append([]byte("ID3\x03\x00\x00\x00"), source[:len(source)/8]...)
+	return os.WriteFile(outPath, encoded, 0o600)
+}
+
+// fixtureEncoderList mimics the shape of `ffmpeg -encoders` output, which
+// the gateway parses to decide which delivery formats it can offer.
+const fixtureEncoderList = `Encoders:
+ V..... = Video
+ A..... = Audio
+ ------
+ A....D aac                  AAC (Advanced Audio Coding)
+ A....D libmp3lame           libmp3lame MP3 (MPEG audio layer 3)
+ A....D libopus              libopus Opus
+ A....D pcm_s16le            PCM signed 16-bit little-endian
+`
 
 func validateWAVFile(path string) error {
 	if err := wav.ValidateFile(path); err != nil {

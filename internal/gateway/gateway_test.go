@@ -891,6 +891,158 @@ func TestTakeRoomRetakeEditAndRender(t *testing.T) {
 	})
 }
 
+// ffmpegHelperEngine points the ffmpeg engine at the test helper process,
+// which answers the encoder probe and performs a stand-in transcode.
+func ffmpegHelperEngine() config.EngineConfig {
+	return config.EngineConfig{
+		Command:               os.Args[0],
+		Args:                  []string{"-test.run=TestGatewayHelperProcess", "--", "ffmpeg"},
+		RequestTimeoutSeconds: 20,
+	}
+}
+
+func TestStoryExportToDeliveryFormat(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio":  helperEngine("speech-tone"),
+		"ffmpeg": ffmpegHelperEngine(),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	// Only formats this ffmpeg can actually encode are offered.
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/audio/formats", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected formats status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var formats struct {
+		Formats []struct {
+			ID        string `json:"id"`
+			Available bool   `json:"available"`
+		} `json:"formats"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&formats); err != nil {
+		t.Fatalf("decode formats: %v", err)
+	}
+	if len(formats.Formats) != 2 {
+		t.Fatalf("expected mp3 and opus, got %+v", formats.Formats)
+	}
+	for _, format := range formats.Formats {
+		if !format.Available {
+			t.Fatalf("%s should be available with this ffmpeg: %+v", format.ID, format)
+		}
+	}
+
+	// Produce a story so there is a render revision to encode.
+	body := strings.Replace(validSketchRequestJSON(), `"voice_mode": "placeholder"`, `"voice_mode": "fixed"`, 1)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(body)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var create story.CreateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&create); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	waitGatewayStoryStatus(t, router, create.ID, story.StatusComplete)
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/stories/"+create.ID+"/export", strings.NewReader(`{"format":"mp3"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected export status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var exported struct {
+		Export   story.Export   `json:"export"`
+		Manifest story.Manifest `json:"manifest"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&exported); err != nil {
+		t.Fatalf("decode export response: %v", err)
+	}
+	if exported.Export.Format != "mp3" || exported.Export.Bitrate != "128k" {
+		t.Fatalf("unexpected export %+v", exported.Export)
+	}
+	if exported.Export.Bytes <= 0 {
+		t.Fatalf("export has no bytes: %+v", exported.Export)
+	}
+	// The export hangs off the revision it encodes, not the story.
+	last := exported.Manifest.Renders[len(exported.Manifest.Renders)-1]
+	if len(last.Exports) != 1 || last.Exports[0].Format != "mp3" {
+		t.Fatalf("export was not recorded against the revision: %+v", last)
+	}
+
+	// And it serves with the right content type.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, exported.Export.URL, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected the export to be served, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "audio/mpeg" {
+		t.Fatalf("expected audio/mpeg, got %q", got)
+	}
+	if !strings.HasPrefix(rec.Body.String(), "ID3") {
+		t.Fatalf("export route did not serve the encoded bytes")
+	}
+
+	t.Run("re-exporting replaces rather than accumulates", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/stories/"+create.ID+"/export", strings.NewReader(`{"format":"mp3","bitrate":"64k"}`)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var again struct {
+			Manifest story.Manifest `json:"manifest"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&again); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		last := again.Manifest.Renders[len(again.Manifest.Renders)-1]
+		if len(last.Exports) != 1 || last.Exports[0].Bitrate != "64k" {
+			t.Fatalf("expected one mp3 export at the new bitrate, got %+v", last.Exports)
+		}
+	})
+
+	t.Run("bad requests are refused", func(t *testing.T) {
+		for _, payload := range []string{`{"format":"flac"}`, `{"format":"mp3","bitrate":"9k"}`, `{"format":"mp3","revision":99}`} {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/stories/"+create.ID+"/export", strings.NewReader(payload)))
+			if rec.Code == http.StatusOK {
+				t.Fatalf("expected %s to be refused", payload)
+			}
+		}
+	})
+}
+
+func TestStoryExportWithoutFfmpegIsUnavailable(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{"audio": helperEngine("speech")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/audio/formats", nil))
+	var formats struct {
+		Formats []struct {
+			Available bool `json:"available"`
+		} `json:"formats"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&formats); err != nil {
+		t.Fatalf("decode formats: %v", err)
+	}
+	for _, format := range formats.Formats {
+		if format.Available {
+			t.Fatalf("no ffmpeg is configured, so nothing should be available: %+v", formats.Formats)
+		}
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/stories/story_20260101_000000_001/export", strings.NewReader(`{"format":"mp3"}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), string(story.CodeExportUnavailable)) {
+		t.Fatalf("expected export_unavailable, got %s", rec.Body.String())
+	}
+}
+
 func TestStoryDraftThenProduceEditedScript(t *testing.T) {
 	t.Chdir(t.TempDir())
 	scriptJSON := `{"title": "Draft Title", "script": [
@@ -1389,6 +1541,8 @@ func TestGatewayHelperProcess(t *testing.T) {
 			fmt.Fprintln(os.Stdout, "8.401 -- 14.408 speaker_01")
 			fmt.Fprintln(os.Stdout, "15.877 -- 21.327 speaker_00")
 			os.Exit(0)
+		case "ffmpeg":
+			runFFmpegHelper(helperArgs)
 		case "import":
 			runImportHelper(helperArgs, "ID3\x03")
 		case "import-not-audio":
@@ -1402,6 +1556,35 @@ func TestGatewayHelperProcess(t *testing.T) {
 			os.Exit(7)
 		}
 	}
+}
+
+// runFFmpegHelper stands in for the operator's ffmpeg: it answers the
+// encoder probe and performs a stand-in transcode over the real paths, so
+// the file-path engine mode is exercised rather than the byte seam.
+func runFFmpegHelper(args []string) {
+	for _, arg := range args {
+		if arg == "-encoders" {
+			fmt.Fprint(os.Stdout, " V..... = Video\n A....D libmp3lame           MP3\n A....D libopus              Opus\n")
+			os.Exit(0)
+		}
+	}
+	in := helperArg(args, "-i")
+	codec := helperArg(args, "-c:a")
+	out := args[len(args)-1]
+	if in == "" || codec == "" || strings.HasPrefix(out, "-") {
+		fmt.Fprintln(os.Stderr, "missing -i/-c:a/output")
+		os.Exit(2)
+	}
+	source, err := os.ReadFile(in)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if err := os.WriteFile(out, append([]byte("ID3\x03\x00\x00\x00"), source[:len(source)/8]...), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	os.Exit(0)
 }
 
 // runImportHelper stands in for yt-dlp: it echoes the source title the way

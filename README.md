@@ -60,9 +60,11 @@ profiles trade resident models against your card's budget.
   the grounding comes off — the writer invents, and your cloned cast
   performs it. Either way every line is spoken and stitched into one piece.
 - **The take room** — every produced line keeps its own recording, so one bad
-  read does not cost you the episode. Retake a line, pick between takes, mute
-  it, nudge the silence after it, then re-render. Renders are numbered
-  revisions: what you already shared keeps playing what you shared.
+  read does not cost you the episode. Retake a line, rewrite what it says,
+  pick between takes, mute it, nudge the silence after it, then re-render.
+  Renders are numbered revisions: what you already shared keeps playing what
+  you shared. Point it at your own `ffmpeg` and any revision exports to MP3
+  or Opus (a 43-second two-hander: 2.0 MB WAV, 687 KB MP3, 348 KB Opus).
 - **The Extractor** — a sampler deck for voices. Drop in any audio or video
   the browser can decode (MP3/OGG/FLAC/WAV/MP4 — a podcast, an old radio
   show), get a scrubbable waveform with a whisper transcript timeline, and
@@ -135,6 +137,7 @@ OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
 | `POST /v1/audio/transcriptions?format=segments` | timestamped transcript segments |
 | `POST /v1/audio/diarization` | who-spoke-when speaker clusters (sherpa-onnx) |
 | `POST /v1/audio/import` | fetch a URL's audio through your own yt-dlp |
+| `POST /v1/stories/{id}/export` | encode a render revision to MP3/Opus via your own ffmpeg |
 | `POST /v1/images/generations` | Stable Diffusion, resident sd-server |
 | `POST /v1/images/descriptions` | VLM describes an image, spoken aloud |
 | `POST /v1/stories` | multi-voice story jobs, grounded or sketch |

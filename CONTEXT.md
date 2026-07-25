@@ -61,6 +61,11 @@ audio, with no sources, no fact cards, and no citations — only the shared
 script shape (speakable text, a speaker in the cast) still gates it. One
 field decides all four differences, so neither mode can weaken the other.
 
+**Exports** are delivery encodings of one render revision (MP3/Opus via the
+operator's optional ffmpeg), written beside the revision they encode and
+recorded on it. They are derived data: re-exporting a format replaces it,
+and a render's exports say nothing about any other revision.
+
 **Takes and renders** are the production layer. A produced line keeps every
 recording ever made of it (`lines/<line-id>/<take-id>.wav`), and the manifest
 says which take is current, whether the line is muted, and how its timing is

@@ -128,6 +128,42 @@ default is 15 minutes). Without this engine, `POST /v1/audio/import` returns
 Whether a URL is yours to download, and whose voice is in it, is settled
 before you paste it — see the cloning note in the README.
 
+## Delivery Exports: the `ffmpeg` engine
+
+Optional, and you supply the binary. Point a subprocess engine named
+`ffmpeg` at your own build and produced stories can be encoded to MP3 or
+Opus:
+
+```json
+{
+  "ffmpeg": {
+    "command": "${root}\\tools\\ffmpeg\\bin\\ffmpeg.exe",
+    "mode": "subprocess",
+    "requestTimeoutSeconds": 600
+  }
+}
+```
+
+No `args`: the gateway owns the whole command line for a transcode
+(`-nostdin -y -i <render> -vn -c:a <encoder> -b:a <bitrate> <out>`), because
+unlike a model path there is nothing here for an operator to tune.
+
+A configured ffmpeg is not the same claim as an ffmpeg that can make an MP3
+— builds vary. The gateway asks yours once, with `-encoders`, and
+`GET /v1/audio/formats` reports what came back, so the console offers only
+formats that will actually work. An export naming a missing encoder fails
+with `export_unavailable` and names the encoder it wanted.
+
+Exports are written beside the render revision they encode
+(`renders/render-003.mp3` next to `renders/render-003.wav`) and recorded on
+that revision in the manifest. Re-exporting the same format replaces it;
+re-rendering leaves earlier revisions and their exports untouched. Bitrates
+are 32k-320k, defaulting to 128k for MP3 and 64k for Opus.
+
+For scale: a 43-second two-hander is 2.0 MB as WAV, 687 KB as MP3, 348 KB as
+Opus. Without this engine, `POST /v1/stories/{id}/export` returns
+`export_unavailable` and the console's export buttons are hidden.
+
 ## VRAM Profiles: `profiles`
 
 Named engine sets for trading resident models against a fixed VRAM budget:

@@ -371,15 +371,35 @@ nothing at all — not its audio and not its timing. A story with nothing
 left to render returns `400` with `nothing_to_render`; a line whose selected
 take was recorded against different words returns `stale_take`.
 
+### POST /v1/stories/{id}/export
+
+Encodes a render revision into a delivery format through the optional
+`ffmpeg` engine, and records it against that revision:
+
+```json
+{ "format": "mp3", "bitrate": "128k", "revision": 0 }
+```
+
+`format` is `mp3` or `opus`; `bitrate` is 32k-320k and defaults per format
+(128k / 64k); `revision` defaults to the latest. Returns
+`{"export": ..., "manifest": ...}`. Re-exporting the same format replaces
+it rather than accumulating duplicates — an export is derived data, not a
+take. Without the engine, or with an ffmpeg build lacking the encoder, the
+route returns `export_unavailable` naming what was missing.
+
+`GET /v1/audio/formats` lists the delivery formats with an `available` flag
+per format, probed once from the configured binary.
+
 ## GET /v1/stories/{id}/artifact/{path}
 
-Serves whitelisted story artifacts.
+Serves whitelisted story artifacts, with the content type matching the file.
 
 Whitelist:
 
 - `story.wav` — the current mix.
 - `lines/{line_id}/{take_id}.wav` — one take.
 - `renders/render-NNN.wav` — one published revision.
+- `renders/render-NNN.mp3` · `.opus` — a delivery encoding of one revision.
 
 Every id is validated the same way a story id is, and the route rejects path
 traversal, absolute paths, unknown filenames, missing files, and non-WAV

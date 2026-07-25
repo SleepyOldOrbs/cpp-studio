@@ -80,6 +80,7 @@ const (
 	CodeLineNotFound           ErrorCode = "line_not_found"
 	CodeTakeNotFound           ErrorCode = "take_not_found"
 	CodeStaleTake              ErrorCode = "stale_take"
+	CodeExportUnavailable      ErrorCode = "export_unavailable"
 	CodeNothingToRender        ErrorCode = "nothing_to_render"
 	CodeArtifactNotFound       ErrorCode = "artifact_not_found"
 	CodeUnsupportedArtifact    ErrorCode = "unsupported_artifact"
@@ -238,6 +239,20 @@ type Render struct {
 	// would be immutable bytes with no surviving explanation of what they
 	// are. One entry per line that was actually used.
 	Recipe []RenderLine `json:"recipe,omitempty"`
+	// Exports are delivery encodings of this exact revision. They hang off
+	// the render rather than the story because that is what they are an
+	// encoding of; re-rendering does not invalidate them, it just means the
+	// newest revision has none yet.
+	Exports []Export `json:"exports,omitempty"`
+}
+
+// Export is one delivery encoding of a render revision.
+type Export struct {
+	Format    string    `json:"format"`
+	Bitrate   string    `json:"bitrate"`
+	Bytes     int       `json:"bytes"`
+	CreatedAt time.Time `json:"created_at"`
+	URL       string    `json:"url"`
 }
 
 // RenderLine is one line as it stood when a revision was published.
