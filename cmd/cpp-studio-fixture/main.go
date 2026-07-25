@@ -41,6 +41,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runDesign(args[1:], stdout, stderr)
 	case "image":
 		return runImage(args[1:], stdout, stderr)
+	case "import":
+		return runImport(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		printUsage(stdout)
 		return nil
@@ -59,6 +61,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  cpp-studio-fixture speech --text <text> --out <path> [--voice-ref <wav> --reference-text <text>]")
 	fmt.Fprintln(w, "  cpp-studio-fixture design --instruct <description> --text <text> --out <path>")
 	fmt.Fprintln(w, "  cpp-studio-fixture image --prompt <prompt> --output <path> [--width <px> --height <px>]")
+	fmt.Fprintln(w, "  cpp-studio-fixture import --no-simulate --print <template> -o <path> <url>")
 }
 
 func runServer(args []string, stderr io.Writer) error {
@@ -304,6 +307,47 @@ func runWhisper(args []string, stdout, stderr io.Writer) error {
 	}
 	_, err := fmt.Fprintln(stdout, "fixture transcript")
 	return err
+}
+
+// runImport stands in for yt-dlp: it accepts the flags the gateway's import
+// spec sends, prints a title on stdout the way --print does, and writes
+// fixture audio to the -o path. Real yt-dlp would refuse to overwrite the
+// temp file the spec runner already created, which is why the gateway passes
+// --force-overwrites — the fixture asserts it is there so that contract
+// cannot quietly rot.
+func runImport(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("import", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	outPath := flags.String("o", "", "fixture/test helper output path")
+	printTemplate := flags.String("print", "", "fixture/test helper output template to print")
+	noSimulate := flags.Bool("no-simulate", false, "fixture/test helper download despite --print")
+	forceOverwrites := flags.Bool("force-overwrites", false, "fixture/test helper overwrite existing output")
+	flags.Bool("no-playlist", false, "fixture/test helper single-item download")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *outPath == "" {
+		return errors.New("import -o <path> is required")
+	}
+	if *printTemplate != "" && !*noSimulate {
+		return errors.New("import --print without --no-simulate would only simulate")
+	}
+	if !*forceOverwrites {
+		return errors.New("import needs --force-overwrites to replace the created output file")
+	}
+	rest := flags.Args()
+	if len(rest) != 1 || strings.TrimSpace(rest[0]) == "" {
+		return errors.New("import needs exactly one URL argument")
+	}
+	if !strings.HasPrefix(rest[0], "http://") && !strings.HasPrefix(rest[0], "https://") {
+		return fmt.Errorf("import URL must be http or https, got %q", rest[0])
+	}
+	if *printTemplate != "" {
+		if _, err := fmt.Fprintln(stdout, "Fixture Import"); err != nil {
+			return err
+		}
+	}
+	return writeFixtureWAV(*outPath)
 }
 
 func validateWAVFile(path string) error {

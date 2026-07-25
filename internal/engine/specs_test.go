@@ -1,8 +1,60 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 )
+
+func TestSniffAudioContentType(t *testing.T) {
+	tests := []struct {
+		name string
+		head []byte
+		want string
+		ok   bool
+	}{
+		{name: "ogg", head: []byte("OggS\x00\x02"), want: "audio/ogg", ok: true},
+		{name: "flac", head: []byte("fLaC\x00\x00"), want: "audio/flac", ok: true},
+		{name: "wav", head: []byte("RIFF\x24\x08\x00\x00WAVE"), want: "audio/wav", ok: true},
+		{name: "mp3 with id3 tag", head: []byte("ID3\x03\x00\x00"), want: "audio/mpeg", ok: true},
+		{name: "bare mpeg frame sync", head: []byte{0xFF, 0xFB, 0x90, 0x00}, want: "audio/mpeg", ok: true},
+		{name: "webm", head: []byte{0x1A, 0x45, 0xDF, 0xA3, 0x01, 0x00}, want: "audio/webm", ok: true},
+		{name: "m4a magic at offset 4", head: []byte("\x00\x00\x00\x20ftypM4A "), want: "audio/mp4", ok: true},
+		{name: "html error page", head: []byte("<!doctype html>"), ok: false},
+		{name: "too short", head: []byte{0xFF}, ok: false},
+		{name: "empty", head: nil, ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := SniffAudioContentType(tt.head)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("SniffAudioContentType = (%q, %v), want (%q, %v)", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestImportAudioSpecArgs(t *testing.T) {
+	spec := ImportAudioSpec("https://example.com/episode")
+	if spec.Engine != "ytdlp" {
+		t.Fatalf("unexpected engine %q", spec.Engine)
+	}
+	args := spec.BuildArgs("", `C:\Temp\cpp-studio-import-123`)
+	joined := strings.Join(args, " ")
+	// --force-overwrites is load-bearing: the runner creates the output file
+	// first, and yt-dlp treats an existing file as already downloaded.
+	for _, want := range []string{"--no-simulate", "--print", "--force-overwrites", "--no-playlist"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected %s in args, got %v", want, args)
+		}
+	}
+	if args[len(args)-1] != "https://example.com/episode" {
+		t.Fatalf("expected the URL last, got %v", args)
+	}
+	if args[len(args)-3] != "-o" || args[len(args)-2] != `C:\Temp\cpp-studio-import-123` {
+		t.Fatalf("expected -o <outPath> before the URL, got %v", args)
+	}
+}
 
 func TestSanitizeSpeechText(t *testing.T) {
 	tests := []struct {

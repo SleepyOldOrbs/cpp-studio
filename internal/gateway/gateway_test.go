@@ -13,6 +13,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1275,6 +1276,10 @@ func TestGatewayHelperProcess(t *testing.T) {
 			fmt.Fprintln(os.Stdout, "8.401 -- 14.408 speaker_01")
 			fmt.Fprintln(os.Stdout, "15.877 -- 21.327 speaker_00")
 			os.Exit(0)
+		case "import":
+			runImportHelper(helperArgs, "ID3\x03")
+		case "import-not-audio":
+			runImportHelper(helperArgs, "<!doctype html>")
 		case "transcribe-slow":
 			time.Sleep(500 * time.Millisecond)
 			runTranscriptionHelper(helperArgs)
@@ -1284,6 +1289,28 @@ func TestGatewayHelperProcess(t *testing.T) {
 			os.Exit(7)
 		}
 	}
+}
+
+// runImportHelper stands in for yt-dlp: it echoes the source title the way
+// --print does and writes prefix-tagged bytes to -o, so the gateway's
+// container sniffing is exercised for real.
+func runImportHelper(args []string, prefix string) {
+	out := helperArg(args, "-o")
+	if out == "" {
+		fmt.Fprintln(os.Stderr, "missing -o")
+		os.Exit(2)
+	}
+	url := args[len(args)-1]
+	if !strings.HasPrefix(url, "http") {
+		fmt.Fprintf(os.Stderr, "expected a URL argument, got %q\n", url)
+		os.Exit(2)
+	}
+	fmt.Fprintln(os.Stdout, "Round the Horne — Series 3, Episode 1")
+	if err := os.WriteFile(out, []byte(prefix+strings.Repeat("x", 64)), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	os.Exit(0)
 }
 
 func runInvalidSpeechHelper(args []string) {
@@ -1511,6 +1538,90 @@ func helperEngine(mode string) config.EngineConfig {
 		Command:               os.Args[0],
 		Args:                  []string{"-test.run=TestGatewayHelperProcess", "--", mode},
 		RequestTimeoutSeconds: 5,
+	}
+}
+
+func TestAudioImportFetchesThroughYtdlp(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"ytdlp": helperEngine("import")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/import", strings.NewReader(`{"url": "https://example.com/episode"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "audio/mpeg" {
+		t.Fatalf("expected sniffed audio/mpeg, got %q", got)
+	}
+	// The title survives the round trip, percent-encoded so a non-ASCII
+	// title stays a legal header value.
+	title, err := url.PathUnescape(rec.Header().Get("X-Import-Title"))
+	if err != nil {
+		t.Fatalf("decode title header: %v", err)
+	}
+	if title != "Round the Horne — Series 3, Episode 1" {
+		t.Fatalf("unexpected title %q", title)
+	}
+	if !strings.HasPrefix(rec.Body.String(), "ID3") {
+		t.Fatalf("expected the fetched bytes, got %q", rec.Body.String()[:8])
+	}
+}
+
+func TestAudioImportRejectsBadRequests(t *testing.T) {
+	t.Run("no engine configured", func(t *testing.T) {
+		cfg := testConfig(map[string]config.EngineConfig{"audio": helperEngine("speech")})
+		router := NewRouter(cfg, lifecycle.NewManager(cfg))
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/audio/import", strings.NewReader(`{"url": "https://example.com/x"}`))
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected status 503, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	cfg := testConfig(map[string]config.EngineConfig{"ytdlp": helperEngine("import")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	// Anything that is not an http(s) URL is refused before yt-dlp runs:
+	// local paths, other schemes, and argv that would parse as a flag.
+	for _, body := range []string{
+		`{"url": ""}`,
+		`{"url": "file:///C:/Windows/win.ini"}`,
+		`{"url": "C:\\Windows\\win.ini"}`,
+		`{"url": "--batch-file=urls.txt"}`,
+		`{"url": "https://"}`,
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/audio/import", strings.NewReader(body))
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400 for %s, got %d: %s", body, rec.Code, rec.Body.String())
+		}
+	}
+
+	t.Run("method not allowed", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/audio/import", nil)
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected status 405, got %d", rec.Code)
+		}
+	})
+}
+
+func TestAudioImportRejectsUndecodableDownload(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"ytdlp": helperEngine("import-not-audio")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/import", strings.NewReader(`{"url": "https://example.com/not-audio"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected a non-audio download to fail, got 200")
+	}
+	if !strings.Contains(strings.ToLower(rec.Body.String()), "audio") {
+		t.Fatalf("expected an explanation mentioning audio, got %s", rec.Body.String())
 	}
 }
 

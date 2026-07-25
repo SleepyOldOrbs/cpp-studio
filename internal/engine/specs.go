@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image/png"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -17,9 +18,16 @@ const (
 	DefaultSpeechTimeout        = 180 * time.Second
 	DefaultImageTimeout         = 300 * time.Second
 	DefaultDiarizationTimeout   = 300 * time.Second
+	// DefaultImportTimeout is generous because it covers a network download
+	// of a whole episode, not a local inference run.
+	DefaultImportTimeout = 900 * time.Second
 
 	MaxSpeechOutputBytes = 32 * 1024 * 1024
 	MaxImageOutputBytes  = 32 * 1024 * 1024
+	// MaxImportOutputBytes bounds a fetched recording. 192 MB is far past
+	// the Extractor's ~30-minute editor cap in any sane audio-only format,
+	// while still refusing someone who points the importer at a film.
+	MaxImportOutputBytes = 192 * 1024 * 1024
 	MaxImageDimension    = 2048
 	maxImagePixels       = MaxImageDimension * MaxImageDimension
 )
@@ -182,6 +190,101 @@ func DiarizationSpec(wavBytes []byte, numSpeakers int) Spec {
 			return append(args, inPath)
 		},
 	}
+}
+
+// ImportAudioSpec invokes the optional "ytdlp" engine: the user's own yt-dlp
+// binary fetches the audio behind a URL into a temp file the gateway hands
+// straight to the Extractor. Format selection (-f bestaudio/...) lives in the
+// config args, since which formats a site offers — and which the browser can
+// decode — is the operator's call.
+//
+// The three flags here are contract, not preference: --no-simulate keeps
+// --print from turning the run into a dry run, --print emits the source title
+// on stdout so a clip can carry its provenance, and --force-overwrites is
+// required because the spec runner has already created the (empty) temp
+// output file, which yt-dlp would otherwise treat as an existing download and
+// skip.
+func ImportAudioSpec(sourceURL string) Spec {
+	return Spec{
+		Engine:        "ytdlp",
+		Label:         "yt-dlp import command",
+		Timeout:       DefaultImportTimeout,
+		OutputPattern: "cpp-studio-import-*",
+		OutputLabel:   "imported audio",
+		BuildArgs: func(_, outPath string) []string {
+			return []string{
+				"--no-simulate",
+				"--print", "%(title)s",
+				"--force-overwrites",
+				"--no-playlist",
+				"-o", outPath,
+				sourceURL,
+			}
+		},
+		ValidateOutput: func(path string) error {
+			if err := validateFileSize(path, MaxImportOutputBytes, "imported audio"); err != nil {
+				return fmt.Errorf("fetched oversized audio: %v", err)
+			}
+			head, err := readFileHead(path, 16)
+			if err != nil {
+				return fmt.Errorf("read imported audio: %v", err)
+			}
+			if _, ok := SniffAudioContentType(head); !ok {
+				return fmt.Errorf("fetched a file the browser cannot decode as audio")
+			}
+			return nil
+		},
+	}
+}
+
+// audioSignature matches a container by the bytes it starts with. offset is
+// where the magic sits: MP4/M4A carry theirs at byte 4, after the box length.
+type audioSignature struct {
+	offset      int
+	magic       []byte
+	contentType string
+}
+
+// audioSignatures covers exactly what browsers decode through Web Audio,
+// which is the only consumer that matters here: whatever the importer
+// fetches has to survive decodeAudioData in the Extractor.
+var audioSignatures = []audioSignature{
+	{0, []byte("OggS"), "audio/ogg"},
+	{0, []byte("fLaC"), "audio/flac"},
+	{0, []byte("RIFF"), "audio/wav"},
+	{0, []byte("ID3"), "audio/mpeg"},
+	{0, []byte{0x1A, 0x45, 0xDF, 0xA3}, "audio/webm"},
+	{4, []byte("ftyp"), "audio/mp4"},
+}
+
+// SniffAudioContentType identifies a fetched container from its first bytes.
+// A bare MPEG frame sync (no ID3 tag) is matched separately because it is a
+// bit pattern rather than a fixed string.
+func SniffAudioContentType(head []byte) (string, bool) {
+	for _, sig := range audioSignatures {
+		end := sig.offset + len(sig.magic)
+		if len(head) >= end && bytes.Equal(head[sig.offset:end], sig.magic) {
+			return sig.contentType, true
+		}
+	}
+	if len(head) >= 2 && head[0] == 0xFF && head[1]&0xE0 == 0xE0 {
+		return "audio/mpeg", true
+	}
+	return "", false
+}
+
+func readFileHead(path string, n int) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	head := make([]byte, n)
+	read, err := io.ReadFull(file, head)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return nil, err
+	}
+	return head[:read], nil
 }
 
 // DiarizationSpan is one contiguous stretch of a single speaker's speech.

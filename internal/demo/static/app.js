@@ -482,6 +482,8 @@
     var hasDiarize = Boolean(data.engines && data.engines.diarize);
     extractDiarizeButton.hidden = !hasDiarize;
     document.getElementById("extractSpeakersInput").hidden = !hasDiarize;
+    // Same rule for the URL importer: no yt-dlp binary configured, no row.
+    document.getElementById("extractImportRow").hidden = !(data.engines && data.engines.ytdlp);
     healthUpdated.textContent = data.updatedAt ? "Updated " + new Date(data.updatedAt).toLocaleString() : "Updated now";
     healthBody.textContent = "";
 
@@ -3404,6 +3406,75 @@
     var file = extractFileInput.files && extractFileInput.files[0];
     if (file) {
       extractLoadFile(file);
+    }
+  });
+
+  // --- URL import (the optional yt-dlp engine) ---------------------------
+  // The gateway streams the fetched audio back as raw bytes with the source
+  // title in a header, so the import path rejoins the file path immediately:
+  // wrap it in a File and hand it to the same decoder.
+  var extractURLInput = document.getElementById("extractURLInput");
+  var extractImportButton = document.getElementById("extractImportButton");
+
+  // Content types map back to the extension the decoder logs and the file
+  // name a clip inherits; the browser decodes from the bytes either way.
+  var IMPORT_EXTENSIONS = {
+    "audio/mpeg": "mp3",
+    "audio/mp4": "m4a",
+    "audio/ogg": "ogg",
+    "audio/webm": "webm",
+    "audio/flac": "flac",
+    "audio/wav": "wav"
+  };
+
+  function importFileName(title, contentType) {
+    var base = (title || "imported").replace(/[\\/:*?"<>|]+/g, " ").trim().slice(0, 80) || "imported";
+    return base + "." + (IMPORT_EXTENSIONS[contentType] || "audio");
+  }
+
+  async function importFromURL() {
+    var url = extractURLInput.value.trim();
+    if (!url) {
+      extractError("Paste a URL first");
+      return;
+    }
+    extractErrorBox.hidden = true;
+    extractImportButton.disabled = true;
+    var original = extractImportButton.textContent;
+    extractImportButton.textContent = "Fetching…";
+    extractFileStatus.textContent = "Fetching audio…";
+    try {
+      log("POST /v1/audio/import " + url);
+      var response = await fetch("/v1/audio/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url })
+      });
+      await ensureOk(response, "Import");
+      var contentType = (response.headers.get("Content-Type") || "").split(";")[0];
+      var title = "";
+      try {
+        title = decodeURIComponent(response.headers.get("X-Import-Title") || "");
+      } catch (err) {
+        title = "";
+      }
+      var blob = await response.blob();
+      var name = importFileName(title, contentType);
+      log("Imported " + name + " (" + Math.round(blob.size / 1024) + " KB)");
+      await extractLoadFile(new File([blob], name, { type: contentType || blob.type }));
+    } catch (err) {
+      extractFileStatus.textContent = "Nothing loaded";
+      extractError(err.message || String(err));
+    }
+    extractImportButton.textContent = original;
+    extractImportButton.disabled = false;
+  }
+
+  extractImportButton.addEventListener("click", importFromURL);
+  extractURLInput.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      importFromURL();
     }
   });
 

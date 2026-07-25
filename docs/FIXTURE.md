@@ -36,6 +36,14 @@ Run an sd-cli-like image command:
 .\bin\cpp-studio-fixture.exe image --prompt "a small cabin" --output .\image.png --width 512 --height 512
 ```
 
+Stand in for yt-dlp so the URL importer can be exercised without a real
+download (it asserts the flag contract the gateway sends, prints a title the
+way `--print` does, and writes fixture audio):
+
+```powershell
+.\bin\cpp-studio-fixture.exe import --no-simulate --print "%(title)s" --force-overwrites --no-playlist -o .\imported.wav https://example.com/episode
+```
+
 ## Smoke Test
 
 Run the complete loop through the real gateway:

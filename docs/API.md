@@ -272,6 +272,28 @@ Without a configured `diarize` engine the route returns `503`; the
 Extractor's "Detect speakers" button appears only when the engine exists and
 fills the transcript's `speaker` tags by maximum overlap.
 
+## POST /v1/audio/import
+
+Fetches the audio behind a URL through the optional, user-supplied `ytdlp`
+engine so it can be loaded into the Extractor:
+
+```json
+{ "url": "https://example.com/an-episode" }
+```
+
+The response is the raw fetched audio — `Content-Type` sniffed from the
+container (`audio/mpeg`, `audio/mp4`, `audio/ogg`, `audio/webm`,
+`audio/flac`, `audio/wav`) — with the source title percent-encoded in
+`X-Import-Title`. Nothing is stored server-side; the browser decodes the
+bytes exactly as it would a dropped file.
+
+Only `http` and `https` URLs are accepted (max 2048 characters), so local
+paths and flag-shaped input never reach yt-dlp. Downloads are capped at
+192 MB, and a fetch that yields something the browser cannot decode as audio
+fails with `502` rather than loading a broken editor. Without a configured
+`ytdlp` engine the route returns `503` and the Extractor's URL row is
+hidden. See `docs/CONFIG.md` for the engine block.
+
 ## POST /v1/audio/speech
 
 Runs the configured `audio` subprocess and returns WAV bytes.

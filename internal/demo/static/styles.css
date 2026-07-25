@@ -1509,6 +1509,17 @@ pre {
   font-size: 0.85rem;
 }
 
+.extract-import {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.extract-import .text-input {
+  flex: 1;
+}
+
 .extract-zoom {
   display: flex;
   gap: 4px;

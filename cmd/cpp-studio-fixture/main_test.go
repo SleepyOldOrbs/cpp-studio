@@ -154,6 +154,50 @@ func TestSpeechWritesValidWAV(t *testing.T) {
 	assertFixtureWAV(t, data)
 }
 
+func TestImportWritesAudioAndPrintsTitle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "import.tmp")
+
+	var stdout, stderr bytes.Buffer
+	args := []string{"import", "--no-simulate", "--print", "%(title)s", "--force-overwrites", "--no-playlist", "-o", path, "https://example.com/episode"}
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatalf("run import: %v (stderr %q)", err, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "Fixture Import" {
+		t.Fatalf("expected the printed title, got %q", stdout.String())
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read imported audio: %v", err)
+	}
+	assertFixtureWAV(t, data)
+}
+
+func TestImportEnforcesTheGatewayContract(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "import.tmp")
+	base := []string{"import", "--no-simulate", "--print", "%(title)s", "--force-overwrites", "--no-playlist", "-o", path}
+
+	tests := map[string][]string{
+		// --force-overwrites is what lets a download replace the empty temp
+		// file the spec runner created.
+		"missing force-overwrites": {"import", "--no-simulate", "--print", "%(title)s", "-o", path, "https://example.com/x"},
+		// --print without --no-simulate makes real yt-dlp skip downloading.
+		"print without no-simulate": {"import", "--print", "%(title)s", "--force-overwrites", "-o", path, "https://example.com/x"},
+		"no url":                    base,
+		"two urls":                  append(append([]string{}, base...), "https://example.com/a", "https://example.com/b"),
+		"non-http url":              append(append([]string{}, base...), "file:///C:/Windows/win.ini"),
+	}
+
+	for name, args := range tests {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if err := run(args, &stdout, &stderr); err == nil {
+				t.Fatalf("expected an error for %v", args)
+			}
+		})
+	}
+}
+
 func TestSpeechRequiresText(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "out.wav")
 

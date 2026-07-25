@@ -38,7 +38,9 @@ behind OpenAI-shaped HTTP routes and a browser studio console.
   one speaker, tick their lines, and export them as one WAV — or press
   **Clone the cast** and mint a library voice per speaker in one click.
   Transcript lines are editable and mergeable; every clip carries
-  source/time/speaker provenance.
+  source/time/speaker provenance. Point it at a **URL** instead of a file if
+  you configure your own `yt-dlp` binary — the row is hidden when you
+  haven't.
 - **Image lab** — Stable Diffusion generation (~2 s per 512×512 resident),
   plus true vision: a VLM describes any image and speaks the description.
 - **Engine rack** — every engine has a power switch, and named VRAM profiles
@@ -99,6 +101,7 @@ OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
 | `POST /v1/voices` · `/v1/voices/design` | clone / design voices |
 | `POST /v1/audio/transcriptions?format=segments` | timestamped transcript segments |
 | `POST /v1/audio/diarization` | who-spoke-when speaker clusters (sherpa-onnx) |
+| `POST /v1/audio/import` | fetch a URL's audio through your own yt-dlp |
 | `POST /v1/images/generations` | Stable Diffusion, resident sd-server |
 | `POST /v1/images/descriptions` | VLM describes an image, spoken aloud |
 | `POST /v1/stories` | multi-voice story jobs, grounded or sketch |
@@ -131,6 +134,11 @@ responsibility: **clone only voices you have the right to use** (your own,
 voices with the speaker's consent, or material whose licence permits it),
 and never present synthetic speech as a real person's words. Everything
 runs locally; what you make and how you use it is on you.
+
+The optional URL importer makes that easier to forget, so it says it twice:
+you supply your own `yt-dlp` binary and configure it deliberately, and
+whether a given URL is yours to download — and whose voice is in it — is
+your call before you paste it, not the studio's after.
 
 ## Architecture in one paragraph
 

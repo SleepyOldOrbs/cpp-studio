@@ -180,9 +180,18 @@ Sequenced plan; each step starts only when the previous is done.
    it. The Story desk gets a two-option mode switch that swaps sources for
    premise/style; the fixture chat server reads the cast out of the prompt
    so a fixture sketch is performable by any cast.
-4. **URL importer.** Config-gated `yt-dlp` (user-supplied binary, hidden
-   when absent): paste a URL, audio lands in the Extractor. Ships with the
-   README consent note about cloning real people's voices.
+4. **URL importer — DONE.** `POST /v1/audio/import` runs the optional,
+   user-supplied `ytdlp` engine: paste a URL, the audio lands in the
+   Extractor. Format selection stays in the config args (site- and
+   browser-dependent); the gateway owns the rest of the CLI contract,
+   including the `--force-overwrites` that stops yt-dlp treating the
+   runner's empty temp file as an already-finished download. Fetched bytes
+   are container-sniffed against what Web Audio can decode and streamed
+   straight to the Extractor — never stored — with the source title in a
+   header. Only http(s) URLs run, so local paths and flag-shaped input are
+   refused before yt-dlp sees them. The row is hidden without the engine,
+   exactly like "Detect speakers". The README consent note grew a paragraph
+   about pasting other people's URLs.
 
 ### Cross-cutting — repo presentation  ·  *stars*
 

@@ -121,6 +121,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/audio/speech", r.handleSpeech)
 	mux.HandleFunc("/v1/audio/transcriptions", r.handleTranscriptions)
 	mux.HandleFunc("/v1/audio/diarization", r.handleDiarization)
+	mux.HandleFunc("/v1/audio/import", r.handleAudioImport)
 	mux.HandleFunc("/v1/voice", r.handleVoice)
 	mux.HandleFunc("/v1/voices", r.handleVoices)
 	mux.HandleFunc("/v1/voices/design", r.handleVoiceDesign)
@@ -1203,6 +1204,103 @@ func (r *router) handleDiarization(w http.ResponseWriter, req *http.Request) {
 		"duration_ms": time.Since(started).Milliseconds(),
 		"spans":       out,
 	})
+}
+
+// maxImportRequestBytes bounds the import request itself — a JSON object
+// holding one URL, nothing more. The response can be enormous; the request
+// cannot.
+const maxImportRequestBytes = 8 * 1024
+
+type audioImportRequest struct {
+	URL string `json:"url"`
+}
+
+// validateImportURL keeps the importer to what a person can paste in a
+// browser. yt-dlp happily accepts local paths, batch files, and anything
+// starting with "-" is argv-parsed as a flag, so the scheme check is the
+// gate: http(s), with a host, or nothing runs.
+func validateImportURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fmt.Errorf("url is required")
+	}
+	if len(trimmed) > 2048 {
+		return "", fmt.Errorf("url must be at most 2048 characters")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("url is not a valid URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("url must be http or https")
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("url must include a host")
+	}
+	return trimmed, nil
+}
+
+// handleAudioImport fetches the audio behind a URL through the optional
+// user-supplied "ytdlp" binary and streams it back for the Extractor to
+// decode. The bytes are never stored: importing is the front door of the
+// Extractor, not a downloader — what the user chooses to keep is saved
+// through the existing clip and voice flows, which is also where the consent
+// question belongs.
+func (r *router) handleAudioImport(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	if _, ok := r.engine("ytdlp"); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, `engine "ytdlp" is not configured; see docs/CONFIG.md for the URL importer setup`)
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxImportRequestBytes)
+	var body audioImportRequest
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid import request body")
+		return
+	}
+	sourceURL, err := validateImportURL(body.URL)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	result, err := r.engines.Run(req.Context(), engine.ImportAudioSpec(sourceURL))
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	contentType, ok := engine.SniffAudioContentType(result.Output)
+	if !ok {
+		writeJSONError(w, http.StatusBadGateway, "yt-dlp returned a file the browser cannot decode as audio")
+		return
+	}
+
+	// The title rides in a header rather than the body so the response stays
+	// raw audio the browser can hand straight to decodeAudioData. Percent
+	// encoding keeps non-ASCII titles legal in a header value.
+	title := firstLine(string(result.Stdout))
+	if title == "" {
+		title = "Imported audio"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(result.Output)))
+	w.Header().Set("X-Import-Title", url.PathEscape(title))
+	w.Header().Set("Access-Control-Expose-Headers", "X-Import-Title")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(result.Output)
+}
+
+// firstLine is yt-dlp's --print output: the title, ahead of whatever progress
+// chatter follows it.
+func firstLine(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // transcriptSegment is one timestamped span of speech. Speaker is first-class

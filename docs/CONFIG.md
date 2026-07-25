@@ -92,6 +92,42 @@ bake-off); use `--clustering.num-clusters=N` instead of the threshold when
 the speaker count is known. Without this engine, `POST /v1/audio/diarization`
 returns `503` and the Extractor's "Detect speakers" button is hidden.
 
+## URL Import: the `ytdlp` engine
+
+Optional, and deliberately not bundled: **you supply the binary**. Point a
+subprocess engine named `ytdlp` at your own
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) (2021.05 or later — the importer
+uses `--print` with `--no-simulate`) and the Extractor grows a URL row:
+
+```json
+{
+  "ytdlp": {
+    "command": "${root}\\tools\\yt-dlp.exe",
+    "args": ["-f", "bestaudio[ext=m4a]/bestaudio/best"],
+    "mode": "subprocess",
+    "requestTimeoutSeconds": 900
+  }
+}
+```
+
+The `args` are yours: format selection is the one decision that depends on
+both the site and what your browser can decode. The gateway appends the rest
+of the contract — `--no-simulate --print "%(title)s" --force-overwrites
+--no-playlist -o <temp file> <url>` — then sniffs the container, refuses
+anything that is not decodable audio (an HTML error page, say), and streams
+the bytes to the Extractor with the source title in an `X-Import-Title`
+header. Nothing is written to your library on the way through.
+
+Fetched audio must land in a format Web Audio decodes: MP3, M4A/MP4, OGG,
+Opus/WebM, FLAC, or WAV. A merged video format would need ffmpeg and is not
+what this is for — keep the selector on `bestaudio`. Downloads are capped at
+192 MB and the request times out per `requestTimeoutSeconds` (the built-in
+default is 15 minutes). Without this engine, `POST /v1/audio/import` returns
+`503` and the Extractor's URL row is hidden.
+
+Whether a URL is yours to download, and whose voice is in it, is settled
+before you paste it — see the cloning note in the README.
+
 ## VRAM Profiles: `profiles`
 
 Named engine sets for trading resident models against a fixed VRAM budget:
