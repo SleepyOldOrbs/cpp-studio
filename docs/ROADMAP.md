@@ -193,7 +193,61 @@ Sequenced plan; each step starts only when the previous is done.
    exactly like "Detect speakers". The README consent note grew a paragraph
    about pasting other people's URLs.
 
-### Cross-cutting — repo presentation  ·  *stars*
+#### M8 — The take room: story production schema v2  ·  *the destination, properly*
+
+Five candidates were drafted against field research (Voicebox at ~45k stars
+on the same Qwen3-TTS family; LM Studio/Jan/Ollama winning on click-to-install
+model libraries; NeuTTS Air's GGUF CPU cloning) and argued out with an
+independent review. What survived:
+
+**Do now — the take room, as a persistence problem.** A story is produced as
+one stitched WAV and the per-line clips are thrown away in
+`Manager.synthesizeScript`; `Store.Save` refuses to touch an existing story;
+`ScriptLine` has no stable id; `wav.Concatenate` knows one uniform gap. So
+"regenerate line 7" means regenerating the episode and hoping. That is the
+gap between generating audio and producing an episode, and it is a schema
+gap, not three buttons:
+
+- Stable `line_id`, and takes persisted at `lines/<line-id>/<take-id>.wav`.
+- Per line: the current take, mute, and gap before/after.
+- Each take records the voice it was spoken in and when — provenance
+  becomes automatic rather than bookkeeping.
+- Renders are immutable revisions (`renders/<n>.wav`), so what you
+  published stays what you published.
+- Retake and re-render are Jobs, with the manifest replaced atomically.
+
+**Deferred, redesigned — model fetching.** The idea was "stream `source`,
+check the `sha256` the manifest already has". Both premises are false:
+every `source` in `models.json` is a landing page, not a downloadable
+object, and the four directory models carry no checksum at all. A fetcher
+needs artifact-level descriptors first (resolved URL, revision, per-file
+digest, archive member). And weights alone do not unblock a stranger — they
+still need engine binaries. The honest version is a versioned reference
+pack, not a download button.
+
+**Deferred, narrowed — OpenAI compatibility.** Worth doing as a *tested*
+conformance profile, not a claim. Note the premise correction: there is no
+`/v1/models` collision (the catalog already lives at `/v1/models/catalog`),
+and `handleChatCompletions` already proxies the upstream body, so streaming
+is conformance hardening (explicit SSE flushing, header forwarding, tests)
+rather than new machinery.
+
+**Cut — NeuTTS Air as a CPU engine.** Its GGUF backbone is real, but the
+shipped runtime is a Python package plus `llama-cpp-python`, eSpeak, and a
+separate NeuCodec/ONNX path. That is not a native engine behind the existing
+seam, and `SpeechVoiceSpec`/`router.speak`/`Manager.Submit` all hardcode a
+single `audio` engine with audio.cpp's CLI contract, so it would need
+capability routing on top of a new dependency stack. A CPU benchmark spike
+can revisit it; it is not a milestone.
+
+**Not adopted — batch synthesis.** ENG-T0 measured a 49.5% wall-time win for
+`--batch-text-file` over per-line subprocesses, and that number is stale: the
+resident `audiocpp_server` (2026-07-23) already took an 8-line story from
+~71 s to ~25 s, "mostly llama scripting". Retaining line WAVs is the part of
+that decision still worth having, and M8 takes it. Revisit batching only
+against a fresh measurement.
+
+## Cross-cutting — repo presentation  ·  *stars*
 
 - **README — DONE.** Rebuilt around the vision, with honest hardware
   requirements and a clear setup path (clone → fetch models → run). The

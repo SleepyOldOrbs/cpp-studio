@@ -2079,17 +2079,66 @@ func (r *router) handleStory(w http.ResponseWriter, req *http.Request) {
 		_ = json.NewEncoder(w).Encode(status)
 		return
 	}
-	if len(parts) == 3 && parts[0] != "" && parts[1] == "artifact" && parts[2] != "" {
+	// Artifacts are story.wav, one take (lines/<line>/<take>.wav), or one
+	// render revision (renders/render-NNN.wav); the store owns the whitelist.
+	if len(parts) >= 3 && parts[0] != "" && parts[1] == "artifact" && parts[2] != "" {
 		if !requireMethod(w, req, http.MethodGet) {
 			return
 		}
-		path, err := r.stories.ArtifactPath(parts[0], parts[2])
+		path, err := r.stories.ArtifactPath(parts[0], parts[2:]...)
 		if err != nil {
 			writeStoryErrorFromError(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "audio/wav")
 		http.ServeFile(w, req, path)
+		return
+	}
+	// The take room: retake one line, edit its production settings, or
+	// publish a new render revision from the current takes.
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "render" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		manifest, render, err := r.stories.Render(parts[0])
+		if err != nil {
+			writeStoryErrorFromError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"render": render, "manifest": manifest})
+		return
+	}
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "lines" && parts[2] != "" && parts[3] == "takes" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		manifest, take, err := r.stories.Retake(req.Context(), parts[0], parts[2])
+		if err != nil {
+			writeStoryErrorFromError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"take": take, "manifest": manifest})
+		return
+	}
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "lines" && parts[2] != "" {
+		if !requireMethod(w, req, http.MethodPatch) {
+			return
+		}
+		req.Body = http.MaxBytesReader(w, req.Body, story.MaxRequestBodyBytes)
+		var patch story.LinePatch
+		if err := json.NewDecoder(req.Body).Decode(&patch); err != nil {
+			writeStoryError(w, http.StatusBadRequest, story.CodeInvalidRequest, "invalid line patch body")
+			return
+		}
+		manifest, err := r.stories.EditLine(parts[0], parts[2], patch)
+		if err != nil {
+			writeStoryErrorFromError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"manifest": manifest})
 		return
 	}
 	http.NotFound(w, req)

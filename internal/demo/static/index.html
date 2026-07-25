@@ -409,6 +409,15 @@
             </div>
             <audio id="storyAudio" controls></audio>
           </div>
+          <div class="take-room" id="takeRoom" hidden>
+            <div class="story-library-header">
+              <span class="source-label">Take room &middot; <span id="takeRoomMeta"></span></span>
+              <button class="primary compact-button" id="takeRoomRenderButton" type="button">Re-render</button>
+            </div>
+            <div class="take-lines" id="takeLines"></div>
+            <small class="hint">Retake a line you don't like, pick the best take, mute it, or nudge the silence after it. Re-render publishes a new revision; earlier revisions stay on disk.</small>
+          </div>
+
           <div class="story-library-header">
             <span class="source-label">Retained stories</span>
             <button class="secondary compact-button" id="storyLibraryButton" type="button">Refresh</button>

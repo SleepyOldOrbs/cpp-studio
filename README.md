@@ -59,6 +59,10 @@ profiles trade resident models against your card's budget.
   does not support. **Sketch**: give it a premise and a style instead, and
   the grounding comes off — the writer invents, and your cloned cast
   performs it. Either way every line is spoken and stitched into one piece.
+- **The take room** — every produced line keeps its own recording, so one bad
+  read does not cost you the episode. Retake a line, pick between takes, mute
+  it, nudge the silence after it, then re-render. Renders are numbered
+  revisions: what you already shared keeps playing what you shared.
 - **The Extractor** — a sampler deck for voices. Drop in any audio or video
   the browser can decode (MP3/OGG/FLAC/WAV/MP4 — a podcast, an old radio
   show), get a scrubbable waveform with a whisper transcript timeline, and

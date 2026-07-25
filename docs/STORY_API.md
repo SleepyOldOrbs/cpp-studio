@@ -313,16 +313,64 @@ Behavior:
 Cancellation may leave a temporary or partial directory on disk. It must not
 write a completed `manifest.json` unless the story finished successfully.
 
-## GET /v1/stories/{id}/artifact/{filename}
+## The take room
+
+A produced story keeps each line's own recording, so one bad read can be
+replaced without regenerating the episode.
+
+- **Takes.** Every line has a stable `id` and a list of `takes`, each with
+  its own `id`, the `voice_id` it was spoken in, the exact `text` at the
+  time, a duration, and a `url`. `current_take` names the one that renders.
+  Retaking adds a take; nothing is ever overwritten.
+- **Production settings.** `muted` drops a line from renders without
+  deleting it; `gap_before_ms` / `gap_after_ms` adjust its timing on top of
+  the default 350 ms inter-line gap (each between -500 and 3000).
+- **Renders are immutable.** Each render is a numbered revision under
+  `renders/`, listed in the manifest's `renders`. `story.wav` always mirrors
+  the latest, so existing clients keep working, and earlier revisions stay
+  fetchable.
+
+Placeholder-tone stories have no per-line audio, so they have no takes.
+
+### POST /v1/stories/{id}/lines/{line_id}/takes
+
+Resynthesizes one line in its speaker's voice, appends the result as a new
+take, and makes it current. Reserves the `audio` engine for the duration
+(`429` with `engine_busy` if it is held). Returns `{"take": ..., "manifest": ...}`.
+Unknown line ids return `400` with `line_not_found`.
+
+### PATCH /v1/stories/{id}/lines/{line_id}
+
+Edits one line's production settings without touching audio. Omitted fields
+are left alone:
+
+```json
+{ "current_take": "take-002", "muted": false, "gap_after_ms": 250 }
+```
+
+Returns `{"manifest": ...}`. Selecting a take the line does not have returns
+`400` with `take_not_found`; out-of-range timing returns `invalid_request`.
+
+### POST /v1/stories/{id}/render
+
+Restitches the story from every line's current take, honouring mutes and
+per-line timing, and publishes it as the next revision. Returns
+`{"render": ..., "manifest": ...}`. A story with nothing left to render
+(every line muted or unrecorded) returns `400` with `nothing_to_render`.
+
+## GET /v1/stories/{id}/artifact/{path}
 
 Serves whitelisted story artifacts.
 
-V1 whitelist:
+Whitelist:
 
-- `story.wav`
+- `story.wav` — the current mix.
+- `lines/{line_id}/{take_id}.wav` — one take.
+- `renders/render-NNN.wav` — one published revision.
 
-The route rejects path traversal, absolute paths, unknown filenames, missing
-files, and non-WAV content for `story.wav`.
+Every id is validated the same way a story id is, and the route rejects path
+traversal, absolute paths, unknown filenames, missing files, and non-WAV
+content.
 
 Response:
 

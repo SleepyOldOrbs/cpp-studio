@@ -77,6 +77,10 @@
   var storyAudio = document.getElementById("storyAudio");
   var storyLibraryButton = document.getElementById("storyLibraryButton");
   var storyLibrary = document.getElementById("storyLibrary");
+  var takeRoom = document.getElementById("takeRoom");
+  var takeRoomMeta = document.getElementById("takeRoomMeta");
+  var takeRoomRenderButton = document.getElementById("takeRoomRenderButton");
+  var takeLines = document.getElementById("takeLines");
   var storyFacts = document.getElementById("storyFacts");
   var voiceSelect = document.getElementById("voiceSelect");
   var cloneForm = document.getElementById("cloneForm");
@@ -741,8 +745,157 @@
     container.appendChild(body);
   }
 
+  // ---------- take room ----------
+  // A produced story keeps every line's own recording. The take room is how
+  // you fix one bad read: retake it, pick the best take, mute it, or nudge
+  // the silence after it, then publish a new render revision.
+
+  var takeRoomStoryID = "";
+
+  function clearTakeRoom() {
+    takeRoomStoryID = "";
+    takeRoom.hidden = true;
+    takeLines.textContent = "";
+    takeRoomMeta.textContent = "";
+  }
+
+  async function patchTakeLine(lineID, patch) {
+    var response = await fetch("/v1/stories/" + encodeURIComponent(takeRoomStoryID) + "/lines/" + encodeURIComponent(lineID), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch)
+    });
+    await ensureOk(response, "Line edit");
+    var data = await response.json();
+    renderTakeRoom(data.manifest);
+    return data.manifest;
+  }
+
+  async function retakeLine(lineID, button) {
+    clearStoryError();
+    setBusy(button, "Taking...");
+    try {
+      log("POST /v1/stories/" + takeRoomStoryID + "/lines/" + lineID + "/takes");
+      var response = await fetch("/v1/stories/" + encodeURIComponent(takeRoomStoryID) + "/lines/" + encodeURIComponent(lineID) + "/takes", { method: "POST" });
+      await ensureOk(response, "Retake");
+      var data = await response.json();
+      log("New take " + data.take.id + " for " + lineID);
+      renderTakeRoom(data.manifest);
+    } catch (error) {
+      setStoryError(error);
+    } finally {
+      clearBusy(button);
+    }
+  }
+
+  async function rerenderStory() {
+    clearStoryError();
+    setBusy(takeRoomRenderButton, "Rendering...");
+    try {
+      log("POST /v1/stories/" + takeRoomStoryID + "/render");
+      var response = await fetch("/v1/stories/" + encodeURIComponent(takeRoomStoryID) + "/render", { method: "POST" });
+      await ensureOk(response, "Render");
+      var data = await response.json();
+      log("Published render revision " + data.render.revision + " (" + data.render.duration_seconds + "s)");
+      renderTakeRoom(data.manifest);
+      // Point playback at the revision that was just published.
+      storyAudio.src = data.render.url + "?v=" + data.render.revision;
+      storyAudio.load();
+      saveStoryButton.disabled = false;
+    } catch (error) {
+      setStoryError(error);
+    } finally {
+      clearBusy(takeRoomRenderButton);
+    }
+  }
+
+  function takeLineRow(line) {
+    var row = createElement("div", "take-line" + (line.muted ? " is-muted" : ""));
+    var head = createElement("div", "take-line-head");
+    head.appendChild(createElement("span", "take-line-speaker", line.speaker_id || "speaker"));
+
+    var takes = line.takes || [];
+    if (takes.length > 1) {
+      var select = createElement("select", "text-input take-select");
+      takes.forEach(function (take, index) {
+        var option = createElement("option", "", "Take " + (index + 1) + " · " + (take.duration_ms / 1000).toFixed(1) + "s");
+        option.value = take.id;
+        select.appendChild(option);
+      });
+      select.value = line.current_take || "";
+      select.addEventListener("change", function () {
+        patchTakeLine(line.id, { current_take: select.value }).catch(setStoryError);
+      });
+      head.appendChild(select);
+    } else if (takes.length === 1) {
+      head.appendChild(createElement("span", "take-line-detail", (takes[0].duration_ms / 1000).toFixed(1) + "s"));
+    }
+
+    var playButton = createElement("button", "plain compact-button", "Play");
+    playButton.type = "button";
+    playButton.disabled = takes.length === 0;
+    playButton.addEventListener("click", function () {
+      var current = takes.filter(function (take) { return take.id === line.current_take; })[0] || takes[0];
+      if (current) {
+        storyAudio.src = current.url;
+        storyAudio.load();
+        storyAudio.play().catch(function () { /* autoplay policy: the controls still work */ });
+      }
+    });
+    head.appendChild(playButton);
+
+    var retakeButton = createElement("button", "secondary compact-button", "Retake");
+    retakeButton.type = "button";
+    retakeButton.addEventListener("click", function () {
+      retakeLine(line.id, retakeButton);
+    });
+    head.appendChild(retakeButton);
+
+    var muteButton = createElement("button", "plain compact-button", line.muted ? "Unmute" : "Mute");
+    muteButton.type = "button";
+    muteButton.addEventListener("click", function () {
+      patchTakeLine(line.id, { muted: !line.muted }).catch(setStoryError);
+    });
+    head.appendChild(muteButton);
+
+    var gapInput = createElement("input", "text-input compact-number take-gap");
+    gapInput.type = "number";
+    gapInput.min = "-500";
+    gapInput.max = "3000";
+    gapInput.step = "50";
+    gapInput.value = String(line.gap_after_ms || 0);
+    gapInput.title = "Extra silence after this line, in milliseconds";
+    gapInput.addEventListener("change", function () {
+      patchTakeLine(line.id, { gap_after_ms: Number(gapInput.value || "0") }).catch(setStoryError);
+    });
+    head.appendChild(gapInput);
+
+    row.appendChild(head);
+    row.appendChild(createElement("p", "take-line-text", line.text || ""));
+    return row;
+  }
+
+  function renderTakeRoom(manifest) {
+    takeLines.textContent = "";
+    var lines = (manifest && manifest.script) || [];
+    var hasTakes = lines.some(function (line) { return (line.takes || []).length > 0; });
+    if (!manifest || !manifest.id || !hasTakes) {
+      // Placeholder-tone stories have no per-line audio to work with.
+      clearTakeRoom();
+      return;
+    }
+    takeRoomStoryID = manifest.id;
+    var revisions = (manifest.renders || []).length;
+    takeRoomMeta.textContent = lines.length + " lines · " + revisions + " render" + (revisions === 1 ? "" : "s");
+    lines.forEach(function (line) {
+      takeLines.appendChild(takeLineRow(line));
+    });
+    takeRoom.hidden = false;
+  }
+
   function renderStoryManifest(manifest) {
     storyFacts.textContent = "";
+    renderTakeRoom(manifest);
     if (!manifest) {
       return;
     }
@@ -2743,6 +2896,7 @@
       }
     });
   });
+  takeRoomRenderButton.addEventListener("click", rerenderStory);
   storyDraftButton.addEventListener("click", draftStory);
   scriptDiscardButton.addEventListener("click", function () {
     discardDraft();

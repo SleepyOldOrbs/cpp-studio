@@ -139,6 +139,24 @@ func Concatenate(clips [][]byte, gap time.Duration) ([]byte, error) {
 	if len(clips) == 0 {
 		return nil, fmt.Errorf("no clips to concatenate")
 	}
+	gaps := make([]time.Duration, len(clips))
+	for i := range gaps {
+		gaps[i] = gap
+	}
+	return ConcatenateGaps(clips, gaps)
+}
+
+// ConcatenateGaps is Concatenate with the silence chosen per clip: gaps[i]
+// is the silence placed *before* clips[i]. gaps[0] is ignored — nothing
+// precedes the first clip — which lets callers index gaps and clips the
+// same way rather than keeping an off-by-one in their heads.
+func ConcatenateGaps(clips [][]byte, gaps []time.Duration) ([]byte, error) {
+	if len(clips) == 0 {
+		return nil, fmt.Errorf("no clips to concatenate")
+	}
+	if len(gaps) != len(clips) {
+		return nil, fmt.Errorf("have %d gaps for %d clips", len(gaps), len(clips))
+	}
 
 	var format Format
 	var pcm bytes.Buffer
@@ -152,8 +170,8 @@ func Concatenate(clips [][]byte, gap time.Duration) ([]byte, error) {
 		} else if clipFormat != format {
 			return nil, fmt.Errorf("clip %d format %+v does not match first clip %+v", i+1, clipFormat, format)
 		}
-		if i > 0 && gap > 0 {
-			gapBytes := int(float64(format.SampleRate)*gap.Seconds()) * int(format.Channels) * int(format.BitsPerSample) / 8
+		if i > 0 && gaps[i] > 0 {
+			gapBytes := int(float64(format.SampleRate)*gaps[i].Seconds()) * int(format.Channels) * int(format.BitsPerSample) / 8
 			// Keep silence aligned to whole frames.
 			blockAlign := int(format.Channels) * int(format.BitsPerSample) / 8
 			if blockAlign > 0 {

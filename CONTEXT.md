@@ -61,6 +61,16 @@ audio, with no sources, no fact cards, and no citations — only the shared
 script shape (speakable text, a speaker in the cast) still gates it. One
 field decides all four differences, so neither mode can weaken the other.
 
+**Takes and renders** are the production layer. A produced line keeps every
+recording ever made of it (`lines/<line-id>/<take-id>.wav`), and the manifest
+says which take is current, whether the line is muted, and how its timing is
+nudged. A *render* is an immutable revision stitched from those choices
+(`renders/render-NNN.wav`), with `story.wav` mirroring the latest so existing
+readers keep working. Takes and renders only accumulate; the manifest is the
+one mutable file, which is what makes an edit visible. Because `Status`
+prefers a tracked in-memory job over the store, every take-room mutation must
+republish the manifest that job is serving.
+
 ## WAV knowledge (`internal/wav`)
 
 The single home for the WAV format invariant: `Validate*` (RIFF/WAVE header)

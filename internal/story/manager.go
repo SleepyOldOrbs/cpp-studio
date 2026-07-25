@@ -200,8 +200,10 @@ func (m *Manager) List() ([]Summary, error) {
 	return m.store.List()
 }
 
-func (m *Manager) ArtifactPath(id string, filename string) (string, error) {
-	return m.store.ArtifactPath(id, filename)
+// ArtifactPath resolves a whitelisted artifact of a stored story: the
+// current mix, one take, or one render revision.
+func (m *Manager) ArtifactPath(id string, segments ...string) (string, error) {
+	return m.store.ArtifactPath(id, segments...)
 }
 
 func (m *Manager) run(ctx context.Context, j *job) {
@@ -249,15 +251,17 @@ func (m *Manager) run(ctx context.Context, j *job) {
 	}
 	audio := fixtureWAV(j.req.TargetSeconds)
 
+	var clips [][]byte
 	if j.req.VoiceMode == "fixed" && m.synthesize != nil {
-		clips, ok := m.synthesizeScript(ctx, j, manifest.Script, j.req.CastVoices)
+		var ok bool
+		clips, ok = m.synthesizeScript(ctx, j, manifest.Script, j.req.CastVoices)
 		if !ok {
 			return
 		}
 		if !m.advance(ctx, j, StatusStitching, 0.9) {
 			return
 		}
-		stitched, err := wav.Concatenate(clips, lineGap)
+		stitched, err := stitchTakes(clips, manifest.Script)
 		if err != nil {
 			m.fail(j, NewError(CodeSynthesisFailure, "stitch story audio: "+err.Error()))
 			return
@@ -285,6 +289,13 @@ func (m *Manager) run(ctx context.Context, j *job) {
 		return
 	}
 	if err := m.store.Save(manifest, audio); err != nil {
+		m.fail(j, NewError(CodeStoreFailure, err.Error()))
+		return
+	}
+	// Keep every line's own recording, and archive this stitch as revision 1.
+	// A story that only kept its mix would have to be regenerated whole to
+	// fix one bad read; with takes on disk, one line can be replaced.
+	if err := m.retainFirstRender(&manifest, clips, audio, createdAt); err != nil {
 		m.fail(j, NewError(CodeStoreFailure, err.Error()))
 		return
 	}

@@ -77,6 +77,9 @@ const (
 	CodeSynthesisFailure       ErrorCode = "synthesis_failure"
 	CodeGroundingFailure       ErrorCode = "grounding_failure"
 	CodeInvalidScript          ErrorCode = "invalid_script"
+	CodeLineNotFound           ErrorCode = "line_not_found"
+	CodeTakeNotFound           ErrorCode = "take_not_found"
+	CodeNothingToRender        ErrorCode = "nothing_to_render"
 	CodeArtifactNotFound       ErrorCode = "artifact_not_found"
 	CodeUnsupportedArtifact    ErrorCode = "unsupported_artifact"
 	CodeInvalidArtifactRequest ErrorCode = "invalid_artifact_request"
@@ -186,9 +189,49 @@ type CastMember struct {
 }
 
 type ScriptLine struct {
+	// ID is the line's stable handle for the life of the story: takes hang
+	// off it, and editing the text does not change it. Requests may omit
+	// it (older clients, hand-written JSON); the manifest always has one.
+	ID        string   `json:"id,omitempty"`
 	SpeakerID string   `json:"speaker_id"`
 	Text      string   `json:"text"`
 	FactIDs   []string `json:"fact_ids"`
+	// Takes are every recording ever made of this line, oldest first.
+	// CurrentTake names the one that gets rendered.
+	Takes       []Take `json:"takes,omitempty"`
+	CurrentTake string `json:"current_take,omitempty"`
+	// Muted drops the line from renders without deleting it.
+	Muted bool `json:"muted,omitempty"`
+	// GapBeforeMS and GapAfterMS adjust this line's timing in the render,
+	// on top of the default inter-line gap. Negative values tighten.
+	GapBeforeMS int `json:"gap_before_ms,omitempty"`
+	GapAfterMS  int `json:"gap_after_ms,omitempty"`
+}
+
+// Take is one recording of one line, kept on disk so a bad read can be
+// replaced without regenerating the episode. VoiceID and Text record what
+// this take actually was, so a take stays explainable after the line is
+// edited or the cast is re-voiced.
+type Take struct {
+	ID         string    `json:"id"`
+	VoiceID    string    `json:"voice_id"`
+	Text       string    `json:"text"`
+	CreatedAt  time.Time `json:"created_at"`
+	DurationMS int       `json:"duration_ms"`
+	Bytes      int       `json:"bytes"`
+	// URL serves this take's WAV for audition in the take room.
+	URL string `json:"url"`
+}
+
+// Render is one published stitch of the current takes. Renders are
+// immutable: re-rendering adds a revision rather than overwriting, so a
+// story you already shared stays what you shared.
+type Render struct {
+	Revision        int       `json:"revision"`
+	CreatedAt       time.Time `json:"created_at"`
+	DurationSeconds int       `json:"duration_seconds"`
+	Bytes           int       `json:"bytes"`
+	URL             string    `json:"url"`
 }
 
 type AudioRef struct {
@@ -214,6 +257,9 @@ type Manifest struct {
 	Cast            []CastMember `json:"cast"`
 	Script          []ScriptLine `json:"script"`
 	Audio           AudioRef     `json:"audio"`
+	// Renders is the revision history. Empty on manifests written before
+	// the take room; Audio still points at the current render either way.
+	Renders []Render `json:"renders,omitempty"`
 }
 
 type CreateResponse struct {

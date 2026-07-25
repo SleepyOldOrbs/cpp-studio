@@ -778,6 +778,119 @@ func TestSketchModeRejectsSourcelessGroundedStory(t *testing.T) {
 	}
 }
 
+func TestTakeRoomRetakeEditAndRender(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{"audio": helperEngine("speech-tone")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	// Produce a sketch with real per-line synthesis so takes land on disk.
+	body := strings.Replace(validSketchRequestJSON(), `"voice_mode": "placeholder"`, `"voice_mode": "fixed"`, 1)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(body))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var create story.CreateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&create); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	status := waitGatewayStoryStatus(t, router, create.ID, story.StatusComplete)
+	if status.Manifest == nil || len(status.Manifest.Script) == 0 {
+		t.Fatalf("expected a produced manifest, got %+v", status)
+	}
+	lineID := status.Manifest.Script[0].ID
+	if lineID == "" {
+		t.Fatalf("produced line has no id: %+v", status.Manifest.Script[0])
+	}
+
+	// Each take is servable over the artifact route.
+	takeURL := status.Manifest.Script[0].Takes[0].URL
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, takeURL, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected take audio at %s, got %d: %s", takeURL, rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.Bytes(); len(body) < 12 || string(body[:4]) != "RIFF" {
+		t.Fatalf("take route did not serve WAV bytes")
+	}
+
+	// Retake that line.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/stories/"+create.ID+"/lines/"+lineID+"/takes", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected retake status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var retake struct {
+		Take     story.Take     `json:"take"`
+		Manifest story.Manifest `json:"manifest"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&retake); err != nil {
+		t.Fatalf("decode retake response: %v", err)
+	}
+	if retake.Take.ID != "take-002" || retake.Manifest.Script[0].CurrentTake != "take-002" {
+		t.Fatalf("unexpected retake result %+v", retake)
+	}
+
+	// Go back to the first take through the line patch route.
+	rec = httptest.NewRecorder()
+	patch := httptest.NewRequest(http.MethodPatch, "/v1/stories/"+create.ID+"/lines/"+lineID, strings.NewReader(`{"current_take": "take-001", "gap_after_ms": 250}`))
+	router.ServeHTTP(rec, patch)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected patch status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var patched struct {
+		Manifest story.Manifest `json:"manifest"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&patched); err != nil {
+		t.Fatalf("decode patch response: %v", err)
+	}
+	if patched.Manifest.Script[0].CurrentTake != "take-001" || patched.Manifest.Script[0].GapAfterMS != 250 {
+		t.Fatalf("patch did not apply: %+v", patched.Manifest.Script[0])
+	}
+
+	// Render a new revision from the current takes.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/stories/"+create.ID+"/render", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected render status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var rendered struct {
+		Render story.Render `json:"render"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&rendered); err != nil {
+		t.Fatalf("decode render response: %v", err)
+	}
+	if rendered.Render.Revision != 2 {
+		t.Fatalf("expected revision 2, got %d", rendered.Render.Revision)
+	}
+	// Both revisions stay fetchable: a published render is immutable.
+	for _, url := range []string{
+		"/v1/stories/" + create.ID + "/artifact/renders/render-001.wav",
+		rendered.Render.URL,
+	} {
+		rec = httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, url, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected %s to be served, got %d", url, rec.Code)
+		}
+	}
+
+	t.Run("path traversal is refused", func(t *testing.T) {
+		for _, url := range []string{
+			"/v1/stories/" + create.ID + "/artifact/manifest.json",
+			"/v1/stories/" + create.ID + "/artifact/renders/render-001.txt",
+			"/v1/stories/" + create.ID + "/artifact/lines/" + lineID + "/take-001.mp3",
+		} {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, url, nil))
+			if rec.Code == http.StatusOK {
+				t.Fatalf("expected %s to be refused", url)
+			}
+		}
+	})
+}
+
 func TestStoryDraftThenProduceEditedScript(t *testing.T) {
 	t.Chdir(t.TempDir())
 	scriptJSON := `{"title": "Draft Title", "script": [

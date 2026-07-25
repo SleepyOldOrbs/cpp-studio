@@ -71,6 +71,8 @@ func castOrDefault(cast []CastMember) []CastMember {
 // decides which contract the script is held to.
 func AssembleManifest(id string, req NormalizedRequest, createdAt time.Time, scaffold Scaffold, title string, script []ScriptLine) (Manifest, error) {
 	artifactURL := fmt.Sprintf("/v1/stories/%s/artifact/%s", id, StoryArtifactName)
+	// Every stored line needs a stable id before it can own takes.
+	script = AssignLineIDs(append([]ScriptLine{}, script...))
 	manifest := Manifest{
 		ID:              id,
 		Subject:         req.Subject,

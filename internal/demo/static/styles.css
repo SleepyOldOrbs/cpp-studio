@@ -754,6 +754,67 @@ audio {
   gap: 10px;
 }
 
+.take-room {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 12px;
+}
+
+.take-lines {
+  display: grid;
+  gap: 6px;
+}
+
+.take-line {
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--well);
+  padding: 8px 10px;
+}
+
+.take-line.is-muted {
+  opacity: 0.5;
+}
+
+.take-line-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.take-line-speaker {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  min-width: 90px;
+}
+
+.take-line-detail {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+
+.take-select,
+.take-gap {
+  min-height: 30px;
+  padding: 2px 8px;
+  font-size: 0.78rem;
+}
+
+.take-gap {
+  width: 82px;
+}
+
+.take-line-text {
+  margin: 6px 0 0;
+  color: var(--ink);
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+
 textarea.text-input {
   resize: vertical;
   font-family: inherit;

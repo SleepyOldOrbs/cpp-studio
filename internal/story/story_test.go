@@ -382,6 +382,254 @@ func TestManagerDraftsSketchWithCustomCast(t *testing.T) {
 	}
 }
 
+// producedStory runs a real fixed-voice production through the manager and
+// returns its manifest — the starting point for every take-room test.
+func producedStory(t *testing.T, opts ...func(*ManagerOptions)) (*Manager, Manifest) {
+	t.Helper()
+	options := ManagerOptions{
+		RootDir: t.TempDir(),
+		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
+			return wav.SyntheticTone(wav.ToneSampleRate / 2), nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	}
+	for _, opt := range opts {
+		opt(&options)
+	}
+	manager := NewManager(options)
+
+	req := validSketchRequest()
+	req.VoiceMode = "fixed"
+	created, err := manager.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, created.ID, StatusComplete)
+	if status.Manifest == nil {
+		t.Fatalf("expected a completed manifest, got %+v", status)
+	}
+	return manager, *status.Manifest
+}
+
+func TestProductionRetainsTakesAndFirstRender(t *testing.T) {
+	manager, manifest := producedStory(t)
+
+	for i, line := range manifest.Script {
+		if line.ID == "" {
+			t.Fatalf("script[%d] has no stable line id", i)
+		}
+		if len(line.Takes) != 1 || line.CurrentTake != line.Takes[0].ID {
+			t.Fatalf("script[%d] expected one current take, got %+v", i, line)
+		}
+		take := line.Takes[0]
+		if take.Text != line.Text {
+			t.Fatalf("take %s recorded text %q, line says %q", take.ID, take.Text, line.Text)
+		}
+		if take.DurationMS <= 0 || take.Bytes <= 0 || take.URL == "" {
+			t.Fatalf("take %s is not described: %+v", take.ID, take)
+		}
+		// The take audio is on disk and re-readable, which is the whole point.
+		audio, err := manager.store.LoadTake(manifest.ID, line.ID, take.ID)
+		if err != nil {
+			t.Fatalf("load take %s: %v", take.ID, err)
+		}
+		if err := wav.ValidateBytes(audio); err != nil {
+			t.Fatalf("take %s is not valid WAV: %v", take.ID, err)
+		}
+	}
+
+	if len(manifest.Renders) != 1 || manifest.Renders[0].Revision != 1 {
+		t.Fatalf("expected render revision 1, got %+v", manifest.Renders)
+	}
+	if _, err := manager.ArtifactPath(manifest.ID, "renders", "render-001.wav"); err != nil {
+		t.Fatalf("render revision 1 is not servable: %v", err)
+	}
+}
+
+func TestRetakeAddsATakeAndMakesItCurrent(t *testing.T) {
+	var spokenTexts []string
+	manager, manifest := producedStory(t, func(o *ManagerOptions) {
+		o.Synthesize = func(ctx context.Context, text string, voiceID string) ([]byte, error) {
+			spokenTexts = append(spokenTexts, text)
+			return wav.SyntheticTone(wav.ToneSampleRate / 2), nil
+		}
+	})
+
+	target := manifest.Script[1]
+	updated, take, err := manager.Retake(context.Background(), manifest.ID, target.ID)
+	if err != nil {
+		t.Fatalf("Retake returned error: %v", err)
+	}
+	if take.ID != "take-002" {
+		t.Fatalf("expected take-002, got %q", take.ID)
+	}
+	if spokenTexts[len(spokenTexts)-1] != target.Text {
+		t.Fatalf("retake spoke %q, expected the line's text %q", spokenTexts[len(spokenTexts)-1], target.Text)
+	}
+	line := updated.Script[1]
+	if len(line.Takes) != 2 || line.CurrentTake != "take-002" {
+		t.Fatalf("expected two takes with the new one current, got %+v", line)
+	}
+	// The first take survives — a retake is an addition, not a replacement.
+	if _, err := manager.store.LoadTake(manifest.ID, target.ID, "take-001"); err != nil {
+		t.Fatalf("original take was lost: %v", err)
+	}
+
+	// And it survives a reload: the manifest on disk carries the history.
+	reloaded, ok, err := manager.store.Load(manifest.ID)
+	if err != nil || !ok {
+		t.Fatalf("reload story: %v (ok=%v)", err, ok)
+	}
+	if len(reloaded.Script[1].Takes) != 2 {
+		t.Fatalf("takes did not persist: %+v", reloaded.Script[1])
+	}
+
+	t.Run("unknown line", func(t *testing.T) {
+		_, _, err := manager.Retake(context.Background(), manifest.ID, "line-999")
+		if !storyErrorIs(err, CodeLineNotFound) {
+			t.Fatalf("expected line_not_found, got %v", err)
+		}
+	})
+}
+
+func TestEditLineChoosesTakesMutesAndTiming(t *testing.T) {
+	manager, manifest := producedStory(t)
+	lineID := manifest.Script[0].ID
+
+	t.Run("rejects an unknown take", func(t *testing.T) {
+		missing := "take-404"
+		_, err := manager.EditLine(manifest.ID, lineID, LinePatch{CurrentTake: &missing})
+		if !storyErrorIs(err, CodeTakeNotFound) {
+			t.Fatalf("expected take_not_found, got %v", err)
+		}
+	})
+
+	t.Run("rejects out-of-range timing", func(t *testing.T) {
+		tooLong := MaxGapMS + 1
+		_, err := manager.EditLine(manifest.ID, lineID, LinePatch{GapAfterMS: &tooLong})
+		if !storyErrorIs(err, CodeInvalidRequest) {
+			t.Fatalf("expected invalid_request, got %v", err)
+		}
+	})
+
+	t.Run("applies mute and timing", func(t *testing.T) {
+		muted := true
+		gap := 400
+		updated, err := manager.EditLine(manifest.ID, lineID, LinePatch{Muted: &muted, GapAfterMS: &gap})
+		if err != nil {
+			t.Fatalf("EditLine returned error: %v", err)
+		}
+		if !updated.Script[0].Muted || updated.Script[0].GapAfterMS != 400 {
+			t.Fatalf("edit did not apply: %+v", updated.Script[0])
+		}
+		// Untouched fields stay untouched.
+		if updated.Script[0].GapBeforeMS != 0 || updated.Script[0].CurrentTake != "take-001" {
+			t.Fatalf("edit disturbed other fields: %+v", updated.Script[0])
+		}
+	})
+}
+
+func TestRenderPublishesImmutableRevisions(t *testing.T) {
+	manager, manifest := producedStory(t)
+
+	before, _, err := manager.Status(manifest.ID)
+	if err != nil {
+		t.Fatalf("Status returned error: %v", err)
+	}
+	firstDuration := before.Manifest.DurationSeconds
+
+	// Mute a line, then re-render: the new revision must be shorter and the
+	// old one must still be on disk.
+	muted := true
+	if _, err := manager.EditLine(manifest.ID, manifest.Script[0].ID, LinePatch{Muted: &muted}); err != nil {
+		t.Fatalf("EditLine returned error: %v", err)
+	}
+	updated, render, err := manager.Render(manifest.ID)
+	if err != nil {
+		t.Fatalf("Render returned error: %v", err)
+	}
+	if render.Revision != 2 {
+		t.Fatalf("expected revision 2, got %d", render.Revision)
+	}
+	if len(updated.Renders) != 2 {
+		t.Fatalf("expected two render revisions, got %+v", updated.Renders)
+	}
+	if render.DurationSeconds > firstDuration {
+		t.Fatalf("muting a line should not lengthen the story: %d -> %d", firstDuration, render.DurationSeconds)
+	}
+	for _, revision := range []string{"render-001.wav", "render-002.wav"} {
+		if _, err := manager.ArtifactPath(manifest.ID, "renders", revision); err != nil {
+			t.Fatalf("%s is not servable: %v", revision, err)
+		}
+	}
+
+	t.Run("refuses to render nothing", func(t *testing.T) {
+		for _, line := range updated.Script {
+			mute := true
+			if _, err := manager.EditLine(manifest.ID, line.ID, LinePatch{Muted: &mute}); err != nil {
+				t.Fatalf("EditLine returned error: %v", err)
+			}
+		}
+		if _, _, err := manager.Render(manifest.ID); !storyErrorIs(err, CodeNothingToRender) {
+			t.Fatalf("expected nothing_to_render, got %v", err)
+		}
+	})
+}
+
+// Status prefers the tracked in-memory job over the store for as long as the
+// process lives, so every take-room edit has to republish the manifest that
+// job is serving. Without it an edit lands on disk and stays invisible.
+func TestStatusReflectsTakeRoomEdits(t *testing.T) {
+	manager, manifest := producedStory(t)
+	lineID := manifest.Script[1].ID
+
+	if _, _, err := manager.Retake(context.Background(), manifest.ID, lineID); err != nil {
+		t.Fatalf("Retake returned error: %v", err)
+	}
+	status, _, err := manager.Status(manifest.ID)
+	if err != nil {
+		t.Fatalf("Status returned error: %v", err)
+	}
+	if got := len(status.Manifest.Script[1].Takes); got != 2 {
+		t.Fatalf("status still reports %d takes after a retake", got)
+	}
+
+	muted := true
+	if _, err := manager.EditLine(manifest.ID, lineID, LinePatch{Muted: &muted}); err != nil {
+		t.Fatalf("EditLine returned error: %v", err)
+	}
+	if status, _, _ = manager.Status(manifest.ID); !status.Manifest.Script[1].Muted {
+		t.Fatalf("status does not reflect the mute")
+	}
+
+	if _, _, err := manager.Render(manifest.ID); err != nil {
+		t.Fatalf("Render returned error: %v", err)
+	}
+	if status, _, _ = manager.Status(manifest.ID); len(status.Manifest.Renders) != 2 {
+		t.Fatalf("status reports %d renders after re-rendering", len(status.Manifest.Renders))
+	}
+}
+
+func TestArtifactPathRejectsEscapes(t *testing.T) {
+	manager, manifest := producedStory(t)
+
+	cases := [][]string{
+		{"lines", "..", "take-001.wav"},
+		{"lines", "line-001", "../../../manifest.json"},
+		{"renders", "../manifest.json"},
+		{"renders", "render-001.txt"},
+		{"manifest.json"},
+		{"lines", "line-001", "take-001.mp3"},
+		{"lines", "line-001"},
+	}
+	for _, segments := range cases {
+		if _, err := manager.ArtifactPath(manifest.ID, segments...); err == nil {
+			t.Fatalf("expected %v to be refused", segments)
+		}
+	}
+}
+
 func TestStoreSaveLoadListAndArtifactPath(t *testing.T) {
 	store := NewStore(t.TempDir())
 	req, err := ValidateCreateRequest(validCreateRequest())
