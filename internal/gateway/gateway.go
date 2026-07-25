@@ -135,6 +135,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/audio/diarization", r.handleDiarization)
 	mux.HandleFunc("/v1/audio/import", r.handleAudioImport)
 	mux.HandleFunc("/v1/audio/formats", r.handleAudioFormats)
+	mux.HandleFunc("/v1/audio/decode", r.handleAudioDecode)
 	mux.HandleFunc("/v1/voice", r.handleVoice)
 	mux.HandleFunc("/v1/voices", r.handleVoices)
 	mux.HandleFunc("/v1/voices/design", r.handleVoiceDesign)
@@ -1336,6 +1337,96 @@ func (r *router) transcodeAudio(ctx context.Context, inPath string, outPath stri
 		return story.NewError(story.CodeStoreFailure, err.Error())
 	}
 	return nil
+}
+
+// handleAudioDecode converts an upload the browser could not decode into a
+// WAV it can. This is the Extractor's other front door, and unlike the URL
+// importer it has to take the file itself, so the upload streams to a temp
+// file rather than being read into memory: the whole point is that these
+// are the large and awkward files.
+func (r *router) handleAudioDecode(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	if _, ok := r.engine("ffmpeg"); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, `engine "ffmpeg" is not configured; see docs/CONFIG.md for the decode setup`)
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, engine.MaxDecodeUploadBytes)
+
+	upload, header, err := req.FormFile("file")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "multipart field file is required")
+		return
+	}
+	defer upload.Close()
+
+	// Keep the original extension: ffmpeg sniffs content, but some formats
+	// are far easier to demux when the container is named.
+	inPath, cleanupIn, err := spoolUpload(upload, filepath.Ext(header.Filename))
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer cleanupIn()
+
+	outFile, err := os.CreateTemp("", "cpp-studio-decoded-*.wav")
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create decode output: %v", err))
+		return
+	}
+	outPath := outFile.Name()
+	_ = outFile.Close()
+	defer os.Remove(outPath)
+
+	if _, err := r.engines.Run(req.Context(), engine.DecodeAudioSpec(inPath, outPath)); err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	decoded, err := os.Open(outPath)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("read decoded audio: %v", err))
+		return
+	}
+	defer decoded.Close()
+	info, err := decoded.Stat()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("stat decoded audio: %v", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	w.Header().Set("X-Decoded-From", url.PathEscape(header.Filename))
+	w.Header().Set("Access-Control-Expose-Headers", "X-Decoded-From")
+	w.WriteHeader(http.StatusOK)
+	// Streamed rather than buffered: a half-hour decode is well over a
+	// hundred megabytes and there is no reason for it to sit in memory.
+	_, _ = io.Copy(w, decoded)
+}
+
+// spoolUpload writes a multipart file to disk without holding it in memory,
+// returning the path and a cleanup func.
+func spoolUpload(upload io.Reader, ext string) (string, func(), error) {
+	if ext == "" || len(ext) > 12 {
+		ext = ".bin"
+	}
+	file, err := os.CreateTemp("", "cpp-studio-upload-*"+ext)
+	if err != nil {
+		return "", func() {}, fmt.Errorf("create upload temp file: %v", err)
+	}
+	path := file.Name()
+	cleanup := func() { os.Remove(path) }
+	if _, err := io.Copy(file, upload); err != nil {
+		_ = file.Close()
+		cleanup()
+		return "", func() {}, fmt.Errorf("save upload: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		cleanup()
+		return "", func() {}, fmt.Errorf("close upload temp file: %v", err)
+	}
+	return path, cleanup, nil
 }
 
 // measureLoudness is the story manager's MeasureFunc: it hands a clip to

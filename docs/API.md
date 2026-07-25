@@ -294,6 +294,27 @@ fails with `502` rather than loading a broken editor. Without a configured
 `ytdlp` engine the route returns `503` and the Extractor's URL row is
 hidden. See `docs/CONFIG.md` for the engine block.
 
+## POST /v1/audio/decode
+
+Converts an uploaded file the browser cannot decode into one it can, through
+the optional user-supplied `ffmpeg` engine. Multipart `file`, up to 1 GiB;
+the response is mono 16-bit PCM in a WAV at the source sample rate, with the
+original filename percent-encoded in `X-Decoded-From`.
+
+Mono is not a compromise: the Extractor mixes to mono the moment it loads
+anything, so a stereo decode would double the transfer for identical
+results. The source sample rate is kept, because a voice cloned from this
+audio deserves the quality that was in the file.
+
+The upload streams to a temp file and the response streams back — a
+half-hour decode is well over a hundred megabytes and never sits in memory.
+Decoded output is capped at 192 MB (roughly 35 minutes, past the Extractor's
+own 30-minute editor cap). Without the engine the route returns `503`.
+
+The console calls this automatically: when client-side decoding fails and an
+ffmpeg engine is configured, the Extractor converts and retries rather than
+telling you to go and find a converter.
+
 ## POST /v1/audio/speech
 
 Runs the configured `audio` subprocess and returns WAV bytes.

@@ -34,6 +34,14 @@ const (
 	// the Extractor's ~30-minute editor cap in any sane audio-only format,
 	// while still refusing someone who points the importer at a film.
 	MaxImportOutputBytes = 192 * 1024 * 1024
+	// MaxDecodedAudioBytes bounds a decode. Mono 16-bit at 48 kHz is about
+	// 5.5 MB a minute, so this is roughly 35 minutes — past the Extractor's
+	// own 30-minute editor cap, which is the real limit a caller will hit.
+	MaxDecodedAudioBytes = 192 * 1024 * 1024
+	// MaxDecodeUploadBytes bounds what may be sent for decoding. Video
+	// containers are the reason this is generous: the audio track inside a
+	// large file is usually small.
+	MaxDecodeUploadBytes = 1024 * 1024 * 1024
 	MaxImageDimension    = 2048
 	maxImagePixels       = MaxImageDimension * MaxImageDimension
 )
@@ -326,6 +334,44 @@ func TranscodeSpec(inPath string, outPath string, format AudioFormat, bitrate st
 			}
 			if info.Size() == 0 {
 				return fmt.Errorf("produced an empty file")
+			}
+			return nil
+		},
+	}
+}
+
+// DecodeAudioSpec turns anything ffmpeg understands into the one thing every
+// browser does: 16-bit PCM in a WAV. This is the escape hatch for the files
+// the Extractor's client-side decoder refuses — old MPEG-1/2 radio rips,
+// WMA, AC3, video containers with unusual audio tracks.
+//
+// Mono is not a compromise here: the Extractor mixes to mono the moment it
+// loads anything, so a stereo decode would double the bytes crossing the
+// wire to produce identical results. The source sample rate is kept, because
+// a voice cloned from this audio deserves the quality that was in the file.
+func DecodeAudioSpec(inPath string, outPath string) Spec {
+	return Spec{
+		Engine:     "ffmpeg",
+		Label:      "ffmpeg decode command",
+		Timeout:    DefaultTranscodeTimeout,
+		InputPath:  inPath,
+		OutputPath: outPath,
+		BuildArgs: func(in, out string) []string {
+			return []string{
+				"-nostdin", "-y",
+				"-i", in,
+				"-vn",
+				"-ac", "1",
+				"-c:a", "pcm_s16le",
+				out,
+			}
+		},
+		ValidateOutput: func(path string) error {
+			if err := wav.ValidateFile(path); err != nil {
+				return fmt.Errorf("produced something that is not a WAV: %v", err)
+			}
+			if err := validateFileSize(path, MaxDecodedAudioBytes, "decoded audio"); err != nil {
+				return fmt.Errorf("decoded to more audio than the editor can hold: %v", err)
 			}
 			return nil
 		},

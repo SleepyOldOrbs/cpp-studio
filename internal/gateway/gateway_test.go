@@ -1012,6 +1012,85 @@ func TestStoryExportToDeliveryFormat(t *testing.T) {
 	})
 }
 
+func TestAudioDecodeConvertsWhatTheBrowserCannot(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"ffmpeg": ffmpegHelperEngine()})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "round-the-horne.wma")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	// Deliberately not a WAV: the whole point is the formats the browser
+	// refuses.
+	if _, err := part.Write([]byte("\x30\x26\xb2\x75 not audio the browser knows")); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/decode", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "audio/wav" {
+		t.Fatalf("expected audio/wav, got %q", got)
+	}
+	if got := rec.Body.Bytes(); len(got) < 12 || string(got[:4]) != "RIFF" {
+		t.Fatalf("decode did not return WAV bytes")
+	}
+	name, err := url.PathUnescape(rec.Header().Get("X-Decoded-From"))
+	if err != nil || name != "round-the-horne.wma" {
+		t.Fatalf("expected the source filename back, got %q (%v)", name, err)
+	}
+
+	t.Run("a missing file is refused", func(t *testing.T) {
+		var empty bytes.Buffer
+		w := multipart.NewWriter(&empty)
+		_ = w.WriteField("notafile", "x")
+		_ = w.Close()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/audio/decode", &empty)
+		req.Header.Set("Content-Type", w.FormDataContentType())
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400, got %d", rec.Code)
+		}
+	})
+
+	t.Run("method not allowed", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/audio/decode", nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected status 405, got %d", rec.Code)
+		}
+	})
+}
+
+func TestAudioDecodeWithoutFfmpegIsUnavailable(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"audio": helperEngine("speech")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "x.wma")
+	_, _ = part.Write([]byte("anything"))
+	_ = writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/decode", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestStoryExportWithoutFfmpegIsUnavailable(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cfg := testConfig(map[string]config.EngineConfig{"audio": helperEngine("speech")})
@@ -1579,6 +1658,14 @@ func runFFmpegHelper(args []string) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
+	}
+	// A pcm_s16le run is a decode: whatever went in, a WAV comes out.
+	if codec == "pcm_s16le" {
+		if err := os.WriteFile(out, validWAVBytes(), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		os.Exit(0)
 	}
 	if err := os.WriteFile(out, append([]byte("ID3\x03\x00\x00\x00"), source[:len(source)/8]...), 0o600); err != nil {
 		fmt.Fprintln(os.Stderr, err)

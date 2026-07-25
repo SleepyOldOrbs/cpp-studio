@@ -164,6 +164,13 @@ For scale: a 43-second two-hander is 2.0 MB as WAV, 687 KB as MP3, 348 KB as
 Opus. Without this engine, `POST /v1/stories/{id}/export` returns
 `export_unavailable` and the console's export buttons are hidden.
 
+The same engine also **decodes what the browser refuses**. The Extractor
+reads WAV, MP3, OGG, FLAC and MP4/WebM client-side; with ffmpeg configured,
+anything else — old MPEG-1/2 radio rips, WMA, AC3, video containers with
+unusual audio tracks — is converted automatically at the moment the browser
+gives up, instead of being turned away. This is the ffmpeg importer M5
+deferred. See `POST /v1/audio/decode` in [`API.md`](API.md).
+
 The same engine also **masters every render**: speakers are levelled against
 each other and the finished piece is placed at -16 LUFS under a -1.5 dBTP
 ceiling, with the measured before and after values recorded in the manifest.

@@ -392,6 +392,15 @@ func runFFmpeg(args []string, stdout, stderr io.Writer) error {
 	if !strings.Contains(fixtureEncoderList, codec) {
 		return fmt.Errorf("ffmpeg has no encoder %q", codec)
 	}
+	if _, err := os.Stat(inPath); err != nil {
+		return fmt.Errorf("ffmpeg could not open %s: %w", inPath, err)
+	}
+	// pcm_s16le is a decode rather than a compression: whatever went in,
+	// a WAV comes out. That is the Extractor's escape hatch for files the
+	// browser cannot read, so the fixture must produce a real WAV.
+	if codec == "pcm_s16le" {
+		return writeFixtureWAV(outPath)
+	}
 	source, err := os.ReadFile(inPath)
 	if err != nil {
 		return fmt.Errorf("ffmpeg could not read %s: %w", inPath, err)

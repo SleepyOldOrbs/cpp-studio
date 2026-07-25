@@ -158,6 +158,9 @@
   var libraryVoices = [];
   var storyDraft = null;
   var storyMode = "grounded";
+  // Whether the optional ffmpeg engine is configured, which decides if a
+  // file the browser cannot decode can be converted instead of refused.
+  var ffmpegAvailable = false;
   var selectedVoiceId = "";
   try {
     selectedVoiceId = window.localStorage.getItem("cpp-studio-voice") || "";
@@ -489,6 +492,9 @@
     document.getElementById("extractSpeakersInput").hidden = !hasDiarize;
     // Same rule for the URL importer: no yt-dlp binary configured, no row.
     document.getElementById("extractImportRow").hidden = !(data.engines && data.engines.ytdlp);
+    // And with an ffmpeg engine, a file the browser refuses is recoverable
+    // rather than a dead end.
+    ffmpegAvailable = Boolean(data.engines && data.engines.ffmpeg);
     healthUpdated.textContent = data.updatedAt ? "Updated " + new Date(data.updatedAt).toLocaleString() : "Updated now";
     healthBody.textContent = "";
 
@@ -3637,7 +3643,9 @@
     return m + ":" + (s < 10 ? "0" : "") + s.toFixed(1);
   }
 
-  async function extractLoadFile(file) {
+  // converted is set when this file is already the output of an ffmpeg
+  // conversion, so a second failure is a real failure rather than a loop.
+  async function extractLoadFile(file, converted) {
     extractErrorBox.hidden = true;
     extractFileStatus.textContent = "Decoding " + file.name + "…";
     try {
@@ -3682,8 +3690,36 @@
       log("Extractor loaded " + file.name + " (" + fmtTime(decoded.duration) + ")");
     } catch (err) {
       extractFileStatus.textContent = "Nothing loaded";
+      // The browser has just refused this file. If an ffmpeg engine is
+      // configured, that refusal is recoverable — offer the conversion here,
+      // at the moment the wall was hit, rather than in a doc somewhere.
+      if (!converted && ffmpegAvailable) {
+        extractError("The browser cannot decode " + file.name + ". Converting it with ffmpeg…");
+        try {
+          await extractConvertAndLoad(file);
+          return;
+        } catch (convertErr) {
+          extractError("ffmpeg could not convert " + file.name + ": " + (convertErr.message || "unsupported format"));
+          return;
+        }
+      }
       extractError("Could not decode " + file.name + ": " + (err.message || "unsupported format") + ". Convert to WAV/MP3/OGG/FLAC first.");
     }
+  }
+
+  // extractConvertAndLoad sends a file the browser refused to the gateway's
+  // ffmpeg and loads whatever comes back, which is always a plain WAV.
+  async function extractConvertAndLoad(file) {
+    extractFileStatus.textContent = "Converting " + file.name + " with ffmpeg…";
+    var form = new FormData();
+    form.append("file", file, file.name);
+    log("POST /v1/audio/decode " + file.name);
+    var response = await fetch("/v1/audio/decode", { method: "POST", body: form });
+    await ensureOk(response, "Convert");
+    var blob = await response.blob();
+    log("ffmpeg converted " + file.name + " to " + Math.round(blob.size / 1024) + " KB of WAV");
+    var name = file.name.replace(/\.[^.]+$/, "") + ".wav";
+    await extractLoadFile(new File([blob], name, { type: "audio/wav" }), true);
   }
 
   extractFileInput.addEventListener("change", function () {

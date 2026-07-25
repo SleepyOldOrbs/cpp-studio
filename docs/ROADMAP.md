@@ -278,9 +278,17 @@ mattered was that none of them should come first:
   this machine will actually produce rather than discovering it mid-job.
   Exports hang off the revision they encode, and re-exporting a format
   replaces it. Measured on a real 43 s two-hander: 2.0 MB WAV → 687 KB MP3
-  → 348 KB Opus. **The ffmpeg *importer* (long and exotic files for the
-  Extractor, deferred at M5) is still open** — it needs a multipart upload
-  path, not the URL-shaped contract the yt-dlp route uses.
+  → 348 KB Opus.
+- **ffmpeg import — DONE, closing M5's last deferral.** `POST
+  /v1/audio/decode` takes a multipart upload — the review was right that
+  the yt-dlp route's URL contract does not fit — and returns mono 16-bit
+  WAV. Upload and response both stream through temp files rather than
+  memory, which is the whole reason the file-path spec mode exists. The
+  console calls it at the only moment it matters: when client-side decoding
+  throws and an ffmpeg engine is configured, the Extractor converts and
+  retries instead of telling the user to go and find a converter. Verified
+  with a real WMA the browser refuses — dropped in, converted, waveform up,
+  Transcribe enabled, no user action in between.
 - **Mastering — DONE, on every one of those terms.** Measurement goes
   through ffmpeg's `loudnorm` analysis (BS.1770 done properly beats
   hand-rolled K-weighting reporting a confident wrong number); the gain is

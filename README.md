@@ -69,9 +69,10 @@ profiles trade resident models against your card's budget.
   written into the manifest and an honest `target_met: false` when the peak
   ceiling binds first. Any revision then exports to MP3 or Opus (that
   43-second two-hander: 2.0 MB WAV, 687 KB MP3, 348 KB Opus).
-- **The Extractor** — a sampler deck for voices. Drop in any audio or video
-  the browser can decode (MP3/OGG/FLAC/WAV/MP4 — a podcast, an old radio
-  show), get a scrubbable waveform with a whisper transcript timeline, and
+- **The Extractor** — a sampler deck for voices. Drop in a podcast or an old
+  radio show (MP3/OGG/FLAC/WAV/MP4 decode in the browser; with `ffmpeg`
+  configured, anything else converts automatically instead of being
+  refused), get a scrubbable waveform with a whisper transcript timeline, and
   let **automatic speaker diarization** tag who says what (a 1968 radio
   episode: 5 speakers, 94% of 651 lines tagged in ~100 s, on CPU). Filter to
   one speaker, tick their lines, and export them as one WAV — or press
@@ -141,6 +142,7 @@ OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
 | `POST /v1/audio/transcriptions?format=segments` | timestamped transcript segments |
 | `POST /v1/audio/diarization` | who-spoke-when speaker clusters (sherpa-onnx) |
 | `POST /v1/audio/import` | fetch a URL's audio through your own yt-dlp |
+| `POST /v1/audio/decode` | convert what the browser can't read, via your own ffmpeg |
 | `POST /v1/stories/{id}/export` | encode a render revision to MP3/Opus via your own ffmpeg |
 | `POST /v1/images/generations` | Stable Diffusion, resident sd-server |
 | `POST /v1/images/descriptions` | VLM describes an image, spoken aloud |
