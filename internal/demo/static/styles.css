@@ -34,6 +34,14 @@ html {
   scroll-padding-top: 96px;
 }
 
+/* The hidden attribute is how every panel in this console shows and hides
+   itself, and it loses to any author `display` rule — an element styled
+   `display: grid` stays on screen no matter what the JS sets. This one line
+   is what makes `hidden` actually mean hidden. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   min-width: 320px;
   margin: 0;
@@ -1120,10 +1128,6 @@ progress::-moz-progress-bar {
   height: auto;
   max-height: 520px;
   object-fit: contain;
-}
-
-.image-frame img[hidden] {
-  display: none;
 }
 
 /* ---------- engine rack detail ---------- */

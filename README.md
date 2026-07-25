@@ -14,6 +14,35 @@ the native inference family —
 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) speaker diarization —
 behind OpenAI-shaped HTTP routes and a browser studio console.
 
+![The Extractor: a 47-second recording as a waveform, transcribed into 18 timestamped segments, every line tagged by speaker automatically](docs/images/extractor.png)
+
+**The loop that makes it a studio:** drop in a recording, let whisper
+transcribe it and diarization work out who spoke when, press **Clone the
+cast** to mint a voice per speaker — then write something new and hear them
+perform it. Everything above happened on one desktop GPU with no network
+connection.
+
+<table>
+<tr>
+<td width="50%">
+
+[![The Story desk in sketch mode: a premise, style notes, a cast of two cloned voices, and a twelve-line comedy script written by the local model](docs/images/sketch-desk.png)](docs/images/sketch-desk.png)
+
+**Sketch mode.** Premise in, script out, performed by voices you cloned.
+The same desk writes source-cited documentary in grounded mode.
+
+</td>
+<td width="50%">
+
+[![The engine rack: nine engines ready, VRAM profiles, and a live meter reading 13.8 of 15.9 GB on an RTX 5080](docs/images/engine-rack.png)](docs/images/engine-rack.png)
+
+**Your GPU, your rules.** Every engine has a power switch, and named VRAM
+profiles trade resident models against your card's budget.
+
+</td>
+</tr>
+</table>
+
 ## What it does
 
 - **Talk** — a multi-turn voice loop: record or type, whisper transcribes,

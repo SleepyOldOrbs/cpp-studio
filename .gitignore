@@ -5,3 +5,4 @@ config.real.json
 coverage.out
 *.exe
 *.log
+.gstack/

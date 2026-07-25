@@ -195,8 +195,15 @@ Sequenced plan; each step starts only when the previous is done.
 
 ### Cross-cutting — repo presentation  ·  *stars*
 
-- **README** rebuilt around the vision, with a hero screenshot/GIF, honest
-  hardware requirements, and a clear setup path (clone → fetch models → run).
+- **README — DONE.** Rebuilt around the vision, with honest hardware
+  requirements and a clear setup path (clone → fetch models → run). The
+  shop window is three stills captured from the real gateway, not a GIF:
+  the Extractor mid-job (a real 47 s two-hander, 18 whisper segments, both
+  speakers tagged automatically), the sketch desk with a llama-written
+  script cast on cloned voices, and the engine rack reading 13.8/15.9 GB on
+  the reference RTX 5080. Stills beat a GIF here — a dithered 256-colour
+  animation of a dark console loses the text that is the whole point, and
+  every frame here is a screen a visitor can reproduce.
 - **CI badge.** A GitHub Action running the GPU-free `go test ./...` (fixture
   engine, `config.ci.json`) — a free quality signal.
 
