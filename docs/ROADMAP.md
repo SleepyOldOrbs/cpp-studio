@@ -281,14 +281,22 @@ mattered was that none of them should come first:
   → 348 KB Opus. **The ffmpeg *importer* (long and exotic files for the
   Extractor, deferred at M5) is still open** — it needs a multipart upload
   path, not the URL-shaped contract the yt-dlp route uses.
-- **Mastering — later, and through ffmpeg `loudnorm`, not pure Go.** The
-  measurement standard is BS.1770; -16 LUFS is the podcast delivery target,
-  not "EBU R128", whose programme target is -23. Two constraints also
-  cannot always both hold: if linear gain to -16 would breach the true-peak
-  ceiling, the honest outcome is a quieter render and a recorded actual
-  value, never a claim that both were met. Level per speaker on aggregate
-  material rather than per take, or intentional whispers and shouts get
-  flattened.
+- **Mastering — DONE, on every one of those terms.** Measurement goes
+  through ffmpeg's `loudnorm` analysis (BS.1770 done properly beats
+  hand-rolled K-weighting reporting a confident wrong number); the gain is
+  applied in Go, because gain is multiplication and that is the whole of
+  what linear mastering means. Two passes: speakers levelled toward the
+  median on their *aggregate* material, then one gain toward -16 LUFS with
+  a -1.5 dBTP ceiling. When the ceiling binds first the render stays
+  quieter and `target_met` says `false` with a note — no compression, no
+  claim that both constraints held. The after values are measured rather
+  than predicted. Verified on the real two-hander: Brian and Philomena were
+  1 dB apart and were levelled symmetrically, the stitch measured -26.6
+  LUFS, +6.6 dB was as far as the peak ceiling allowed, and an independent
+  ffmpeg run on the finished file agreed to within 0.07 LUFS. Spoken-word
+  TTS turns out to be peaky enough that the ceiling usually binds before
+  the loudness target, which is exactly the case the review said must never
+  be papered over.
 - **Per-line delivery direction — CUT.** Not reachable: the resident audio
   server takes `{model, input, voice_ref, reference_text}`, `SynthesizeFunc`
   is `(ctx, text, voiceID)`, and `--instruct` belongs to the voice *design*

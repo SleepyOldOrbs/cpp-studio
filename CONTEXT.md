@@ -61,6 +61,13 @@ audio, with no sources, no fact cards, and no citations — only the shared
 script shape (speakable text, a speaker in the cast) still gates it. One
 field decides all four differences, so neither mode can weaken the other.
 
+**Mastering** is two linear-gain passes applied while rendering, when a
+measurement engine is configured: speakers levelled toward the median on
+their aggregate material (never per line — that flattens a performance),
+then one gain toward -16 LUFS under a -1.5 dBTP ceiling. ffmpeg measures
+(BS.1770), Go applies the gain. The ceiling wins when the two constraints
+conflict, and the render says `target_met: false` rather than compressing.
+
 **Exports** are delivery encodings of one render revision (MP3/Opus via the
 operator's optional ffmpeg), written beside the revision they encode and
 recorded on it. They are derived data: re-exporting a format replaces it,

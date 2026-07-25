@@ -2,9 +2,11 @@ package engine
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"image/png"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -328,6 +330,84 @@ func TranscodeSpec(inPath string, outPath string, format AudioFormat, bitrate st
 			return nil
 		},
 	}
+}
+
+// Loudness is one BS.1770 measurement of a recording.
+//
+// Integrated is the gated integrated loudness in LUFS — the number that
+// answers "how loud does this feel overall". TruePeak is the inter-sample
+// peak in dBTP, which is what actually clips a listener's decoder. Range is
+// the loudness range in LU, a measure of how much the level moves about.
+type Loudness struct {
+	Integrated float64 `json:"integrated_lufs"`
+	TruePeak   float64 `json:"true_peak_dbtp"`
+	Range      float64 `json:"range_lu"`
+}
+
+// LoudnessSpec measures a WAV without producing one. ffmpeg's loudnorm
+// filter in analysis mode implements BS.1770 properly, which is the reason
+// to shell out rather than hand-roll K-weighting and gating: getting those
+// subtly wrong and then confidently reporting the wrong number is worse
+// than not measuring at all.
+func LoudnessSpec(path string) Spec {
+	return Spec{
+		Engine:    "ffmpeg",
+		Label:     "ffmpeg loudness measurement",
+		Timeout:   DefaultTranscodeTimeout,
+		InputPath: path,
+		BuildArgs: func(in, _ string) []string {
+			return []string{
+				"-nostdin", "-hide_banner",
+				"-i", in,
+				"-af", "loudnorm=print_format=json",
+				"-f", "null", "-",
+			}
+		},
+	}
+}
+
+// ParseLoudness pulls the measurement out of loudnorm's report, which
+// ffmpeg prints to stderr as a JSON object after its usual log chatter.
+func ParseLoudness(stderr []byte) (Loudness, error) {
+	text := string(stderr)
+	start := strings.LastIndex(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end <= start {
+		return Loudness{}, fmt.Errorf("ffmpeg printed no loudness report")
+	}
+	var report struct {
+		InputI   string `json:"input_i"`
+		InputTP  string `json:"input_tp"`
+		InputLRA string `json:"input_lra"`
+	}
+	if err := json.Unmarshal([]byte(text[start:end+1]), &report); err != nil {
+		return Loudness{}, fmt.Errorf("loudness report was not valid JSON: %v", err)
+	}
+	parse := func(field, raw string) (float64, error) {
+		value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+		if err != nil {
+			return 0, fmt.Errorf("loudness report has no usable %s", field)
+		}
+		return value, nil
+	}
+	integrated, err := parse("input_i", report.InputI)
+	if err != nil {
+		return Loudness{}, err
+	}
+	truePeak, err := parse("input_tp", report.InputTP)
+	if err != nil {
+		return Loudness{}, err
+	}
+	// A silent or near-silent input reports -inf; treat that as unmeasurable
+	// rather than letting an infinity propagate into a gain calculation.
+	if math.IsInf(integrated, 0) || math.IsInf(truePeak, 0) {
+		return Loudness{}, fmt.Errorf("input is silent, so it has no measurable loudness")
+	}
+	loudness := Loudness{Integrated: integrated, TruePeak: truePeak}
+	if lra, err := parse("input_lra", report.InputLRA); err == nil && !math.IsInf(lra, 0) {
+		loudness.Range = lra
+	}
+	return loudness, nil
 }
 
 // EncodersSpec asks ffmpeg what it can encode. "ffmpeg is configured" and

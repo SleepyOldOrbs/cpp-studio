@@ -63,8 +63,12 @@ profiles trade resident models against your card's budget.
   read does not cost you the episode. Retake a line, rewrite what it says,
   pick between takes, mute it, nudge the silence after it, then re-render.
   Renders are numbered revisions: what you already shared keeps playing what
-  you shared. Point it at your own `ffmpeg` and any revision exports to MP3
-  or Opus (a 43-second two-hander: 2.0 MB WAV, 687 KB MP3, 348 KB Opus).
+  you shared. Point it at your own `ffmpeg` and every render is **mastered**
+  — performers levelled against each other, the finished piece placed at
+  -16 LUFS under a -1.5 dBTP ceiling, with the measured before and after
+  written into the manifest and an honest `target_met: false` when the peak
+  ceiling binds first. Any revision then exports to MP3 or Opus (that
+  43-second two-hander: 2.0 MB WAV, 687 KB MP3, 348 KB Opus).
 - **The Extractor** — a sampler deck for voices. Drop in any audio or video
   the browser can decode (MP3/OGG/FLAC/WAV/MP4 — a podcast, an old radio
   show), get a scrubbable waveform with a whisper transcript timeline, and

@@ -371,6 +371,50 @@ nothing at all — not its audio and not its timing. A story with nothing
 left to render returns `400` with `nothing_to_render`; a line whose selected
 take was recorded against different words returns `stale_take`.
 
+### Mastering
+
+When the `ffmpeg` engine is configured, every render is mastered, and the
+render records exactly what was done in a `master` block. Two passes, both
+of them linear gain — no compression, no limiting, nothing that changes the
+shape of a performance:
+
+- **Speaker levelling.** Each speaker's takes are measured *together* and
+  brought toward the median performer, so a two-hander stops having a loud
+  half. Measuring per line would be the wrong unit: it would drag every
+  whisper up and every shout down. Corrections under 0.5 dB are ignored and
+  none exceeds 12 dB — a voice needing more than that is a bad reference,
+  not a levelling problem.
+- **Delivery target.** The finished stitch gets one gain toward -16 LUFS
+  with a -1.5 dBTP true-peak ceiling. -16 is the podcast delivery
+  convention; BS.1770 is the measurement standard, and note that EBU R128's
+  *programme* target is -23, so this is not "R128 normalisation".
+
+**The target cannot always be met, and the manifest says so.** If reaching
+-16 LUFS would push the true peak past the ceiling, the gain is clamped and
+the render stays quieter. `target_met` is then `false` with a `note`
+explaining it. Spoken-word TTS is peaky, so this is common rather than
+exceptional. The alternative would be compression, which is not what
+mastering means here.
+
+Every figure in the block is measured, including the after values — the
+render is measured again once the gain is applied rather than the result
+being predicted:
+
+```json
+{
+  "target_lufs": -16, "target_true_peak_dbtp": -1.5,
+  "before": { "integrated_lufs": -26.6, "true_peak_dbtp": -8.1 },
+  "after":  { "integrated_lufs": -20.0, "true_peak_dbtp": -1.5 },
+  "gain_db": 6.6,
+  "speaker_gains_db": { "brian": 1, "philomena": -1 },
+  "target_met": false,
+  "note": "raised as far as the -1.5 dBTP peak ceiling allows; reaching -16 LUFS would have needed compression"
+}
+```
+
+Without the engine there is no `master` block at all: an unmastered render
+is honest, an invented loudness figure is not.
+
 ### POST /v1/stories/{id}/export
 
 Encodes a render revision into a delivery format through the optional

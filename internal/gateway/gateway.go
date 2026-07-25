@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -90,6 +91,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	// manager has no transcoder and the export route says so.
 	if _, ok := cfg.Engines["ffmpeg"]; ok {
 		storyOptions.Transcode = r.transcodeAudio
+		storyOptions.Measure = r.measureLoudness
 	}
 	r.stories = story.NewManager(storyOptions)
 	r.audiobooks = audiobook.NewManager(audiobook.ManagerOptions{
@@ -1336,6 +1338,40 @@ func (r *router) transcodeAudio(ctx context.Context, inPath string, outPath stri
 	return nil
 }
 
+// measureLoudness is the story manager's MeasureFunc: it hands a clip to
+// ffmpeg's loudnorm analysis and reads back a BS.1770 measurement. The clip
+// is written to a temp file rather than piped so ffmpeg can seek it, which
+// the two-pass analysis needs.
+func (r *router) measureLoudness(ctx context.Context, audio []byte) (story.Loudness, error) {
+	file, err := os.CreateTemp("", "cpp-studio-loudness-*.wav")
+	if err != nil {
+		return story.Loudness{}, fmt.Errorf("create temp file to measure: %v", err)
+	}
+	path := file.Name()
+	defer os.Remove(path)
+	if _, err := file.Write(audio); err != nil {
+		_ = file.Close()
+		return story.Loudness{}, fmt.Errorf("write temp file to measure: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		return story.Loudness{}, fmt.Errorf("close temp file to measure: %v", err)
+	}
+
+	result, err := r.engines.Run(ctx, engine.LoudnessSpec(path))
+	if err != nil {
+		return story.Loudness{}, err
+	}
+	measured, err := engine.ParseLoudness(result.Stderr)
+	if err != nil {
+		return story.Loudness{}, err
+	}
+	return story.Loudness{
+		IntegratedLUFS: measured.Integrated,
+		TruePeakDBTP:   measured.TruePeak,
+		RangeLU:        measured.Range,
+	}, nil
+}
+
 // audioEncoders reports what the configured ffmpeg can encode, probing once
 // and caching: the answer cannot change while the binary does not.
 func (r *router) audioEncoders(ctx context.Context) (map[string]bool, error) {
@@ -2237,7 +2273,7 @@ func (r *router) handleStory(w http.ResponseWriter, req *http.Request) {
 		if !requireMethod(w, req, http.MethodPost) {
 			return
 		}
-		manifest, render, err := r.stories.Render(parts[0])
+		manifest, render, err := r.stories.Render(req.Context(), parts[0])
 		if err != nil {
 			writeStoryErrorFromError(w, err)
 			return

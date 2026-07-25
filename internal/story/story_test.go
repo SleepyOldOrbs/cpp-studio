@@ -546,7 +546,7 @@ func TestRenderPublishesImmutableRevisions(t *testing.T) {
 	if _, err := manager.EditLine(manifest.ID, manifest.Script[0].ID, LinePatch{Muted: &muted}); err != nil {
 		t.Fatalf("EditLine returned error: %v", err)
 	}
-	updated, render, err := manager.Render(manifest.ID)
+	updated, render, err := manager.Render(context.Background(), manifest.ID)
 	if err != nil {
 		t.Fatalf("Render returned error: %v", err)
 	}
@@ -572,7 +572,7 @@ func TestRenderPublishesImmutableRevisions(t *testing.T) {
 				t.Fatalf("EditLine returned error: %v", err)
 			}
 		}
-		if _, _, err := manager.Render(manifest.ID); !storyErrorIs(err, CodeNothingToRender) {
+		if _, _, err := manager.Render(context.Background(), manifest.ID); !storyErrorIs(err, CodeNothingToRender) {
 			t.Fatalf("expected nothing_to_render, got %v", err)
 		}
 	})
@@ -604,7 +604,7 @@ func TestStatusReflectsTakeRoomEdits(t *testing.T) {
 		t.Fatalf("status does not reflect the mute")
 	}
 
-	if _, _, err := manager.Render(manifest.ID); err != nil {
+	if _, _, err := manager.Render(context.Background(), manifest.ID); err != nil {
 		t.Fatalf("Render returned error: %v", err)
 	}
 	if status, _, _ = manager.Status(manifest.ID); len(status.Manifest.Renders) != 2 {
@@ -653,7 +653,7 @@ func TestEditLineTextDeselectsTheStaleTake(t *testing.T) {
 		if err := manager.store.SaveManifest(bad); err != nil {
 			t.Fatalf("SaveManifest returned error: %v", err)
 		}
-		if _, _, err := manager.Render(manifest.ID); !storyErrorIs(err, CodeStaleTake) {
+		if _, _, err := manager.Render(context.Background(), manifest.ID); !storyErrorIs(err, CodeStaleTake) {
 			t.Fatalf("expected stale_take from Render, got %v", err)
 		}
 	})
@@ -673,7 +673,7 @@ func TestEditLineTextDeselectsTheStaleTake(t *testing.T) {
 		if got := takeByID(take.Takes, take.CurrentTake); got == nil || got.Text != newText {
 			t.Fatalf("the new take was not recorded against the new words: %+v", got)
 		}
-		if _, _, err := manager.Render(manifest.ID); err != nil {
+		if _, _, err := manager.Render(context.Background(), manifest.ID); err != nil {
 			t.Fatalf("Render returned error after retake: %v", err)
 		}
 	})
@@ -730,7 +730,7 @@ func TestConcurrentTakeRoomEditsDoNotCollide(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, _, err := manager.Render(manifest.ID); err != nil {
+			if _, _, err := manager.Render(context.Background(), manifest.ID); err != nil {
 				rerrs <- err
 			}
 		}()
@@ -767,7 +767,7 @@ func TestRenderRecordsItsRecipe(t *testing.T) {
 	if _, err := manager.EditLine(manifest.ID, manifest.Script[0].ID, LinePatch{Muted: &muted}); err != nil {
 		t.Fatalf("EditLine returned error: %v", err)
 	}
-	updated, render, err := manager.Render(manifest.ID)
+	updated, render, err := manager.Render(context.Background(), manifest.ID)
 	if err != nil {
 		t.Fatalf("Render returned error: %v", err)
 	}

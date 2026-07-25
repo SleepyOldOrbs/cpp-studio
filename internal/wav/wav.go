@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"time"
 )
@@ -182,6 +183,46 @@ func ConcatenateGaps(clips [][]byte, gaps []time.Duration) ([]byte, error) {
 		pcm.Write(clipPCM)
 	}
 	return Encode(format, pcm.Bytes()), nil
+}
+
+// ApplyGain scales a clip by db decibels. Gain is the whole of what
+// "levelling" and "mastering" mean here: no compression, no limiting, just
+// the same multiplication applied to every sample, which is what keeps a
+// performance sounding like the performance.
+//
+// Samples that would leave the 16-bit range are clamped rather than allowed
+// to wrap, but a caller that has done its arithmetic against a true-peak
+// measurement should never reach that clamp; ClippedSamples reports whether
+// it happened so the caller can stop claiming the gain was transparent.
+func ApplyGain(data []byte, db float64) ([]byte, int, error) {
+	format, pcm, err := Decode(data)
+	if err != nil {
+		return nil, 0, err
+	}
+	if format.BitsPerSample != 16 {
+		return nil, 0, fmt.Errorf("gain needs 16-bit PCM, got %d-bit", format.BitsPerSample)
+	}
+	if db == 0 {
+		return data, 0, nil
+	}
+	scale := math.Pow(10, db/20)
+
+	out := make([]byte, len(pcm))
+	clipped := 0
+	for i := 0; i+1 < len(pcm); i += 2 {
+		sample := float64(int16(binary.LittleEndian.Uint16(pcm[i : i+2])))
+		scaled := math.Round(sample * scale)
+		switch {
+		case scaled > math.MaxInt16:
+			scaled = math.MaxInt16
+			clipped++
+		case scaled < math.MinInt16:
+			scaled = math.MinInt16
+			clipped++
+		}
+		binary.LittleEndian.PutUint16(out[i:i+2], uint16(int16(scaled)))
+	}
+	return Encode(format, out), clipped, nil
 }
 
 // PadSilence returns the clip with lead and trail silence spliced around its

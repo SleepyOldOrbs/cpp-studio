@@ -277,10 +277,11 @@ func (m *Manager) EditLine(storyID string, lineID string, patch LinePatch) (Mani
 	return manifest, nil
 }
 
-// Render restitches a stored story from its current takes and publishes the
-// result as a new revision. Earlier revisions stay on disk: what you already
-// shared keeps playing what you shared.
-func (m *Manager) Render(storyID string) (Manifest, Render, error) {
+// Render restitches a stored story from its current takes, masters it when
+// a measurement engine is configured, and publishes the result as a new
+// revision. Earlier revisions stay on disk: what you already shared keeps
+// playing what you shared.
+func (m *Manager) Render(ctx context.Context, storyID string) (Manifest, Render, error) {
 	// Two concurrent renders would otherwise both claim the same revision
 	// number and overwrite an allegedly immutable file.
 	lock := m.editLock(storyID)
@@ -327,9 +328,42 @@ func (m *Manager) Render(storyID string) (Manifest, Render, error) {
 		})
 	}
 
+	// Level the performers against each other before stitching, then place
+	// the finished piece at the delivery target. Both are linear gain, and
+	// both are skipped entirely when no measurement engine is configured —
+	// an unmastered render is honest, a fabricated LUFS number is not.
+	var (
+		master       *Master
+		speakerGains map[string]float64
+	)
+	if m.measure != nil {
+		speakerGains, err = m.levelSpeakers(ctx, clips, manifest.Script)
+		if err != nil {
+			return Manifest{}, Render{}, NewError(CodeMasteringFailure, err.Error())
+		}
+		for i, line := range manifest.Script {
+			gain, ok := speakerGains[line.SpeakerID]
+			if !ok || len(clips[i]) == 0 {
+				continue
+			}
+			levelled, _, err := wav.ApplyGain(clips[i], gain)
+			if err != nil {
+				return Manifest{}, Render{}, NewError(CodeMasteringFailure, fmt.Sprintf("level %s: %v", line.SpeakerID, err))
+			}
+			clips[i] = levelled
+		}
+	}
+
 	stitched, err := stitchTakes(clips, manifest.Script)
 	if err != nil {
 		return Manifest{}, Render{}, err
+	}
+	if m.measure != nil {
+		mastered, report, err := m.masterRender(ctx, stitched, speakerGains)
+		if err != nil {
+			return Manifest{}, Render{}, NewError(CodeMasteringFailure, err.Error())
+		}
+		stitched, master = mastered, report
 	}
 	durationSeconds := manifest.DurationSeconds
 	if d, err := wav.Duration(stitched); err == nil {
@@ -350,6 +384,7 @@ func (m *Manager) Render(storyID string) (Manifest, Render, error) {
 		Bytes:           len(stitched),
 		URL:             RenderURL(storyID, revision),
 		Recipe:          recipe,
+		Master:          master,
 	}
 	manifest.Renders = append(manifest.Renders, render)
 	manifest.DurationSeconds = durationSeconds

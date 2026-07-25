@@ -979,8 +979,23 @@
       return;
     }
     takeRoomStoryID = manifest.id;
-    var revisions = (manifest.renders || []).length;
-    takeRoomMeta.textContent = lines.length + " lines · " + revisions + " render" + (revisions === 1 ? "" : "s");
+    var renders = manifest.renders || [];
+    var meta = lines.length + " lines · " + renders.length + " render" + (renders.length === 1 ? "" : "s");
+    // Say what mastering actually achieved, including when it could not
+    // reach the target — a number nobody can check is worth nothing.
+    var master = renders.length ? renders[renders.length - 1].master : null;
+    if (master) {
+      meta += " · " + master.after.integrated_lufs.toFixed(1) + " LUFS";
+      if (!master.target_met) {
+        meta += " (peak-limited)";
+      }
+    }
+    takeRoomMeta.textContent = meta;
+    takeRoomMeta.title = master
+      ? "Mastered " + (master.gain_db >= 0 ? "+" : "") + master.gain_db + " dB from " + master.before.integrated_lufs.toFixed(1)
+        + " LUFS; true peak " + master.after.true_peak_dbtp.toFixed(1) + " dBTP against a " + master.target_true_peak_dbtp + " dBTP ceiling."
+        + (master.note ? " " + master.note : "")
+      : "";
     lines.forEach(function (line) {
       takeLines.appendChild(takeLineRow(line));
     });

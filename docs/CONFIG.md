@@ -164,6 +164,13 @@ For scale: a 43-second two-hander is 2.0 MB as WAV, 687 KB as MP3, 348 KB as
 Opus. Without this engine, `POST /v1/stories/{id}/export` returns
 `export_unavailable` and the console's export buttons are hidden.
 
+The same engine also **masters every render**: speakers are levelled against
+each other and the finished piece is placed at -16 LUFS under a -1.5 dBTP
+ceiling, with the measured before and after values recorded in the manifest.
+See "Mastering" in [`STORY_API.md`](STORY_API.md). Configure ffmpeg and your
+renders are mastered; leave it out and they are exactly as stitched, with no
+`master` block claiming otherwise.
+
 ## VRAM Profiles: `profiles`
 
 Named engine sets for trading resident models against a fixed VRAM budget:

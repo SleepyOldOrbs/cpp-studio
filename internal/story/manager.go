@@ -42,7 +42,11 @@ type ManagerOptions struct {
 	Script        ScriptFunc
 	// Transcode, when set, enables delivery exports (MP3/Opus) of render
 	// revisions. nil means the optional ffmpeg engine is not configured.
-	Transcode  TranscodeFunc
+	Transcode TranscodeFunc
+	// Measure, when set, masters every render: speakers are levelled against
+	// each other and the finished piece is placed at the delivery target.
+	// nil leaves renders exactly as they were stitched.
+	Measure    MeasureFunc
 	StageDelay time.Duration
 	Now        func() time.Time
 	// Jobs, when set, mirrors every story job into the gateway-wide job
@@ -58,6 +62,7 @@ type Manager struct {
 	synthesize    SynthesizeFunc
 	script        ScriptFunc
 	transcode     TranscodeFunc
+	measure       MeasureFunc
 	stageDelay    time.Duration
 	now           func() time.Time
 	counter       int
@@ -108,6 +113,7 @@ func NewManager(opts ManagerOptions) *Manager {
 		synthesize:    opts.Synthesize,
 		script:        opts.Script,
 		transcode:     opts.Transcode,
+		measure:       opts.Measure,
 		stageDelay:    stageDelay,
 		now:           now,
 		jobs:          make(map[string]*job),
