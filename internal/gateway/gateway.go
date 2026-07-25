@@ -767,7 +767,7 @@ func (r *router) speak(ctx context.Context, text string, clonedVoice *engine.Voi
 	payload, err := json.Marshal(audioServerSpeechRequest{
 		Model:         audioServerModelID,
 		Input:         text,
-		VoiceRef:      filepath.ToSlash(refPath),
+		VoiceRef:      slashPath(refPath),
 		ReferenceText: refText,
 	})
 	if err != nil {
@@ -2360,6 +2360,17 @@ func readUploadedWAV(w http.ResponseWriter, req *http.Request) ([]byte, bool) {
 		return nil, false
 	}
 	return data, true
+}
+
+// slashPath normalizes a configured path for the resident audio server's
+// JSON API, which wants forward slashes whatever the host looks like.
+//
+// This deliberately does not use filepath.ToSlash: that converts the *host's*
+// separator, so on Linux it leaves a Windows-style config path untouched and
+// the engine receives C:\voices\ref.wav. The config is the same file on every
+// platform, so the conversion has to be too.
+func slashPath(path string) string {
+	return strings.ReplaceAll(path, `\`, "/")
 }
 
 // inferEngineURL derives a server engine's request route from its healthUrl,

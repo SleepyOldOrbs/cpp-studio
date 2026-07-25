@@ -1654,6 +1654,26 @@ func helperEngine(mode string) config.EngineConfig {
 	}
 }
 
+// The resident audio server wants forward slashes in the voice reference
+// whatever host the gateway runs on. filepath.ToSlash cannot do this job: it
+// converts the host separator, so on Linux it silently passes a Windows
+// config path straight through. This test fails on every platform if that
+// regresses, which the integration test could not.
+func TestSlashPathIsHostIndependent(t *testing.T) {
+	tests := map[string]string{
+		`C:\voices\default.wav`:      "C:/voices/default.wav",
+		`\\server\share\ref.wav`:     "//server/share/ref.wav",
+		"/home/james/voices/ref.wav": "/home/james/voices/ref.wav",
+		"already/slashed.wav":        "already/slashed.wav",
+		"":                           "",
+	}
+	for input, want := range tests {
+		if got := slashPath(input); got != want {
+			t.Errorf("slashPath(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestVoiceCloneRecordsProvenance(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cfg := testConfig(map[string]config.EngineConfig{"whisper": helperEngine("transcribe")})
