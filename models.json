@@ -45,6 +45,17 @@
       "description": "Maximum-accuracy speech-to-text (full 32-layer decoder); slower than turbo, still GPU-fast."
     },
     {
+      "id": "silero-vad-v5.1.2",
+      "engine": "whisper",
+      "family": "silero-vad",
+      "path": "engines/models/ggml-silero-v5.1.2.bin",
+      "bytes": 885098,
+      "sha256": "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf",
+      "source": "https://huggingface.co/ggml-org/whisper-vad",
+      "license": "MIT",
+      "description": "Voice-activity detection for whisper: skips silence/music, which kills large-v3's hallucination-repetition loops."
+    },
+    {
       "id": "whisper-large-v3-turbo",
       "engine": "whisper",
       "family": "whisper-ggml",
