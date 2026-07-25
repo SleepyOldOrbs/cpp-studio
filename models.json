@@ -34,6 +34,17 @@
       "description": "Multimodal projector paired with the vision model."
     },
     {
+      "id": "whisper-large-v3",
+      "engine": "whisper",
+      "family": "whisper-ggml",
+      "path": "engines/models/ggml-large-v3.bin",
+      "bytes": 3095033483,
+      "sha256": "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
+      "source": "https://huggingface.co/ggerganov/whisper.cpp",
+      "license": "MIT",
+      "description": "Maximum-accuracy speech-to-text (full 32-layer decoder); slower than turbo, still GPU-fast."
+    },
+    {
       "id": "whisper-large-v3-turbo",
       "engine": "whisper",
       "family": "whisper-ggml",
