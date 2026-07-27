@@ -45,29 +45,50 @@ material, and then cannot produce the thing it exists to produce.
 
 ## Stage 1 — Make an episode a first-class thing
 
-### The merge direction (recommendation, with a correction)
+### Shape: scenes inside one episode  ·  *decided*
 
-At the end of the session I guessed it would be easier to lift the story
-production layer onto the audiobook path. **Reading the code says the
-opposite, and the opposite is right.**
+An episode is a sequence of **scenes**, each of which is what a sketch is
+today. That single decision resolves four problems at once, which is why it
+is the right one:
 
-- `internal/audiobook` is 309 lines of manager with a flat `Manifest`
-  (id/title/voiceId/chunks/duration/createdAt/artifactUrl). There is no
-  script model, no line identity, no cast. Almost nothing to preserve.
-- `internal/story` carries the entire production model: `ScriptLine` with
-  stable ids, `Take`, `Render` with `Recipe` and `Master`, `Export`, the
-  per-story mutation lock, the artifact whitelist, the take room UI.
+- **Writing.** Generating 330 good lines in one llama call will not work.
+  A scene is one call, and a scene is a unit a writer actually thinks in.
+- **The take room at length.** 330 flat lines is unusable; scenes give it
+  grouping, collapse, and somewhere to put "jump to the next unrendered
+  line".
+- **Resumability.** A completed scene is a natural checkpoint. Much of the
+  work in (3) below falls out of scene boundaries rather than needing a
+  bespoke work-in-progress format.
+- **Sound design** (stage 3, now confirmed) attaches to exactly these
+  seams: a bed under a scene, a sting between scenes.
 
-So: **extend the story path to long form, and move audiobook's *ingest* into
-it.** `internal/audiobook/ingest.go` (240 lines: `.txt`/`.md`/`.epub` →
-sentence-boundary chunks) is the genuinely valuable half and it is
-self-contained. Rebuilding takes/renders/mastering/exports inside audiobook
-would be rebuilding the last two days.
+**Aim for "a sketch is a one-scene episode"** rather than two parallel
+concepts. If the current story path becomes the degenerate case of the new
+one, nothing has to be maintained twice and existing stories stay valid.
 
-Open question worth 20 minutes before committing to it: does the audiobook
-path keep a separate front door (upload a document, one narrator, no take
-room) or become "an episode with one speaker"? Leaning toward the latter —
-one spine, fewer concepts — but check what the Audiobook tab would lose.
+Leave room in the scene schema for per-scene audio assets even though stage
+1 will not implement them. Cheap now, expensive to retrofit.
+
+### No merge with audiobooks  ·  *decided*
+
+Audiobooks keep their own front door, tab and manifest. **This makes stage 1
+smaller than the earlier draft assumed**, and corrects the plan:
+
+- The previous version proposed moving `internal/audiobook/ingest.go` into
+  the story path. That was predicated on a merge. **Do not move it.** It
+  stays where it is.
+- More usefully: **episodes probably do not need document ingest at all.**
+  An episode is written from a premise, not extracted from an `.epub`. The
+  ingest work was only ever load-bearing for the merge that is not
+  happening.
+- If "perform a script I already wrote" is wanted later, that is *script
+  import* — paste or upload a cast script — and it is a different, smaller
+  thing than epub chunking.
+
+Note for later, not for stage 1: `audiobook.Manager.run` has the same
+memory problem as stories (all chunks held, saved only after stitching). If
+(2) and (3) below produce something reusable, audiobooks should eventually
+get it. They do not block this stage.
 
 ### What has to change
 
@@ -85,20 +106,20 @@ one spine, fewer concepts — but check what the Audiobook tab would lose.
    fingerprint, and a work-in-progress directory needs to exist before the
    final story directory does (today `SaveTake` assumes the finished story
    dir).
-4. **Scene structure.** 330 flat lines is not a usable take room and
-   probably not a usable script. Scenes are the natural unit: a sketch is a
-   scene, an episode is several. This also gives the writer something to
-   work at — generating 330 good lines in one llama call will not work;
-   generating a scene at a time will.
+4. **Scene structure.** The decision above, in the schema: episode → scenes
+   → lines, with line ids staying stable and takes hanging off them exactly
+   as they do now. Scenes get their own ids so takes, renders and (later)
+   audio assets can reference them.
 5. **Single-active-job.** `Manager.Submit` allows one story at a time. That
    is fine for 40 seconds and questionable for 30 minutes.
 
 ### Where it will hurt
 
-The take room UI is a flat list — fine at 8 lines, unusable at 330. Expect
-scene grouping, collapse, and "jump to the next unrendered line" to become
-necessary rather than nice. Budget real time for this; it is the surface
-James will actually live in.
+The take room UI is a flat list — fine at 8 lines, unusable at 330. Scene
+grouping and collapse are the minimum; "jump to the next unrendered line" is
+the thing that makes it workable. Budget real time here. It is the surface
+James will actually live in, and it is the part most likely to be
+underestimated.
 
 ---
 
@@ -125,22 +146,32 @@ gap between a repo people admire and one they run.
 
 ---
 
-## Stage 3 — A fork
+## Stage 3 — Sound design  ·  *decided*
 
-**Sound design** *(recommended)*. Music beds, stings, scene transitions,
-audience laughter. Radio comedy has all of it and this has none. It became
-much cheaper this session: mixing needs gain (`wav.ApplyGain` exists) and
-asset conversion needs ffmpeg (an engine now). Serves the destination James
-actually named, and makes an episode sound like a show rather than voices in
-a row.
+Music beds, stings, scene transitions, audience laughter. Radio comedy has
+all of it and this has none — it is most of the distance between "voices in
+a row" and "a show".
 
-**Or: be a drop-in OpenAI endpoint.** Distribution by being plugged into
-other people's stacks. Narrower and well-defined, but it must be a *tested*
-conformance profile rather than a claim — half-compatible is worse than
-honestly incompatible. Note the premise correction from the review: there is
-no `/v1/models` collision (the catalog already lives at
+It became much cheaper this session: mixing needs gain (`wav.ApplyGain`
+exists) and asset conversion needs ffmpeg (an engine now, with a file-path
+spec mode for large assets). The missing primitive is **overlay** — mixing
+two streams at an offset with independent gain — which `internal/wav` does
+not have yet and which is the one genuinely new piece of audio maths here.
+
+Because scenes are the seam this attaches to, the stage 1 schema should
+leave room for it: a scene that can carry assets, even with nothing reading
+that field yet.
+
+Open, for when we get there: user-supplied assets only, or a small bundled
+set? Bundling raises licensing questions the project has so far avoided
+entirely by shipping no weights and no audio. Leaning strongly toward
+user-supplied, consistent with every other optional capability here.
+
+**Not doing: the OpenAI conformance profile.** It stays on the shelf rather
+than being cut — if it is ever picked up, note that there is no
+`/v1/models` collision (the catalog already lives at
 `/v1/models/catalog`), and `handleChatCompletions` already proxies the
-upstream body, so streaming is conformance hardening rather than new
+upstream body, so streaming would be conformance hardening rather than new
 machinery.
 
 ---
@@ -186,11 +217,32 @@ machinery.
   job over the store, so an edit that skips it lands on disk and stays
   invisible for the life of the process.
 
-## Questions for James before starting
+## Answered, 2026-07-25
 
-1. **Episode shape.** Scenes inside one episode, or episodes as a sequence
-   of independent sketches stitched at the end? Changes the schema.
-2. **Does the Audiobook tab survive** as its own thing, or become
-   "an episode with one speaker"?
-3. **Stage 3 fork** — sound design or OpenAI conformance? (Recommendation:
-   sound design.)
+James settled all three before the session ended:
+
+1. **Scenes inside one episode.** Not independent sketches stitched at the
+   end. Folded into Stage 1 above.
+2. **Audiobooks stay separate.** No merge — which makes Stage 1 smaller,
+   and means `ingest.go` stays where it is.
+3. **Sound design** for Stage 3. OpenAI conformance shelved, not cut.
+
+Nothing is blocked on a decision. Stage 1 can start from the schema.
+
+## First moves, when the session starts
+
+Roughly in this order, and none of it is committed to:
+
+1. Read `internal/story/types.go`, `takes.go` and `manager.go` end to end —
+   they changed a great deal on 2026-07-25 and the take-room model is the
+   thing being extended.
+2. Sketch the scene schema on paper first: episode → scenes → lines, where
+   a one-scene episode is exactly today's story. Check it against an
+   existing stored manifest in the workspace-root `out/stories/` before
+   writing code.
+3. Decide what a scene render is. A per-scene render revision is
+   attractive — natural checkpoint, cheap re-render of one scene — but it
+   multiplies artifacts, so think it through rather than assuming.
+4. Only then touch the caps in `types.go`. They are the last step, not the
+   first: raising them before the buffering is fixed just makes the failure
+   mode bigger.
