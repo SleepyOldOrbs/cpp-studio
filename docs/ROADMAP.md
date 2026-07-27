@@ -318,6 +318,18 @@ mattered was that none of them should come first:
   Audiobooks have no take layout at all, so story resume would not help the
   long-form case that motivates it.
 
+### M10 — Episodes  ·  *the wall between here and the destination*
+
+Everything M8 and M9 built lives on the story path, which caps at 300
+seconds, 60 script lines and 32 MiB. A comedy episode is roughly 330 lines.
+The only long-form path, audiobooks, is single-narrator with no cast, no
+takes, no mastering and no exports. So the studio can extract a cast and
+write them material, and then cannot produce the thing it exists to produce.
+
+The plan — merge direction, what breaks at length, resumability, and the
+two stages after it — is written up in
+[`PLAN-EPISODES.md`](PLAN-EPISODES.md).
+
 ## Cross-cutting — repo presentation  ·  *stars*
 
 - **README — DONE.** Rebuilt around the vision, with honest hardware
