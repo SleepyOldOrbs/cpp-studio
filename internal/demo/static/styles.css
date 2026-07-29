@@ -780,11 +780,67 @@ audio {
   gap: 6px;
 }
 
+/* Scenes fold: 330 flat lines is not a workspace. The summary row keeps
+   the numbers that matter visible while a scene is closed. */
+.take-scene {
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: rgba(21, 26, 33, 0.5);
+}
+
+.take-scene-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.take-scene-head::marker {
+  color: var(--muted);
+}
+
+.take-scene[open] > .take-scene-head {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.take-scene-title {
+  font-family: var(--display);
+  font-size: 0.86rem;
+  letter-spacing: 0.02em;
+}
+
+.take-scene-detail {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+
+.take-scene-head .compact-button {
+  margin-left: auto;
+}
+
+.take-scene-lines {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+
 .take-line {
   border: 1px solid var(--line-soft);
   border-radius: 7px;
   background: var(--well);
   padding: 8px 10px;
+}
+
+.take-line.is-flash {
+  animation: take-flash 1.6s ease-out 1;
+}
+
+@keyframes take-flash {
+  0% { border-color: var(--accent); background: var(--accent-soft); }
+  100% { border-color: var(--line-soft); background: var(--well); }
 }
 
 .take-line.is-muted {
@@ -1022,6 +1078,23 @@ progress::-moz-progress-bar {
 .story-library-item:hover:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* An interrupted production: not loadable, so its card is a plain panel
+   whose buttons are the two things that can be done with it. */
+.story-library-item.is-interrupted {
+  border: 1px solid rgba(232, 193, 90, 0.45);
+  border-radius: 7px;
+}
+
+.story-library-item.is-interrupted .story-library-detail {
+  color: var(--warn);
+}
+
+.story-library-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 3px;
 }
 
 .story-library-title,

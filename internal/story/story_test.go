@@ -1541,6 +1541,74 @@ func TestCancelBeforeAnyTakeLeavesNoResidue(t *testing.T) {
 	}
 }
 
+func TestAuditionStitchesOneScene(t *testing.T) {
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(),
+		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
+			return wav.SyntheticTone(wav.ToneSampleRate / 2), nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+	req := sceneEpisodeRequest()
+	req.VoiceMode = "fixed"
+	created, err := manager.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, created.ID, StatusComplete)
+	manifest := *status.Manifest
+
+	audio, err := manager.Audition(created.ID, "the-shop")
+	if err != nil {
+		t.Fatalf("Audition returned error: %v", err)
+	}
+	if err := wav.ValidateBytes(audio); err != nil {
+		t.Fatalf("audition is not a WAV: %v", err)
+	}
+	full, err := manager.Audition(created.ID, "the-return")
+	if err != nil {
+		t.Fatalf("Audition of second scene returned error: %v", err)
+	}
+	// Two lines per scene, equal takes: the two scenes audition to the
+	// same length, and both are shorter than the published whole.
+	if len(audio) != len(full) {
+		t.Fatalf("expected equal-length scene auditions, got %d vs %d", len(audio), len(full))
+	}
+	render, err := manager.ArtifactPath(created.ID, StoryArtifactName)
+	if err != nil {
+		t.Fatalf("artifact path: %v", err)
+	}
+	info, err := os.Stat(render)
+	if err != nil {
+		t.Fatalf("stat story.wav: %v", err)
+	}
+	if int64(len(audio)) >= info.Size() {
+		t.Fatalf("a one-scene audition should be shorter than the episode: %d vs %d", len(audio), info.Size())
+	}
+
+	// A muted line drops out of its scene's audition.
+	if _, err := manager.EditLine(created.ID, manifest.Script[0].ID, LinePatch{Muted: boolPtr(true)}); err != nil {
+		t.Fatalf("EditLine returned error: %v", err)
+	}
+	muted, err := manager.Audition(created.ID, "the-shop")
+	if err != nil {
+		t.Fatalf("Audition after mute returned error: %v", err)
+	}
+	if len(muted) >= len(audio) {
+		t.Fatalf("muting a line should shorten the audition: %d vs %d", len(muted), len(audio))
+	}
+
+	if _, err := manager.Audition(created.ID, "no-such-scene"); !storyErrorIs(err, CodeSceneNotFound) {
+		t.Fatalf("expected scene not found, got %v", err)
+	}
+	if _, err := manager.Audition("story_20260101_000000_009", "the-shop"); !storyErrorIs(err, CodeNotFound) {
+		t.Fatalf("expected story not found, got %v", err)
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
+
 func TestValidateCreateRequestEpisodeScale(t *testing.T) {
 	// The wall the episodes plan exists to break: a 28-minute radio
 	// half-hour is roughly 330 lines. It must validate.

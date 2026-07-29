@@ -80,6 +80,9 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "takeRoom") {
 		t.Fatalf("expected take room marker, got %q", body)
 	}
+	if !strings.Contains(body, "takeRoomNextButton") {
+		t.Fatalf("expected needs-work navigation marker, got %q", body)
+	}
 	if !strings.Contains(body, "extractImportRow") {
 		t.Fatalf("expected URL importer marker, got %q", body)
 	}
@@ -229,6 +232,30 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/styles.css",
 			contentType: "text/css",
 			needle:      ".extract-segment",
+		},
+		{
+			name:        "javascript scene grouping",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "sceneRuns",
+		},
+		{
+			name:        "javascript scene audition",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "audition.wav",
+		},
+		{
+			name:        "javascript resume interrupted",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "resumeStory",
+		},
+		{
+			name:        "css scene fold",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".take-scene",
 		},
 	}
 

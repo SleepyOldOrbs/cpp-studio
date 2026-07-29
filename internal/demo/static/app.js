@@ -80,6 +80,7 @@
   var takeRoom = document.getElementById("takeRoom");
   var takeRoomMeta = document.getElementById("takeRoomMeta");
   var takeRoomRenderButton = document.getElementById("takeRoomRenderButton");
+  var takeRoomNextButton = document.getElementById("takeRoomNextButton");
   var takeLines = document.getElementById("takeLines");
   var storyExportRow = document.getElementById("storyExportRow");
   var storyFacts = document.getElementById("storyFacts");
@@ -764,6 +765,7 @@
     takeRoom.hidden = true;
     takeLines.textContent = "";
     takeRoomMeta.textContent = "";
+    takeRoomNextButton.hidden = true;
     storyExportRow.textContent = "";
     storyExportRow.hidden = true;
   }
@@ -975,6 +977,107 @@
     storyExportRow.hidden = false;
   }
 
+  // Collapse state per story, surviving the re-render that follows every
+  // edit: a retake must not spring every folded scene back open.
+  var takeRoomOpenScenes = {};
+  // Where the "next needs work" walk has got to, so repeated clicks cycle
+  // through every line that needs attention rather than hammering the first.
+  var takeRoomNextCursor = 0;
+
+  function lineNeedsWork(line) {
+    return !line.muted && !line.current_take;
+  }
+
+  // sceneRuns groups the script into its contiguous scene runs. A story
+  // with no declared scenes is one unnamed run — the degenerate case the
+  // schema promises — and renders exactly as the flat list always did.
+  function sceneRuns(manifest) {
+    var lines = (manifest && manifest.script) || [];
+    var scenes = (manifest && manifest.scenes) || [];
+    if (!scenes.length) {
+      return lines.length ? [{ scene: null, lines: lines }] : [];
+    }
+    var byId = {};
+    scenes.forEach(function (scene) { byId[scene.id] = scene; });
+    var runs = [];
+    var current = null;
+    lines.forEach(function (line) {
+      if (!current || current.scene.id !== line.scene_id) {
+        current = { scene: byId[line.scene_id] || { id: line.scene_id }, lines: [] };
+        runs.push(current);
+      }
+      current.lines.push(line);
+    });
+    return runs;
+  }
+
+  // A scene folds: 330 flat lines is not a workspace. The header carries
+  // the numbers that matter while it is folded, and Play scene auditions
+  // the scene's current takes without publishing anything.
+  function sceneSection(storyID, run, open) {
+    var section = createElement("details", "take-scene");
+    var sceneID = run.scene.id;
+    section.open = open[sceneID] !== false;
+    section.dataset.sceneId = sceneID;
+
+    var summary = createElement("summary", "take-scene-head");
+    summary.appendChild(createElement("span", "take-scene-title", run.scene.title || sceneID));
+    if (run.scene.premise) {
+      summary.title = run.scene.premise;
+    }
+    var recorded = run.lines.filter(function (line) { return !!line.current_take; }).length;
+    summary.appendChild(createElement("span", "take-scene-detail", recorded + "/" + run.lines.length + " recorded"));
+    var needy = run.lines.filter(lineNeedsWork).length;
+    if (needy) {
+      summary.appendChild(createElement("span", "take-line-stale", needy + " need work"));
+    }
+    var playScene = createElement("button", "plain compact-button", "Play scene");
+    playScene.type = "button";
+    playScene.disabled = recorded === 0;
+    playScene.title = "Audition this scene's current takes — nothing is published";
+    playScene.addEventListener("click", function (event) {
+      // A button inside <summary> must not also toggle the fold.
+      event.preventDefault();
+      event.stopPropagation();
+      log("GET /v1/stories/" + storyID + "/scenes/" + sceneID + "/audition.wav");
+      storyAudio.src = "/v1/stories/" + encodeURIComponent(storyID) + "/scenes/" + encodeURIComponent(sceneID) + "/audition.wav?v=" + Date.now();
+      storyAudio.load();
+      storyAudio.play().catch(function () { /* autoplay policy: the controls still work */ });
+    });
+    summary.appendChild(playScene);
+    section.appendChild(summary);
+    section.addEventListener("toggle", function () {
+      open[sceneID] = section.open;
+    });
+
+    var body = createElement("div", "take-scene-lines");
+    run.lines.forEach(function (line) {
+      body.appendChild(takeLineRow(line));
+    });
+    section.appendChild(body);
+    return section;
+  }
+
+  // jumpToNextNeedsWork walks the lines that still need attention — no
+  // current take and not muted — unfolding their scene and centring them.
+  // This is the button that makes a 330-line episode workable.
+  function jumpToNextNeedsWork() {
+    var rows = takeLines.querySelectorAll(".take-line.is-stale");
+    if (!rows.length) {
+      return;
+    }
+    var row = rows[takeRoomNextCursor % rows.length];
+    takeRoomNextCursor++;
+    var section = row.closest("details.take-scene");
+    if (section && !section.open) {
+      section.open = true;
+    }
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    row.classList.remove("is-flash");
+    void row.offsetWidth;
+    row.classList.add("is-flash");
+  }
+
   function renderTakeRoom(manifest) {
     takeLines.textContent = "";
     var lines = (manifest && manifest.script) || [];
@@ -986,7 +1089,9 @@
     }
     takeRoomStoryID = manifest.id;
     var renders = manifest.renders || [];
-    var meta = lines.length + " lines · " + renders.length + " render" + (renders.length === 1 ? "" : "s");
+    var recorded = lines.filter(function (line) { return !!line.current_take; }).length;
+    var needsWork = lines.filter(lineNeedsWork).length;
+    var meta = recorded + "/" + lines.length + " recorded · " + renders.length + " render" + (renders.length === 1 ? "" : "s");
     // Say what mastering actually achieved, including when it could not
     // reach the target — a number nobody can check is worth nothing.
     var master = renders.length ? renders[renders.length - 1].master : null;
@@ -1002,9 +1107,20 @@
         + " LUFS; true peak " + master.after.true_peak_dbtp.toFixed(1) + " dBTP against a " + master.target_true_peak_dbtp + " dBTP ceiling."
         + (master.note ? " " + master.note : "")
       : "";
-    lines.forEach(function (line) {
-      takeLines.appendChild(takeLineRow(line));
-    });
+    var runs = sceneRuns(manifest);
+    if (runs.length === 1 && !runs[0].scene) {
+      lines.forEach(function (line) {
+        takeLines.appendChild(takeLineRow(line));
+      });
+    } else {
+      var open = takeRoomOpenScenes[manifest.id] || (takeRoomOpenScenes[manifest.id] = {});
+      runs.forEach(function (run) {
+        takeLines.appendChild(sceneSection(manifest.id, run, open));
+      });
+    }
+    takeRoomNextCursor = 0;
+    takeRoomNextButton.hidden = needsWork === 0;
+    takeRoomNextButton.textContent = "Needs work: " + needsWork;
     takeRoom.hidden = false;
     renderExportRow(manifest);
   }
@@ -1082,12 +1198,41 @@
       return;
     }
     stories.forEach(function (story) {
-      var item = createElement("button", "story-library-item");
-      item.type = "button";
-      item.dataset.storyId = story.id || "";
       var title = story.title || story.subject || story.id || "Story";
       var created = story.created_at ? new Date(story.created_at).toLocaleString() : "";
       var detail = [story.mode === "sketch" ? "sketch" : "", story.status || "unknown", story.duration_seconds ? story.duration_seconds + "s" : "", created].filter(Boolean).join(" / ");
+
+      // An interrupted production is not loadable — its takes live in the
+      // work-in-progress directory — so its card offers the two things
+      // that can actually be done with it.
+      if (story.status === "interrupted") {
+        var card = createElement("div", "story-library-item is-interrupted");
+        card.dataset.storyId = story.id || "";
+        card.appendChild(createElement("span", "story-library-title", title));
+        card.appendChild(createElement("span", "story-library-detail", detail));
+        var actions = createElement("span", "story-library-actions");
+        var resumeButton = createElement("button", "secondary compact-button", "Resume");
+        resumeButton.type = "button";
+        resumeButton.title = "Finish this production; takes already recorded are kept";
+        resumeButton.addEventListener("click", function () {
+          resumeStory(story.id, resumeButton);
+        });
+        actions.appendChild(resumeButton);
+        var discardButton = createElement("button", "plain compact-button", "Discard");
+        discardButton.type = "button";
+        discardButton.title = "Throw this production away, takes and all";
+        discardButton.addEventListener("click", function () {
+          discardStory(story.id, discardButton);
+        });
+        actions.appendChild(discardButton);
+        card.appendChild(actions);
+        storyLibrary.appendChild(card);
+        return;
+      }
+
+      var item = createElement("button", "story-library-item");
+      item.type = "button";
+      item.dataset.storyId = story.id || "";
       item.appendChild(createElement("span", "story-library-title", title));
       item.appendChild(createElement("span", "story-library-detail", detail));
       item.addEventListener("click", function () {
@@ -1095,6 +1240,45 @@
       });
       storyLibrary.appendChild(item);
     });
+  }
+
+  async function resumeStory(id, button) {
+    clearStoryError();
+    if (activeStoryID) {
+      setStoryError(new Error("A story is already running"));
+      return;
+    }
+    setBusy(button, "Resuming...");
+    try {
+      log("POST /v1/stories/" + id + "/resume");
+      var response = await fetch("/v1/stories/" + encodeURIComponent(id) + "/resume", { method: "POST" });
+      await ensureOk(response, "Resume");
+      var data = await response.json();
+      activeStoryID = data.id;
+      storyCancelButton.disabled = false;
+      setStoryStatus("queued", 0);
+      log("Resuming story: " + activeStoryID);
+      pollStory(activeStoryID);
+    } catch (error) {
+      setStoryError(error);
+    } finally {
+      clearBusy(button);
+    }
+  }
+
+  async function discardStory(id, button) {
+    clearStoryError();
+    setBusy(button, "Discarding...");
+    try {
+      log("POST /v1/stories/" + id + "/discard");
+      var response = await fetch("/v1/stories/" + encodeURIComponent(id) + "/discard", { method: "POST" });
+      await ensureOk(response, "Discard");
+      log("Discarded " + id);
+      refreshStoryLibrary(true);
+    } catch (error) {
+      setStoryError(error);
+      clearBusy(button);
+    }
   }
 
   async function refreshStoryLibrary(silent) {
@@ -3033,6 +3217,7 @@
     });
   });
   takeRoomRenderButton.addEventListener("click", rerenderStory);
+  takeRoomNextButton.addEventListener("click", jumpToNextNeedsWork);
   storyDraftButton.addEventListener("click", draftStory);
   scriptDiscardButton.addEventListener("click", function () {
     discardDraft();

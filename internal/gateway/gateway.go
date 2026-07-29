@@ -2347,6 +2347,23 @@ func (r *router) handleStory(w http.ResponseWriter, req *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": parts[0], "discarded": true})
 		return
 	}
+	// A scene audition is an ephemeral stitch of the scene's current takes:
+	// nothing mastered, nothing stored, so it is computed per request and
+	// must not be cached.
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "scenes" && parts[2] != "" && parts[3] == "audition.wav" {
+		if !requireMethod(w, req, http.MethodGet) {
+			return
+		}
+		audio, err := r.stories.Audition(parts[0], parts[2])
+		if err != nil {
+			writeStoryErrorFromError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(audio)
+		return
+	}
 	// Artifacts are story.wav, one take (lines/<line>/<take>.wav), or one
 	// render revision (renders/render-NNN.wav); the store owns the whitelist.
 	if len(parts) >= 3 && parts[0] != "" && parts[1] == "artifact" && parts[2] != "" {
@@ -2811,7 +2828,7 @@ func storyHTTPStatus(code story.ErrorCode) int {
 	switch code {
 	case story.CodeStoryBusy, story.CodeEngineBusy:
 		return http.StatusTooManyRequests
-	case story.CodeNotFound, story.CodeArtifactNotFound, story.CodeUnsupportedArtifact, story.CodeInvalidArtifactRequest:
+	case story.CodeNotFound, story.CodeSceneNotFound, story.CodeArtifactNotFound, story.CodeUnsupportedArtifact, story.CodeInvalidArtifactRequest:
 		return http.StatusNotFound
 	case story.CodeCannotCancel:
 		return http.StatusConflict

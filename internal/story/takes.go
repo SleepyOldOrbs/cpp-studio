@@ -413,6 +413,43 @@ func (m *Manager) Render(ctx context.Context, storyID string) (Manifest, Render,
 	return manifest, render, nil
 }
 
+// Audition stitches one scene's current takes on demand, for listening in
+// the take room while editing. It is deliberately not a render: nothing is
+// mastered, nothing is stored, and nothing is promised — lines that are
+// muted, unrecorded, or recorded against earlier words are simply left
+// out, because the question an audition answers is "what does this scene
+// sound like right now".
+func (m *Manager) Audition(storyID string, sceneID string) ([]byte, error) {
+	manifest, ok, err := m.store.Load(storyID)
+	if err != nil {
+		return nil, NewError(CodeStoreFailure, err.Error())
+	}
+	if !ok {
+		return nil, NewError(CodeNotFound, "story not found")
+	}
+	known := false
+	for _, scene := range manifest.Scenes {
+		if scene.ID == sceneID {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return nil, NewError(CodeSceneNotFound, "story has no scene with this id")
+	}
+	usable := func(i int) bool {
+		line := manifest.Script[i]
+		if line.SceneID != sceneID || line.CurrentTake == "" {
+			return false
+		}
+		take := takeByID(line.Takes, line.CurrentTake)
+		return take != nil && take.Text == line.Text
+	}
+	return stitchLines(manifest.Script, usable, func(i int) ([]byte, error) {
+		return m.store.LoadTake(storyID, manifest.Script[i].ID, manifest.Script[i].CurrentTake)
+	})
+}
+
 // publishManifest replaces the manifest a finished in-memory job is still
 // serving. Status prefers the tracked job over the store for as long as the
 // process lives, so without this a take-room edit would land on disk and

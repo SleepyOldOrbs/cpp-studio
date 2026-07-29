@@ -409,6 +409,14 @@ above). Selecting a take the line does not have returns `400` with
 `take_not_found`; selecting one recorded against different words returns
 `stale_take`; empty text or out-of-range timing returns `invalid_request`.
 
+### GET /v1/stories/{id}/scenes/{scene_id}/audition.wav
+
+An ephemeral stitch of one scene's current takes, for listening while
+editing. It is deliberately not a render: nothing is mastered, nothing is
+stored (`Cache-Control: no-store`), and nothing is promised — lines that
+are muted, unrecorded, or recorded against earlier words are simply left
+out. Unknown scene: `404` with code `scene_not_found`.
+
 ### POST /v1/stories/{id}/render
 
 Restitches the story from every line's current take, honouring mutes and
