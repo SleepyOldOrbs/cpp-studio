@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"image/png"
 	"io"
+	"math"
+	mrand "math/rand/v2"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -875,8 +877,15 @@ func (r *router) handleImageGenerations(w http.ResponseWriter, req *http.Request
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Resolve the seed here, once: absent or negative rolls a fresh one.
+	// Downstream everything works with a concrete value, and the response
+	// reports it, so every image is reproducible by construction.
+	seed := rollImageSeed()
+	if body.Seed != nil && *body.Seed >= 0 {
+		seed = *body.Seed
+	}
 
-	png, err := r.generateImage(req.Context(), body.Prompt, width, height)
+	png, err := r.generateImage(req.Context(), body.Prompt, width, height, seed)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -888,43 +897,51 @@ func (r *router) handleImageGenerations(w http.ResponseWriter, req *http.Request
 		Data: []imageGenerationData{
 			{B64JSON: base64.StdEncoding.EncodeToString(png)},
 		},
+		Seed: seed,
 	})
 }
 
+// rollImageSeed picks a fresh positive seed. Zero is avoided so a rolled
+// seed can never look like "unset" to anything downstream.
+func rollImageSeed() int64 {
+	return mrand.Int64N(math.MaxInt32-1) + 1
+}
+
 // generateImage produces a PNG for the prompt. Subprocess sd crosses the
-// engine seam (sd-cli reloads the model each run); server-mode sd posts to the
-// resident sd-server's OpenAI-compatible /v1/images/generations route so the
-// ~2.8GB model stays loaded between requests, mirroring the resident whisper
-// and audio proxies. Either way the returned bytes satisfy the same PNG caps.
-func (r *router) generateImage(ctx context.Context, prompt string, width, height int) ([]byte, error) {
+// engine seam (sd-cli reloads the model each run); server-mode sd posts to
+// the resident sd-server's native async route, POST /sdcpp/v1/img_gen, and
+// polls the job it returns. The native route is used rather than the
+// OpenAI-compatible one because it accepts a seed — the whole point — and
+// the same purpose-built-body discipline applies (the OpenAI route once
+// crashed on a stray "n":null; only send fields the server defines).
+func (r *router) generateImage(ctx context.Context, prompt string, width, height int, seed int64) ([]byte, error) {
 	engineCfg, ok := r.engine("sd")
 	if !ok {
 		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "sd" is not configured`}
 	}
 	if engineCfg.Mode != "server" {
-		res, err := r.engines.Run(ctx, engine.ImageSpec(prompt, width, height))
+		res, err := r.engines.Run(ctx, engine.ImageSpec(prompt, width, height, seed))
 		if err != nil {
 			return nil, err
 		}
 		return res.Output, nil
 	}
 
-	upstreamURL, ok := inferImageGenerationsURL(engineCfg.HealthURL)
+	upstreamURL, ok := inferSDURL(engineCfg.HealthURL, "/sdcpp/v1/img_gen")
 	if !ok {
-		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "sd" healthUrl must be an absolute http(s) URL to infer /v1/images/generations`}
+		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "sd" healthUrl must be an absolute http(s) URL to infer /sdcpp/v1/img_gen`}
 	}
 
-	// Build the upstream body explicitly rather than reusing
-	// imageGenerationRequest: its N field has no omitempty, so an unset N
-	// marshals to "n":null, which sd-server's JSON parser fatally rejects
-	// (fast-fail / 0xc0000409). Only send the fields sd-server needs.
 	upstreamBody := struct {
-		Prompt         string `json:"prompt"`
-		Size           string `json:"size,omitempty"`
-		ResponseFormat string `json:"response_format"`
-	}{Prompt: prompt, ResponseFormat: "b64_json"}
+		Prompt       string `json:"prompt"`
+		Width        int    `json:"width,omitempty"`
+		Height       int    `json:"height,omitempty"`
+		Seed         int64  `json:"seed"`
+		OutputFormat string `json:"output_format"`
+	}{Prompt: prompt, Seed: seed, OutputFormat: "png"}
 	if width > 0 && height > 0 {
-		upstreamBody.Size = fmt.Sprintf("%dx%d", width, height)
+		upstreamBody.Width = width
+		upstreamBody.Height = height
 	}
 	payload, err := json.Marshal(upstreamBody)
 	if err != nil {
@@ -943,35 +960,96 @@ func (r *router) generateImage(ctx context.Context, prompt string, width, height
 	if err != nil {
 		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream request failed: %v", err)}
 	}
+	submitted, err := readBoundedJSON(resp, maxImageUpstreamBytes)
+	if err != nil {
+		return nil, err
+	}
+	var job struct {
+		PollURL string `json:"poll_url"`
+	}
+	if err := json.Unmarshal(submitted, &job); err != nil || job.PollURL == "" {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream returned no job to poll: %s", strings.TrimSpace(string(submitted)))}
+	}
+	pollURL, ok := inferSDURL(engineCfg.HealthURL, job.PollURL)
+	if !ok {
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: "sd upstream returned an unusable poll url"}
+	}
+
+	// Poll until the job lands somewhere terminal; the request context
+	// bounds the whole wait, so a wedged job becomes a timeout rather than
+	// a stuck request.
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: "sd generation timed out"}
+		case <-time.After(250 * time.Millisecond):
+		}
+		pollReq, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		if err != nil {
+			return nil, &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
+		}
+		pollResp, err := r.client.Do(pollReq)
+		if err != nil {
+			return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd job poll failed: %v", err)}
+		}
+		pollBody, err := readBoundedJSON(pollResp, maxImageUpstreamBytes)
+		if err != nil {
+			return nil, err
+		}
+		var status struct {
+			Status string `json:"status"`
+			Result *struct {
+				Images []struct {
+					B64JSON string `json:"b64_json"`
+				} `json:"images"`
+			} `json:"result"`
+			Error *struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(pollBody, &status); err != nil {
+			return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("decode sd job status: %v", err)}
+		}
+		switch status.Status {
+		case "queued", "generating":
+			continue
+		case "completed":
+			if status.Result == nil || len(status.Result.Images) == 0 || status.Result.Images[0].B64JSON == "" {
+				return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: "sd job completed with no image data"}
+			}
+			pngBytes, err := base64.StdEncoding.DecodeString(status.Result.Images[0].B64JSON)
+			if err != nil {
+				return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("decode sd upstream image: %v", err)}
+			}
+			if err := engine.ValidatePNGBytes(pngBytes); err != nil {
+				return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream produced invalid PNG: %v", err)}
+			}
+			r.manager.MarkSuccess("sd")
+			return pngBytes, nil
+		default:
+			message := "sd job " + status.Status
+			if status.Error != nil && status.Error.Message != "" {
+				message += ": " + status.Error.Message
+			}
+			return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: message}
+		}
+	}
+}
+
+// readBoundedJSON drains a bounded upstream response and hands back its
+// bytes, treating non-2xx statuses as engine failures with the body as the
+// explanation.
+func readBoundedJSON(resp *http.Response, limit int64) ([]byte, error) {
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxImageUpstreamBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read sd upstream response: %v", err)}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))}
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
 	}
-
-	var parsed struct {
-		Data []struct {
-			B64JSON string `json:"b64_json"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("decode sd upstream response: %v", err)}
-	}
-	if len(parsed.Data) == 0 || parsed.Data[0].B64JSON == "" {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: "sd upstream returned no image data"}
-	}
-	pngBytes, err := base64.StdEncoding.DecodeString(parsed.Data[0].B64JSON)
-	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("decode sd upstream image: %v", err)}
-	}
-	if err := engine.ValidatePNGBytes(pngBytes); err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream produced invalid PNG: %v", err)}
-	}
-	r.manager.MarkSuccess("sd")
-	return pngBytes, nil
+	return body, nil
 }
 
 const (
@@ -2724,11 +2802,11 @@ func inferChatCompletionsURL(healthURL string) (string, bool) {
 	return inferEngineURL(healthURL, "/v1/chat/completions")
 }
 
-// inferImageGenerationsURL derives sd-server's request route from its
-// healthUrl's origin. Unlike the /health-suffixed engines, sd-server has no
-// /health route (readiness is polled at /v1/models), so the path is taken from
-// the origin rather than by stripping a /health suffix.
-func inferImageGenerationsURL(healthURL string) (string, bool) {
+// inferSDURL derives an sd-server route from its healthUrl's origin. Unlike
+// the /health-suffixed engines, sd-server has no /health route (readiness is
+// polled at /v1/models), so the path is taken from the origin rather than by
+// stripping a /health suffix.
+func inferSDURL(healthURL string, path string) (string, bool) {
 	if healthURL == "" {
 		return "", false
 	}
@@ -2736,7 +2814,7 @@ func inferImageGenerationsURL(healthURL string) (string, bool) {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", false
 	}
-	return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: "/v1/images/generations"}).String(), true
+	return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: path}).String(), true
 }
 
 func parseImageSize(size string) (int, int, error) {
@@ -2850,11 +2928,18 @@ type imageGenerationRequest struct {
 	Size           string `json:"size"`
 	ResponseFormat string `json:"response_format"`
 	N              *int   `json:"n"`
+	// Seed pins the noise a generation starts from. Absent or negative
+	// means "roll a fresh one" — the gateway always resolves it to a
+	// concrete value and reports it back, so the repeated-clicks-same-image
+	// trap is gone and a good image can still be reproduced on purpose.
+	Seed *int64 `json:"seed,omitempty"`
 }
 
 type imageGenerationResponse struct {
 	Created int64                 `json:"created"`
 	Data    []imageGenerationData `json:"data"`
+	// Seed is the concrete seed this image was generated with.
+	Seed int64 `json:"seed"`
 }
 
 type imageGenerationData struct {

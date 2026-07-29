@@ -514,6 +514,8 @@ func runImage(args []string, stdout, stderr io.Writer) error {
 	flags.IntVar(&width, "W", 0, "fixture/test helper image width")
 	flags.IntVar(&height, "height", 0, "fixture/test helper image height")
 	flags.IntVar(&height, "H", 0, "fixture/test helper image height")
+	var seed int64
+	flags.Int64Var(&seed, "seed", 0, "fixture/test helper seed (accepted for arg parity with sd-cli)")
 	flags.StringVar(&requireSize, "require-size", "", "fail unless width and height match WIDTHxHEIGHT")
 	if err := flags.Parse(args); err != nil {
 		return err

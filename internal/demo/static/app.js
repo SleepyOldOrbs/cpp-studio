@@ -34,6 +34,8 @@
   var imageForm = document.getElementById("imageForm");
   var imagePromptInput = document.getElementById("imagePromptInput");
   var imageSizeInput = document.getElementById("imageSizeInput");
+  var imageSeedInput = document.getElementById("imageSeedInput");
+  var imageSeedClearButton = document.getElementById("imageSeedClearButton");
   var sizePresets = Array.prototype.slice.call(document.querySelectorAll(".preset"));
   var generateImageButton = document.getElementById("generateImageButton");
   var clearImageButton = document.getElementById("clearImageButton");
@@ -176,6 +178,8 @@
     messageInput,
     imagePromptInput,
     imageSizeInput,
+    imageSeedInput,
+    imageSeedClearButton,
     generateImageButton,
     clearImageButton,
     storySubjectInput,
@@ -1453,6 +1457,25 @@
     }
   }
 
+  // renderImageStatus shows what was made and the seed it was made from,
+  // with a one-click pin: pinning fills the seed box so the next generation
+  // reproduces this image, ready for prompt-tweaking around a keeper.
+  function renderImageStatus(summary, seed) {
+    imageStatus.textContent = summary;
+    if (typeof seed !== "number") {
+      return;
+    }
+    imageStatus.appendChild(document.createTextNode(" · seed " + seed + " "));
+    var pin = createElement("button", "plain compact-button", "Pin");
+    pin.type = "button";
+    pin.title = "Reuse seed " + seed + " for the next generation";
+    pin.addEventListener("click", function () {
+      imageSeedInput.value = String(seed);
+      log("Pinned image seed " + seed);
+    });
+    imageStatus.appendChild(pin);
+  }
+
   async function generateImage(event) {
     if (event) {
       event.preventDefault();
@@ -1466,6 +1489,17 @@
       if (!prompt) {
         throw new Error("Enter an image prompt");
       }
+      // An empty seed box means "roll a fresh one each click" — the cure
+      // for every generation repeating the same image. A pinned seed
+      // reproduces a picture on purpose.
+      var request = { prompt: prompt, size: size, response_format: "b64_json" };
+      var pinnedSeed = imageSeedInput.value.trim();
+      if (pinnedSeed !== "") {
+        if (!/^\d+$/.test(pinnedSeed)) {
+          throw new Error("Seed must be a whole number, or empty for random");
+        }
+        request.seed = Number(pinnedSeed);
+      }
       imageStatus.textContent = "Generating...";
       log("POST /v1/images/generations");
       var response = await fetch("/v1/images/generations", {
@@ -1473,11 +1507,7 @@
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-          prompt: prompt,
-          size: size,
-          response_format: "b64_json"
-        })
+        body: JSON.stringify(request)
       });
       await ensureOk(response, "Image generation");
       var data = await response.json();
@@ -1489,7 +1519,7 @@
       libraryImageButton.disabled = false;
       imageDescriptionOutput.value = "";
       clearDescribeAudio();
-      imageStatus.textContent = size + " PNG, " + formatBytes(estimateBase64Bytes(b64));
+      renderImageStatus(size + " PNG, " + formatBytes(estimateBase64Bytes(b64)), data.seed);
       log("Image PNG received: " + imageStatus.textContent);
     } catch (error) {
       imageStatus.textContent = "Error";
@@ -3138,6 +3168,10 @@
   });
   voiceForm.addEventListener("submit", runVoiceLoop);
   imageForm.addEventListener("submit", generateImage);
+  imageSeedClearButton.addEventListener("click", function () {
+    imageSeedInput.value = "";
+    log("Image seed back to random");
+  });
   storyForm.addEventListener("submit", startStory);
   storyCancelButton.addEventListener("click", cancelStory);
   storyLibraryButton.addEventListener("click", function () {

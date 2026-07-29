@@ -263,6 +263,14 @@
             </div>
           </div>
 
+          <div class="field compact-field">
+            <span class="field-label" id="imageSeedLabel">Seed</span>
+            <div class="size-row" role="group" aria-labelledby="imageSeedLabel">
+              <input class="text-input" id="imageSeedInput" type="text" inputmode="numeric" placeholder="random" aria-label="Image seed" title="Leave empty to roll a fresh seed every generation; enter one to reproduce an image">
+              <button type="button" class="preset" id="imageSeedClearButton" title="Back to a fresh random seed each generation">🎲</button>
+            </div>
+          </div>
+
           <div class="action-row">
             <button class="primary" id="generateImageButton" type="submit">Generate image</button>
             <label class="file-button">
@@ -271,7 +279,7 @@
             </label>
             <button class="secondary" id="clearImageButton" type="button">Clear image</button>
           </div>
-          <small class="hint">Generate an image or load a PNG, then let the vision engine describe what it sees.</small>
+          <small class="hint">Generate an image or load a PNG, then let the vision engine describe what it sees. Every image reports the seed it used — pin it to iterate on a picture you like.</small>
         </form>
 
         <section class="image-result" aria-live="polite">

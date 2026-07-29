@@ -32,6 +32,9 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "imageErrorBox") {
 		t.Fatalf("expected image error marker, got %q", body)
 	}
+	if !strings.Contains(body, "imageSeedInput") {
+		t.Fatalf("expected image seed marker, got %q", body)
+	}
 	if !strings.Contains(body, "storyLibraryButton") {
 		t.Fatalf("expected story library marker, got %q", body)
 	}
@@ -256,6 +259,12 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/styles.css",
 			contentType: "text/css",
 			needle:      ".take-scene",
+		},
+		{
+			name:        "javascript image seed",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "renderImageStatus",
 		},
 	}
 

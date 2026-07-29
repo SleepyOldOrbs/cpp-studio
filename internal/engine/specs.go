@@ -571,7 +571,7 @@ func ParseDiarization(stdout []byte) []DiarizationSpan {
 // ImageSpec invokes the "sd" engine: --prompt <prompt> --output <png path>
 // plus --width/--height when both are positive. The engine must produce a
 // decodable PNG within MaxImageDimension and MaxImageOutputBytes.
-func ImageSpec(prompt string, width, height int) Spec {
+func ImageSpec(prompt string, width, height int, seed int64) Spec {
 	return Spec{
 		Engine:        "sd",
 		Label:         "sd image generation command",
@@ -583,6 +583,10 @@ func ImageSpec(prompt string, width, height int) Spec {
 			if width > 0 && height > 0 {
 				args = append(args, "--width", strconv.Itoa(width), "--height", strconv.Itoa(height))
 			}
+			// The seed is always concrete by the time a spec is built — the
+			// gateway rolls one when the request left it out — so a good
+			// image is always reproducible.
+			args = append(args, "--seed", strconv.FormatInt(seed, 10))
 			return args
 		},
 		ValidateOutput: func(path string) error {

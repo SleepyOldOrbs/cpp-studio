@@ -238,33 +238,38 @@ func TestImageGenerationSuccess(t *testing.T) {
 	}
 }
 
-func TestImageGenerationViaResidentSDServer(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/v1/images/generations" {
+// fakeSDServer implements the native async sd-server API: img_gen accepts a
+// job and the jobs route reports it generating once before completing, so
+// the gateway's poll loop is actually exercised.
+func fakeSDServer(t *testing.T, onBody func(raw []byte)) *httptest.Server {
+	t.Helper()
+	var polls int
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case req.URL.Path == "/sdcpp/v1/img_gen":
+			raw, _ := io.ReadAll(req.Body)
+			onBody(raw)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"id":"job-1","status":"queued","poll_url":"/sdcpp/v1/jobs/job-1"}`))
+		case req.URL.Path == "/sdcpp/v1/jobs/job-1":
+			w.Header().Set("Content-Type", "application/json")
+			polls++
+			if polls == 1 {
+				_, _ = w.Write([]byte(`{"id":"job-1","status":"generating","result":null,"error":null}`))
+				return
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"id":"job-1","status":"completed","result":{"output_format":"png","images":[{"index":0,"b64_json":%q}]},"error":null}`, base64.StdEncoding.EncodeToString(validPNGBytes()))))
+		default:
 			t.Errorf("unexpected upstream path %q", req.URL.Path)
+			http.NotFound(w, req)
 		}
-		raw, _ := io.ReadAll(req.Body)
-		// sd-server fatally rejects "n":null, so the upstream body must omit
-		// the n field entirely (regression guard).
-		if bytes.Contains(raw, []byte(`"n"`)) {
-			t.Errorf("upstream body must not contain an n field: %s", raw)
-		}
-		var body imageGenerationRequest
-		if err := json.Unmarshal(raw, &body); err != nil {
-			t.Errorf("decode upstream request: %v", err)
-		}
-		if body.Prompt != "a small cabin" {
-			t.Errorf("unexpected upstream prompt %q", body.Prompt)
-		}
-		if body.Size != "512x512" {
-			t.Errorf("unexpected upstream size %q", body.Size)
-		}
-		if body.ResponseFormat != "b64_json" {
-			t.Errorf("expected response_format b64_json, got %q", body.ResponseFormat)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"created":1,"data":[{"b64_json":%q}]}`, base64.StdEncoding.EncodeToString(validPNGBytes()))))
 	}))
+}
+
+func TestImageGenerationViaResidentSDServer(t *testing.T) {
+	var upstreamBody []byte
+	upstream := fakeSDServer(t, func(raw []byte) { upstreamBody = raw })
 	defer upstream.Close()
 
 	cfg := testConfig(map[string]config.EngineConfig{
@@ -274,18 +279,48 @@ func TestImageGenerationViaResidentSDServer(t *testing.T) {
 	router := NewRouter(cfg, manager)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"a small cabin","size":"512x512","response_format":"b64_json"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"a small cabin","size":"512x512","response_format":"b64_json","seed":1234}`))
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
+	// The upstream body is purpose-built: exactly the fields the native
+	// route defines, with the client's seed passed through. The old OpenAI
+	// route fatally rejected stray fields ("n":null), so the same
+	// discipline is guarded here.
+	var sent struct {
+		Prompt       string `json:"prompt"`
+		Width        int    `json:"width"`
+		Height       int    `json:"height"`
+		Seed         *int64 `json:"seed"`
+		OutputFormat string `json:"output_format"`
+	}
+	if err := json.Unmarshal(upstreamBody, &sent); err != nil {
+		t.Fatalf("decode upstream body: %v", err)
+	}
+	if sent.Prompt != "a small cabin" || sent.Width != 512 || sent.Height != 512 {
+		t.Fatalf("unexpected upstream request: %s", upstreamBody)
+	}
+	if sent.Seed == nil || *sent.Seed != 1234 {
+		t.Fatalf("expected the client seed passed through, got %s", upstreamBody)
+	}
+	if sent.OutputFormat != "png" {
+		t.Fatalf("expected png output_format, got %s", upstreamBody)
+	}
+	if bytes.Contains(upstreamBody, []byte(`"n"`)) || bytes.Contains(upstreamBody, []byte("response_format")) {
+		t.Fatalf("upstream body must only carry native-route fields: %s", upstreamBody)
+	}
+
 	var response imageGenerationResponse
 	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
 		t.Fatalf("decode image generation response: %v", err)
 	}
 	if len(response.Data) != 1 || response.Data[0].B64JSON == "" {
 		t.Fatalf("expected one b64_json image, got %+v", response)
+	}
+	if response.Seed != 1234 {
+		t.Fatalf("expected the seed reported back, got %d", response.Seed)
 	}
 	image, err := base64.StdEncoding.DecodeString(response.Data[0].B64JSON)
 	if err != nil {
@@ -296,6 +331,44 @@ func TestImageGenerationViaResidentSDServer(t *testing.T) {
 	}
 	if manager.Health().Engines["sd"].LastSuccessAt == nil {
 		t.Fatalf("expected sd lastSuccessAt to be recorded")
+	}
+}
+
+func TestImageGenerationRollsASeedWhenAbsent(t *testing.T) {
+	var upstreamBody []byte
+	upstream := fakeSDServer(t, func(raw []byte) { upstreamBody = raw })
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"sd": {Command: "sd-server", Mode: "server", HealthURL: upstream.URL + "/v1/models"},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"prompt":"a small cabin","size":"512x512"}`))
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var sent struct {
+		Seed *int64 `json:"seed"`
+	}
+	if err := json.Unmarshal(upstreamBody, &sent); err != nil {
+		t.Fatalf("decode upstream body: %v", err)
+	}
+	// No seed in the request: the gateway rolls a concrete positive one —
+	// never -1, which would let the server randomise invisibly and make
+	// the image unreproducible.
+	if sent.Seed == nil || *sent.Seed <= 0 {
+		t.Fatalf("expected a rolled positive seed, got %s", upstreamBody)
+	}
+	var response imageGenerationResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode image generation response: %v", err)
+	}
+	if response.Seed != *sent.Seed {
+		t.Fatalf("response seed %d should match the one sent upstream %d", response.Seed, *sent.Seed)
 	}
 }
 
