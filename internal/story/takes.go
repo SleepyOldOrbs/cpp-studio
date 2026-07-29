@@ -124,15 +124,16 @@ func (m *Manager) stitchWIPTakes(storyID string, script []ScriptLine) ([]byte, e
 		})
 }
 
-// storeTake writes one take and describes it. The voice and the exact text
-// are recorded on the take rather than looked up later, so a take stays
-// explainable after the line is edited or the cast is re-voiced.
+// storeTake writes one take and describes it. The voice, the exact text and
+// the synthesis fingerprint are recorded on the take rather than looked up
+// later, so a take stays explainable after the line is edited, the cast is
+// re-voiced, or the engine configuration moves on.
 func (m *Manager) storeTake(storyID string, lineID string, takeID string, audio []byte, voiceID string, text string, createdAt time.Time) (Take, error) {
 	url, err := m.store.SaveTake(storyID, lineID, takeID, audio)
 	if err != nil {
 		return Take{}, err
 	}
-	return describeTake(takeID, audio, voiceID, text, createdAt, url), nil
+	return m.describeTake(takeID, audio, voiceID, text, createdAt, url), nil
 }
 
 // storeTakeWIP is storeTake for a story still being produced: the audio
@@ -142,22 +143,23 @@ func (m *Manager) storeTakeWIP(storyID string, lineID string, takeID string, aud
 	if err != nil {
 		return Take{}, err
 	}
-	return describeTake(takeID, audio, voiceID, text, createdAt, url), nil
+	return m.describeTake(takeID, audio, voiceID, text, createdAt, url), nil
 }
 
-func describeTake(takeID string, audio []byte, voiceID string, text string, createdAt time.Time, url string) Take {
+func (m *Manager) describeTake(takeID string, audio []byte, voiceID string, text string, createdAt time.Time, url string) Take {
 	durationMS := 0
 	if d, err := wav.Duration(audio); err == nil {
 		durationMS = int(d / time.Millisecond)
 	}
 	return Take{
-		ID:         takeID,
-		VoiceID:    voiceID,
-		Text:       text,
-		CreatedAt:  createdAt.UTC(),
-		DurationMS: durationMS,
-		Bytes:      len(audio),
-		URL:        url,
+		ID:          takeID,
+		VoiceID:     voiceID,
+		Text:        text,
+		CreatedAt:   createdAt.UTC(),
+		DurationMS:  durationMS,
+		Bytes:       len(audio),
+		URL:         url,
+		Fingerprint: m.fingerprint,
 	}
 }
 

@@ -79,6 +79,7 @@ func AssembleManifest(id string, req NormalizedRequest, createdAt time.Time, sca
 		Mode:            req.Mode,
 		Premise:         req.Premise,
 		Style:           req.Style,
+		VoiceMode:       req.VoiceMode,
 		Title:           title,
 		Status:          StatusComplete,
 		CreatedAt:       createdAt.UTC(),

@@ -108,6 +108,74 @@ func (s *Store) DiscardWIP(id string) error {
 	return nil
 }
 
+// SaveManifestWIP records production progress in the work-in-progress
+// directory. It is written after every take lands — take file first, then
+// the manifest naming it — so a crash at any point leaves a manifest that
+// only names takes that exist, and a resume trusts what it reads.
+func (s *Store) SaveManifestWIP(manifest Manifest) error {
+	if err := validateStoryID(manifest.ID); err != nil {
+		return fmt.Errorf("invalid story id")
+	}
+	wip := s.wipDir(manifest.ID)
+	if info, err := os.Stat(wip); err != nil || !info.IsDir() {
+		return fmt.Errorf("story %s has no work in progress", manifest.ID)
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode manifest: %w", err)
+	}
+	return writeFileAtomic(filepath.Join(wip, "manifest.json"), append(data, '\n'))
+}
+
+// LoadWIP reads the manifest of an interrupted production, if one exists.
+func (s *Store) LoadWIP(id string) (Manifest, bool, error) {
+	if err := validateStoryID(id); err != nil {
+		return Manifest{}, false, NewError(CodeNotFound, "story not found")
+	}
+	data, err := os.ReadFile(filepath.Join(s.wipDir(id), "manifest.json"))
+	if os.IsNotExist(err) {
+		return Manifest{}, false, nil
+	}
+	if err != nil {
+		return Manifest{}, false, fmt.Errorf("read wip manifest: %w", err)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return Manifest{}, false, fmt.Errorf("decode wip manifest: %w", err)
+	}
+	return manifest, true, nil
+}
+
+// ListWIP enumerates interrupted productions: every work-in-progress
+// directory that carries a manifest. Directories without one — a crash
+// before the first save, an unrelated dot-dir — are not listable work.
+func (s *Store) ListWIP() ([]Manifest, error) {
+	entries, err := os.ReadDir(s.rootDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read stories dir: %w", err)
+	}
+	var manifests []Manifest
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".wip") {
+			continue
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(name, "."), ".wip")
+		manifest, ok, err := s.LoadWIP(id)
+		if err != nil || !ok {
+			continue
+		}
+		manifests = append(manifests, manifest)
+	}
+	return manifests, nil
+}
+
 // FinalizeWIP publishes a produced story: the mix and the manifest are
 // written beside the takes already in the work-in-progress directory, and
 // the directory is renamed into place. A reader therefore sees either no
@@ -220,6 +288,21 @@ func (s *Store) LoadTake(storyID, lineID, takeID string) ([]byte, error) {
 		return nil, err
 	}
 	return readTake(path)
+}
+
+// HasTakeWIP reports whether a work-in-progress take's audio is actually on
+// disk — the resume path's guard against a manifest naming what a tampered
+// directory no longer holds.
+func (s *Store) HasTakeWIP(storyID, lineID, takeID string) bool {
+	if err := validateStoryID(storyID); err != nil {
+		return false
+	}
+	path, err := s.takePathIn(s.wipDir(storyID), lineID, takeID)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // LoadTakeWIP reads a take of a story still being produced, for the stitch

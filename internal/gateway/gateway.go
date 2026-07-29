@@ -3,7 +3,9 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,9 +79,10 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 		library: library.NewStore(""),
 	}
 	storyOptions := story.ManagerOptions{
-		ReserveEngine: r.reserveEngine,
-		Synthesize:    r.synthesizeSpeech,
-		Jobs:          r.jobs,
+		ReserveEngine:        r.reserveEngine,
+		Synthesize:           r.synthesizeSpeech,
+		SynthesisFingerprint: synthesisFingerprint(cfg.Engines["audio"]),
+		Jobs:                 r.jobs,
 	}
 	// With a llama engine configured, stories are written by the model;
 	// without one (CI, pure-fixture setups) the deterministic fixture
@@ -2315,6 +2318,35 @@ func (r *router) handleStory(w http.ResponseWriter, req *http.Request) {
 		_ = json.NewEncoder(w).Encode(status)
 		return
 	}
+	// An interrupted production either resumes — kept takes stay, the rest
+	// are synthesized under the current engine fingerprint — or is
+	// discarded, takes and all.
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "resume" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		response, err := r.stories.Resume(req.Context(), parts[0])
+		if err != nil {
+			writeStoryErrorFromError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(response)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "discard" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		if err := r.stories.Discard(parts[0]); err != nil {
+			writeStoryErrorFromError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": parts[0], "discarded": true})
+		return
+	}
 	// Artifacts are story.wav, one take (lines/<line>/<take>.wav), or one
 	// render revision (renders/render-NNN.wav); the store owns the whitelist.
 	if len(parts) >= 3 && parts[0] != "" && parts[1] == "artifact" && parts[2] != "" {
@@ -2427,6 +2459,42 @@ func (r *router) synthesizeSpeech(ctx context.Context, text string, voiceID stri
 		return nil, err
 	}
 	return r.speak(ctx, text, clonedVoice, true)
+}
+
+// synthesisFingerprint names the audio synthesis configuration for take
+// provenance: the engine's command, args and default voice, plus the size
+// and mtime of any of those that are files on disk — the binary, a server
+// config, a model path — hashed together. A resume keeps only takes whose
+// fingerprint matches the configuration running now, so a swapped model or
+// rebuilt engine re-synthesizes rather than splices. Timeouts and health
+// probing stay out: a changed timeout does not change audio.
+// Over-invalidation costs a re-synthesis; under-invalidation publishes an
+// episode spoken by two different engines, which is why file identity is
+// included deliberately.
+func synthesisFingerprint(cfg config.EngineConfig) string {
+	if cfg.Command == "" {
+		return ""
+	}
+	h := sha256.New()
+	add := func(s string) {
+		h.Write([]byte(s))
+		h.Write([]byte{0})
+	}
+	addFileIdentity := func(path string) {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			add(fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano()))
+		}
+	}
+	add(cfg.Command)
+	addFileIdentity(cfg.Command)
+	for _, arg := range cfg.Args {
+		add(arg)
+		addFileIdentity(arg)
+	}
+	add(cfg.DefaultVoiceRef)
+	addFileIdentity(cfg.DefaultVoiceRef)
+	add(cfg.DefaultVoiceText)
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // storyScriptSystemPrompt instructs llama to write grounded audio stories

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1417,6 +1418,224 @@ func TestCancelledProductionLeavesNoResidue(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(rootDir, created.ID)); !os.IsNotExist(err) {
 		t.Fatalf("a cancelled story must not be published: %v", err)
 	}
+}
+
+// interruptedProduction runs a fixed-voice production that fails after two
+// takes, leaving a resumable work-in-progress directory behind. It returns
+// the shared root directory and the story id.
+func interruptedProduction(t *testing.T, fingerprint string) (string, string) {
+	t.Helper()
+	rootDir := t.TempDir()
+	calls := 0
+	manager := NewManager(ManagerOptions{
+		RootDir:              rootDir,
+		SynthesisFingerprint: fingerprint,
+		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
+			calls++
+			if calls == 3 {
+				return nil, errors.New("the process died here")
+			}
+			return wav.SyntheticTone(wav.ToneSampleRate / 2), nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+	req := validSketchRequest()
+	req.VoiceMode = "fixed"
+	created, err := manager.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status, _, _ := manager.Status(created.ID)
+		if status.Status == StatusFailed {
+			return rootDir, created.ID
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("production did not fail in time")
+	return "", ""
+}
+
+func TestResumeFinishesInterruptedProduction(t *testing.T) {
+	rootDir, id := interruptedProduction(t, "fp-1")
+
+	// A fresh manager over the same root is a restarted process. Same
+	// synthesis fingerprint: the two takes already on disk are kept.
+	resumed := 0
+	later := func() time.Time { return fixedNow().Add(time.Hour) }
+	manager := NewManager(ManagerOptions{
+		RootDir:              rootDir,
+		SynthesisFingerprint: "fp-1",
+		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
+			resumed++
+			return wav.SyntheticTone(wav.ToneSampleRate / 2), nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        later,
+	})
+
+	response, err := manager.Resume(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Resume returned error: %v", err)
+	}
+	if response.ID != id {
+		t.Fatalf("a resume continues the same story, got %q", response.ID)
+	}
+	status := waitStoryStatus(t, manager, id, StatusComplete)
+	manifest := *status.Manifest
+
+	// The fixture sketch is nine lines; two were already performed.
+	if resumed != len(manifest.Script)-2 {
+		t.Fatalf("expected %d lines synthesized on resume, got %d", len(manifest.Script)-2, resumed)
+	}
+	for i, line := range manifest.Script {
+		if len(line.Takes) != 1 || line.CurrentTake == "" {
+			t.Fatalf("script[%d] should have its take after resume, got %+v", i, line)
+		}
+		if line.Takes[0].Fingerprint != "fp-1" {
+			t.Fatalf("script[%d] take should carry the fingerprint, got %+v", i, line.Takes[0])
+		}
+	}
+	// Kept takes keep their original recording time; new ones carry the
+	// resume's clock. That difference is the proof nothing was re-made.
+	if !manifest.Script[0].Takes[0].CreatedAt.Equal(fixedNow()) {
+		t.Fatalf("kept take should keep its original time, got %v", manifest.Script[0].Takes[0].CreatedAt)
+	}
+	if !manifest.Script[2].Takes[0].CreatedAt.Equal(later()) {
+		t.Fatalf("resumed take should carry the resume time, got %v", manifest.Script[2].Takes[0].CreatedAt)
+	}
+	// The story is published and the work-in-progress directory is gone.
+	if _, err := os.Stat(filepath.Join(rootDir, id, StoryArtifactName)); err != nil {
+		t.Fatalf("resumed story should be published: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, "."+id+".wip")); !os.IsNotExist(err) {
+		t.Fatalf("wip directory should be renamed away: %v", err)
+	}
+}
+
+func TestResumeResynthesizesWhenFingerprintChanged(t *testing.T) {
+	rootDir, id := interruptedProduction(t, "fp-old")
+
+	resumed := 0
+	manager := NewManager(ManagerOptions{
+		RootDir:              rootDir,
+		SynthesisFingerprint: "fp-new",
+		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
+			resumed++
+			return wav.SyntheticTone(wav.ToneSampleRate / 2), nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+	if _, err := manager.Resume(context.Background(), id); err != nil {
+		t.Fatalf("Resume returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, id, StatusComplete)
+
+	// The engine changed under the takes: every line is performed again.
+	// Splicing two engines into one episode is exactly what must not happen.
+	if resumed != len(status.Manifest.Script) {
+		t.Fatalf("expected every line re-synthesized under the new fingerprint, got %d of %d", resumed, len(status.Manifest.Script))
+	}
+}
+
+func TestResumeRefusals(t *testing.T) {
+	t.Run("unknown story", func(t *testing.T) {
+		manager := NewManager(ManagerOptions{
+			RootDir:    t.TempDir(),
+			Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) { return nil, nil },
+			Now:        fixedNow,
+		})
+		if _, err := manager.Resume(context.Background(), "story_20260101_000000_001"); !storyErrorIs(err, CodeNotFound) {
+			t.Fatalf("expected not found, got %v", err)
+		}
+	})
+	t.Run("no synthesizer", func(t *testing.T) {
+		manager := NewManager(ManagerOptions{RootDir: t.TempDir(), Now: fixedNow})
+		if _, err := manager.Resume(context.Background(), "story_20260101_000000_001"); !storyErrorIs(err, CodeSynthesisFailure) {
+			t.Fatalf("expected synthesis failure, got %v", err)
+		}
+	})
+	t.Run("placeholder production", func(t *testing.T) {
+		rootDir := t.TempDir()
+		store := NewStore(rootDir)
+		manifest, _, err := BuildFixtureManifest("story_20260101_000000_001", mustNormalize(t, validSketchRequest()), fixedNow())
+		if err != nil {
+			t.Fatalf("build fixture manifest: %v", err)
+		}
+		manifest.VoiceMode = "placeholder"
+		if err := store.BeginWIP(manifest.ID); err != nil {
+			t.Fatalf("BeginWIP: %v", err)
+		}
+		if err := store.SaveManifestWIP(manifest); err != nil {
+			t.Fatalf("SaveManifestWIP: %v", err)
+		}
+		manager := NewManager(ManagerOptions{
+			RootDir:    rootDir,
+			Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) { return nil, nil },
+			Now:        fixedNow,
+		})
+		if _, err := manager.Resume(context.Background(), manifest.ID); !storyErrorIs(err, CodeNotResumable) {
+			t.Fatalf("expected not resumable, got %v", err)
+		}
+	})
+}
+
+func TestInterruptedProductionsListStatusAndDiscard(t *testing.T) {
+	rootDir, id := interruptedProduction(t, "fp-1")
+
+	// A fresh manager sees the interruption in the list and in status.
+	manager := NewManager(ManagerOptions{RootDir: rootDir, Now: fixedNow})
+	summaries, err := manager.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	found := false
+	for _, summary := range summaries {
+		if summary.ID == id {
+			found = true
+			if summary.Status != StatusInterrupted {
+				t.Fatalf("expected interrupted status in the list, got %+v", summary)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("interrupted production missing from the list: %+v", summaries)
+	}
+
+	status, ok, err := manager.Status(id)
+	if err != nil || !ok {
+		t.Fatalf("Status returned %v ok=%v", err, ok)
+	}
+	if status.Status != StatusInterrupted || status.Manifest == nil {
+		t.Fatalf("expected interrupted status with manifest, got %+v", status)
+	}
+	// Two of nine lines were performed before the failure.
+	want := 2.0 / float64(len(status.Manifest.Script))
+	if math.Abs(status.Progress-want) > 0.001 {
+		t.Fatalf("expected progress %.3f, got %.3f", want, status.Progress)
+	}
+
+	if err := manager.Discard(id); err != nil {
+		t.Fatalf("Discard returned error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, "."+id+".wip")); !os.IsNotExist(err) {
+		t.Fatalf("discard should remove the wip directory: %v", err)
+	}
+	if err := manager.Discard(id); !storyErrorIs(err, CodeNotFound) {
+		t.Fatalf("a second discard has nothing to remove, got %v", err)
+	}
+}
+
+func mustNormalize(t *testing.T, req CreateRequest) NormalizedRequest {
+	t.Helper()
+	normalized, err := ValidateCreateRequest(req)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	return normalized
 }
 
 func TestValidateCreateRequestScenes(t *testing.T) {

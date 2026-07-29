@@ -55,6 +55,10 @@ const (
 	StatusComplete          Status = "complete"
 	StatusFailed            Status = "failed"
 	StatusCancelled         Status = "cancelled"
+	// StatusInterrupted is a production that stopped without finishing —
+	// a failure or a dead process — whose work-in-progress directory is
+	// still on disk. It is the state a resume picks up from.
+	StatusInterrupted Status = "interrupted"
 )
 
 type ErrorCode string
@@ -82,6 +86,7 @@ const (
 	CodeInvalidScript          ErrorCode = "invalid_script"
 	CodeInvalidScenes          ErrorCode = "invalid_scenes"
 	CodeSceneNotFound          ErrorCode = "scene_not_found"
+	CodeNotResumable           ErrorCode = "not_resumable"
 	CodeLineNotFound           ErrorCode = "line_not_found"
 	CodeTakeNotFound           ErrorCode = "take_not_found"
 	CodeStaleTake              ErrorCode = "stale_take"
@@ -261,6 +266,12 @@ type Take struct {
 	Bytes      int       `json:"bytes"`
 	// URL serves this take's WAV for audition in the take room.
 	URL string `json:"url"`
+	// Fingerprint names the synthesis configuration — engine binary, args,
+	// models — that made this take. Line id + text is not a sufficient
+	// resume key: an engine or model change between runs would splice an
+	// inconsistent episode together silently. A resume keeps a take only
+	// when its fingerprint matches the configuration running now.
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // Render is one published stitch of the current takes. Renders are
@@ -318,9 +329,14 @@ type Manifest struct {
 	Subject string `json:"subject"`
 	// Mode records which contract wrote this story. Older manifests
 	// predate the field; empty reads as grounded.
-	Mode            string       `json:"mode,omitempty"`
-	Premise         string       `json:"premise,omitempty"`
-	Style           string       `json:"style,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	Premise string `json:"premise,omitempty"`
+	Style   string `json:"style,omitempty"`
+	// VoiceMode records how the audio was made: "fixed" spoke every line
+	// through the audio engine, "placeholder" shipped a synthetic tone.
+	// Resume needs it — only a fixed-voice production has takes to finish.
+	// Older manifests predate the field.
+	VoiceMode       string       `json:"voice_mode,omitempty"`
 	Title           string       `json:"title"`
 	Status          Status       `json:"status"`
 	CreatedAt       time.Time    `json:"created_at"`

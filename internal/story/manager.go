@@ -3,6 +3,7 @@ package story
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -46,9 +47,15 @@ type ManagerOptions struct {
 	// Measure, when set, masters every render: speakers are levelled against
 	// each other and the finished piece is placed at the delivery target.
 	// nil leaves renders exactly as they were stitched.
-	Measure    MeasureFunc
-	StageDelay time.Duration
-	Now        func() time.Time
+	Measure MeasureFunc
+	// SynthesisFingerprint names the synthesis configuration behind
+	// Synthesize — engine binary, args, models — and is stamped on every
+	// take. A resume keeps only takes whose fingerprint matches it; empty
+	// means unfingerprinted, which never matches, so a resume under an
+	// unknown configuration re-synthesizes rather than splices.
+	SynthesisFingerprint string
+	StageDelay           time.Duration
+	Now                  func() time.Time
 	// Jobs, when set, mirrors every story job into the gateway-wide job
 	// registry so /v1/jobs lists and cancels stories alongside other async
 	// work. The story manager remains the source of truth.
@@ -63,6 +70,7 @@ type Manager struct {
 	script        ScriptFunc
 	transcode     TranscodeFunc
 	measure       MeasureFunc
+	fingerprint   string
 	stageDelay    time.Duration
 	now           func() time.Time
 	counter       int
@@ -114,6 +122,7 @@ func NewManager(opts ManagerOptions) *Manager {
 		script:        opts.Script,
 		transcode:     opts.Transcode,
 		measure:       opts.Measure,
+		fingerprint:   opts.SynthesisFingerprint,
 		stageDelay:    stageDelay,
 		now:           now,
 		jobs:          make(map[string]*job),
@@ -185,8 +194,34 @@ func (m *Manager) Status(id string) (StatusResponse, bool, error) {
 	m.mu.Unlock()
 
 	manifest, ok, err := m.store.Load(id)
-	if err != nil || !ok {
-		return StatusResponse{}, ok, err
+	if err != nil {
+		return StatusResponse{}, false, err
+	}
+	if !ok {
+		// Not stored, not running: an interrupted production still reports —
+		// its work-in-progress manifest says what exists and how far the
+		// synthesis got, which is what a resume decision needs to see.
+		wip, wipOk, wipErr := m.store.LoadWIP(id)
+		if wipErr != nil || !wipOk {
+			return StatusResponse{}, false, wipErr
+		}
+		recorded := 0
+		for _, line := range wip.Script {
+			if line.CurrentTake != "" {
+				recorded++
+			}
+		}
+		progress := 0.0
+		if len(wip.Script) > 0 {
+			progress = float64(recorded) / float64(len(wip.Script))
+		}
+		return StatusResponse{
+			ID:       wip.ID,
+			Status:   StatusInterrupted,
+			Stage:    StatusInterrupted,
+			Progress: progress,
+			Manifest: &wip,
+		}, true, nil
 	}
 	artifactURL := manifest.Audio.URL
 	return StatusResponse{
@@ -228,7 +263,144 @@ func (m *Manager) Cancel(id string) (StatusResponse, error) {
 }
 
 func (m *Manager) List() ([]Summary, error) {
-	return m.store.List()
+	summaries, err := m.store.List()
+	if err != nil {
+		return nil, err
+	}
+	// Interrupted productions list alongside finished stories so the
+	// console can offer to resume or discard them. The one currently being
+	// produced is running, not interrupted, so it is skipped.
+	wips, err := m.store.ListWIP()
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	active := m.activeID
+	m.mu.Unlock()
+	for _, wip := range wips {
+		if wip.ID == active {
+			continue
+		}
+		summaries = append(summaries, Summary{
+			ID:              wip.ID,
+			Subject:         wip.Subject,
+			Mode:            wip.Mode,
+			Title:           wip.Title,
+			Status:          StatusInterrupted,
+			CreatedAt:       wip.CreatedAt,
+			DurationSeconds: wip.DurationSeconds,
+		})
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].CreatedAt.After(summaries[j].CreatedAt)
+	})
+	return summaries, nil
+}
+
+// Resume finishes an interrupted production: the work-in-progress manifest
+// is read back, lines whose takes were made by the current synthesis
+// configuration are kept, and everything else is synthesized again. It is
+// a story job like any other — same single-active gate, same engine
+// reservation, same status lifecycle, same id.
+func (m *Manager) Resume(ctx context.Context, id string) (CreateResponse, error) {
+	if m.synthesize == nil {
+		return CreateResponse{}, NewError(CodeSynthesisFailure, "no audio engine is configured for synthesis")
+	}
+	m.mu.Lock()
+	if m.activeID != "" {
+		m.mu.Unlock()
+		return CreateResponse{}, NewError(CodeStoryBusy, "another story job is already active")
+	}
+	m.mu.Unlock()
+
+	manifest, ok, err := m.store.LoadWIP(id)
+	if err != nil {
+		return CreateResponse{}, NewError(CodeStoreFailure, err.Error())
+	}
+	if !ok {
+		return CreateResponse{}, NewError(CodeNotFound, "no interrupted production with this id")
+	}
+	// A placeholder story has no takes to keep and costs nothing to make;
+	// resubmitting is the honest path for it.
+	if manifest.VoiceMode != "fixed" {
+		return CreateResponse{}, NewError(CodeNotResumable, "only fixed-voice productions resume; submit the story again instead")
+	}
+
+	m.mu.Lock()
+	if m.activeID != "" {
+		m.mu.Unlock()
+		return CreateResponse{}, NewError(CodeStoryBusy, "another story job is already active")
+	}
+	var release func()
+	if m.reserveEngine != nil {
+		var reserved bool
+		release, reserved = m.reserveEngine(ctx, "audio")
+		if !reserved {
+			m.mu.Unlock()
+			return CreateResponse{}, NewError(CodeEngineBusy, "engine \"audio\" is busy")
+		}
+	}
+	jobCtx, cancel := context.WithCancel(context.Background())
+	j := &job{
+		id:      id,
+		cancel:  cancel,
+		release: release,
+		status: StatusResponse{
+			ID:           id,
+			Status:       StatusQueued,
+			Stage:        StatusQueued,
+			Progress:     0,
+			RetryAfterMS: DefaultRetryAfterMillis,
+		},
+	}
+	m.jobs[id] = j
+	m.activeID = id
+	if m.registry != nil {
+		m.registry.Track(id, "story", func() { _, _ = m.Cancel(id) })
+	}
+	m.mu.Unlock()
+
+	go m.resumeRun(jobCtx, j, manifest)
+	return CreateResponse{
+		ID:        id,
+		Status:    StatusQueued,
+		StatusURL: "/v1/stories/" + id,
+	}, nil
+}
+
+// resumeRun is run() without the writing half: the script already exists in
+// the work-in-progress manifest, so production picks up from synthesis.
+func (m *Manager) resumeRun(ctx context.Context, j *job, manifest Manifest) {
+	if j.release != nil {
+		defer j.release()
+	}
+	manifest.Status = StatusSynthesizing
+	if err := m.store.SaveManifestWIP(manifest); err != nil {
+		m.fail(j, NewError(CodeStoreFailure, err.Error()))
+		return
+	}
+	m.produce(ctx, j, manifest, m.now())
+}
+
+// Discard abandons an interrupted production, takes and all. The one being
+// produced right now cannot be discarded — cancel it instead.
+func (m *Manager) Discard(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeID == id {
+		return NewError(CodeCannotCancel, "story is being produced; cancel it instead")
+	}
+	_, ok, err := m.store.LoadWIP(id)
+	if err != nil {
+		return NewError(CodeStoreFailure, err.Error())
+	}
+	if !ok {
+		return NewError(CodeNotFound, "no interrupted production with this id")
+	}
+	if err := m.store.DiscardWIP(id); err != nil {
+		return NewError(CodeStoreFailure, err.Error())
+	}
+	return nil
 }
 
 // ArtifactPath resolves a whitelisted artifact of a stored story: the
@@ -289,13 +461,30 @@ func (m *Manager) run(ctx context.Context, j *job) {
 		m.fail(j, NewError(CodeStoreFailure, err.Error()))
 		return
 	}
+	// The manifest rides in the directory from the start — status honest —
+	// so an interrupted run is a story a resume can read, not a pile of
+	// anonymous WAVs.
+	manifest.Status = StatusSynthesizing
+	if err := m.store.SaveManifestWIP(manifest); err != nil {
+		m.fail(j, NewError(CodeStoreFailure, err.Error()))
+		return
+	}
+	m.produce(ctx, j, manifest, createdAt)
+}
+
+// produce is the production half of a story job — synthesis onward — shared
+// by a fresh run and a resume. Everything it needs rides on the manifest —
+// a resumed job has no original request to consult. The manifest it is
+// handed is already in the work-in-progress directory; lines that carry a
+// valid take are kept, the rest are synthesized.
+func (m *Manager) produce(ctx context.Context, j *job, manifest Manifest, createdAt time.Time) {
 	// An explicit cancel wants no residue; a failure deliberately leaves
 	// the directory behind — its takes are what a future resume picks up.
 	discard := func() { _ = m.store.DiscardWIP(j.id) }
 
-	audio := fixtureWAV(j.req.TargetSeconds)
-	if j.req.VoiceMode == "fixed" && m.synthesize != nil {
-		if !m.synthesizeTakes(ctx, j, &manifest, j.req.CastVoices, createdAt) {
+	audio := fixtureWAV(manifest.DurationSeconds)
+	if manifest.VoiceMode == "fixed" && m.synthesize != nil {
+		if !m.synthesizeTakes(ctx, j, &manifest, createdAt) {
 			if m.isCancelled(j) {
 				discard()
 			}
@@ -350,6 +539,7 @@ func (m *Manager) run(ctx context.Context, j *job) {
 		Bytes:           len(audio),
 		URL:             RenderURL(j.id, 1),
 	}}
+	manifest.Status = StatusComplete
 	if err := m.store.FinalizeWIP(manifest, audio); err != nil {
 		m.fail(j, NewError(CodeStoreFailure, err.Error()))
 		return
@@ -448,19 +638,21 @@ func (m *Manager) Draft(ctx context.Context, req CreateRequest) (DraftResponse, 
 // synthesizeTakes speaks each script line through the injected synthesizer
 // with the speaker's assigned voice, walking progress across the
 // synthesizing stage. Every take is written to the work-in-progress
-// directory the moment it is made — safe on disk before the next line is
-// attempted — and recorded on its manifest line, so nothing accumulates in
-// memory and an interruption keeps everything already performed. Lines are
-// synthesized grouped by voice — resident TTS sessions keep a single-slot
-// voice-prompt cache, so grouping re-conditions once per voice instead of
-// once per speaker change. It reports false when the job was cancelled or
-// failed (status already updated).
-func (m *Manager) synthesizeTakes(ctx context.Context, j *job, manifest *Manifest, castVoices map[string]string, createdAt time.Time) bool {
+// directory the moment it is made — take file first, then the manifest
+// naming it — so nothing accumulates in memory and an interruption keeps
+// everything already performed. Lines whose existing take was made by this
+// same synthesis configuration for these same words are kept, which is what
+// lets a resume skip straight to the first line that still needs work.
+// Lines are synthesized grouped by voice — resident TTS sessions keep a
+// single-slot voice-prompt cache, so grouping re-conditions once per voice
+// instead of once per speaker change. It reports false when the job was
+// cancelled or failed (status already updated).
+func (m *Manager) synthesizeTakes(ctx context.Context, j *job, manifest *Manifest, createdAt time.Time) bool {
 	script := manifest.Script
 	byVoice := make(map[string][]int)
 	var voiceOrder []string
 	for i, line := range script {
-		voiceID := castVoices[line.SpeakerID]
+		voiceID := castVoiceFor(manifest.Cast, line.SpeakerID)
 		if _, seen := byVoice[voiceID]; !seen {
 			voiceOrder = append(voiceOrder, voiceID)
 		}
@@ -475,6 +667,10 @@ func (m *Manager) synthesizeTakes(ctx context.Context, j *job, manifest *Manifes
 				return false
 			}
 			m.setStage(j, StatusSynthesizing, 0.55+0.3*float64(done)/float64(len(script)))
+			if m.takeStillValid(manifest.ID, script[idx], voiceID) {
+				done++
+				continue
+			}
 			clip, err := m.synthesize(ctx, script[idx].Text, voiceID)
 			if err != nil {
 				m.fail(j, NewError(CodeSynthesisFailure, fmt.Sprintf("synthesize script line %d: %v", idx+1, err)))
@@ -487,10 +683,42 @@ func (m *Manager) synthesizeTakes(ctx context.Context, j *job, manifest *Manifes
 			}
 			script[idx].Takes = []Take{take}
 			script[idx].CurrentTake = take.ID
+			if err := m.store.SaveManifestWIP(*manifest); err != nil {
+				m.fail(j, NewError(CodeStoreFailure, err.Error()))
+				return false
+			}
 			done++
 		}
 	}
 	return true
+}
+
+// takeStillValid reports whether a line's current take can be kept by this
+// run: same words, same voice, the same synthesis fingerprint, and audio
+// actually on disk. Line id + text alone is not a sufficient key — an
+// engine or model change between runs would splice an inconsistent episode
+// together silently, which is exactly what the fingerprint exists to
+// refuse. An empty fingerprint on either side never matches, so an
+// unfingerprinted configuration always re-synthesizes rather than splices.
+func (m *Manager) takeStillValid(storyID string, line ScriptLine, voiceID string) bool {
+	if line.CurrentTake == "" {
+		return false
+	}
+	take := takeByID(line.Takes, line.CurrentTake)
+	if take == nil {
+		return false
+	}
+	if take.Text != line.Text || take.VoiceID != voiceID {
+		return false
+	}
+	if take.Fingerprint == "" || take.Fingerprint != m.fingerprint {
+		return false
+	}
+	// The manifest is written after the take, so this should always hold;
+	// checking anyway turns a tampered or half-lost directory into one
+	// re-synthesized line instead of a stitch failure a resume cannot get
+	// past.
+	return m.store.HasTakeWIP(storyID, line.ID, line.CurrentTake)
 }
 
 // setStage updates status/progress without the stage-delay pause; synthesis
