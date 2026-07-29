@@ -315,6 +315,43 @@ func (r *router) handleEngines(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 		return
 	}
+	// The model pickers: list an engine's variants, or switch to one. A
+	// switch restarts a running server with the chosen args — the busy
+	// state on the console covers the model load.
+	if parts[1] == "variants" {
+		if !requireMethod(w, req, http.MethodGet) {
+			return
+		}
+		variants, ok := r.manager.Variants(parts[0])
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, fmt.Sprintf("engine %q has no variants", parts[0]))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"variants": variants})
+		return
+	}
+	if parts[1] == "variant" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
+			writeJSONError(w, http.StatusBadRequest, "body must be {\"id\": \"<variant>\"}")
+			return
+		}
+		if err := r.manager.SetVariant(req.Context(), parts[0], body.ID); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		variants, _ := r.manager.Variants(parts[0])
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"variants": variants})
+		return
+	}
 	if !requireMethod(w, req, http.MethodPost) {
 		return
 	}

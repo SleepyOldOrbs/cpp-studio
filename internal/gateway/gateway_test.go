@@ -1145,6 +1145,60 @@ func TestAudioDecodeConvertsWhatTheBrowserCannot(t *testing.T) {
 	})
 }
 
+func TestEngineVariantRoutes(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"whisper": {
+			Command:        "whisper-server",
+			Mode:           "server",
+			DefaultVariant: "large",
+			Variants: map[string]config.EngineVariant{
+				"large": {Label: "large-v3 (best)", Args: []string{"-m", "large.bin"}},
+				"turbo": {Args: []string{"-m", "turbo.bin"}},
+			},
+		},
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/engines/whisper/variants", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 listing variants, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var listing struct {
+		Variants []lifecycle.VariantInfo `json:"variants"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&listing); err != nil {
+		t.Fatalf("decode variants: %v", err)
+	}
+	if len(listing.Variants) != 2 || !listing.Variants[0].Active || listing.Variants[0].ID != "large" {
+		t.Fatalf("unexpected variants %+v", listing.Variants)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/engines/whisper/variant", strings.NewReader(`{"id":"turbo"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 switching variant, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&listing); err != nil {
+		t.Fatalf("decode variants after switch: %v", err)
+	}
+	if !listing.Variants[1].Active || listing.Variants[0].Active {
+		t.Fatalf("expected turbo active after the switch, got %+v", listing.Variants)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/engines/whisper/variant", strings.NewReader(`{"id":"nope"}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an unknown variant, got %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/engines/audio/variants", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for an engine without variants, got %d", rec.Code)
+	}
+}
+
 func TestAudioEncodeSavesDeliveryFormats(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{"ffmpeg": ffmpegHelperEngine()})
 	router := NewRouter(cfg, lifecycle.NewManager(cfg))

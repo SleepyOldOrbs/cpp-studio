@@ -38,6 +38,12 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "busyToast") {
 		t.Fatalf("expected busy toast marker, got %q", body)
 	}
+	if !strings.Contains(body, "extractModelSelect") {
+		t.Fatalf("expected transcription model picker marker, got %q", body)
+	}
+	if !strings.Contains(body, "imageModelSelect") {
+		t.Fatalf("expected image model picker marker, got %q", body)
+	}
 	if !strings.Contains(body, "storyLibraryButton") {
 		t.Fatalf("expected story library marker, got %q", body)
 	}
@@ -280,6 +286,12 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/app.js",
 			contentType: "javascript",
 			needle:      "attachEncodeChips",
+		},
+		{
+			name:        "javascript variant pickers",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "initVariantSelect",
 		},
 		{
 			name:        "css busy toast",

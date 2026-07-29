@@ -36,9 +36,12 @@ const (
 )
 
 type EngineHealth struct {
-	Name          string     `json:"name"`
-	Mode          string     `json:"mode,omitempty"`
-	Status        Status     `json:"status"`
+	Name   string `json:"name"`
+	Mode   string `json:"mode,omitempty"`
+	Status Status `json:"status"`
+	// Variant names the active argument set of an engine that declares
+	// variants — which model whisper or sd is actually serving right now.
+	Variant       string     `json:"variant,omitempty"`
 	PID           int        `json:"pid,omitempty"`
 	Ready         bool       `json:"ready"`
 	LastError     string     `json:"lastError,omitempty"`
@@ -87,6 +90,12 @@ func NewManager(cfg config.Config) *Manager {
 			health.Status = StatusReady
 			health.Ready = true
 		}
+		// An engine with variants boots on its default set; the active
+		// variant's args are simply the engine's args from here on.
+		if len(engineCfg.Variants) > 0 {
+			health.Variant = engineCfg.DefaultVariant
+			engineCfg.Args = append([]string{}, engineCfg.Variants[engineCfg.DefaultVariant].Args...)
+		}
 		engines[name] = &engineProcess{
 			name:   name,
 			cfg:    engineCfg,
@@ -98,6 +107,79 @@ func NewManager(cfg config.Config) *Manager {
 		engines: engines,
 		client:  &http.Client{Timeout: 2 * time.Second},
 	}
+}
+
+// VariantInfo describes one selectable argument set of an engine, for the
+// console's model pickers.
+type VariantInfo struct {
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+	Active bool   `json:"active"`
+}
+
+// Variants lists an engine's argument sets in a stable order, or reports
+// that the engine has none.
+func (m *Manager) Variants(name string) ([]VariantInfo, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	engine, ok := m.engines[name]
+	if !ok || len(engine.cfg.Variants) == 0 {
+		return nil, false
+	}
+	ids := make([]string, 0, len(engine.cfg.Variants))
+	for id := range engine.cfg.Variants {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]VariantInfo, 0, len(ids))
+	for _, id := range ids {
+		label := engine.cfg.Variants[id].Label
+		if label == "" {
+			label = id
+		}
+		out = append(out, VariantInfo{ID: id, Label: label, Active: id == engine.health.Variant})
+	}
+	return out, true
+}
+
+// SetVariant switches an engine to another of its argument sets. A running
+// server restarts with the new args — that is the whole point, the same
+// binary serving a different model — and a stopped one simply starts on
+// the new set next time. Switching to the already-active variant is a
+// no-op, so the console can set what it shows without churning engines.
+func (m *Manager) SetVariant(ctx context.Context, name string, id string) error {
+	m.mu.Lock()
+	engine, ok := m.engines[name]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("unknown engine %q", name)
+	}
+	if len(engine.cfg.Variants) == 0 {
+		m.mu.Unlock()
+		return fmt.Errorf("engine %q has no variants", name)
+	}
+	variant, ok := engine.cfg.Variants[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("engine %q has no variant %q", name, id)
+	}
+	if engine.health.Variant == id {
+		m.mu.Unlock()
+		return nil
+	}
+	wasRunning := engine.cmd != nil && engine.cmd.Process != nil
+	engine.cfg.Args = append([]string{}, variant.Args...)
+	engine.health.Variant = id
+	engine.health.UpdatedAt = time.Now().UTC()
+	m.mu.Unlock()
+
+	if !wasRunning {
+		return nil
+	}
+	if err := m.Stop(ctx, name); err != nil {
+		return fmt.Errorf("stop %q to switch variant: %w", name, err)
+	}
+	return m.Start(ctx, name)
 }
 
 func (m *Manager) StartAll(ctx context.Context) error {

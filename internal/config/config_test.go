@@ -104,6 +104,79 @@ func TestLoadCheckedRejectsMissingCommand(t *testing.T) {
 	}
 }
 
+func TestLoadEngineVariants(t *testing.T) {
+	t.Run("valid variants load with vars expanded", func(t *testing.T) {
+		path := writeConfig(t, `{
+  "gateway": {"host": "127.0.0.1", "port": 8765},
+  "vars": {"models": "C:\\models"},
+  "engines": {"whisper": {
+    "command": "whisper-server",
+    "mode": "server",
+    "defaultVariant": "large",
+    "variants": {
+      "large": {"label": "large-v3 (best)", "args": ["-m", "${models}\\large.bin"]},
+      "turbo": {"args": ["-m", "${models}\\turbo.bin"]}
+    }
+  }}
+}`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load returned error: %v", err)
+		}
+		whisper := cfg.Engines["whisper"]
+		if len(whisper.Variants) != 2 || whisper.DefaultVariant != "large" {
+			t.Fatalf("unexpected variants %+v", whisper)
+		}
+		if got := whisper.Variants["large"].Args[1]; got != `C:\models\large.bin` {
+			t.Fatalf("expected vars expanded in variant args, got %q", got)
+		}
+	})
+
+	rejects := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "variants on a subprocess engine",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"subprocess","defaultVariant":"a","variants":{"a":{"args":[]}}}}}`,
+			want: "server mode",
+		},
+		{
+			name: "args and variants together",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"server","args":["-m","m"],"defaultVariant":"a","variants":{"a":{"args":[]}}}}}`,
+			want: "single source of truth",
+		},
+		{
+			name: "missing defaultVariant",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"server","variants":{"a":{"args":[]}}}}}`,
+			want: "no defaultVariant",
+		},
+		{
+			name: "unknown defaultVariant",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"server","defaultVariant":"b","variants":{"a":{"args":[]}}}}}`,
+			want: "not a declared variant",
+		},
+		{
+			name: "defaultVariant without variants",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"server","defaultVariant":"a"}}}`,
+			want: "declares no variants",
+		},
+		{
+			name: "unknown variant field",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"server","defaultVariant":"a","variants":{"a":{"args":[],"model":"m"}}}}}`,
+			want: "unknown field",
+		},
+	}
+	for _, tt := range rejects {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := Load(writeConfig(t, tt.body)); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.json")

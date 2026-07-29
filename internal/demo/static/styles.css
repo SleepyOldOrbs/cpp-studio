@@ -874,6 +874,14 @@ audio {
   font-size: 0.78rem;
 }
 
+/* Engine model pickers (whisper in Extract, sd in the Image Lab). */
+.compact-select {
+  min-height: 30px;
+  padding: 2px 8px;
+  font-size: 0.78rem;
+  max-width: 240px;
+}
+
 .take-gap {
   width: 82px;
 }

@@ -350,3 +350,104 @@ func waitForEngine(t *testing.T, manager *Manager, name string, ready func(Engin
 	t.Fatalf("engine %q did not reach expected state: %+v", name, engine)
 	return EngineHealth{}
 }
+
+func TestSetVariantSwapsArgsAndRestartsARunningServer(t *testing.T) {
+	cfg := config.Config{
+		Gateway: config.GatewayConfig{Host: "127.0.0.1", Port: 8765},
+		Engines: map[string]config.EngineConfig{
+			"whisper": {
+				Command:        os.Args[0],
+				Mode:           "server",
+				DefaultVariant: "large",
+				Variants: map[string]config.EngineVariant{
+					"large": {Label: "large-v3 (best)", Args: []string{"-test.run=TestHelperProcess", "--", "sleep"}},
+					"turbo": {Args: []string{"-test.run=TestHelperProcess", "--", "sleep", "turbo"}},
+				},
+				StartupTimeoutSeconds:  2,
+				ShutdownTimeoutSeconds: 2,
+			},
+		},
+	}
+	manager := NewManager(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := manager.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+	defer manager.StopAll(context.Background())
+
+	// Boots on the default variant, and the listing knows which is active.
+	engine := waitForEngine(t, manager, "whisper", func(e EngineHealth) bool { return e.PID != 0 })
+	if engine.Variant != "large" {
+		t.Fatalf("expected the default variant active, got %q", engine.Variant)
+	}
+	variants, ok := manager.Variants("whisper")
+	if !ok || len(variants) != 2 {
+		t.Fatalf("expected two variants, got %+v ok=%v", variants, ok)
+	}
+	if variants[0].ID != "large" || !variants[0].Active || variants[0].Label != "large-v3 (best)" {
+		t.Fatalf("unexpected first variant %+v", variants[0])
+	}
+	if variants[1].ID != "turbo" || variants[1].Active || variants[1].Label != "turbo" {
+		t.Fatalf("unexpected second variant %+v", variants[1])
+	}
+	firstPID := engine.PID
+
+	// Switching restarts the server on the new args: same engine name, new
+	// process, new active variant.
+	if err := manager.SetVariant(ctx, "whisper", "turbo"); err != nil {
+		t.Fatalf("SetVariant returned error: %v", err)
+	}
+	engine = waitForEngine(t, manager, "whisper", func(e EngineHealth) bool { return e.PID != 0 && e.PID != firstPID })
+	if engine.Variant != "turbo" {
+		t.Fatalf("expected turbo active after the switch, got %q", engine.Variant)
+	}
+
+	// Re-selecting the active variant must not churn the process.
+	secondPID := engine.PID
+	if err := manager.SetVariant(ctx, "whisper", "turbo"); err != nil {
+		t.Fatalf("SetVariant no-op returned error: %v", err)
+	}
+	if got := manager.Health().Engines["whisper"].PID; got != secondPID {
+		t.Fatalf("re-selecting the active variant restarted the engine: %d -> %d", secondPID, got)
+	}
+
+	if err := manager.SetVariant(ctx, "whisper", "nonexistent"); err == nil {
+		t.Fatalf("expected an unknown variant to be refused")
+	}
+	if _, ok := manager.Variants("nope"); ok {
+		t.Fatalf("expected no variants for an unknown engine")
+	}
+}
+
+func TestSetVariantOnAStoppedEngineJustSwaps(t *testing.T) {
+	cfg := config.Config{
+		Gateway: config.GatewayConfig{Host: "127.0.0.1", Port: 8765},
+		Engines: map[string]config.EngineConfig{
+			"whisper": {
+				Command:        os.Args[0],
+				Mode:           "server",
+				DefaultVariant: "large",
+				Variants: map[string]config.EngineVariant{
+					"large": {Args: []string{"-test.run=TestHelperProcess", "--", "sleep"}},
+					"turbo": {Args: []string{"-test.run=TestHelperProcess", "--", "sleep", "turbo"}},
+				},
+				StartupTimeoutSeconds:  2,
+				ShutdownTimeoutSeconds: 2,
+			},
+		},
+	}
+	manager := NewManager(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Never started: the swap records the choice and nothing launches.
+	if err := manager.SetVariant(ctx, "whisper", "turbo"); err != nil {
+		t.Fatalf("SetVariant returned error: %v", err)
+	}
+	engine := manager.Health().Engines["whisper"]
+	if engine.Variant != "turbo" || engine.PID != 0 {
+		t.Fatalf("expected a silent swap on a stopped engine, got %+v", engine)
+	}
+}

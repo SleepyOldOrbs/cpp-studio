@@ -36,6 +36,9 @@
   var imageSizeInput = document.getElementById("imageSizeInput");
   var imageSeedInput = document.getElementById("imageSeedInput");
   var imageSeedClearButton = document.getElementById("imageSeedClearButton");
+  var imageModelField = document.getElementById("imageModelField");
+  var imageModelSelect = document.getElementById("imageModelSelect");
+  var extractModelSelect = document.getElementById("extractModelSelect");
   // Only the size presets carry data-size; the seed dice button shares
   // their look but must not inherit their click handler.
   var sizePresets = Array.prototype.slice.call(document.querySelectorAll(".preset[data-size]"));
@@ -2924,6 +2927,65 @@
     setCloneWav(file, "upload");
   }
 
+  // ---------- engine variant pickers ----------
+  // Some engines are one binary that can serve different models: whisper's
+  // large-v3 against its turbo, sd-server's SD 1.5 against FLUX.2. The
+  // gateway lists an engine's variants and switching restarts it on the
+  // chosen model — the busy toast covers the load. No variants configured,
+  // no dropdown: the picker only exists where there is a choice.
+  function initVariantSelect(select, engineName, wrapper) {
+    function render(variants) {
+      select.textContent = "";
+      variants.forEach(function (variant) {
+        var option = createElement("option", "", variant.label);
+        option.value = variant.id;
+        if (variant.active) {
+          option.selected = true;
+        }
+        select.appendChild(option);
+      });
+      select.hidden = false;
+      if (wrapper) {
+        wrapper.hidden = false;
+      }
+    }
+    fetch("/v1/engines/" + encodeURIComponent(engineName) + "/variants")
+      .then(function (response) {
+        if (!response.ok) {
+          return null;
+        }
+        return response.json();
+      })
+      .then(function (data) {
+        if (data && data.variants && data.variants.length > 1) {
+          render(data.variants);
+        }
+      })
+      .catch(function () { /* no picker is a fine picker */ });
+    select.addEventListener("change", async function () {
+      var wanted = select.value;
+      select.disabled = true;
+      try {
+        log("POST /v1/engines/" + engineName + "/variant " + wanted);
+        var response = await fetch("/v1/engines/" + encodeURIComponent(engineName) + "/variant", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: wanted })
+        });
+        await ensureOk(response, "Model switch");
+        var data = await response.json();
+        render(data.variants || []);
+        log("Engine " + engineName + " now serving " + wanted);
+        refreshHealth(true);
+      } catch (error) {
+        log("Model switch failed: " + (error && error.message ? error.message : error), "error");
+        refreshHealth(true);
+      } finally {
+        select.disabled = false;
+      }
+    });
+  }
+
   // ---------- one way to save audio ----------
   // Every audio panel used to grow its own Save WAV button while MP3 and
   // Opus lived only on story renders. One shape now: beside each existing
@@ -3352,6 +3414,10 @@
     imageSeedInput.value = "";
     log("Image seed back to random");
   });
+
+  // Model pickers appear only where the config declares a choice.
+  initVariantSelect(imageModelSelect, "sd", imageModelField);
+  initVariantSelect(extractModelSelect, "whisper", null);
 
   // Every audio panel gets the same save row: the existing WAV button plus
   // MP3/Opus chips when this machine's ffmpeg can make them. Story render

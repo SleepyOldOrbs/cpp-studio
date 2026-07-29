@@ -61,6 +61,23 @@ type EngineConfig struct {
 	// args instead.
 	DefaultVoiceRef  string `json:"defaultVoiceRef,omitempty"`
 	DefaultVoiceText string `json:"defaultVoiceText,omitempty"`
+	// Variants are named alternate argument sets for one engine — the same
+	// binary pointed at a different model (whisper's large-v3 against its
+	// turbo, sd-server's SD 1.5 against FLUX.2). The console switches
+	// between them at runtime by restarting the engine with the chosen
+	// variant's args, which is why variants exist for server-mode engines
+	// only: a subprocess engine takes per-run flags instead. When variants
+	// are declared, args must be empty — one source of truth — and
+	// defaultVariant names the set the gateway boots with.
+	Variants       map[string]EngineVariant `json:"variants,omitempty"`
+	DefaultVariant string                   `json:"defaultVariant,omitempty"`
+}
+
+// EngineVariant is one selectable argument set of an engine.
+type EngineVariant struct {
+	// Label is what the console shows; empty falls back to the variant id.
+	Label string   `json:"label,omitempty"`
+	Args  []string `json:"args"`
 }
 
 // Load reads a config file and validates everything that can be checked
@@ -124,6 +141,27 @@ func Load(path string) (Config, error) {
 				return Config{}, fmt.Errorf("engine %q healthUrl must be an absolute HTTP(S) URL", name)
 			}
 		}
+		if len(engine.Variants) > 0 {
+			if engine.Mode != "server" && engine.Mode != "" {
+				return Config{}, fmt.Errorf("engine %q variants require server mode: a subprocess engine takes per-run flags instead", name)
+			}
+			if len(engine.Args) > 0 {
+				return Config{}, fmt.Errorf("engine %q declares both args and variants; variants are the single source of truth", name)
+			}
+			if engine.DefaultVariant == "" {
+				return Config{}, fmt.Errorf("engine %q has variants but no defaultVariant", name)
+			}
+			if _, ok := engine.Variants[engine.DefaultVariant]; !ok {
+				return Config{}, fmt.Errorf("engine %q defaultVariant %q is not a declared variant", name, engine.DefaultVariant)
+			}
+			for id := range engine.Variants {
+				if strings.TrimSpace(id) == "" {
+					return Config{}, fmt.Errorf("engine %q has a variant with an empty id", name)
+				}
+			}
+		} else if engine.DefaultVariant != "" {
+			return Config{}, fmt.Errorf("engine %q names defaultVariant %q but declares no variants", name, engine.DefaultVariant)
+		}
 	}
 
 	for profile, engines := range cfg.Profiles {
@@ -174,6 +212,12 @@ func (c *Config) expandVars(configDir string) {
 		engine.DefaultVoiceRef = expand(engine.DefaultVoiceRef)
 		for i, arg := range engine.Args {
 			engine.Args[i] = expand(arg)
+		}
+		for id, variant := range engine.Variants {
+			for i, arg := range variant.Args {
+				variant.Args[i] = expand(arg)
+			}
+			engine.Variants[id] = variant
 		}
 		c.Engines[name] = engine
 	}
@@ -274,9 +318,22 @@ func rejectUnknownKeys(data []byte) error {
 			}
 			for key := range engine {
 				switch key {
-				case "command", "args", "mode", "workingDir", "healthUrl", "startupTimeoutSeconds", "shutdownTimeoutSeconds", "requestTimeoutSeconds", "gpu", "defaultVoiceRef", "defaultVoiceText":
+				case "command", "args", "mode", "workingDir", "healthUrl", "startupTimeoutSeconds", "shutdownTimeoutSeconds", "requestTimeoutSeconds", "gpu", "defaultVoiceRef", "defaultVoiceText", "variants", "defaultVariant":
 				default:
 					return fmt.Errorf("unknown engine %q field %q", name, key)
+				}
+			}
+			if rawVariants, ok := engine["variants"]; ok {
+				var variants map[string]map[string]json.RawMessage
+				if err := json.Unmarshal(rawVariants, &variants); err != nil {
+					return fmt.Errorf("engine %q variants must be an object of variant objects: %w", name, err)
+				}
+				for id, variant := range variants {
+					for key := range variant {
+						if key != "label" && key != "args" {
+							return fmt.Errorf("engine %q variant %q has unknown field %q", name, id, key)
+						}
+					}
 				}
 			}
 		}

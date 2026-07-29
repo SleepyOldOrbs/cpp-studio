@@ -263,6 +263,11 @@
             </div>
           </div>
 
+          <div class="field compact-field" id="imageModelField" hidden>
+            <span class="field-label" id="imageModelLabel">Model</span>
+            <select class="text-input compact-select" id="imageModelSelect" aria-labelledby="imageModelLabel" title="Which diffusion model generates; switching loads the model into VRAM"></select>
+          </div>
+
           <div class="field compact-field">
             <span class="field-label" id="imageSeedLabel">Seed</span>
             <div class="size-row" role="group" aria-labelledby="imageSeedLabel">
@@ -513,6 +518,7 @@
             <span>Load audio / video</span>
           </label>
           <span id="extractFileStatus">Nothing loaded</span>
+          <select class="text-input compact-select" id="extractModelSelect" title="Which whisper model transcribes; switching loads the model into VRAM" hidden></select>
           <button class="secondary compact-button" id="extractTranscribeButton" type="button" disabled>Transcribe</button>
           <input class="text-input compact-number" id="extractSpeakersInput" type="number" min="2" max="26" placeholder="auto" title="Number of speakers, if you know it" hidden>
           <button class="secondary compact-button" id="extractDiarizeButton" type="button" disabled hidden>Detect speakers</button>

@@ -199,6 +199,36 @@ VRAM between requests). Individual engines can also be controlled with
 surfaces both, along with `GET /v1/gpu`'s VRAM readout. Profile names must
 reference declared engines; validation rejects unknown names.
 
+## Engine Variants: `variants`
+
+One binary, several models: whisper's large-v3 against its turbo, sd-server's
+SD 1.5 against FLUX.2. A server-mode engine may declare named argument sets
+and the default it boots with; `args` must then be empty — the variants are
+the single source of truth.
+
+```json
+{
+  "whisper": {
+    "command": "...\\whisper-server.exe",
+    "mode": "server",
+    "healthUrl": "http://127.0.0.1:8734/health",
+    "defaultVariant": "large-v3",
+    "variants": {
+      "large-v3":       {"label": "large-v3 — best quality", "args": ["-m", "${root}\\models\\ggml-large-v3.bin", "..."]},
+      "large-v3-turbo": {"label": "large-v3-turbo — faster", "args": ["-m", "${root}\\models\\ggml-large-v3-turbo.bin", "..."]}
+    }
+  }
+}
+```
+
+`GET /v1/engines/{name}/variants` lists them; `POST /v1/engines/{name}/variant`
+with `{"id": "..."}` switches — a running server restarts on the new args
+(the model load is the wait), a stopped one simply starts on them next time.
+The console grows a model picker wherever an engine declares more than one
+variant: the transcription model in Extract, the diffusion model in the
+Image Lab. Health reports the active variant per engine. Variants are for
+server-mode engines only; a subprocess engine takes per-run flags instead.
+
 ## Engine Modes
 
 ### Server
