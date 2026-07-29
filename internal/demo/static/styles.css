@@ -1080,6 +1080,49 @@ progress::-moz-progress-bar {
   background: var(--accent-soft);
 }
 
+/* The busy toast: visible proof the studio heard you. It appears when a
+   request has been in flight long enough to feel slow, and it never blocks
+   anything — impatience needs information, not a modal. */
+.busy-toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 340px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--well);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.busy-toast-body {
+  display: grid;
+  gap: 2px;
+}
+
+.busy-toast-body small {
+  color: var(--muted);
+}
+
+.busy-toast-spinner {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: busy-spin 0.9s linear infinite;
+}
+
+@keyframes busy-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* An interrupted production: not loadable, so its card is a plain panel
    whose buttons are the two things that can be done with it. */
 .story-library-item.is-interrupted {

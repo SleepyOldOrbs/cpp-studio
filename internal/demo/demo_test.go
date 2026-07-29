@@ -35,6 +35,9 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "imageSeedInput") {
 		t.Fatalf("expected image seed marker, got %q", body)
 	}
+	if !strings.Contains(body, "busyToast") {
+		t.Fatalf("expected busy toast marker, got %q", body)
+	}
 	if !strings.Contains(body, "storyLibraryButton") {
 		t.Fatalf("expected story library marker, got %q", body)
 	}
@@ -265,6 +268,18 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/app.js",
 			contentType: "javascript",
 			needle:      "renderImageStatus",
+		},
+		{
+			name:        "javascript busy toast",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "busyMessageFor",
+		},
+		{
+			name:        "css busy toast",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".busy-toast",
 		},
 	}
 

@@ -36,7 +36,9 @@
   var imageSizeInput = document.getElementById("imageSizeInput");
   var imageSeedInput = document.getElementById("imageSeedInput");
   var imageSeedClearButton = document.getElementById("imageSeedClearButton");
-  var sizePresets = Array.prototype.slice.call(document.querySelectorAll(".preset"));
+  // Only the size presets carry data-size; the seed dice button shares
+  // their look but must not inherit their click handler.
+  var sizePresets = Array.prototype.slice.call(document.querySelectorAll(".preset[data-size]"));
   var generateImageButton = document.getElementById("generateImageButton");
   var clearImageButton = document.getElementById("clearImageButton");
   var imagePreview = document.getElementById("imagePreview");
@@ -202,6 +204,119 @@
     designGenerateButton,
     designNameInput
   ].concat(sizePresets);
+
+  // ---------- the busy toast ----------
+  // Impatience needs information, not a modal. Every mutating /v1/ request
+  // is tracked through one fetch wrapper; anything in flight longer than a
+  // beat surfaces a small non-blocking toast saying what the studio is
+  // doing, and a long wait adds a line so nobody sits there re-clicking.
+  var busyToast = document.getElementById("busyToast");
+  var busyToastText = document.getElementById("busyToastText");
+  var busyToastSub = document.getElementById("busyToastSub");
+  var busyInflight = 0;
+  var busyShowTimer = 0;
+  var busyLongTimer = 0;
+  var busyLatestMessage = "Working on it…";
+  var imagePipelineWarm = false;
+
+  function busyMessageFor(path) {
+    if (path.indexOf("/v1/images/generations") === 0) {
+      return imagePipelineWarm
+        ? "Generating your image…"
+        : "Generating your image — the first one after a start warms the pipeline, so it takes a bit longer…";
+    }
+    if (path.indexOf("/v1/images/descriptions") === 0) {
+      return "Looking at the image…";
+    }
+    if (path.indexOf("/v1/audio/transcriptions") === 0) {
+      return "Transcribing…";
+    }
+    if (path.indexOf("/v1/audio/decode") === 0) {
+      return "Converting the audio through ffmpeg…";
+    }
+    if (path.indexOf("/v1/audio/speech") === 0 || path.indexOf("/v1/voice") === 0) {
+      return "Speaking…";
+    }
+    if (path.indexOf("/v1/voices/design") === 0) {
+      return "Designing the voice…";
+    }
+    if (path.indexOf("/v1/voices") === 0) {
+      return "Working on the voice…";
+    }
+    if (path.indexOf("/takes") > 0) {
+      return "Retaking the line…";
+    }
+    if (path.indexOf("/render") > 0) {
+      return "Stitching and mastering the render…";
+    }
+    if (path.indexOf("/export") > 0) {
+      return "Encoding the export…";
+    }
+    if (path.indexOf("/resume") > 0) {
+      return "Resuming the production…";
+    }
+    if (path.indexOf("/v1/stories") === 0) {
+      return "Working on the story…";
+    }
+    if (path.indexOf("/v1/engines") === 0) {
+      return "Reworking the engines — models are loading into VRAM…";
+    }
+    return "Working on it…";
+  }
+
+  function busyStarted(path) {
+    busyLatestMessage = busyMessageFor(path);
+    busyInflight++;
+    if (busyInflight === 1) {
+      busyShowTimer = window.setTimeout(function () {
+        busyToastText.textContent = busyLatestMessage;
+        busyToastSub.hidden = true;
+        busyToast.hidden = false;
+        busyLongTimer = window.setTimeout(function () {
+          busyToastSub.textContent = "Still going — clicking more won't hurt, but it won't help either.";
+          busyToastSub.hidden = false;
+        }, 8000);
+      }, 600);
+    } else if (!busyToast.hidden) {
+      busyToastText.textContent = busyLatestMessage;
+    }
+  }
+
+  function busyFinished(path, failed) {
+    busyInflight = Math.max(0, busyInflight - 1);
+    if (!failed && path.indexOf("/v1/images/generations") === 0) {
+      imagePipelineWarm = true;
+    }
+    if (busyInflight === 0) {
+      window.clearTimeout(busyShowTimer);
+      window.clearTimeout(busyLongTimer);
+      busyToast.hidden = true;
+      busyToastSub.hidden = true;
+    }
+  }
+
+  var nativeFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    var path = typeof input === "string" ? input : (input && input.url) || "";
+    var method = ((init && init.method) || (typeof input === "object" && input && input.method) || "GET").toUpperCase();
+    // Only mutating studio calls are tracked: the half-second status polls
+    // would otherwise flicker the toast forever.
+    var tracked = method !== "GET" && path.indexOf("/v1/") === 0;
+    if (!tracked) {
+      return nativeFetch(input, init);
+    }
+    busyStarted(path);
+    return nativeFetch(input, init).then(
+      function (response) {
+        busyFinished(path, !response.ok);
+        return response;
+      },
+      function (error) {
+        busyFinished(path, true);
+        throw error;
+      }
+    );
+  };
 
   function log(message, level) {
     var stamp = new Date().toLocaleTimeString();

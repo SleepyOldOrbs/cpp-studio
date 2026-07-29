@@ -618,6 +618,14 @@
     </section>
 
     <footer class="page-foot">Every request stays on this machine &mdash; llama.cpp, whisper.cpp, audio.cpp, stable-diffusion.cpp behind one gateway.</footer>
+
+    <div class="busy-toast" id="busyToast" role="status" aria-live="polite" hidden>
+      <span class="busy-toast-spinner" aria-hidden="true"></span>
+      <span class="busy-toast-body">
+        <span id="busyToastText">Working on it&hellip;</span>
+        <small id="busyToastSub" hidden></small>
+      </span>
+    </div>
   </main>
 
   <script src="app.js"></script>
