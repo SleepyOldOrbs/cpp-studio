@@ -1320,6 +1320,363 @@ func TestValidateCreateRequestCastVoices(t *testing.T) {
 	}
 }
 
+func TestProductionKeepsTakesWhenSynthesisFails(t *testing.T) {
+	rootDir := t.TempDir()
+	calls := 0
+	manager := NewManager(ManagerOptions{
+		RootDir: rootDir,
+		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
+			calls++
+			if calls == 3 {
+				return nil, errors.New("the engine died mid-episode")
+			}
+			return wav.SyntheticTone(wav.ToneSampleRate / 2), nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	req := validSketchRequest()
+	req.VoiceMode = "fixed"
+	created, err := manager.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var status StatusResponse
+	for time.Now().Before(deadline) {
+		status, _, _ = manager.Status(created.ID)
+		if status.Status == StatusFailed {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if status.Status != StatusFailed || status.Error == nil || status.Error.Code != CodeSynthesisFailure {
+		t.Fatalf("expected a synthesis failure, got %+v", status)
+	}
+
+	// The point of writing takes as they are made: the two lines recorded
+	// before the failure are on disk in the work-in-progress directory,
+	// waiting for a resume — not lost with the job.
+	wip := filepath.Join(rootDir, "."+created.ID+".wip")
+	for _, lineID := range []string{"line-001", "line-002"} {
+		takePath := filepath.Join(wip, "lines", lineID, "take-001.wav")
+		if _, err := os.Stat(takePath); err != nil {
+			t.Fatalf("expected %s to survive the failure: %v", takePath, err)
+		}
+	}
+	// And the story itself never came to exist.
+	if _, err := os.Stat(filepath.Join(rootDir, created.ID)); !os.IsNotExist(err) {
+		t.Fatalf("a failed story must not be published: %v", err)
+	}
+}
+
+func TestCancelledProductionLeavesNoResidue(t *testing.T) {
+	rootDir := t.TempDir()
+	idCh := make(chan string, 1)
+	var manager *Manager
+	calls := 0
+	manager = NewManager(ManagerOptions{
+		RootDir: rootDir,
+		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
+			calls++
+			if calls == 2 {
+				// Cancel mid-production: the first take is already on disk,
+				// and the explicit cancel must sweep it away.
+				if _, err := manager.Cancel(<-idCh); err != nil {
+					t.Errorf("Cancel returned error: %v", err)
+				}
+			}
+			return wav.SyntheticTone(wav.ToneSampleRate / 2), nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	req := validSketchRequest()
+	req.VoiceMode = "fixed"
+	created, err := manager.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	idCh <- created.ID
+
+	wip := filepath.Join(rootDir, "."+created.ID+".wip")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status, _, _ := manager.Status(created.ID)
+		_, wipErr := os.Stat(wip)
+		if status.Status == StatusCancelled && os.IsNotExist(wipErr) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := os.Stat(wip); !os.IsNotExist(err) {
+		t.Fatalf("expected the cancelled wip directory to be discarded: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, created.ID)); !os.IsNotExist(err) {
+		t.Fatalf("a cancelled story must not be published: %v", err)
+	}
+}
+
+func TestValidateCreateRequestScenes(t *testing.T) {
+	t.Run("resolves ids and slugs titles", func(t *testing.T) {
+		req := sceneEpisodeRequest()
+		normalized, err := ValidateCreateRequest(req)
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		if len(normalized.Scenes) != 2 {
+			t.Fatalf("expected 2 scenes, got %+v", normalized.Scenes)
+		}
+		if normalized.Scenes[0].ID != "the-shop" || normalized.Scenes[0].Title != "The Shop" {
+			t.Fatalf("unexpected first scene %+v", normalized.Scenes[0])
+		}
+		// The second scene declared no id: it slugs from the title exactly
+		// as cast ids slug from names.
+		if normalized.Scenes[1].ID != "the-return" {
+			t.Fatalf("expected slugged id the-return, got %+v", normalized.Scenes[1])
+		}
+	})
+
+	tests := []struct {
+		name string
+		edit func(*CreateRequest)
+	}{
+		{
+			name: "duplicate scene id",
+			edit: func(req *CreateRequest) {
+				req.Scenes[1].ID = "the-shop"
+			},
+		},
+		{
+			name: "id and title both missing",
+			edit: func(req *CreateRequest) {
+				req.Scenes[1] = SceneInput{Premise: "a premise names nothing"}
+			},
+		},
+		{
+			name: "id outside the story-id alphabet",
+			edit: func(req *CreateRequest) {
+				req.Scenes[0].ID = "the/shop"
+			},
+		},
+		{
+			name: "too many scenes",
+			edit: func(req *CreateRequest) {
+				req.Scenes = nil
+				for i := 0; i <= MaxScenes; i++ {
+					req.Scenes = append(req.Scenes, SceneInput{ID: fmt.Sprintf("scene-%d", i+1)})
+				}
+			},
+		},
+		{
+			name: "scene title too long",
+			edit: func(req *CreateRequest) {
+				req.Scenes[0].Title = strings.Repeat("x", MaxSceneTitleChars+1)
+			},
+		},
+		{
+			name: "scenes without a script",
+			edit: func(req *CreateRequest) {
+				req.Script = nil
+			},
+		},
+		{
+			// The cross-checks run at request time, not only at the
+			// manifest gate: a knowably doomed script must not occupy the
+			// story slot just to fail asynchronously.
+			name: "interleaved scene runs",
+			edit: func(req *CreateRequest) {
+				req.Script[1].SceneID = "the-return"
+				req.Script[2].SceneID = "the-shop"
+			},
+		},
+		{
+			name: "scene id without declared scenes",
+			edit: func(req *CreateRequest) {
+				req.Scenes = nil
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := sceneEpisodeRequest()
+			tt.edit(&req)
+			if _, err := ValidateCreateRequest(req); !storyErrorIs(err, CodeInvalidScenes) {
+				t.Fatalf("expected %s, got %v", CodeInvalidScenes, err)
+			}
+		})
+	}
+}
+
+func TestValidateManifestSceneInvariants(t *testing.T) {
+	line := func(speaker, text, sceneID string) ScriptLine {
+		return ScriptLine{SpeakerID: speaker, Text: text, SceneID: sceneID}
+	}
+	manifest := func(scenes []Scene, script []ScriptLine) Manifest {
+		return Manifest{
+			Mode: ModeSketch,
+			Cast: []CastMember{
+				{ID: "kenneth", DisplayName: "Kenneth", VoiceID: "studio-default"},
+				{ID: "hugh", DisplayName: "Hugh", VoiceID: "studio-default"},
+			},
+			Scenes: scenes,
+			Script: script,
+		}
+	}
+	two := []Scene{{ID: "one"}, {ID: "two"}}
+
+	if err := ValidateManifest(manifest(two, []ScriptLine{
+		line("kenneth", "First.", "one"),
+		line("hugh", "Second.", "one"),
+		line("kenneth", "Third.", "two"),
+	})); err != nil {
+		t.Fatalf("contiguous ordered scenes should validate, got %v", err)
+	}
+	// The degenerate case: no scenes at all is exactly a pre-episode story.
+	if err := ValidateManifest(manifest(nil, []ScriptLine{
+		line("kenneth", "Alone.", ""),
+	})); err != nil {
+		t.Fatalf("sceneless story should validate, got %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		scenes []Scene
+		script []ScriptLine
+	}{
+		{
+			name:   "scene id on a story with no scenes",
+			scenes: nil,
+			script: []ScriptLine{line("kenneth", "Lost.", "one")},
+		},
+		{
+			name:   "line missing its scene id",
+			scenes: two,
+			script: []ScriptLine{line("kenneth", "First.", "one"), line("hugh", "Where am I?", ""), line("kenneth", "Third.", "two")},
+		},
+		{
+			name:   "line naming an unknown scene",
+			scenes: two,
+			script: []ScriptLine{line("kenneth", "First.", "one"), line("hugh", "Second.", "three")},
+		},
+		{
+			name:   "scene resuming after an interruption",
+			scenes: two,
+			script: []ScriptLine{line("kenneth", "First.", "one"), line("hugh", "Second.", "two"), line("kenneth", "Back again.", "one")},
+		},
+		{
+			name:   "scenes out of declared order",
+			scenes: two,
+			script: []ScriptLine{line("kenneth", "First.", "two"), line("hugh", "Second.", "one")},
+		},
+		{
+			name:   "declared scene with no lines",
+			scenes: two,
+			script: []ScriptLine{line("kenneth", "First.", "one")},
+		},
+		{
+			name:   "duplicate declared scene id",
+			scenes: []Scene{{ID: "one"}, {ID: "one"}},
+			script: []ScriptLine{line("kenneth", "First.", "one")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateManifest(manifest(tt.scenes, tt.script)); !storyErrorIs(err, CodeInvalidScenes) {
+				t.Fatalf("expected %s, got %v", CodeInvalidScenes, err)
+			}
+		})
+	}
+}
+
+func TestManagerProducesMultiSceneEpisode(t *testing.T) {
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(),
+		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
+			return wav.SyntheticTone(wav.ToneSampleRate / 2), nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	req := sceneEpisodeRequest()
+	req.VoiceMode = "fixed"
+	created, err := manager.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	status := waitStoryStatus(t, manager, created.ID, StatusComplete)
+	if status.Manifest == nil {
+		t.Fatalf("expected completed manifest, got %+v", status)
+	}
+	manifest := *status.Manifest
+	if len(manifest.Scenes) != 2 || manifest.Scenes[0].ID != "the-shop" || manifest.Scenes[1].ID != "the-return" {
+		t.Fatalf("expected both scenes stored, got %+v", manifest.Scenes)
+	}
+	for i, l := range manifest.Script {
+		if l.ID == "" || l.SceneID == "" {
+			t.Fatalf("script[%d] should have line and scene ids, got %+v", i, l)
+		}
+		if len(l.Takes) != 1 || l.CurrentTake != l.Takes[0].ID {
+			t.Fatalf("script[%d] should have its first take current, got %+v", i, l)
+		}
+	}
+
+	// A take-room mutation on a scene-two line reloads the manifest from
+	// disk: scenes must survive the JSON round trip and the republish.
+	sceneTwoLine := manifest.Script[len(manifest.Script)-1]
+	reloaded, take, err := manager.Retake(context.Background(), manifest.ID, sceneTwoLine.ID)
+	if err != nil {
+		t.Fatalf("Retake returned error: %v", err)
+	}
+	if take.ID != "take-002" {
+		t.Fatalf("expected a second take, got %+v", take)
+	}
+	if len(reloaded.Scenes) != 2 {
+		t.Fatalf("scenes should survive reload, got %+v", reloaded.Scenes)
+	}
+}
+
+func TestManagerDraftEchoesScenes(t *testing.T) {
+	manager := NewManager(ManagerOptions{RootDir: t.TempDir(), Now: fixedNow})
+	draft, err := manager.Draft(context.Background(), sceneEpisodeRequest())
+	if err != nil {
+		t.Fatalf("Draft returned error: %v", err)
+	}
+	if len(draft.Scenes) != 2 || draft.Scenes[1].ID != "the-return" {
+		t.Fatalf("expected the resolved scene list in the draft, got %+v", draft.Scenes)
+	}
+}
+
+// sceneEpisodeRequest is a two-scene sketch episode submitted through the
+// draft → edit → produce flow: declared scenes, a script whose lines name
+// them, and a cast to speak it.
+func sceneEpisodeRequest() CreateRequest {
+	return CreateRequest{
+		Subject: "a shop that only sells apologies",
+		Mode:    ModeSketch,
+		Premise: "A customer wants to return an apology that did not fit.",
+		Style:   "1960s BBC radio comedy: fast, silly, groan-worthy puns.",
+		Cast: []CastInput{
+			{Name: "Kenneth", Role: "the browbeaten customer"},
+			{Name: "Hugh", Role: "the evasive shopkeeper"},
+		},
+		Title: "The Apology Shop",
+		Scenes: []SceneInput{
+			{ID: "the-shop", Title: "The Shop", Premise: "Kenneth attempts the return."},
+			{Title: "The Return", Premise: "The apology comes back anyway."},
+		},
+		Script: []ScriptLine{
+			{SpeakerID: "kenneth", Text: "I'd like to return this apology.", SceneID: "the-shop"},
+			{SpeakerID: "hugh", Text: "All apologies are final, sir.", SceneID: "the-shop"},
+			{SpeakerID: "kenneth", Text: "Then I apologise for asking.", SceneID: "the-return"},
+			{SpeakerID: "hugh", Text: "That one I can take in part exchange.", SceneID: "the-return"},
+		},
+	}
+}
+
 func validCreateRequest() CreateRequest {
 	return CreateRequest{
 		Subject:       "how stars are born",

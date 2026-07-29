@@ -152,16 +152,31 @@ func Concatenate(clips [][]byte, gap time.Duration) ([]byte, error) {
 // precedes the first clip — which lets callers index gaps and clips the
 // same way rather than keeping an off-by-one in their heads.
 func ConcatenateGaps(clips [][]byte, gaps []time.Duration) ([]byte, error) {
-	if len(clips) == 0 {
+	return ConcatenateGapsFrom(len(clips), gaps, func(i int) ([]byte, error) {
+		return clips[i], nil
+	})
+}
+
+// ConcatenateGapsFrom is ConcatenateGaps with clips pulled one at a time:
+// load(i) supplies clip i, and it is released before the next is loaded.
+// Peak memory is the joined PCM plus a single clip, which is what makes an
+// episode-length stitch feasible — holding three hundred clips at once is
+// exactly the thing this variant exists to avoid.
+func ConcatenateGapsFrom(count int, gaps []time.Duration, load func(i int) ([]byte, error)) ([]byte, error) {
+	if count == 0 {
 		return nil, fmt.Errorf("no clips to concatenate")
 	}
-	if len(gaps) != len(clips) {
-		return nil, fmt.Errorf("have %d gaps for %d clips", len(gaps), len(clips))
+	if len(gaps) != count {
+		return nil, fmt.Errorf("have %d gaps for %d clips", len(gaps), count)
 	}
 
 	var format Format
 	var pcm bytes.Buffer
-	for i, clip := range clips {
+	for i := 0; i < count; i++ {
+		clip, err := load(i)
+		if err != nil {
+			return nil, fmt.Errorf("clip %d: %w", i+1, err)
+		}
 		clipFormat, clipPCM, err := Decode(clip)
 		if err != nil {
 			return nil, fmt.Errorf("clip %d: %v", i+1, err)

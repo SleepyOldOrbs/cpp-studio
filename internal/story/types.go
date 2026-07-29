@@ -21,6 +21,9 @@ const (
 	MaxCastMembers          = 6
 	MaxCastNameChars        = 60
 	MaxCastRoleChars        = 200
+	MaxScenes               = 40
+	MaxSceneTitleChars      = 200
+	MaxScenePremiseChars    = 2000
 	MaxGeneratedWAVBytes    = 32 * 1024 * 1024
 	StoryArtifactName       = "story.wav"
 	DefaultRetryAfterMillis = 500
@@ -77,6 +80,8 @@ const (
 	CodeSynthesisFailure       ErrorCode = "synthesis_failure"
 	CodeGroundingFailure       ErrorCode = "grounding_failure"
 	CodeInvalidScript          ErrorCode = "invalid_script"
+	CodeInvalidScenes          ErrorCode = "invalid_scenes"
+	CodeSceneNotFound          ErrorCode = "scene_not_found"
 	CodeLineNotFound           ErrorCode = "line_not_found"
 	CodeTakeNotFound           ErrorCode = "take_not_found"
 	CodeStaleTake              ErrorCode = "stale_take"
@@ -133,6 +138,18 @@ type CreateRequest struct {
 	// have to be speakable lines from cast members.
 	Title  string       `json:"title,omitempty"`
 	Script []ScriptLine `json:"script,omitempty"`
+	// Scenes declares the episode's scene list when Script is a multi-scene
+	// episode: every script line then names one of these via scene_id, in
+	// contiguous runs following this order. Empty means the script is one
+	// unnamed scene — which is what every sketch is.
+	Scenes []SceneInput `json:"scenes,omitempty"`
+}
+
+// SceneInput is one declared scene of a submitted episode script.
+type SceneInput struct {
+	ID      string `json:"id,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Premise string `json:"premise,omitempty"`
 }
 
 // CastInput is one user-defined speaker.
@@ -155,6 +172,7 @@ type DraftResponse struct {
 	SourceNotes []SourceNote `json:"source_notes"`
 	FactCards   []FactCard   `json:"fact_cards"`
 	Cast        []CastMember `json:"cast"`
+	Scenes      []Scene      `json:"scenes,omitempty"`
 	Script      []ScriptLine `json:"script"`
 }
 
@@ -199,6 +217,11 @@ type ScriptLine struct {
 	SpeakerID string   `json:"speaker_id"`
 	Text      string   `json:"text"`
 	FactIDs   []string `json:"fact_ids"`
+	// SceneID names the scene this line belongs to when the story declares
+	// scenes. Lines of a scene are contiguous and follow the manifest's
+	// scene order. Empty everywhere means the whole script is one unnamed
+	// scene — every story written before episodes existed reads that way.
+	SceneID string `json:"scene_id,omitempty"`
 	// Takes are every recording ever made of this line, oldest first.
 	// CurrentTake names the one that gets rendered.
 	Takes       []Take `json:"takes,omitempty"`
@@ -209,6 +232,20 @@ type ScriptLine struct {
 	// on top of the default inter-line gap. Negative values tighten.
 	GapBeforeMS int `json:"gap_before_ms,omitempty"`
 	GapAfterMS  int `json:"gap_after_ms,omitempty"`
+}
+
+// Scene is one contiguous run of script lines written and produced as a
+// unit: a sketch is a one-scene episode, and an episode is a sequence of
+// these. The id is the scene's stable identity — per-scene audio assets
+// (beds, stings; stage 3) and any future per-scene artifact hang off it,
+// which is why scenes are persisted entries rather than derived groupings.
+type Scene struct {
+	ID    string `json:"id"`
+	Title string `json:"title,omitempty"`
+	// Premise is what this scene plays, in the same sense as the story's
+	// premise: the writer's brief for these lines, kept so a scene can be
+	// rewritten later against the intent it was written under.
+	Premise string `json:"premise,omitempty"`
 }
 
 // Take is one recording of one line, kept on disk so a bad read can be
@@ -292,8 +329,13 @@ type Manifest struct {
 	SourceNotes     []SourceNote `json:"source_notes"`
 	FactCards       []FactCard   `json:"fact_cards"`
 	Cast            []CastMember `json:"cast"`
-	Script          []ScriptLine `json:"script"`
-	Audio           AudioRef     `json:"audio"`
+	// Scenes orders the episode's scenes; script lines reference them by
+	// scene_id in contiguous runs. Empty on every manifest written before
+	// episodes existed and on plain sketches: an absent scene list reads as
+	// one unnamed scene holding the whole script.
+	Scenes []Scene      `json:"scenes,omitempty"`
+	Script []ScriptLine `json:"script"`
+	Audio  AudioRef     `json:"audio"`
 	// Renders is the revision history. Empty on manifests written before
 	// the take room; Audio still points at the current render either way.
 	Renders []Render `json:"renders,omitempty"`

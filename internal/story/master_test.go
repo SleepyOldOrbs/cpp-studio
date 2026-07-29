@@ -97,9 +97,9 @@ func TestLevelSpeakersUsesAggregateMaterial(t *testing.T) {
 		{ID: "line-003", SpeakerID: "loud", Text: "three"},
 		{ID: "line-004", SpeakerID: "quiet", Text: "four"},
 	}
-	clips := [][]byte{loud, quiet, loud, quiet}
+	has, load := clipLoaders([][]byte{loud, quiet, loud, quiet})
 
-	gains, err := manager.levelSpeakers(context.Background(), clips, script)
+	gains, err := manager.levelSpeakers(context.Background(), script, has, load)
 	if err != nil {
 		t.Fatalf("levelSpeakers returned error: %v", err)
 	}
@@ -127,7 +127,8 @@ func TestLevelSpeakersLeavesASingleVoiceAlone(t *testing.T) {
 		{ID: "line-001", SpeakerID: "solo", Text: "one"},
 		{ID: "line-002", SpeakerID: "solo", Text: "two"},
 	}
-	gains, err := manager.levelSpeakers(context.Background(), [][]byte{clip, clip}, script)
+	has, load := clipLoaders([][]byte{clip, clip})
+	gains, err := manager.levelSpeakers(context.Background(), script, has, load)
 	if err != nil {
 		t.Fatalf("levelSpeakers returned error: %v", err)
 	}
@@ -150,13 +151,21 @@ func TestLevelSpeakersIgnoresMutedLines(t *testing.T) {
 		{ID: "line-001", SpeakerID: "a", Text: "one"},
 		{ID: "line-002", SpeakerID: "b", Text: "two", Muted: true},
 	}
-	gains, err := manager.levelSpeakers(context.Background(), [][]byte{clip, clip}, script)
+	has, load := clipLoaders([][]byte{clip, clip})
+	gains, err := manager.levelSpeakers(context.Background(), script, has, load)
 	if err != nil {
 		t.Fatalf("levelSpeakers returned error: %v", err)
 	}
 	if len(gains) != 0 {
 		t.Fatalf("a muted speaker is not in the render: %+v", gains)
 	}
+}
+
+// clipLoaders adapts in-memory clips to the pull shape levelSpeakers uses,
+// so these tests keep stating their material as plain slices.
+func clipLoaders(clips [][]byte) (func(i int) bool, func(i int) ([]byte, error)) {
+	return func(i int) bool { return len(clips[i]) > 0 },
+		func(i int) ([]byte, error) { return clips[i], nil }
 }
 
 func TestApplyGainIsLinearAndClamps(t *testing.T) {

@@ -87,6 +87,7 @@ func AssembleManifest(id string, req NormalizedRequest, createdAt time.Time, sca
 		SourceNotes:     scaffold.Notes,
 		FactCards:       scaffold.Facts,
 		Cast:            scaffold.Cast,
+		Scenes:          req.Scenes,
 		Script:          script,
 		Audio: AudioRef{
 			Format: "wav",
@@ -123,12 +124,67 @@ func FixtureScript(req NormalizedRequest, scaffold Scaffold) []ScriptLine {
 
 // ValidateManifest is the final gate before a story is stored, dispatching
 // on the mode the story was written under. Sketches are held to the script's
-// shape alone; grounded stories additionally have to cite their facts.
+// shape alone; grounded stories additionally have to cite their facts. Both
+// modes are held to the scene invariants first — scenes are structure, not
+// contract.
 func ValidateManifest(manifest Manifest) error {
+	if err := validateScenes(manifest); err != nil {
+		return err
+	}
 	if manifest.Mode == ModeSketch {
 		return validateScriptShape(manifest, CodeInvalidScript)
 	}
 	return ValidateManifestGrounding(manifest)
+}
+
+// validateScenes holds a manifest to the scene invariants: either no scenes
+// at all (the whole script is one unnamed scene — every pre-episode story),
+// or every line names a declared scene, lines form one contiguous run per
+// scene, and runs follow the declared order. The invariants are what let
+// everything downstream — grouping, checkpoints, later per-scene assets —
+// treat "the lines of scene N" as a simple slice of the script.
+func validateScenes(manifest Manifest) error {
+	if len(manifest.Scenes) == 0 {
+		for i, line := range manifest.Script {
+			if line.SceneID != "" {
+				return NewError(CodeInvalidScenes, fmt.Sprintf("script[%d] names scene %q but the story declares no scenes", i, line.SceneID))
+			}
+		}
+		return nil
+	}
+	order := make(map[string]int, len(manifest.Scenes))
+	for i, scene := range manifest.Scenes {
+		if scene.ID == "" {
+			return NewError(CodeInvalidScenes, fmt.Sprintf("scenes[%d].id is required", i))
+		}
+		if _, dup := order[scene.ID]; dup {
+			return NewError(CodeInvalidScenes, fmt.Sprintf("scenes contains duplicate scene id %q", scene.ID))
+		}
+		order[scene.ID] = i
+	}
+	last := -1
+	for i, line := range manifest.Script {
+		if line.SceneID == "" {
+			return NewError(CodeInvalidScenes, fmt.Sprintf("script[%d].scene_id is required when scenes are declared", i))
+		}
+		index, ok := order[line.SceneID]
+		if !ok {
+			return NewError(CodeInvalidScenes, fmt.Sprintf("script[%d] names unknown scene %q", i, line.SceneID))
+		}
+		if index != last {
+			// A new run must be exactly the next declared scene: a smaller
+			// index is a scene resuming after other scenes interrupted it, a
+			// jump would leave the skipped scene without lines.
+			if index != last+1 {
+				return NewError(CodeInvalidScenes, fmt.Sprintf("script[%d]: scene %q is out of order; lines must follow the declared scene order in contiguous runs", i, line.SceneID))
+			}
+			last = index
+		}
+	}
+	if last != len(manifest.Scenes)-1 {
+		return NewError(CodeInvalidScenes, fmt.Sprintf("scene %q has no script lines", manifest.Scenes[last+1].ID))
+	}
+	return nil
 }
 
 // validateScriptShape is the floor both modes share: every line is speakable

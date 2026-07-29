@@ -64,25 +64,25 @@ func AssignLineIDs(script []ScriptLine) []ScriptLine {
 	return script
 }
 
-// stitchTakes joins per-line clips into one WAV, honouring each line's mute
+// stitchLines joins per-line audio into one WAV, honouring each line's mute
 // and timing. Muted lines contribute nothing at all — not even their gap.
-func stitchTakes(clips [][]byte, script []ScriptLine) ([]byte, error) {
-	if len(clips) != len(script) {
-		return nil, fmt.Errorf("have %d clips for %d lines", len(clips), len(script))
-	}
+// Audio is pulled one line at a time through load, so an episode-length
+// stitch holds the joined output and a single clip rather than every clip
+// at once; has says which lines have audio at all without loading it.
+func stitchLines(script []ScriptLine, has func(i int) bool, load func(i int) ([]byte, error)) ([]byte, error) {
 	var (
-		kept []([]byte)
+		kept []int
 		gaps []time.Duration
 		// previous is the last line actually kept, which is not always the
 		// line before this one: a muted line contributes nothing to the
 		// render, so its trailing nudge must not survive it either.
 		previous *ScriptLine
 	)
-	for i, line := range script {
-		if line.Muted || len(clips[i]) == 0 {
+	for i := range script {
+		if script[i].Muted || !has(i) {
 			continue
 		}
-		gap := lineGap + time.Duration(line.GapBeforeMS)*time.Millisecond
+		gap := lineGap + time.Duration(script[i].GapBeforeMS)*time.Millisecond
 		if previous != nil {
 			// The kept predecessor's trailing nudge and this line's leading
 			// nudge both apply to the single silence between them.
@@ -91,46 +91,37 @@ func stitchTakes(clips [][]byte, script []ScriptLine) ([]byte, error) {
 		if gap < 0 {
 			gap = 0
 		}
-		kept = append(kept, clips[i])
+		kept = append(kept, i)
 		gaps = append(gaps, gap)
 		previous = &script[i]
 	}
 	if len(kept) == 0 {
 		return nil, NewError(CodeNothingToRender, "every line is muted or unrecorded")
 	}
-	return wav.ConcatenateGaps(kept, gaps)
+	return wav.ConcatenateGapsFrom(len(kept), gaps, func(j int) ([]byte, error) {
+		return load(kept[j])
+	})
 }
 
-// retainFirstRender persists the takes behind a freshly produced story and
-// archives its stitch as revision 1, then republishes the manifest naming
-// them. The story is already on disk and playable when this runs, so a
-// failure here costs the take room, not the episode.
-func (m *Manager) retainFirstRender(manifest *Manifest, clips [][]byte, audio []byte, createdAt time.Time) error {
-	if len(clips) == len(manifest.Script) {
-		for i := range manifest.Script {
-			if len(clips[i]) == 0 {
-				continue
-			}
-			voiceID := castVoiceFor(manifest.Cast, manifest.Script[i].SpeakerID)
-			take, err := m.storeTake(manifest.ID, manifest.Script[i].ID, "take-001", clips[i], voiceID, manifest.Script[i].Text, createdAt)
-			if err != nil {
-				return err
-			}
-			manifest.Script[i].Takes = []Take{take}
-			manifest.Script[i].CurrentTake = take.ID
-		}
+// stitchTakes is stitchLines over clips already in memory — the shape the
+// short-form tests and callers hold audio in.
+func stitchTakes(clips [][]byte, script []ScriptLine) ([]byte, error) {
+	if len(clips) != len(script) {
+		return nil, fmt.Errorf("have %d clips for %d lines", len(clips), len(script))
 	}
-	if err := m.store.SaveRender(manifest.ID, 1, audio); err != nil {
-		return err
-	}
-	manifest.Renders = []Render{{
-		Revision:        1,
-		CreatedAt:       createdAt.UTC(),
-		DurationSeconds: manifest.DurationSeconds,
-		Bytes:           len(audio),
-		URL:             RenderURL(manifest.ID, 1),
-	}}
-	return m.store.SaveManifest(*manifest)
+	return stitchLines(script,
+		func(i int) bool { return len(clips[i]) > 0 },
+		func(i int) ([]byte, error) { return clips[i], nil })
+}
+
+// stitchWIPTakes restitches a production in progress from the takes already
+// written to its work-in-progress directory, one take at a time.
+func (m *Manager) stitchWIPTakes(storyID string, script []ScriptLine) ([]byte, error) {
+	return stitchLines(script,
+		func(i int) bool { return script[i].CurrentTake != "" },
+		func(i int) ([]byte, error) {
+			return m.store.LoadTakeWIP(storyID, script[i].ID, script[i].CurrentTake)
+		})
 }
 
 // storeTake writes one take and describes it. The voice and the exact text
@@ -141,6 +132,20 @@ func (m *Manager) storeTake(storyID string, lineID string, takeID string, audio 
 	if err != nil {
 		return Take{}, err
 	}
+	return describeTake(takeID, audio, voiceID, text, createdAt, url), nil
+}
+
+// storeTakeWIP is storeTake for a story still being produced: the audio
+// lands in the work-in-progress directory the moment it exists.
+func (m *Manager) storeTakeWIP(storyID string, lineID string, takeID string, audio []byte, voiceID string, text string, createdAt time.Time) (Take, error) {
+	url, err := m.store.SaveTakeWIP(storyID, lineID, takeID, audio)
+	if err != nil {
+		return Take{}, err
+	}
+	return describeTake(takeID, audio, voiceID, text, createdAt, url), nil
+}
+
+func describeTake(takeID string, audio []byte, voiceID string, text string, createdAt time.Time, url string) Take {
 	durationMS := 0
 	if d, err := wav.Duration(audio); err == nil {
 		durationMS = int(d / time.Millisecond)
@@ -153,7 +158,7 @@ func (m *Manager) storeTake(storyID string, lineID string, takeID string, audio 
 		DurationMS: durationMS,
 		Bytes:      len(audio),
 		URL:        url,
-	}, nil
+	}
 }
 
 // Retake resynthesizes one line of a stored story and makes the new take
@@ -296,9 +301,11 @@ func (m *Manager) Render(ctx context.Context, storyID string) (Manifest, Render,
 		return Manifest{}, Render{}, NewError(CodeNotFound, "story not found")
 	}
 
-	clips := make([][]byte, len(manifest.Script))
+	// The recipe is settled from the manifest alone before any audio is
+	// read: at episode length the takes no longer fit in memory together,
+	// so every pass below pulls them from disk one at a time instead.
 	var recipe []RenderLine
-	for i, line := range manifest.Script {
+	for _, line := range manifest.Script {
 		if line.Muted || line.CurrentTake == "" {
 			continue
 		}
@@ -312,11 +319,6 @@ func (m *Manager) Render(ctx context.Context, storyID string) (Manifest, Render,
 		if take.Text != line.Text {
 			return Manifest{}, Render{}, NewError(CodeStaleTake, fmt.Sprintf("line %s was edited after take %s was recorded; retake it or mute the line", line.ID, take.ID))
 		}
-		audio, err := m.store.LoadTake(storyID, line.ID, line.CurrentTake)
-		if err != nil {
-			return Manifest{}, Render{}, err
-		}
-		clips[i] = audio
 		recipe = append(recipe, RenderLine{
 			LineID:      line.ID,
 			TakeID:      take.ID,
@@ -328,6 +330,11 @@ func (m *Manager) Render(ctx context.Context, storyID string) (Manifest, Render,
 		})
 	}
 
+	has := func(i int) bool { return manifest.Script[i].CurrentTake != "" }
+	loadTake := func(i int) ([]byte, error) {
+		return m.store.LoadTake(storyID, manifest.Script[i].ID, manifest.Script[i].CurrentTake)
+	}
+
 	// Level the performers against each other before stitching, then place
 	// the finished piece at the delivery target. Both are linear gain, and
 	// both are skipped entirely when no measurement engine is configured —
@@ -336,25 +343,34 @@ func (m *Manager) Render(ctx context.Context, storyID string) (Manifest, Render,
 		master       *Master
 		speakerGains map[string]float64
 	)
+	load := loadTake
 	if m.measure != nil {
-		speakerGains, err = m.levelSpeakers(ctx, clips, manifest.Script)
+		speakerGains, err = m.levelSpeakers(ctx, manifest.Script, has, loadTake)
 		if err != nil {
 			return Manifest{}, Render{}, NewError(CodeMasteringFailure, err.Error())
 		}
-		for i, line := range manifest.Script {
-			gain, ok := speakerGains[line.SpeakerID]
-			if !ok || len(clips[i]) == 0 {
-				continue
+		if len(speakerGains) > 0 {
+			// The stitch pass applies each speaker's correction as its takes
+			// stream through, so the levelled clips never accumulate either.
+			load = func(i int) ([]byte, error) {
+				audio, err := loadTake(i)
+				if err != nil {
+					return nil, err
+				}
+				gain, ok := speakerGains[manifest.Script[i].SpeakerID]
+				if !ok {
+					return audio, nil
+				}
+				levelled, _, err := wav.ApplyGain(audio, gain)
+				if err != nil {
+					return nil, NewError(CodeMasteringFailure, fmt.Sprintf("level %s: %v", manifest.Script[i].SpeakerID, err))
+				}
+				return levelled, nil
 			}
-			levelled, _, err := wav.ApplyGain(clips[i], gain)
-			if err != nil {
-				return Manifest{}, Render{}, NewError(CodeMasteringFailure, fmt.Sprintf("level %s: %v", line.SpeakerID, err))
-			}
-			clips[i] = levelled
 		}
 	}
 
-	stitched, err := stitchTakes(clips, manifest.Script)
+	stitched, err := stitchLines(manifest.Script, has, load)
 	if err != nil {
 		return Manifest{}, Render{}, err
 	}

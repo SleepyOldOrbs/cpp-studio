@@ -70,14 +70,15 @@ type Master struct {
 // levelSpeakers brings each speaker's material into line with the others.
 // It measures a speaker's takes together rather than one at a time, so the
 // correction reflects how loud that performer is overall and not how loud
-// any single line happened to be.
-func (m *Manager) levelSpeakers(ctx context.Context, clips [][]byte, script []ScriptLine) (map[string]float64, error) {
-	bySpeaker := make(map[string][][]byte)
-	for i, line := range script {
-		if line.Muted || len(clips[i]) == 0 {
+// any single line happened to be. Audio is pulled through load one speaker
+// at a time — the peak cost is one performer's material, not the episode's.
+func (m *Manager) levelSpeakers(ctx context.Context, script []ScriptLine, has func(i int) bool, load func(i int) ([]byte, error)) (map[string]float64, error) {
+	bySpeaker := make(map[string][]int)
+	for i := range script {
+		if script[i].Muted || !has(i) {
 			continue
 		}
-		bySpeaker[line.SpeakerID] = append(bySpeaker[line.SpeakerID], clips[i])
+		bySpeaker[script[i].SpeakerID] = append(bySpeaker[script[i].SpeakerID], i)
 	}
 	if len(bySpeaker) < 2 {
 		// One voice cannot be out of balance with itself; the render-level
@@ -87,11 +88,20 @@ func (m *Manager) levelSpeakers(ctx context.Context, clips [][]byte, script []Sc
 
 	measured := make(map[string]float64, len(bySpeaker))
 	speakers := make([]string, 0, len(bySpeaker))
-	for speaker, takes := range bySpeaker {
+	for speaker, lines := range bySpeaker {
+		takes := make([][]byte, 0, len(lines))
+		for _, i := range lines {
+			audio, err := load(i)
+			if err != nil {
+				return nil, fmt.Errorf("load %s's takes to measure them: %w", speaker, err)
+			}
+			takes = append(takes, audio)
+		}
 		joined, err := wav.Concatenate(takes, 0)
 		if err != nil {
 			return nil, fmt.Errorf("join %s's takes to measure them: %w", speaker, err)
 		}
+		takes = nil
 		loudness, err := m.measure(ctx, joined)
 		if err != nil {
 			return nil, fmt.Errorf("measure %s: %w", speaker, err)

@@ -280,19 +280,32 @@ func (m *Manager) run(ctx context.Context, j *job) {
 		m.fail(j, err)
 		return
 	}
-	audio := fixtureWAV(j.req.TargetSeconds)
 
-	var clips [][]byte
+	// Production runs in a work-in-progress directory: every take is on
+	// disk the moment it is synthesized, so a failure part-way loses the
+	// remainder of the session, not the recordings already made. The story
+	// itself appears only at FinalizeWIP, complete with its take room.
+	if err := m.store.BeginWIP(j.id); err != nil {
+		m.fail(j, NewError(CodeStoreFailure, err.Error()))
+		return
+	}
+	// An explicit cancel wants no residue; a failure deliberately leaves
+	// the directory behind — its takes are what a future resume picks up.
+	discard := func() { _ = m.store.DiscardWIP(j.id) }
+
+	audio := fixtureWAV(j.req.TargetSeconds)
 	if j.req.VoiceMode == "fixed" && m.synthesize != nil {
-		var ok bool
-		clips, ok = m.synthesizeScript(ctx, j, manifest.Script, j.req.CastVoices)
-		if !ok {
+		if !m.synthesizeTakes(ctx, j, &manifest, j.req.CastVoices, createdAt) {
+			if m.isCancelled(j) {
+				discard()
+			}
 			return
 		}
 		if !m.advance(ctx, j, StatusStitching, 0.9) {
+			discard()
 			return
 		}
-		stitched, err := stitchTakes(clips, manifest.Script)
+		stitched, err := m.stitchWIPTakes(j.id, manifest.Script)
 		if err != nil {
 			m.fail(j, NewError(CodeSynthesisFailure, "stitch story audio: "+err.Error()))
 			return
@@ -309,24 +322,35 @@ func (m *Manager) run(ctx context.Context, j *job) {
 		audio = stitched
 	} else {
 		if !m.advance(ctx, j, StatusSynthesizing, 0.75) {
+			discard()
 			return
 		}
 		if !m.advance(ctx, j, StatusStitching, 0.9) {
+			discard()
 			return
 		}
 	}
 	if ctx.Err() != nil || m.isCancelled(j) {
 		m.cancelled(j)
+		discard()
 		return
 	}
-	if err := m.store.Save(manifest, audio); err != nil {
+	// Archive this stitch as revision 1 beside the takes, then publish the
+	// whole story atomically. A story that only kept its mix would have to
+	// be regenerated whole to fix one bad read; with takes on disk, one
+	// line can be replaced.
+	if err := m.store.SaveRenderWIP(j.id, 1, audio); err != nil {
 		m.fail(j, NewError(CodeStoreFailure, err.Error()))
 		return
 	}
-	// Keep every line's own recording, and archive this stitch as revision 1.
-	// A story that only kept its mix would have to be regenerated whole to
-	// fix one bad read; with takes on disk, one line can be replaced.
-	if err := m.retainFirstRender(&manifest, clips, audio, createdAt); err != nil {
+	manifest.Renders = []Render{{
+		Revision:        1,
+		CreatedAt:       createdAt.UTC(),
+		DurationSeconds: manifest.DurationSeconds,
+		Bytes:           len(audio),
+		URL:             RenderURL(j.id, 1),
+	}}
+	if err := m.store.FinalizeWIP(manifest, audio); err != nil {
 		m.fail(j, NewError(CodeStoreFailure, err.Error()))
 		return
 	}
@@ -416,18 +440,23 @@ func (m *Manager) Draft(ctx context.Context, req CreateRequest) (DraftResponse, 
 		SourceNotes: scaffold.Notes,
 		FactCards:   scaffold.Facts,
 		Cast:        scaffold.Cast,
+		Scenes:      normalized.Scenes,
 		Script:      script,
 	}, nil
 }
 
-// synthesizeScript speaks each script line through the injected synthesizer
+// synthesizeTakes speaks each script line through the injected synthesizer
 // with the speaker's assigned voice, walking progress across the
-// synthesizing stage. Lines are synthesized grouped by voice — resident TTS
-// sessions keep a single-slot voice-prompt cache, so grouping re-conditions
-// once per voice instead of once per speaker change — while clips return in
-// script order. It reports false when the job was cancelled or failed
-// (status already updated).
-func (m *Manager) synthesizeScript(ctx context.Context, j *job, script []ScriptLine, castVoices map[string]string) ([][]byte, bool) {
+// synthesizing stage. Every take is written to the work-in-progress
+// directory the moment it is made — safe on disk before the next line is
+// attempted — and recorded on its manifest line, so nothing accumulates in
+// memory and an interruption keeps everything already performed. Lines are
+// synthesized grouped by voice — resident TTS sessions keep a single-slot
+// voice-prompt cache, so grouping re-conditions once per voice instead of
+// once per speaker change. It reports false when the job was cancelled or
+// failed (status already updated).
+func (m *Manager) synthesizeTakes(ctx context.Context, j *job, manifest *Manifest, castVoices map[string]string, createdAt time.Time) bool {
+	script := manifest.Script
 	byVoice := make(map[string][]int)
 	var voiceOrder []string
 	for i, line := range script {
@@ -438,25 +467,30 @@ func (m *Manager) synthesizeScript(ctx context.Context, j *job, script []ScriptL
 		byVoice[voiceID] = append(byVoice[voiceID], i)
 	}
 
-	clips := make([][]byte, len(script))
 	done := 0
 	for _, voiceID := range voiceOrder {
 		for _, idx := range byVoice[voiceID] {
 			if ctx.Err() != nil || m.isCancelled(j) {
 				m.cancelled(j)
-				return nil, false
+				return false
 			}
 			m.setStage(j, StatusSynthesizing, 0.55+0.3*float64(done)/float64(len(script)))
 			clip, err := m.synthesize(ctx, script[idx].Text, voiceID)
 			if err != nil {
 				m.fail(j, NewError(CodeSynthesisFailure, fmt.Sprintf("synthesize script line %d: %v", idx+1, err)))
-				return nil, false
+				return false
 			}
-			clips[idx] = clip
+			take, err := m.storeTakeWIP(manifest.ID, script[idx].ID, "take-001", clip, voiceID, script[idx].Text, createdAt)
+			if err != nil {
+				m.fail(j, NewError(CodeStoreFailure, err.Error()))
+				return false
+			}
+			script[idx].Takes = []Take{take}
+			script[idx].CurrentTake = take.ID
 			done++
 		}
 	}
-	return clips, true
+	return true
 }
 
 // setStage updates status/progress without the stage-delay pause; synthesis

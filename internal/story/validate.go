@@ -26,6 +26,9 @@ type NormalizedRequest struct {
 	// Title/Script, when Script is non-empty, bypass the script writer.
 	Title  string
 	Script []ScriptLine
+	// Scenes is the resolved scene list of a multi-scene script, empty for
+	// the one-unnamed-scene case.
+	Scenes []Scene
 }
 
 // DefaultCast is the trio used when a request defines no cast.
@@ -94,6 +97,48 @@ func normalizeCast(inputs []CastInput) ([]CastMember, error) {
 		cast = append(cast, CastMember{ID: id, DisplayName: name, Role: role, VoiceID: strings.TrimSpace(input.VoiceID)})
 	}
 	return cast, nil
+}
+
+// normalizeScenes resolves a declared scene list: ids come from the input,
+// or are slugged from titles the same way cast ids are slugged from names,
+// so the draft flow can hand titles in and get referenceable ids back.
+func normalizeScenes(inputs []SceneInput) ([]Scene, error) {
+	if len(inputs) == 0 {
+		return nil, nil
+	}
+	if len(inputs) > MaxScenes {
+		return nil, NewError(CodeInvalidScenes, fmt.Sprintf("scenes must include at most %d entries", MaxScenes))
+	}
+	seen := make(map[string]bool, len(inputs))
+	scenes := make([]Scene, 0, len(inputs))
+	for i, input := range inputs {
+		title := strings.TrimSpace(input.Title)
+		if utf8.RuneCountInString(title) > MaxSceneTitleChars {
+			return nil, NewError(CodeInvalidScenes, fmt.Sprintf("scenes[%d].title must be at most %d characters", i, MaxSceneTitleChars))
+		}
+		premise := strings.TrimSpace(input.Premise)
+		if utf8.RuneCountInString(premise) > MaxScenePremiseChars {
+			return nil, NewError(CodeInvalidScenes, fmt.Sprintf("scenes[%d].premise must be at most %d characters", i, MaxScenePremiseChars))
+		}
+		id := strings.TrimSpace(input.ID)
+		if id == "" {
+			id = slugifyCastID(title)
+		}
+		if id == "" {
+			return nil, NewError(CodeInvalidScenes, fmt.Sprintf("scenes[%d] needs an id or a title", i))
+		}
+		// Scene ids share the story-id alphabet so a scene can safely name
+		// on-disk artifacts later (stage 3 assets) without a second rule.
+		if err := validateStoryID(id); err != nil {
+			return nil, NewError(CodeInvalidScenes, fmt.Sprintf("scenes[%d].id may use letters, digits, dash and underscore only", i))
+		}
+		if seen[id] {
+			return nil, NewError(CodeInvalidScenes, fmt.Sprintf("scenes contains duplicate scene id %q", id))
+		}
+		seen[id] = true
+		scenes = append(scenes, Scene{ID: id, Title: title, Premise: premise})
+	}
+	return scenes, nil
 }
 
 // normalizeSources applies the grounded-mode source contract: 3-5 entries,
@@ -254,6 +299,24 @@ func ValidateCreateRequest(req CreateRequest) (NormalizedRequest, error) {
 		return NormalizedRequest{}, NewError(CodeInvalidRequest, fmt.Sprintf("script must have at most %d lines", MaxScriptLines))
 	}
 
+	scenes, err := normalizeScenes(req.Scenes)
+	if err != nil {
+		return NormalizedRequest{}, err
+	}
+	// Scenes describe a submitted script; a scripted-by-model story has no
+	// declared scenes yet.
+	if len(scenes) > 0 && len(req.Script) == 0 {
+		return NormalizedRequest{}, NewError(CodeInvalidScenes, "scenes require a submitted script")
+	}
+	// Run the scene↔line cross-checks on the request itself, not only in
+	// ValidateManifest: a submitted script that violates them is knowably
+	// doomed, and failing at POST time beats occupying the single story
+	// slot just to fail the same way asynchronously. ValidateManifest stays
+	// the final gate for scripts assembled later.
+	if err := validateScenes(Manifest{Scenes: scenes, Script: req.Script}); err != nil {
+		return NormalizedRequest{}, err
+	}
+
 	return NormalizedRequest{
 		Subject:       subject,
 		Mode:          mode,
@@ -267,5 +330,6 @@ func ValidateCreateRequest(req CreateRequest) (NormalizedRequest, error) {
 		CastVoices:    castVoices,
 		Title:         title,
 		Script:        req.Script,
+		Scenes:        scenes,
 	}, nil
 }

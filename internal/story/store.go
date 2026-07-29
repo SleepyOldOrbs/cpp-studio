@@ -69,6 +69,85 @@ func (s *Store) Save(manifest Manifest, audio []byte) error {
 	return nil
 }
 
+// A story being produced lives in a work-in-progress directory: the same
+// dot-prefix that hides Save's temp dance from List, but named and long-
+// lived. Takes are written into it the moment they are made, so a failure
+// mid-production loses the remainder of the session, not the recordings
+// already on disk. FinalizeWIP renames the whole directory into place, which
+// is the single moment the story starts to exist — take room and all.
+func (s *Store) wipDir(id string) string {
+	return filepath.Join(s.rootDir, "."+id+".wip")
+}
+
+// BeginWIP claims the work-in-progress directory for a production run.
+func (s *Store) BeginWIP(id string) error {
+	if err := validateStoryID(id); err != nil {
+		return fmt.Errorf("invalid story id")
+	}
+	if _, err := os.Stat(filepath.Join(s.rootDir, id)); err == nil {
+		return fmt.Errorf("story %s already exists", id)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat story dir: %w", err)
+	}
+	if err := os.MkdirAll(s.wipDir(id), 0o755); err != nil {
+		return fmt.Errorf("create wip story dir: %w", err)
+	}
+	return nil
+}
+
+// DiscardWIP abandons a production run: an explicit cancel wants no residue.
+// Failed runs deliberately do not call this — their takes are the raw
+// material a future resume picks up.
+func (s *Store) DiscardWIP(id string) error {
+	if err := validateStoryID(id); err != nil {
+		return fmt.Errorf("invalid story id")
+	}
+	if err := os.RemoveAll(s.wipDir(id)); err != nil {
+		return fmt.Errorf("discard wip story dir: %w", err)
+	}
+	return nil
+}
+
+// FinalizeWIP publishes a produced story: the mix and the manifest are
+// written beside the takes already in the work-in-progress directory, and
+// the directory is renamed into place. A reader therefore sees either no
+// story or the complete one — never a story whose takes are still arriving.
+func (s *Store) FinalizeWIP(manifest Manifest, audio []byte) error {
+	if err := validateStoryID(manifest.ID); err != nil {
+		return fmt.Errorf("invalid story id")
+	}
+	if len(audio) > MaxGeneratedWAVBytes {
+		return fmt.Errorf("generated wav is %d bytes, max is %d bytes", len(audio), MaxGeneratedWAVBytes)
+	}
+	if err := wav.ValidateBytes(audio); err != nil {
+		return fmt.Errorf("generated wav: %w", err)
+	}
+	finalDir := filepath.Join(s.rootDir, manifest.ID)
+	if _, err := os.Stat(finalDir); err == nil {
+		return fmt.Errorf("story %s already exists", manifest.ID)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat story dir: %w", err)
+	}
+	wip := s.wipDir(manifest.ID)
+	if info, err := os.Stat(wip); err != nil || !info.IsDir() {
+		return fmt.Errorf("story %s has no work in progress", manifest.ID)
+	}
+	if err := os.WriteFile(filepath.Join(wip, StoryArtifactName), audio, 0o644); err != nil {
+		return fmt.Errorf("write story wav: %w", err)
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode manifest: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(wip, "manifest.json"), append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write manifest: %w", err)
+	}
+	if err := os.Rename(wip, finalDir); err != nil {
+		return fmt.Errorf("finalize story dir: %w", err)
+	}
+	return nil
+}
+
 // takePath is where one line's take lives: lines/<line-id>/<take-id>.wav.
 // Both ids are validated the same way story ids are, so a crafted id cannot
 // walk out of the story directory.
@@ -76,13 +155,19 @@ func (s *Store) takePath(storyID, lineID, takeID string) (string, error) {
 	if err := validateStoryID(storyID); err != nil {
 		return "", NewError(CodeNotFound, "story not found")
 	}
+	return s.takePathIn(filepath.Join(s.rootDir, storyID), lineID, takeID)
+}
+
+// takePathIn resolves a take below any story home — final or work in
+// progress — with the same id policing either way.
+func (s *Store) takePathIn(dir, lineID, takeID string) (string, error) {
 	if err := validateStoryID(lineID); err != nil {
 		return "", NewError(CodeLineNotFound, "invalid line id")
 	}
 	if err := validateStoryID(takeID); err != nil {
 		return "", NewError(CodeTakeNotFound, "invalid take id")
 	}
-	return filepath.Join(s.rootDir, storyID, "lines", lineID, takeID+".wav"), nil
+	return filepath.Join(dir, "lines", lineID, takeID+".wav"), nil
 }
 
 // SaveTake writes one take beside its story and returns the URL it serves
@@ -90,23 +175,42 @@ func (s *Store) takePath(storyID, lineID, takeID string) (string, error) {
 // a take is only ever referenced by a manifest that is written afterwards,
 // so a half-written take is unreachable rather than corrupting.
 func (s *Store) SaveTake(storyID, lineID, takeID string, audio []byte) (string, error) {
-	if len(audio) > MaxGeneratedWAVBytes {
-		return "", fmt.Errorf("take is %d bytes, max is %d bytes", len(audio), MaxGeneratedWAVBytes)
-	}
-	if err := wav.ValidateBytes(audio); err != nil {
-		return "", fmt.Errorf("take wav: %w", err)
-	}
 	path, err := s.takePath(storyID, lineID, takeID)
 	if err != nil {
 		return "", err
 	}
+	return TakeURL(storyID, lineID, takeID), writeTake(path, audio)
+}
+
+// SaveTakeWIP is SaveTake into the work-in-progress directory — where every
+// take of a story still being produced goes the moment it is synthesized.
+// The URL it reports is the one the take serves from after FinalizeWIP,
+// which is when the manifest naming it first becomes visible.
+func (s *Store) SaveTakeWIP(storyID, lineID, takeID string, audio []byte) (string, error) {
+	if err := validateStoryID(storyID); err != nil {
+		return "", NewError(CodeNotFound, "story not found")
+	}
+	path, err := s.takePathIn(s.wipDir(storyID), lineID, takeID)
+	if err != nil {
+		return "", err
+	}
+	return TakeURL(storyID, lineID, takeID), writeTake(path, audio)
+}
+
+func writeTake(path string, audio []byte) error {
+	if len(audio) > MaxGeneratedWAVBytes {
+		return fmt.Errorf("take is %d bytes, max is %d bytes", len(audio), MaxGeneratedWAVBytes)
+	}
+	if err := wav.ValidateBytes(audio); err != nil {
+		return fmt.Errorf("take wav: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("create take dir: %w", err)
+		return fmt.Errorf("create take dir: %w", err)
 	}
 	if err := os.WriteFile(path, audio, 0o644); err != nil {
-		return "", fmt.Errorf("write take: %w", err)
+		return fmt.Errorf("write take: %w", err)
 	}
-	return TakeURL(storyID, lineID, takeID), nil
+	return nil
 }
 
 // LoadTake reads a stored take back for re-rendering.
@@ -115,6 +219,23 @@ func (s *Store) LoadTake(storyID, lineID, takeID string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return readTake(path)
+}
+
+// LoadTakeWIP reads a take of a story still being produced, for the stitch
+// that happens before the story is finalized.
+func (s *Store) LoadTakeWIP(storyID, lineID, takeID string) ([]byte, error) {
+	if err := validateStoryID(storyID); err != nil {
+		return nil, NewError(CodeNotFound, "story not found")
+	}
+	path, err := s.takePathIn(s.wipDir(storyID), lineID, takeID)
+	if err != nil {
+		return nil, err
+	}
+	return readTake(path)
+}
+
+func readTake(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, NewError(CodeTakeNotFound, "take audio not found")
@@ -149,6 +270,32 @@ func (s *Store) SaveRender(storyID string, revision int, audio []byte) error {
 		return fmt.Errorf("write render: %w", err)
 	}
 	return writeFileAtomic(filepath.Join(s.rootDir, storyID, StoryArtifactName), audio)
+}
+
+// SaveRenderWIP archives a revision inside the work-in-progress directory.
+// It skips the story.wav copy SaveRender maintains — FinalizeWIP writes
+// that as part of publishing the story.
+func (s *Store) SaveRenderWIP(storyID string, revision int, audio []byte) error {
+	if err := validateStoryID(storyID); err != nil {
+		return NewError(CodeNotFound, "story not found")
+	}
+	if revision < 1 {
+		return fmt.Errorf("render revision must be positive")
+	}
+	if len(audio) > MaxGeneratedWAVBytes {
+		return fmt.Errorf("render is %d bytes, max is %d bytes", len(audio), MaxGeneratedWAVBytes)
+	}
+	if err := wav.ValidateBytes(audio); err != nil {
+		return fmt.Errorf("render wav: %w", err)
+	}
+	dir := filepath.Join(s.wipDir(storyID), "renders")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create renders dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, renderFileName(revision)), audio, 0o644); err != nil {
+		return fmt.Errorf("write render: %w", err)
+	}
+	return nil
 }
 
 // SaveManifest replaces the manifest of a story that already exists. This is
