@@ -144,9 +144,15 @@ func (m *Manager) Variants(name string) ([]VariantInfo, bool) {
 
 // SetVariant switches an engine to another of its argument sets. A running
 // server restarts with the new args — that is the whole point, the same
-// binary serving a different model — and a stopped one simply starts on
-// the new set next time. Switching to the already-active variant is a
-// no-op, so the console can set what it shows without churning engines.
+// binary serving a different model. A degraded engine (crashed, missing
+// model) is also started: the user's swap is an instruction to make it
+// work, not to relabel a corpse. Only a deliberately stopped engine stays
+// stopped. Switching to the already-active variant is a no-op.
+//
+// If the new variant fails to start — the classic case is a model file
+// that has not finished downloading — the engine reverts to the variant
+// that was serving before, so one bad pick never leaves image generation
+// dead until someone digs through the Engines tab.
 func (m *Manager) SetVariant(ctx context.Context, name string, id string) error {
 	m.mu.Lock()
 	engine, ok := m.engines[name]
@@ -167,19 +173,42 @@ func (m *Manager) SetVariant(ctx context.Context, name string, id string) error 
 		m.mu.Unlock()
 		return nil
 	}
+	previous := engine.health.Variant
+	previousArgs := engine.cfg.Args
 	wasRunning := engine.cmd != nil && engine.cmd.Process != nil
+	shouldRun := wasRunning || isDegradedStatus(engine.health.Status)
 	engine.cfg.Args = append([]string{}, variant.Args...)
 	engine.health.Variant = id
 	engine.health.UpdatedAt = time.Now().UTC()
 	m.mu.Unlock()
 
-	if !wasRunning {
+	if !shouldRun {
 		return nil
 	}
-	if err := m.Stop(ctx, name); err != nil {
-		return fmt.Errorf("stop %q to switch variant: %w", name, err)
+	if wasRunning {
+		if err := m.Stop(ctx, name); err != nil {
+			return fmt.Errorf("stop %q to switch variant: %w", name, err)
+		}
 	}
-	return m.Start(ctx, name)
+	err := m.Start(ctx, name)
+	if err == nil {
+		return nil
+	}
+
+	// The new variant would not come up. Put the old one back — best
+	// effort, but it was serving moments ago, so it usually will again.
+	m.mu.Lock()
+	engine.cfg.Args = previousArgs
+	engine.health.Variant = previous
+	engine.health.UpdatedAt = time.Now().UTC()
+	m.mu.Unlock()
+	if wasRunning {
+		if revertErr := m.Start(ctx, name); revertErr != nil {
+			return fmt.Errorf("variant %q failed to start (%v) and reverting to %q also failed: %w", id, err, previous, revertErr)
+		}
+		return fmt.Errorf("variant %q failed to start; reverted to %q: %w", id, previous, err)
+	}
+	return fmt.Errorf("variant %q failed to start: %w", id, err)
 }
 
 func (m *Manager) StartAll(ctx context.Context) error {

@@ -294,6 +294,18 @@ func TestHandlerServesAssets(t *testing.T) {
 			needle:      "initVariantSelect",
 		},
 		{
+			name:        "css library full text",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".library-item-text",
+		},
+		{
+			name:        "html 1024 preset",
+			path:        "/",
+			contentType: "text/html",
+			needle:      "1024x1024",
+		},
+		{
 			name:        "css busy toast",
 			path:        "/styles.css",
 			contentType: "text/css",

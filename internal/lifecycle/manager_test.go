@@ -451,3 +451,47 @@ func TestSetVariantOnAStoppedEngineJustSwaps(t *testing.T) {
 		t.Fatalf("expected a silent swap on a stopped engine, got %+v", engine)
 	}
 }
+
+func TestSetVariantRevertsWhenTheNewVariantCannotStart(t *testing.T) {
+	port := freePort(t)
+	cfg := config.Config{
+		Gateway: config.GatewayConfig{Host: "127.0.0.1", Port: 8765},
+		Engines: map[string]config.EngineConfig{
+			"sd": {
+				Command:        os.Args[0],
+				Mode:           "server",
+				HealthURL:      fmt.Sprintf("http://127.0.0.1:%d/health", port),
+				DefaultVariant: "works",
+				Variants: map[string]config.EngineVariant{
+					// The working variant serves the health endpoint; the
+					// broken one just sleeps, so its health check times out —
+					// the same shape as a model file that is not there yet.
+					"works":  {Args: []string{"-test.run=TestHelperProcess", "--", "http", fmt.Sprint(port)}},
+					"broken": {Args: []string{"-test.run=TestHelperProcess", "--", "sleep"}},
+				},
+				StartupTimeoutSeconds:  2,
+				ShutdownTimeoutSeconds: 2,
+			},
+		},
+	}
+	manager := NewManager(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if err := manager.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+	defer manager.StopAll(context.Background())
+
+	err := manager.SetVariant(ctx, "sd", "broken")
+	if err == nil {
+		t.Fatalf("expected the broken variant to fail")
+	}
+	if !strings.Contains(err.Error(), "reverted to \"works\"") {
+		t.Fatalf("expected the error to say it reverted, got %v", err)
+	}
+	engine := waitForEngine(t, manager, "sd", func(e EngineHealth) bool { return e.Ready })
+	if engine.Variant != "works" {
+		t.Fatalf("expected the previous variant back in service, got %q", engine.Variant)
+	}
+}

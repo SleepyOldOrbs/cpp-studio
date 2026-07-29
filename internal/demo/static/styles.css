@@ -874,6 +874,16 @@ audio {
   font-size: 0.78rem;
 }
 
+/* The full words behind a saved clip: wrap, never truncate. */
+.library-item-text {
+  color: var(--ink);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 2px 0 4px;
+}
+
 /* Engine model pickers (whisper in Extract, sd in the Image Lab). */
 .compact-select {
   min-height: 30px;

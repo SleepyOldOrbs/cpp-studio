@@ -2979,6 +2979,15 @@
         refreshHealth(true);
       } catch (error) {
         log("Model switch failed: " + (error && error.message ? error.message : error), "error");
+        // The gateway reverts a failed switch to the previous model; ask it
+        // what is actually serving so the picker never lies about it.
+        try {
+          var current = await fetch("/v1/engines/" + encodeURIComponent(engineName) + "/variants");
+          if (current.ok) {
+            var listing = await current.json();
+            render(listing.variants || []);
+          }
+        } catch (resyncError) { /* health refresh below still tells the truth */ }
         refreshHealth(true);
       } finally {
         select.disabled = false;
@@ -5106,17 +5115,20 @@
     }
   }
 
+  // The item name is capped (it doubles as a filename), but the words that
+  // made the clip are not disposable: the full text rides in meta and the
+  // library shows it, so nothing ends mid-sentence any more.
   libraryReplyButton.addEventListener("click", function () {
-    var name = (replyOutput.value || "Voice reply").slice(0, 60);
-    saveToLibrary("audio", name, replyAudio.src, { source: "voice-loop" }, libraryReplyButton);
+    var text = replyOutput.value || "Voice reply";
+    saveToLibrary("audio", text.slice(0, 110), replyAudio.src, { source: "voice-loop", text: text }, libraryReplyButton);
   });
   librarySpeakButton.addEventListener("click", function () {
-    var name = (speakTextInput.value || "Spoken text").slice(0, 60);
-    saveToLibrary("audio", name, speakAudio.src, { source: "speak" }, librarySpeakButton);
+    var text = speakTextInput.value || "Spoken text";
+    saveToLibrary("audio", text.slice(0, 110), speakAudio.src, { source: "speak", text: text }, librarySpeakButton);
   });
   libraryImageButton.addEventListener("click", function () {
-    var name = (imagePromptInput.value || "Generated image").slice(0, 60);
-    saveToLibrary("image", name, imagePreview.src, { source: "image-lab" }, libraryImageButton);
+    var text = imagePromptInput.value || "Generated image";
+    saveToLibrary("image", text.slice(0, 110), imagePreview.src, { source: "image-lab", text: text }, libraryImageButton);
   });
 
   function jobStateClass(status) {
@@ -5189,9 +5201,16 @@
     items.forEach(function (item) {
       var row = createElement("div", "library-item");
       var head = createElement("div", "library-item-head");
-      head.appendChild(createElement("span", "library-item-name", item.name));
+      var nameSpan = createElement("span", "library-item-name", item.name);
+      nameSpan.title = (item.meta && item.meta.text) || item.name;
+      head.appendChild(nameSpan);
       head.appendChild(createElement("span", "library-item-kind", item.kind));
       row.appendChild(head);
+      // Items saved with their full words show them all; the name is just
+      // the label.
+      if (item.meta && item.meta.text && item.meta.text.length > item.name.length) {
+        row.appendChild(createElement("div", "library-item-text", item.meta.text));
+      }
       row.appendChild(createElement("div", "library-item-meta",
         new Date(item.createdAt).toLocaleString() + " · " + Math.round(item.bytes / 1024) + " KB"));
 
