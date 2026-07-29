@@ -1372,18 +1372,20 @@ func TestProductionKeepsTakesWhenSynthesisFails(t *testing.T) {
 	}
 }
 
-func TestCancelledProductionLeavesNoResidue(t *testing.T) {
+func TestCancelKeepsRecordedTakesForResume(t *testing.T) {
 	rootDir := t.TempDir()
 	idCh := make(chan string, 1)
 	var manager *Manager
 	calls := 0
 	manager = NewManager(ManagerOptions{
-		RootDir: rootDir,
+		RootDir:              rootDir,
+		SynthesisFingerprint: "fp-1",
 		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
 			calls++
-			if calls == 2 {
-				// Cancel mid-production: the first take is already on disk,
-				// and the explicit cancel must sweep it away.
+			if calls == 3 {
+				// Cancel mid-production: two takes are already on disk. At
+				// episode scale a cancel is a pause, not a shredder — the
+				// recorded work stays behind as an interrupted story.
 				if _, err := manager.Cancel(<-idCh); err != nil {
 					t.Errorf("Cancel returned error: %v", err)
 				}
@@ -1404,19 +1406,170 @@ func TestCancelledProductionLeavesNoResidue(t *testing.T) {
 
 	wip := filepath.Join(rootDir, "."+created.ID+".wip")
 	deadline := time.Now().Add(2 * time.Second)
+	var status StatusResponse
 	for time.Now().Before(deadline) {
-		status, _, _ := manager.Status(created.ID)
+		status, _, _ = manager.Status(created.ID)
+		if status.Status == StatusCancelled {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if status.Status != StatusCancelled {
+		t.Fatalf("expected the job to cancel, got %+v", status)
+	}
+	if _, err := os.Stat(filepath.Join(wip, "lines")); err != nil {
+		t.Fatalf("a cancel with recorded takes must keep them: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, created.ID)); !os.IsNotExist(err) {
+		t.Fatalf("a cancelled story must not be published: %v", err)
+	}
+
+	// The kept directory is an ordinary interruption: it lists, and a
+	// resume finishes the episode with the recorded takes spliced in.
+	summaries, err := manager.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	interrupted := false
+	for _, summary := range summaries {
+		if summary.ID == created.ID && summary.Status == StatusInterrupted {
+			interrupted = true
+		}
+	}
+	if !interrupted {
+		t.Fatalf("cancelled production should list as interrupted: %+v", summaries)
+	}
+	if _, err := manager.Resume(context.Background(), created.ID); err != nil {
+		t.Fatalf("Resume returned error: %v", err)
+	}
+	final := waitStoryStatus(t, manager, created.ID, StatusComplete)
+	for i, line := range final.Manifest.Script {
+		if line.CurrentTake == "" {
+			t.Fatalf("script[%d] unrecorded after resume: %+v", i, line)
+		}
+	}
+	if _, err := os.Stat(wip); !os.IsNotExist(err) {
+		t.Fatalf("wip should be renamed away after the resumed run: %v", err)
+	}
+}
+
+func TestCancelDuringSynthesisReleasesTheJobSlot(t *testing.T) {
+	// A real engine call respects its context: cancelling mid-line makes
+	// the synthesizer return ctx.Err() rather than a clip. That error path
+	// races the cancelled status into fail(), which must still release the
+	// job slot — the live smoke caught it staying "active" forever,
+	// unlistable and unresumable.
+	rootDir := t.TempDir()
+	reached := make(chan struct{})
+	var manager *Manager
+	calls := 0
+	manager = NewManager(ManagerOptions{
+		RootDir:              rootDir,
+		SynthesisFingerprint: "fp-1",
+		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
+			calls++
+			if calls == 3 {
+				close(reached)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return wav.SyntheticTone(wav.ToneSampleRate / 2), nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+
+	req := validSketchRequest()
+	req.VoiceMode = "fixed"
+	created, err := manager.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	<-reached
+	if _, err := manager.Cancel(created.ID); err != nil {
+		t.Fatalf("Cancel returned error: %v", err)
+	}
+
+	// The job slot must come free: a resume of the kept work succeeds
+	// rather than reporting the story busy for the life of the process.
+	deadline := time.Now().Add(2 * time.Second)
+	var resumeErr error
+	for time.Now().Before(deadline) {
+		_, resumeErr = manager.Resume(context.Background(), created.ID)
+		if resumeErr == nil || !storyErrorIs(resumeErr, CodeStoryBusy) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if resumeErr != nil {
+		t.Fatalf("Resume after mid-synthesis cancel returned %v", resumeErr)
+	}
+	waitStoryStatus(t, manager, created.ID, StatusComplete)
+}
+
+func TestCancelBeforeAnyTakeLeavesNoResidue(t *testing.T) {
+	// A placeholder story records nothing, so cancelling it mid-flight
+	// must sweep its work-in-progress directory clean rather than leaving
+	// an unresumable husk in the list.
+	rootDir := t.TempDir()
+	manager := NewManager(ManagerOptions{
+		RootDir:    rootDir,
+		StageDelay: 40 * time.Millisecond,
+		Now:        fixedNow,
+	})
+	created, err := manager.Submit(context.Background(), validSketchRequest())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := manager.Cancel(created.ID); err != nil {
+		t.Fatalf("Cancel returned error: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	wip := filepath.Join(rootDir, "."+created.ID+".wip")
+	for time.Now().Before(deadline) {
 		_, wipErr := os.Stat(wip)
-		if status.Status == StatusCancelled && os.IsNotExist(wipErr) {
+		if os.IsNotExist(wipErr) {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	if _, err := os.Stat(wip); !os.IsNotExist(err) {
-		t.Fatalf("expected the cancelled wip directory to be discarded: %v", err)
+		t.Fatalf("a cancel with nothing recorded should leave nothing: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(rootDir, created.ID)); !os.IsNotExist(err) {
 		t.Fatalf("a cancelled story must not be published: %v", err)
+	}
+}
+
+func TestValidateCreateRequestEpisodeScale(t *testing.T) {
+	// The wall the episodes plan exists to break: a 28-minute radio
+	// half-hour is roughly 330 lines. It must validate.
+	req := validSketchRequest()
+	req.VoiceMode = "fixed"
+	req.TargetSeconds = 1680
+	req.Title = "A Half Hour"
+	req.Cast = []CastInput{{Name: "Kenneth"}, {Name: "Hugh"}}
+	for i := 0; i < 330; i++ {
+		speaker := "kenneth"
+		if i%2 == 1 {
+			speaker = "hugh"
+		}
+		req.Script = append(req.Script, ScriptLine{SpeakerID: speaker, Text: fmt.Sprintf("Line %d of the episode.", i+1)})
+	}
+	if _, err := ValidateCreateRequest(req); err != nil {
+		t.Fatalf("an episode-sized request must validate: %v", err)
+	}
+
+	req.TargetSeconds = MaxTargetSeconds + 1
+	if _, err := ValidateCreateRequest(req); !storyErrorIs(err, CodeTargetSecondsInvalid) {
+		t.Fatalf("expected the target-seconds cap to hold, got %v", err)
+	}
+	req.TargetSeconds = 1680
+	for len(req.Script) <= MaxScriptLines {
+		req.Script = append(req.Script, ScriptLine{SpeakerID: "kenneth", Text: "Overflow."})
+	}
+	if _, err := ValidateCreateRequest(req); !storyErrorIs(err, CodeInvalidRequest) {
+		t.Fatalf("expected the lines cap to hold, got %v", err)
 	}
 }
 

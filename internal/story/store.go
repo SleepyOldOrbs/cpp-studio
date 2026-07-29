@@ -95,9 +95,10 @@ func (s *Store) BeginWIP(id string) error {
 	return nil
 }
 
-// DiscardWIP abandons a production run: an explicit cancel wants no residue.
-// Failed runs deliberately do not call this — their takes are the raw
-// material a future resume picks up.
+// DiscardWIP removes a production run's directory, takes and all. It is
+// called for the explicit discard route, and for cancels that recorded
+// nothing; a cancel or failure with takes on disk keeps its directory —
+// that work is what a resume picks up.
 func (s *Store) DiscardWIP(id string) error {
 	if err := validateStoryID(id); err != nil {
 		return fmt.Errorf("invalid story id")

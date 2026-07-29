@@ -34,16 +34,21 @@ Deferred:
 Story routes use their own limits instead of inheriting the smaller chat,
 speech, and image JSON limits:
 
-- Request body: 512 KiB.
+- Request body: 2 MiB.
 - Subject: 1-200 characters after trimming.
-- Target seconds: 30-300 when supplied.
+- Target seconds: 30-2700 when supplied.
 - Sources: 3-5 entries (grounded mode; sketch mode takes none).
 - Premise: max 2000 characters. Style notes: max 1000 characters.
 - Source title: 1-200 characters after trimming.
 - Source URL: optional metadata only, max 2048 characters.
 - Source excerpt: 1-12000 characters after trimming.
 - Script line text: 1-2000 characters.
-- Generated WAV artifact: 32 MiB.
+- Script: max 600 lines. Scenes: max 40.
+- Generated WAV artifact: 256 MiB.
+
+The caps are episode-scale — a 28-minute radio half-hour is roughly 330
+lines — and were raised only after production stopped buffering takes in
+memory and became resumable.
 
 URLs are never fetched in V1. A source with only a URL and no excerpt is
 invalid.
@@ -143,7 +148,7 @@ Supported fields:
 - `title` + `script` (optional): when `script` is non-empty the job produces
   exactly this script (the draft → edit → produce flow) instead of writing
   one. Lines must cite fact ids derived from the same `sources`, or the job
-  fails with `grounding_failure`. Max 60 lines.
+  fails with `grounding_failure`. Max 600 lines.
 
 Script writing: with a `llama` engine configured, the story script is written
 by the model, grounded in the fact cards, with one corrective retry before
@@ -232,7 +237,12 @@ edited `title` + `script` to produce audio.
 
 ## GET /v1/stories
 
-Lists retained local story manifests from `out/stories/`.
+Lists retained local story manifests from `out/stories/`, plus interrupted
+productions — work-in-progress directories whose run failed, was cancelled
+after recording takes, or belonged to a process that died. Interrupted
+entries carry `"status": "interrupted"` and no artifact URL; they can be
+resumed or discarded (below). The production currently running is listed by
+neither (poll its status URL instead).
 
 Response:
 
@@ -267,6 +277,12 @@ queued -> extracting_sources -> planning -> scripting -> synthesizing -> stitchi
 queued -> ... -> failed
 queued -> ... -> cancelled
 ```
+
+A story that stopped without finishing and left its work-in-progress
+directory behind reports `interrupted` once no live job is tracking it (a
+process restart, or a listed entry that failed or was cancelled). The
+interrupted response carries the work-in-progress manifest and `progress`
+as the fraction of lines already recorded.
 
 In-progress response:
 
@@ -310,8 +326,39 @@ Behavior:
 - Already `complete` or `failed`: `409` with code `cannot_cancel`.
 - Unknown id: `404`.
 
-Cancellation may leave a temporary or partial directory on disk. It must not
-write a completed `manifest.json` unless the story finished successfully.
+At episode scale a cancel is a pause, not a shredder: a cancelled
+production that has recorded takes keeps its work-in-progress directory and
+lists as `interrupted`, ready to resume; one that recorded nothing is swept
+clean. A cancel that loses the race with completion changes nothing — the
+finished story stays. Cancellation must not write a completed
+`manifest.json` unless the story finished successfully.
+
+## POST /v1/stories/{id}/resume
+
+Finishes an interrupted production under the same id — same single-active
+gate and engine reservation as a fresh story. Returns `202` with the same
+shape as `POST /v1/stories`.
+
+Every take records the synthesis fingerprint of the engine configuration
+that made it (binary, args, default voice, and the identity of any of those
+that are files on disk). A resume keeps a take only when its fingerprint
+matches the configuration running now, its text matches the line, its
+voice matches, and its audio exists; everything else is performed again.
+Line id + text alone would splice an episode from two different engines
+without anyone noticing, which is exactly what the fingerprint refuses.
+
+Behavior:
+
+- No interrupted production with this id: `404`.
+- Another story job active: `429` with code `story_busy`.
+- Placeholder-voice production: `400` with code `not_resumable` — it has no
+  takes to keep and costs nothing to resubmit.
+
+## POST /v1/stories/{id}/discard
+
+Destroys an interrupted production, takes and all. The one currently being
+produced cannot be discarded — cancel it instead. Returns
+`{"id": "...", "discarded": true}`; unknown id: `404`.
 
 ## The take room
 

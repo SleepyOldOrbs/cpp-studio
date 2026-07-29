@@ -478,20 +478,31 @@ func (m *Manager) run(ctx context.Context, j *job) {
 // handed is already in the work-in-progress directory; lines that carry a
 // valid take are kept, the rest are synthesized.
 func (m *Manager) produce(ctx context.Context, j *job, manifest Manifest, createdAt time.Time) {
-	// An explicit cancel wants no residue; a failure deliberately leaves
-	// the directory behind — its takes are what a future resume picks up.
-	discard := func() { _ = m.store.DiscardWIP(j.id) }
+	// A failure always leaves the directory behind — its takes are what a
+	// resume picks up. A cancel keeps it only once something is recorded:
+	// at sketch scale a cancel wanted no residue, but at episode scale a
+	// cancel twenty-five minutes in must not cost twenty-five minutes of
+	// takes, so a cancelled production with work in it becomes an
+	// interrupted story — resume continues it, discard destroys it.
+	abandon := func() {
+		for _, line := range manifest.Script {
+			if line.CurrentTake != "" {
+				return
+			}
+		}
+		_ = m.store.DiscardWIP(j.id)
+	}
 
 	audio := fixtureWAV(manifest.DurationSeconds)
 	if manifest.VoiceMode == "fixed" && m.synthesize != nil {
 		if !m.synthesizeTakes(ctx, j, &manifest, createdAt) {
 			if m.isCancelled(j) {
-				discard()
+				abandon()
 			}
 			return
 		}
 		if !m.advance(ctx, j, StatusStitching, 0.9) {
-			discard()
+			abandon()
 			return
 		}
 		stitched, err := m.stitchWIPTakes(j.id, manifest.Script)
@@ -511,17 +522,17 @@ func (m *Manager) produce(ctx context.Context, j *job, manifest Manifest, create
 		audio = stitched
 	} else {
 		if !m.advance(ctx, j, StatusSynthesizing, 0.75) {
-			discard()
+			abandon()
 			return
 		}
 		if !m.advance(ctx, j, StatusStitching, 0.9) {
-			discard()
+			abandon()
 			return
 		}
 	}
 	if ctx.Err() != nil || m.isCancelled(j) {
 		m.cancelled(j)
-		discard()
+		abandon()
 		return
 	}
 	// Archive this stitch as revision 1 beside the takes, then publish the
@@ -547,11 +558,15 @@ func (m *Manager) produce(ctx context.Context, j *job, manifest Manifest, create
 	artifactURL := manifest.Audio.URL
 	m.mu.Lock()
 	if j.status.Status == StatusCancelled {
+		// The cancel lost the race with completion: the story is finished
+		// and on disk. The status stays cancelled — that is what the caller
+		// saw — but deleting half an hour of finished work to honour a
+		// cancel that changed nothing is the wrong trade, so the story
+		// stays too. It lists as complete, because it is.
 		if m.activeID == j.id {
 			m.activeID = ""
 		}
 		m.mu.Unlock()
-		_ = m.store.Delete(j.id)
 		return
 	}
 	j.status.Status = StatusComplete
@@ -775,6 +790,13 @@ func (m *Manager) fail(j *job, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if j.status.Status == StatusCancelled {
+		// A cancel interrupting an in-flight synthesis surfaces here as the
+		// engine's context error. The cancelled status wins, but this path
+		// must still release the job slot — leaving activeID set would keep
+		// the story "active" forever, unlistable and unresumable.
+		if m.activeID == j.id {
+			m.activeID = ""
+		}
 		return
 	}
 	j.status.Status = StatusFailed

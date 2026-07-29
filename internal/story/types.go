@@ -2,12 +2,19 @@ package story
 
 import "time"
 
+// The caps are episode-scale, and the order they were raised in matters:
+// they exist to bound memory and request size, and they were only raised
+// after production stopped buffering (takes stream to disk, stitches pull
+// one clip at a time) and became resumable. A 28-minute radio half-hour is
+// roughly 330 lines; 45 minutes and 600 lines leave working room beyond
+// it. 256 MiB holds 45 minutes of 48 kHz mono 16-bit WAV — the highest
+// sample rate the configured engines produce — with margin.
 const (
 	DefaultRootDir          = "out/stories"
-	MaxRequestBodyBytes     = 512 * 1024
+	MaxRequestBodyBytes     = 2 * 1024 * 1024
 	MaxSubjectChars         = 200
 	MinTargetSeconds        = 30
-	MaxTargetSeconds        = 300
+	MaxTargetSeconds        = 2700
 	MinSources              = 3
 	MaxSources              = 5
 	MaxSourceTitleChars     = 200
@@ -16,7 +23,7 @@ const (
 	MaxPremiseChars         = 2000
 	MaxStyleChars           = 1000
 	MaxScriptLineTextChars  = 2000
-	MaxScriptLines          = 60
+	MaxScriptLines          = 600
 	MinCastMembers          = 2
 	MaxCastMembers          = 6
 	MaxCastNameChars        = 60
@@ -24,7 +31,7 @@ const (
 	MaxScenes               = 40
 	MaxSceneTitleChars      = 200
 	MaxScenePremiseChars    = 2000
-	MaxGeneratedWAVBytes    = 32 * 1024 * 1024
+	MaxGeneratedWAVBytes    = 256 * 1024 * 1024
 	StoryArtifactName       = "story.wav"
 	DefaultRetryAfterMillis = 500
 )
