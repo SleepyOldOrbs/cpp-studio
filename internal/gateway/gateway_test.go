@@ -1145,6 +1145,67 @@ func TestAudioDecodeConvertsWhatTheBrowserCannot(t *testing.T) {
 	})
 }
 
+func TestAudioEncodeSavesDeliveryFormats(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"ffmpeg": ffmpegHelperEngine()})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	encode := func(format string) *httptest.ResponseRecorder {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile("file", "clip.wav")
+		if err != nil {
+			t.Fatalf("create multipart file: %v", err)
+		}
+		if _, err := part.Write([]byte("RIFF fake wav bytes")); err != nil {
+			t.Fatalf("write multipart file: %v", err)
+		}
+		_ = writer.WriteField("format", format)
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close multipart writer: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/audio/encode", &body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := encode("mp3")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "audio/mpeg" {
+		t.Fatalf("expected audio/mpeg, got %q", got)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatalf("expected encoded bytes back")
+	}
+
+	if rec := encode("flac"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected an unknown format to be refused, got %d", rec.Code)
+	}
+}
+
+func TestAudioEncodeWithoutFfmpegIsUnavailable(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"audio": helperEngine("speech")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "clip.wav")
+	_, _ = part.Write([]byte("RIFF"))
+	_ = writer.WriteField("format", "mp3")
+	_ = writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/encode", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAudioDecodeWithoutFfmpegIsUnavailable(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{"audio": helperEngine("speech")})
 	router := NewRouter(cfg, lifecycle.NewManager(cfg))

@@ -276,6 +276,12 @@ func TestHandlerServesAssets(t *testing.T) {
 			needle:      "busyMessageFor",
 		},
 		{
+			name:        "javascript unified audio save",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "attachEncodeChips",
+		},
+		{
 			name:        "css busy toast",
 			path:        "/styles.css",
 			contentType: "text/css",

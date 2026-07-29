@@ -141,6 +141,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/audio/import", r.handleAudioImport)
 	mux.HandleFunc("/v1/audio/formats", r.handleAudioFormats)
 	mux.HandleFunc("/v1/audio/decode", r.handleAudioDecode)
+	mux.HandleFunc("/v1/audio/encode", r.handleAudioEncode)
 	mux.HandleFunc("/v1/voice", r.handleVoice)
 	mux.HandleFunc("/v1/voices", r.handleVoices)
 	mux.HandleFunc("/v1/voices/design", r.handleVoiceDesign)
@@ -1484,6 +1485,86 @@ func (r *router) handleAudioDecode(w http.ResponseWriter, req *http.Request) {
 	// Streamed rather than buffered: a half-hour decode is well over a
 	// hundred megabytes and there is no reason for it to sit in memory.
 	_, _ = io.Copy(w, decoded)
+}
+
+// handleAudioEncode is the decode route's mirror: a clip the browser
+// already holds, returned in a delivery format through the operator's own
+// ffmpeg. It is what makes "Save MP3" work anywhere audio exists — voice
+// replies, spoken previews, recordings — not just on story render
+// revisions, whose exports stay on the story route because they are
+// recorded against a revision.
+func (r *router) handleAudioEncode(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	if _, ok := r.engine("ffmpeg"); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, `engine "ffmpeg" is not configured; see docs/CONFIG.md for the export setup`)
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, engine.MaxDecodeUploadBytes)
+
+	upload, header, err := req.FormFile("file")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "multipart field file is required")
+		return
+	}
+	defer upload.Close()
+	format, ok := engine.LookupAudioFormat(strings.TrimSpace(req.FormValue("format")))
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "format must be mp3 or opus")
+		return
+	}
+	bitrate := strings.TrimSpace(req.FormValue("bitrate"))
+	if bitrate == "" {
+		bitrate = format.DefaultBitrate
+	}
+
+	inPath, cleanupIn, err := spoolUpload(upload, filepath.Ext(header.Filename))
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer cleanupIn()
+
+	outFile, err := os.CreateTemp("", "cpp-studio-encoded-*."+format.ID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create encode output: %v", err))
+		return
+	}
+	outPath := outFile.Name()
+	_ = outFile.Close()
+	defer os.Remove(outPath)
+
+	if err := r.transcodeAudio(req.Context(), inPath, outPath, format.ID, bitrate); err != nil {
+		var storyErr *story.StoryError
+		if errors.As(err, &storyErr) {
+			status := http.StatusBadRequest
+			if storyErr.Code == story.CodeExportUnavailable {
+				status = http.StatusServiceUnavailable
+			}
+			writeJSONError(w, status, storyErr.Message)
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	encoded, err := os.Open(outPath)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("read encoded audio: %v", err))
+		return
+	}
+	defer encoded.Close()
+	info, err := encoded.Stat()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("stat encoded audio: %v", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", story.ArtifactContentType(outPath))
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, encoded)
 }
 
 // spoolUpload writes a multipart file to disk without holding it in memory,

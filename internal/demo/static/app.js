@@ -2924,6 +2924,71 @@
     setCloneWav(file, "upload");
   }
 
+  // ---------- one way to save audio ----------
+  // Every audio panel used to grow its own Save WAV button while MP3 and
+  // Opus lived only on story renders. One shape now: beside each existing
+  // Save WAV sits the same pair of format chips, encoding any clip through
+  // the operator's ffmpeg via /v1/audio/encode. No ffmpeg, no chips — the
+  // probe is the same one the take room's export row uses.
+  function attachEncodeChips(wavButton, baseName, getWav) {
+    loadExportFormats().then(function (formats) {
+      if (!formats.length || !wavButton || !wavButton.parentNode) {
+        return;
+      }
+      var anchor = wavButton;
+      formats.forEach(function (format) {
+        var chip = createElement("button", "plain compact-button", format.label);
+        chip.type = "button";
+        chip.title = "Save as " + format.label + " through your ffmpeg";
+        chip.addEventListener("click", function () {
+          saveEncodedAudio(getWav, baseName, format, chip);
+        });
+        anchor.parentNode.insertBefore(chip, anchor.nextSibling);
+        anchor = chip;
+        // Match the WAV button's availability so the row enables and
+        // disables as one control.
+        var sync = function () { chip.disabled = wavButton.disabled; };
+        sync();
+        new MutationObserver(sync).observe(wavButton, { attributes: true, attributeFilter: ["disabled"] });
+      });
+    });
+  }
+
+  async function saveEncodedAudio(getWav, baseName, format, chip) {
+    setBusy(chip, "Encoding...");
+    try {
+      var wav = await getWav();
+      if (!wav) {
+        throw new Error("Nothing to encode yet");
+      }
+      var form = new FormData();
+      form.append("file", wav, baseName + ".wav");
+      form.append("format", format.id);
+      log("POST /v1/audio/encode " + format.id);
+      var response = await fetch("/v1/audio/encode", { method: "POST", body: form });
+      await ensureOk(response, "Encode");
+      var blob = await response.blob();
+      downloadURL(URL.createObjectURL(blob), baseName + "." + format.id);
+      log("Saved " + baseName + "." + format.id + " (" + Math.round(blob.size / 1024) + " KB)");
+    } catch (error) {
+      log("Encode failed: " + (error && error.message ? error.message : error), "error");
+    } finally {
+      clearBusy(chip);
+    }
+  }
+
+  // wavFromSrc turns an <audio> element's current source — a served URL or
+  // a data: URI — into a Blob for the encoder.
+  function wavFromSrc(audioElement) {
+    return function () {
+      var src = audioElement.currentSrc || audioElement.src;
+      if (!src) {
+        return Promise.resolve(null);
+      }
+      return fetch(src).then(function (response) { return response.blob(); });
+    };
+  }
+
   function downloadURL(url, filename) {
     var link = document.createElement("a");
     link.href = url;
@@ -3287,6 +3352,17 @@
     imageSeedInput.value = "";
     log("Image seed back to random");
   });
+
+  // Every audio panel gets the same save row: the existing WAV button plus
+  // MP3/Opus chips when this machine's ffmpeg can make them. Story render
+  // exports keep their own row — those are recorded on the revision.
+  attachEncodeChips(saveReplyButton, "voice-reply", wavFromSrc(replyAudio));
+  attachEncodeChips(wavSaveButton, "recording", function () { return Promise.resolve(activeWavFile); });
+  attachEncodeChips(cloneWavSaveButton, "reference", function () { return Promise.resolve(cloneWavFile); });
+  attachEncodeChips(saveSpeakButton, "spoken-text", wavFromSrc(speakAudio));
+  attachEncodeChips(saveDescriptionButton, "description", wavFromSrc(describeAudio));
+  attachEncodeChips(saveDesignWavButton, "voice-design", wavFromSrc(designAudio));
+  attachEncodeChips(saveStoryButton, "story", wavFromSrc(storyAudio));
   storyForm.addEventListener("submit", startStory);
   storyCancelButton.addEventListener("click", cancelStory);
   storyLibraryButton.addEventListener("click", function () {
