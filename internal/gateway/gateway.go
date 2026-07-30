@@ -378,6 +378,9 @@ func (r *router) handleEngines(w http.ResponseWriter, req *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if parts[0] == "llama" {
+			go r.warmupLlama()
+		}
 		r.writeVariantListing(w, req, parts[0])
 		return
 	}
@@ -2618,6 +2621,49 @@ func (r *router) chatOnce(ctx context.Context, history []voice.Turn, message str
 }
 
 // llamaChat sends one chat completion to the resident llama server.
+// warmupTimeout is generous on purpose: the warmup exists to absorb the
+// first-request page-in of a large model off slow storage, which can take
+// minutes — exactly the cost the regular request timeout would otherwise
+// turn into an empty first reply.
+const warmupTimeout = 5 * time.Minute
+
+// warmupLlama nudges a freshly switched chat model through one tiny
+// completion so the weights page in now, not under the user's first
+// message. Fire-and-forget best effort: a stopped engine refuses the
+// connection, a mid-warmup restart severs it, and both are fine — the
+// next real request simply pays the cost the warmup would have.
+func (r *router) warmupLlama() {
+	engineCfg, ok := r.engine("llama")
+	if !ok {
+		return
+	}
+	upstreamURL, ok := inferChatCompletionsURL(engineCfg.HealthURL)
+	if !ok {
+		return
+	}
+	payload, err := json.Marshal(chatCompletionRequest{
+		Model:     "default",
+		Messages:  []chatMessage{{Role: "user", Content: "hi"}},
+		MaxTokens: 1,
+	})
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), warmupTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxChatReplyBytes))
+}
+
 func (r *router) llamaChat(ctx context.Context, messages []chatMessage) (string, error) {
 	engineCfg, ok := r.engine("llama")
 	if !ok {
@@ -3439,6 +3485,9 @@ type voiceResponse struct {
 type chatCompletionRequest struct {
 	Model    string        `json:"model"`
 	Messages []chatMessage `json:"messages"`
+	// MaxTokens caps generation; only the warmup ping sets it, so every
+	// other request serializes exactly as before.
+	MaxTokens int `json:"max_tokens,omitempty"`
 }
 
 type chatMessage struct {

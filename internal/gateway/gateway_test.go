@@ -1452,6 +1452,48 @@ func TestVariantSwitchRejectsRemedyMisuse(t *testing.T) {
 	}
 }
 
+func TestVariantSwitchWarmsTheChatModel(t *testing.T) {
+	cannedGPU(t, 1000, false)
+	warmed := make(chan chatCompletionRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, req)
+			return
+		}
+		var body chatCompletionRequest
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		select {
+		case warmed <- body:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "."}}},
+		})
+	}))
+	defer upstream.Close()
+
+	llama := byomLlamaEngine(t)
+	llama.HealthURL = upstream.URL + "/health"
+	cfg := testConfig(map[string]config.EngineConfig{"llama": llama})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/engines/llama/variant", strings.NewReader(`{"id":"byom:dense.gguf"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 switching variant, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	select {
+	case body := <-warmed:
+		if body.MaxTokens != 1 || len(body.Messages) != 1 || body.Messages[0].Role != "user" {
+			t.Fatalf("unexpected warmup request %+v", body)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected a warmup completion after the switch")
+	}
+}
+
 func TestVariantSwitchRefusedWhileAStoryProductionIsActive(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cannedGPU(t, 1000, false)

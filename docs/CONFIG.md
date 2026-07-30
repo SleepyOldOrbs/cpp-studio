@@ -66,7 +66,11 @@ directory scan), and `byomArgs` must contain the `{model}` placeholder
 exactly once — written with braces only, because `${model}` would be
 expanded against vars and the environment at load time. Switching restarts
 llama-server on the chosen file; a model that fails to load auto-reverts
-to the previous one.
+to the previous one. After a successful switch the gateway fires a one-token
+warmup completion in the background, so the minutes a large model spends
+paging weights off slow storage are paid immediately rather than by your
+first message (which would otherwise hit the request timeout and come back
+empty).
 
 Each byom entry carries a **fit preflight**: file size against live
 `nvidia-smi` free memory (crediting back what the currently loaded model
