@@ -46,22 +46,48 @@ a `models` block the catalog is empty and everything else works unchanged.
 
 ## Bring Your Own Model
 
-The chat (`llama`) and transcription (`whisper`) engines accept any model in
-their engines' native formats — a GGUF chat model for llama-server, a ggml
-`.bin` for whisper. Swapping takes three steps, no rebuild:
+For chat models, byo is first-class: give the `llama` engine a `byomDir`
+and a `byomArgs` template, and every `*.gguf` file in that directory
+appears in the Talk panel's chat-model picker (and in
+`GET /v1/engines/llama/variants` as a `byom:<filename>` entry) with no
+config edit and no restart — drop a file in, it shows up.
 
-1. Put the model file under your models root and add an entry to
-   `models.json` (id, engine, relative path, size) so the Models tab tracks it.
-2. Point the engine's `-m` arg at it in your config — with `vars`, that is
-   usually one line, e.g. `"-m", "${root}\\engines\\models\\my-model.gguf"`.
-3. Restart that engine: `POST /v1/engines/llama/reload` (or the Reload button
-   on the Engines tab) if the gateway is running with the updated config, or
-   restart the gateway.
+```json
+"llama": {
+  "defaultVariant": "qwen3-4b",
+  "variants": { "qwen3-4b": { "args": ["...", "-m", "${root}\\models\\qwen.gguf", "..."] } },
+  "byomDir": "${root}",
+  "byomArgs": ["--host", "127.0.0.1", "--port", "8733", "-m", "{model}", "--jinja", "-ngl", "99", "-c", "8192"]
+}
+```
 
-The same recipe applies to the SD checkpoint (any SD 1.x-compatible
-`.safetensors` for the bundled build). The TTS and voice-design engines are
-coupled to their model families' CLI contracts — treat those as fixed unless
-you are also changing the audio.cpp invocation.
+Rules: `byomDir` requires a `variants` block (boot never depends on a
+directory scan), and `byomArgs` must contain the `{model}` placeholder
+exactly once — written with braces only, because `${model}` would be
+expanded against vars and the environment at load time. Switching restarts
+llama-server on the chosen file; a model that fails to load auto-reverts
+to the previous one.
+
+Each byom entry carries a **fit preflight**: file size against live
+`nvidia-smi` free memory (crediting back what the currently loaded model
+will free), with verdicts `fits`, `tight`, `too_big`, or `no_gpu_info`.
+The headroom numbers are calibrated for the `-c 8192` context in the
+template above — raise the context in your `byomArgs` and the verdicts
+get optimistic. A `too_big` model whose GGUF header says
+mixture-of-experts is offered the one black-and-white remedy: `POST
+/v1/engines/llama/variant {"id": "byom:...", "remedy": "cpu-moe"}` loads
+it with `--cpu-moe` (experts in system RAM, attention on GPU — it loads
+and runs, slower per token). Remedies are server-defined names, never
+client-supplied flags. While a story production is running, chat-model
+switches are refused with `409` — the production is scripting through the
+same llama.
+
+For whisper the older recipe still applies: point a variant's `-m` at any
+ggml `.bin` and switch with the Extract panel's picker, or edit the config
+and `POST /v1/engines/whisper/reload`. The same manual recipe covers the
+SD checkpoint. The TTS and voice-design engines are coupled to their model
+families' CLI contracts — treat those as fixed unless you are also
+changing the audio.cpp invocation.
 
 ## Speaker Diarization: the `diarize` engine
 

@@ -96,9 +96,11 @@ The magical outcome, riding on M1–M3.
   stdlib-only module; uploads are rejected with a pointer to export as text.
 - **BYO model (the achievable slice).** The manifest + config vars + engine
   reload make swapping a chat/whisper/SD model a documented three-step recipe
-  (see CONFIG.md "Bring Your Own Model"). A picker UI that rewrites config is
-  future work. (TTS/voice-design swap stays out of scope — those engines' CLI
-  contracts are tightly coupled.)
+  (see CONFIG.md "Bring Your Own Model"). ~~A picker UI that rewrites config is
+  future work.~~ *Shipped 2026-07-30 for chat models — as synthesized `byom:`
+  variants over a scanned directory rather than config rewriting, with a
+  VRAM fit preflight and the `cpu-moe` remedy for MoE models.* (TTS/voice-design
+  swap stays out of scope — those engines' CLI contracts are tightly coupled.)
 - **Acceptance:** a multi-page document becomes a stitched audiobook in a chosen
   voice, as a cancellable Job in the Library; a user-supplied GGUF chat model
   loads and serves.

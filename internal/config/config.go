@@ -71,6 +71,15 @@ type EngineConfig struct {
 	// defaultVariant names the set the gateway boots with.
 	Variants       map[string]EngineVariant `json:"variants,omitempty"`
 	DefaultVariant string                   `json:"defaultVariant,omitempty"`
+	// ByomDir, when set, is scanned (non-recursively) for *.gguf files at
+	// listing time; each becomes a synthesized "byom:<filename>" variant.
+	// ByomArgs is the full argument template such a variant launches with;
+	// exactly one argument must contain the {model} placeholder, replaced
+	// by the chosen file's path. {model} deliberately avoids ${} syntax:
+	// ${} tokens are expanded against vars and the environment at load.
+	// ByomDir requires a variants block so boot never depends on a scan.
+	ByomDir  string   `json:"byomDir,omitempty"`
+	ByomArgs []string `json:"byomArgs,omitempty"`
 }
 
 // EngineVariant is one selectable argument set of an engine.
@@ -158,9 +167,30 @@ func Load(path string) (Config, error) {
 				if strings.TrimSpace(id) == "" {
 					return Config{}, fmt.Errorf("engine %q has a variant with an empty id", name)
 				}
+				if strings.HasPrefix(id, "byom:") {
+					return Config{}, fmt.Errorf("engine %q variant id %q uses the reserved byom: namespace", name, id)
+				}
 			}
 		} else if engine.DefaultVariant != "" {
 			return Config{}, fmt.Errorf("engine %q names defaultVariant %q but declares no variants", name, engine.DefaultVariant)
+		}
+		if (engine.ByomDir != "") != (len(engine.ByomArgs) > 0) {
+			return Config{}, fmt.Errorf("engine %q must set byomDir and byomArgs together", name)
+		}
+		if engine.ByomDir != "" {
+			if len(engine.Variants) == 0 {
+				return Config{}, fmt.Errorf("engine %q byomDir requires a variants block: boot must never depend on a directory scan", name)
+			}
+			placeholders := 0
+			for _, arg := range engine.ByomArgs {
+				if strings.Contains(arg, "${model}") {
+					return Config{}, fmt.Errorf("engine %q byomArgs uses ${model}; use {model}: ${...} tokens are expanded against vars and the environment", name)
+				}
+				placeholders += strings.Count(arg, "{model}")
+			}
+			if placeholders != 1 {
+				return Config{}, fmt.Errorf("engine %q byomArgs must contain the {model} placeholder exactly once, found %d", name, placeholders)
+			}
 		}
 	}
 
@@ -218,6 +248,10 @@ func (c *Config) expandVars(configDir string) {
 				variant.Args[i] = expand(arg)
 			}
 			engine.Variants[id] = variant
+		}
+		engine.ByomDir = expand(engine.ByomDir)
+		for i, arg := range engine.ByomArgs {
+			engine.ByomArgs[i] = expand(arg)
 		}
 		c.Engines[name] = engine
 	}
@@ -318,7 +352,7 @@ func rejectUnknownKeys(data []byte) error {
 			}
 			for key := range engine {
 				switch key {
-				case "command", "args", "mode", "workingDir", "healthUrl", "startupTimeoutSeconds", "shutdownTimeoutSeconds", "requestTimeoutSeconds", "gpu", "defaultVoiceRef", "defaultVoiceText", "variants", "defaultVariant":
+				case "command", "args", "mode", "workingDir", "healthUrl", "startupTimeoutSeconds", "shutdownTimeoutSeconds", "requestTimeoutSeconds", "gpu", "defaultVoiceRef", "defaultVoiceText", "variants", "defaultVariant", "byomDir", "byomArgs":
 				default:
 					return fmt.Errorf("unknown engine %q field %q", name, key)
 				}

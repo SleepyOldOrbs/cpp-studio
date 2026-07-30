@@ -72,6 +72,20 @@
             <small class="hint">Clone a voice below to add options here.</small>
           </label>
 
+          <label class="field compact-field" id="chatModelField" hidden>
+            <span>Chat model</span>
+            <select class="text-input" id="chatModelSelect" hidden></select>
+            <small class="hint">Shared with story scripting. Drop .gguf files in your byom folder to add options; switching restarts llama, and a failed load reverts.</small>
+          </label>
+          <div class="warn-box" id="chatModelWarn" hidden>
+            <span id="chatModelWarnText"></span>
+            <div class="action-row">
+              <button class="secondary compact-button" id="chatModelMoeButton" type="button" hidden>Load with experts on CPU</button>
+              <button class="secondary compact-button" id="chatModelAnywayButton" type="button">Load anyway</button>
+              <button class="plain compact-button" id="chatModelCancelButton" type="button">Cancel</button>
+            </div>
+          </div>
+
           <div class="action-row">
             <button class="primary" id="runButton" type="submit">Run voice loop</button>
             <button class="secondary" id="clearButton" type="button">Clear</button>

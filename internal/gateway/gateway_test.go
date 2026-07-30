@@ -2,8 +2,10 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -1196,6 +1198,329 @@ func TestEngineVariantRoutes(t *testing.T) {
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/engines/audio/variants", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for an engine without variants, got %d", rec.Code)
+	}
+}
+
+// ggufHeaderBytes hand-crafts the minimal GGUF header the fit preflight
+// reads: architecture plus, for MoE models, an expert count.
+func ggufHeaderBytes(arch string, expertCount uint32) []byte {
+	var kvs bytes.Buffer
+	writeStr := func(s string) {
+		_ = binary.Write(&kvs, binary.LittleEndian, uint64(len(s)))
+		kvs.WriteString(s)
+	}
+	kvCount := uint64(1)
+	writeStr("general.architecture")
+	_ = binary.Write(&kvs, binary.LittleEndian, uint32(8)) // string
+	writeStr(arch)
+	if expertCount > 0 {
+		kvCount++
+		writeStr(arch + ".expert_count")
+		_ = binary.Write(&kvs, binary.LittleEndian, uint32(4)) // uint32
+		_ = binary.Write(&kvs, binary.LittleEndian, expertCount)
+	}
+	var out bytes.Buffer
+	out.WriteString("GGUF")
+	_ = binary.Write(&out, binary.LittleEndian, uint32(3))
+	_ = binary.Write(&out, binary.LittleEndian, uint64(0))
+	_ = binary.Write(&out, binary.LittleEndian, kvCount)
+	out.Write(kvs.Bytes())
+	return out.Bytes()
+}
+
+// byomLlamaEngine returns a llama engine whose byomDir is a temp dir
+// seeded with a MoE model, a dense model, and a file that is not GGUF at
+// all (the size-only degradation path).
+func byomLlamaEngine(t *testing.T) config.EngineConfig {
+	t.Helper()
+	dir := t.TempDir()
+	seed := map[string][]byte{
+		"moe.gguf":   ggufHeaderBytes("qwen35moe", 8),
+		"dense.gguf": ggufHeaderBytes("gemma3", 0),
+		"junk.gguf":  []byte("not a gguf at all"),
+	}
+	for name, data := range seed {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+			t.Fatalf("seed byom file: %v", err)
+		}
+	}
+	return config.EngineConfig{
+		Command:        "llama-server",
+		Mode:           "server",
+		DefaultVariant: "base",
+		Variants: map[string]config.EngineVariant{
+			"base": {Label: "studio default", Args: []string{"-m", "base.gguf"}},
+		},
+		ByomDir:  dir,
+		ByomArgs: []string{"-m", "{model}"},
+	}
+}
+
+func cannedGPU(t *testing.T, freeMiB int, fail bool) {
+	t.Helper()
+	previous := defaultGPUQuery
+	defaultGPUQuery = func(ctx context.Context) ([]gpuInfo, error) {
+		if fail {
+			return nil, fmt.Errorf("no nvidia-smi here")
+		}
+		return []gpuInfo{{Name: "Test GPU", TotalMiB: 16000, UsedMiB: 16000 - freeMiB}}, nil
+	}
+	t.Cleanup(func() { defaultGPUQuery = previous })
+}
+
+type fitListing struct {
+	Variants []struct {
+		ID     string `json:"id"`
+		Label  string `json:"label"`
+		Active bool   `json:"active"`
+		Bytes  int64  `json:"bytes"`
+		Fit    *struct {
+			Verdict  string `json:"verdict"`
+			Detail   string `json:"detail"`
+			Remedies []struct {
+				ID    string `json:"id"`
+				Label string `json:"label"`
+			} `json:"remedies"`
+		} `json:"fit"`
+	} `json:"variants"`
+	ActiveRemedy *string `json:"activeRemedy"`
+}
+
+func listLlamaVariants(t *testing.T, router http.Handler) fitListing {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/engines/llama/variants", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 listing variants, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var listing fitListing
+	if err := json.NewDecoder(rec.Body).Decode(&listing); err != nil {
+		t.Fatalf("decode variants: %v", err)
+	}
+	return listing
+}
+
+func TestFitVerdictBoundaries(t *testing.T) {
+	cases := []struct {
+		fileMiB, freeMiB int
+		want             string
+	}{
+		{fileMiB: 1000, freeMiB: 3560, want: "fits"},
+		{fileMiB: 1000, freeMiB: 3559, want: "tight"},
+		{fileMiB: 1000, freeMiB: 2280, want: "tight"},
+		{fileMiB: 1000, freeMiB: 2279, want: "too_big"},
+		{fileMiB: 15000, freeMiB: 12000, want: "too_big"},
+		{fileMiB: 0, freeMiB: 0, want: "too_big"},
+	}
+	for _, tc := range cases {
+		if got := fitVerdict(tc.fileMiB, tc.freeMiB); got != tc.want {
+			t.Fatalf("fitVerdict(%d, %d) = %q, want %q", tc.fileMiB, tc.freeMiB, got, tc.want)
+		}
+	}
+}
+
+func TestEngineVariantRoutesListByomModelsWithFit(t *testing.T) {
+	engineCfg := byomLlamaEngine(t)
+
+	// Tiny files need ~2.5 GiB of free VRAM to earn "fits"; scarce free
+	// memory pushes every entry to too_big, and only the MoE model gets a
+	// remedy for it.
+	cannedGPU(t, 1000, false)
+	cfg := testConfig(map[string]config.EngineConfig{"llama": engineCfg})
+	listing := listLlamaVariants(t, NewRouter(cfg, lifecycle.NewManager(cfg)))
+	if len(listing.Variants) != 4 {
+		t.Fatalf("expected base + three byom entries, got %+v", listing.Variants)
+	}
+	base := listing.Variants[0]
+	if base.ID != "base" || !base.Active || base.Fit != nil || base.Bytes != 0 {
+		t.Fatalf("expected the configured variant undecorated, got %+v", base)
+	}
+	dense, junk, moe := listing.Variants[1], listing.Variants[2], listing.Variants[3]
+	if dense.ID != "byom:dense.gguf" || junk.ID != "byom:junk.gguf" || moe.ID != "byom:moe.gguf" {
+		t.Fatalf("unexpected byom order %+v", listing.Variants[1:])
+	}
+	if dense.Fit == nil || dense.Fit.Verdict != "too_big" || len(dense.Fit.Remedies) != 0 {
+		t.Fatalf("unexpected dense fit %+v", dense.Fit)
+	}
+	if junk.Fit == nil || junk.Fit.Verdict != "too_big" || len(junk.Fit.Remedies) != 0 || junk.Bytes == 0 {
+		t.Fatalf("expected the unparseable file judged on size alone, got %+v", junk)
+	}
+	if moe.Fit == nil || moe.Fit.Verdict != "too_big" || len(moe.Fit.Remedies) != 1 || moe.Fit.Remedies[0].ID != "cpu-moe" {
+		t.Fatalf("expected the MoE model offered cpu-moe, got %+v", moe.Fit)
+	}
+	if listing.ActiveRemedy == nil || *listing.ActiveRemedy != "" {
+		t.Fatalf("expected an empty activeRemedy, got %+v", listing.ActiveRemedy)
+	}
+
+	// Plenty of room: everything fits and no remedies are offered.
+	cannedGPU(t, 8000, false)
+	listing = listLlamaVariants(t, NewRouter(cfg, lifecycle.NewManager(cfg)))
+	moe = listing.Variants[3]
+	if moe.Fit == nil || moe.Fit.Verdict != "fits" || len(moe.Fit.Remedies) != 0 {
+		t.Fatalf("expected fits with no remedy, got %+v", moe.Fit)
+	}
+
+	// The in-between band is honest about being tight.
+	cannedGPU(t, 2000, false)
+	listing = listLlamaVariants(t, NewRouter(cfg, lifecycle.NewManager(cfg)))
+	if got := listing.Variants[1].Fit.Verdict; got != "tight" {
+		t.Fatalf("expected tight, got %q", got)
+	}
+
+	// No nvidia-smi: sizes still listed, fit honestly unknown.
+	cannedGPU(t, 0, true)
+	listing = listLlamaVariants(t, NewRouter(cfg, lifecycle.NewManager(cfg)))
+	moe = listing.Variants[3]
+	if moe.Fit == nil || moe.Fit.Verdict != "no_gpu_info" || len(moe.Fit.Remedies) != 0 || moe.Bytes == 0 {
+		t.Fatalf("expected no_gpu_info with sizes, got %+v", moe)
+	}
+}
+
+func TestEngineVariantRoutesKeepNonByomPayloadUnchanged(t *testing.T) {
+	cannedGPU(t, 1000, false)
+	cfg := testConfig(map[string]config.EngineConfig{
+		"whisper": {
+			Command:        "whisper-server",
+			Mode:           "server",
+			DefaultVariant: "large",
+			Variants: map[string]config.EngineVariant{
+				"large": {Label: "large-v3 (best)", Args: []string{"-m", "large.bin"}},
+				"turbo": {Args: []string{"-m", "turbo.bin"}},
+			},
+		},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/engines/whisper/variants", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, key := range []string{"bytes", "fit", "activeRemedy"} {
+		if strings.Contains(body, key) {
+			t.Fatalf("expected the non-byom payload untouched, found %q in %s", key, body)
+		}
+	}
+}
+
+func TestVariantSwitchAppliesAServerDefinedRemedy(t *testing.T) {
+	cannedGPU(t, 1000, false)
+	cfg := testConfig(map[string]config.EngineConfig{"llama": byomLlamaEngine(t)})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/engines/llama/variant",
+		strings.NewReader(`{"id":"byom:moe.gguf","remedy":"cpu-moe"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 applying a remedy, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var listing fitListing
+	if err := json.NewDecoder(rec.Body).Decode(&listing); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if listing.ActiveRemedy == nil || *listing.ActiveRemedy != "cpu-moe" {
+		t.Fatalf("expected activeRemedy cpu-moe, got %+v", listing.ActiveRemedy)
+	}
+	if !listing.Variants[3].Active {
+		t.Fatalf("expected the MoE byom variant active, got %+v", listing.Variants)
+	}
+}
+
+func TestVariantSwitchRejectsRemedyMisuse(t *testing.T) {
+	cannedGPU(t, 1000, false)
+	cfg := testConfig(map[string]config.EngineConfig{"llama": byomLlamaEngine(t)})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"unknown remedy", `{"id":"byom:moe.gguf","remedy":"turbo-mode"}`, "unknown remedy"},
+		{"remedy on a configured variant", `{"id":"base","remedy":"cpu-moe"}`, "apply only to byom"},
+		{"cpu-moe on a dense model", `{"id":"byom:dense.gguf","remedy":"cpu-moe"}`, "not a mixture-of-experts"},
+		{"cpu-moe on an unparseable model", `{"id":"byom:junk.gguf","remedy":"cpu-moe"}`, "cannot read"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/engines/llama/variant", strings.NewReader(tc.body)))
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tc.want) {
+				t.Fatalf("expected 400 containing %q, got %d: %s", tc.want, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestVariantSwitchRefusedWhileAStoryProductionIsActive(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cannedGPU(t, 1000, false)
+
+	scriptJSON := `{"title": "The Llama Tale", "script": [
+{"speaker_id": "narrator", "text": "An opening line.", "fact_ids": ["fact-1"]},
+{"speaker_id": "nova", "text": "A question?", "fact_ids": ["fact-2"]},
+{"speaker_id": "dr-lumen", "text": "An answer.", "fact_ids": ["fact-3"]},
+{"speaker_id": "narrator", "text": "A closing line.", "fact_ids": ["fact-1"]}
+]}`
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": scriptJSON}}},
+		})
+	}))
+	defer upstream.Close()
+
+	llama := byomLlamaEngine(t)
+	llama.HealthURL = upstream.URL + "/health"
+	cfg := testConfig(map[string]config.EngineConfig{
+		"llama": llama,
+		"whisper": {
+			Command:        "whisper-server",
+			Mode:           "server",
+			DefaultVariant: "large",
+			Variants: map[string]config.EngineVariant{
+				"large": {Args: []string{"-m", "large.bin"}},
+				"turbo": {Args: []string{"-m", "turbo.bin"}},
+			},
+		},
+		"audio": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(validStoryRequestJSON())))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 submitting the story, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created story.CreateResponse
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	// The production is holding the pipeline (blocked in scripting), so a
+	// chat model swap is refused — it would restart the engine writing it.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/engines/llama/variant", strings.NewReader(`{"id":"byom:dense.gguf"}`)))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "story production is running") {
+		t.Fatalf("expected 409 while a production runs, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Other engines are not the story's scriptwriter; whisper still swaps.
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/engines/whisper/variant", strings.NewReader(`{"id":"turbo"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 switching whisper mid-production, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	close(release)
+	waitGatewayStoryStatus(t, router, created.ID, story.StatusComplete)
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/engines/llama/variant", strings.NewReader(`{"id":"byom:dense.gguf"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 after the production finished, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

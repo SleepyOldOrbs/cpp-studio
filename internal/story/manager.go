@@ -85,6 +85,15 @@ type Manager struct {
 	editsMu sync.Mutex
 }
 
+// Active reports whether a story production currently holds the pipeline —
+// scripting through synthesis. The take room (retakes, edits, renders)
+// does not count: those hold per-story edit locks, not the job slot.
+func (m *Manager) Active() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.activeID != ""
+}
+
 // editLock returns the mutation lock for one story, creating it on first
 // use. Locks are keyed by story id and outlive individual requests.
 func (m *Manager) editLock(storyID string) *sync.Mutex {

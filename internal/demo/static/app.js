@@ -635,6 +635,11 @@
       row.appendChild(createElement("span", "engine-status", engine.status || "unknown"));
 
       var detail = engine.ready ? "ready" : "not ready";
+      if (engine.remedy === "--cpu-moe") {
+        detail += ", experts on CPU";
+      } else if (engine.remedy) {
+        detail += ", " + engine.remedy;
+      }
       if (engine.pid) {
         detail += ", pid " + engine.pid;
       }
@@ -2933,8 +2938,15 @@
   // gateway lists an engine's variants and switching restarts it on the
   // chosen model — the busy toast covers the load. No variants configured,
   // no dropdown: the picker only exists where there is a choice.
-  function initVariantSelect(select, engineName, wrapper) {
+  // hooks (optional) lets a picker react to per-variant fit data:
+  //   decorate(option, variant) dresses each option as it renders;
+  //   confirmSwitch(variant) -> Promise<{proceed, remedy}> runs before the
+  //   POST, so a picker can interpose a warning. Undefined hooks cost
+  //   nothing — sd and whisper pass none and behave exactly as before.
+  function initVariantSelect(select, engineName, wrapper, hooks) {
+    var lastVariants = [];
     function render(variants) {
+      lastVariants = variants;
       select.textContent = "";
       variants.forEach(function (variant) {
         var option = createElement("option", "", variant.label);
@@ -2942,12 +2954,22 @@
         if (variant.active) {
           option.selected = true;
         }
+        if (hooks && hooks.decorate) {
+          hooks.decorate(option, variant);
+        }
         select.appendChild(option);
       });
       select.hidden = false;
       if (wrapper) {
         wrapper.hidden = false;
       }
+    }
+    function resyncToActive() {
+      lastVariants.forEach(function (variant) {
+        if (variant.active) {
+          select.value = variant.id;
+        }
+      });
     }
     fetch("/v1/engines/" + encodeURIComponent(engineName) + "/variants")
       .then(function (response) {
@@ -2964,13 +2986,27 @@
       .catch(function () { /* no picker is a fine picker */ });
     select.addEventListener("change", async function () {
       var wanted = select.value;
+      var remedy = "";
       select.disabled = true;
       try {
-        log("POST /v1/engines/" + engineName + "/variant " + wanted);
+        if (hooks && hooks.confirmSwitch) {
+          var picked = lastVariants.filter(function (variant) { return variant.id === wanted; })[0];
+          var decision = await hooks.confirmSwitch(picked);
+          if (!decision || !decision.proceed) {
+            resyncToActive();
+            return;
+          }
+          remedy = decision.remedy || "";
+        }
+        log("POST /v1/engines/" + engineName + "/variant " + wanted + (remedy ? " with " + remedy : ""));
+        var payload = { id: wanted };
+        if (remedy) {
+          payload.remedy = remedy;
+        }
         var response = await fetch("/v1/engines/" + encodeURIComponent(engineName) + "/variant", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: wanted })
+          body: JSON.stringify(payload)
         });
         await ensureOk(response, "Model switch");
         var data = await response.json();
@@ -2993,6 +3029,64 @@
         select.disabled = false;
       }
     });
+  }
+
+  // ---------- the chat model picker ----------
+  // The Talk panel's llama picker carries byom fit data: option labels get
+  // a terse verdict suffix (house style: short suffix, detail in the
+  // tooltip), and picking a model the GPU cannot comfortably hold routes
+  // through an amber panel offering the black-and-white way out — cpu-moe
+  // for MoE models — or an eyes-open "load anyway".
+  function chatModelHooks() {
+    var warnBox = document.getElementById("chatModelWarn");
+    var warnText = document.getElementById("chatModelWarnText");
+    var moeButton = document.getElementById("chatModelMoeButton");
+    var anywayButton = document.getElementById("chatModelAnywayButton");
+    var cancelButton = document.getElementById("chatModelCancelButton");
+    var pendingResolve = null;
+
+    function settle(decision) {
+      warnBox.hidden = true;
+      if (pendingResolve) {
+        var resolve = pendingResolve;
+        pendingResolve = null;
+        resolve(decision);
+      }
+    }
+    moeButton.addEventListener("click", function () { settle({ proceed: true, remedy: "cpu-moe" }); });
+    anywayButton.addEventListener("click", function () { settle({ proceed: true }); });
+    cancelButton.addEventListener("click", function () { settle({ proceed: false }); });
+
+    return {
+      decorate: function (option, variant) {
+        if (variant.bytes) {
+          option.textContent += " (" + formatBytes(variant.bytes) + ")";
+        }
+        if (!variant.fit) {
+          return;
+        }
+        option.title = variant.fit.detail || "";
+        if (variant.fit.verdict === "too_big") {
+          option.textContent += " — too big for GPU";
+        } else if (variant.fit.verdict === "tight") {
+          option.textContent += " — tight fit";
+        }
+      },
+      confirmSwitch: function (variant) {
+        settle({ proceed: false });
+        var fit = variant && variant.fit;
+        if (!fit || fit.verdict === "fits" || fit.verdict === "no_gpu_info") {
+          return Promise.resolve({ proceed: true });
+        }
+        var offersMoe = (fit.remedies || []).some(function (remedy) { return remedy.id === "cpu-moe"; });
+        warnText.textContent = fit.detail || "This model may not fit in GPU memory.";
+        moeButton.hidden = !offersMoe;
+        warnBox.hidden = false;
+        return new Promise(function (resolve) {
+          pendingResolve = resolve;
+        });
+      }
+    };
   }
 
   // ---------- one way to save audio ----------
@@ -3427,6 +3521,7 @@
   // Model pickers appear only where the config declares a choice.
   initVariantSelect(imageModelSelect, "sd", imageModelField);
   initVariantSelect(extractModelSelect, "whisper", null);
+  initVariantSelect(document.getElementById("chatModelSelect"), "llama", document.getElementById("chatModelField"), chatModelHooks());
 
   // Every audio panel gets the same save row: the existing WAV button plus
   // MP3/Opus chips when this machine's ffmpeg can make them. Story render

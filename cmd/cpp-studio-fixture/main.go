@@ -73,6 +73,9 @@ func runServer(args []string, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	host := flags.String("host", "127.0.0.1", "fixture/test helper listen host")
 	port := flags.Int("port", 8799, "fixture/test helper listen port")
+	// Accepted and ignored: byom variants restart the engine with a model
+	// path, and this FlagSet would otherwise reject the unknown flag.
+	flags.String("m", "", "fixture/test helper model path (ignored)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}

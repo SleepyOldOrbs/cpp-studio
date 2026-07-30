@@ -604,6 +604,21 @@ textarea[readonly] {
   line-height: 1.4;
 }
 
+/* An amber sibling of .error-box for "it can work, but" moments — the
+   byom fit warning with its remedy buttons lives here. */
+.warn-box {
+  margin: 0;
+  border: 1px solid rgba(232, 193, 90, 0.45);
+  border-radius: 7px;
+  padding: 10px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 0.88rem;
+  line-height: 1.4;
+  display: grid;
+  gap: 8px;
+}
+
 .audio-panel {
   display: grid;
   gap: 8px;

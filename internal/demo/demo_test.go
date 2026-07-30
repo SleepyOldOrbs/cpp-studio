@@ -44,6 +44,12 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "imageModelSelect") {
 		t.Fatalf("expected image model picker marker, got %q", body)
 	}
+	if !strings.Contains(body, "chatModelSelect") {
+		t.Fatalf("expected chat model picker marker, got %q", body)
+	}
+	if !strings.Contains(body, "chatModelWarn") {
+		t.Fatalf("expected chat model fit warning marker, got %q", body)
+	}
 	if !strings.Contains(body, "storyLibraryButton") {
 		t.Fatalf("expected story library marker, got %q", body)
 	}
@@ -292,6 +298,18 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/app.js",
 			contentType: "javascript",
 			needle:      "initVariantSelect",
+		},
+		{
+			name:        "javascript chat model fit hooks",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "chatModelHooks",
+		},
+		{
+			name:        "css byom fit warning",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".warn-box",
 		},
 		{
 			name:        "css library full text",

@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -41,7 +44,11 @@ type EngineHealth struct {
 	Status Status `json:"status"`
 	// Variant names the active argument set of an engine that declares
 	// variants — which model whisper or sd is actually serving right now.
-	Variant       string     `json:"variant,omitempty"`
+	Variant string `json:"variant,omitempty"`
+	// Remedy is the extra arguments a byom variant was loaded with (for
+	// example "--cpu-moe"), so health can say not just which model is
+	// serving but how it was made to fit. Empty when none.
+	Remedy        string     `json:"remedy,omitempty"`
 	PID           int        `json:"pid,omitempty"`
 	Ready         bool       `json:"ready"`
 	LastError     string     `json:"lastError,omitempty"`
@@ -71,6 +78,10 @@ type engineProcess struct {
 	done   chan error
 	health EngineHealth
 	logs   *logRing
+	// activeExtra holds the remedy arguments the current variant was
+	// loaded with, so re-selecting the same variant without them is a
+	// restart, not a no-op.
+	activeExtra []string
 }
 
 func NewManager(cfg config.Config) *Manager {
@@ -115,15 +126,28 @@ type VariantInfo struct {
 	ID     string `json:"id"`
 	Label  string `json:"label"`
 	Active bool   `json:"active"`
+	// ModelPath is the model file behind a synthesized byom variant, for
+	// the gateway's fit preflight. Never serialized; empty for configured
+	// variants.
+	ModelPath string `json:"-"`
 }
 
+// byomPrefix marks variants synthesized from files in an engine's byomDir
+// rather than declared in config. The id is the prefix plus the bare
+// filename, so the picker's value round-trips to a file without any
+// server-side session state.
+const byomPrefix = "byom:"
+
 // Variants lists an engine's argument sets in a stable order, or reports
-// that the engine has none.
+// that the engine has none: configured variants first, then one entry per
+// *.gguf file in byomDir. The directory scan happens outside the manager
+// lock — byomDir may live on a slow network drive, and a stalled listing
+// must never stall /health.
 func (m *Manager) Variants(name string) ([]VariantInfo, bool) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	engine, ok := m.engines[name]
 	if !ok || len(engine.cfg.Variants) == 0 {
+		m.mu.Unlock()
 		return nil, false
 	}
 	ids := make([]string, 0, len(engine.cfg.Variants))
@@ -139,7 +163,58 @@ func (m *Manager) Variants(name string) ([]VariantInfo, bool) {
 		}
 		out = append(out, VariantInfo{ID: id, Label: label, Active: id == engine.health.Variant})
 	}
+	active := engine.health.Variant
+	byomDir := engine.cfg.ByomDir
+	m.mu.Unlock()
+
+	if byomDir == "" {
+		return out, true
+	}
+	entries, err := os.ReadDir(byomDir)
+	if err != nil {
+		// A missing or unreadable byom directory is not a degraded
+		// engine; the configured variants simply stand alone.
+		return out, true
+	}
+	for _, entry := range entries {
+		fname := entry.Name()
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(fname), ".gguf") {
+			continue
+		}
+		out = append(out, VariantInfo{
+			ID:        byomPrefix + fname,
+			Label:     strings.TrimSuffix(fname, filepath.Ext(fname)),
+			Active:    byomPrefix+fname == active,
+			ModelPath: filepath.Join(byomDir, fname),
+		})
+	}
 	return out, true
+}
+
+// byomVariantArgs resolves a byom variant id to the args that launch it:
+// the engine's byomArgs template with {model} replaced by the file's path.
+// The id must name a plain *.gguf file directly inside byomDir — anything
+// resembling a path is rejected, so a crafted id can never reach outside
+// the directory the operator chose to expose.
+func byomVariantArgs(cfg config.EngineConfig, id string) ([]string, error) {
+	if cfg.ByomDir == "" {
+		return nil, fmt.Errorf("engine has no byom directory")
+	}
+	name := strings.TrimPrefix(id, byomPrefix)
+	if name == "" || name != filepath.Base(name) || strings.ContainsAny(name, `/\`) ||
+		!strings.EqualFold(filepath.Ext(name), ".gguf") {
+		return nil, fmt.Errorf("byom model name %q is invalid", name)
+	}
+	path := filepath.Join(cfg.ByomDir, name)
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("byom model %q not found", name)
+	}
+	args := make([]string, len(cfg.ByomArgs))
+	for i, arg := range cfg.ByomArgs {
+		args[i] = strings.ReplaceAll(arg, "{model}", path)
+	}
+	return args, nil
 }
 
 // SetVariant switches an engine to another of its argument sets. A running
@@ -153,7 +228,12 @@ func (m *Manager) Variants(name string) ([]VariantInfo, bool) {
 // that has not finished downloading — the engine reverts to the variant
 // that was serving before, so one bad pick never leaves image generation
 // dead until someone digs through the Engines tab.
-func (m *Manager) SetVariant(ctx context.Context, name string, id string) error {
+//
+// A byom:<file> id launches the engine's byomArgs template against that
+// file. Extra args are remedy flags the caller vouches for (the gateway
+// only ever passes server-defined remedies); the same variant with
+// different extra args counts as a different selection.
+func (m *Manager) SetVariant(ctx context.Context, name string, id string, extra ...string) error {
 	m.mu.Lock()
 	engine, ok := m.engines[name]
 	if !ok {
@@ -164,21 +244,35 @@ func (m *Manager) SetVariant(ctx context.Context, name string, id string) error 
 		m.mu.Unlock()
 		return fmt.Errorf("engine %q has no variants", name)
 	}
-	variant, ok := engine.cfg.Variants[id]
-	if !ok {
+	var args []string
+	if strings.HasPrefix(id, byomPrefix) {
+		byomArgs, err := byomVariantArgs(engine.cfg, id)
+		if err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("engine %q: %w", name, err)
+		}
+		args = byomArgs
+	} else if variant, ok := engine.cfg.Variants[id]; ok {
+		args = append([]string{}, variant.Args...)
+	} else {
 		m.mu.Unlock()
 		return fmt.Errorf("engine %q has no variant %q", name, id)
 	}
-	if engine.health.Variant == id {
+	if engine.health.Variant == id && slices.Equal(engine.activeExtra, extra) {
 		m.mu.Unlock()
 		return nil
 	}
+	args = append(args, extra...)
 	previous := engine.health.Variant
 	previousArgs := engine.cfg.Args
+	previousExtra := engine.activeExtra
+	previousRemedy := engine.health.Remedy
 	wasRunning := engine.cmd != nil && engine.cmd.Process != nil
 	shouldRun := wasRunning || isDegradedStatus(engine.health.Status)
-	engine.cfg.Args = append([]string{}, variant.Args...)
+	engine.cfg.Args = args
+	engine.activeExtra = append([]string{}, extra...)
 	engine.health.Variant = id
+	engine.health.Remedy = strings.Join(extra, " ")
 	engine.health.UpdatedAt = time.Now().UTC()
 	m.mu.Unlock()
 
@@ -199,7 +293,9 @@ func (m *Manager) SetVariant(ctx context.Context, name string, id string) error 
 	// effort, but it was serving moments ago, so it usually will again.
 	m.mu.Lock()
 	engine.cfg.Args = previousArgs
+	engine.activeExtra = previousExtra
 	engine.health.Variant = previous
+	engine.health.Remedy = previousRemedy
 	engine.health.UpdatedAt = time.Now().UTC()
 	m.mu.Unlock()
 	if wasRunning {

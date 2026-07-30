@@ -1453,6 +1453,49 @@ func TestCancelKeepsRecordedTakesForResume(t *testing.T) {
 	}
 }
 
+func TestActiveTracksTheProductionLifecycle(t *testing.T) {
+	rootDir := t.TempDir()
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	manager := NewManager(ManagerOptions{
+		RootDir:              rootDir,
+		SynthesisFingerprint: "fp-1",
+		Synthesize: func(ctx context.Context, text string, voiceID string) ([]byte, error) {
+			select {
+			case <-reached:
+			default:
+				close(reached)
+			}
+			<-release
+			return wav.SyntheticTone(wav.ToneSampleRate / 2), nil
+		},
+		StageDelay: time.Millisecond,
+		Now:        fixedNow,
+	})
+	if manager.Active() {
+		t.Fatal("expected no active production before any submit")
+	}
+	req := validSketchRequest()
+	req.VoiceMode = "fixed"
+	created, err := manager.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if !manager.Active() {
+		t.Fatal("expected an active production immediately after submit")
+	}
+	<-reached
+	close(release)
+	waitStoryStatus(t, manager, created.ID, StatusComplete)
+	deadline := time.Now().Add(2 * time.Second)
+	for manager.Active() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if manager.Active() {
+		t.Fatal("expected the active slot released after completion")
+	}
+}
+
 func TestCancelDuringSynthesisReleasesTheJobSlot(t *testing.T) {
 	// A real engine call respects its context: cancelling mid-line makes
 	// the synthesizer return ctx.Err() rather than a clip. That error path

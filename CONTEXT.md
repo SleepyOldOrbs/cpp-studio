@@ -39,6 +39,29 @@ Owns engine process state: start/stop, health polling, log capture, crash
 classification, and the `/health` rollup. It knows nothing about CLI
 invocation flags — that is the engine invocation module's job.
 
+## BYOM variant (`internal/lifecycle`)
+
+A variant synthesized from a file rather than declared in config: each
+`*.gguf` in an engine's `byomDir` lists as `byom:<filename>`, launched
+through the engine's `byomArgs` template (`{model}` → the file's path).
+The lifecycle manager owns synthesis, the traversal guard, and remedy
+extra-args; it stays ignorant of what the flags mean.
+
+## Fit preflight (`internal/gateway`)
+
+The judgement attached to byom variants in the listing: file size against
+live nvidia-smi free VRAM (plus what the running model will free), giving
+`fits` / `tight` / `too_big` / `no_gpu_info`, and offering server-defined
+**remedies** (today only `cpu-moe`, for over-VRAM MoE models). Policy and
+llama-specific flag knowledge live here, not in lifecycle.
+
+## GGUF reader (`internal/gguf`)
+
+Reads just enough of a GGUF header to answer the preflight's questions —
+architecture, expert count, size label. Stops before the tokenizer
+section; any parse trouble degrades the fit check to size-only, never an
+error surfaced to the user.
+
 ## Voice Loop (`internal/voice`)
 
 The flagship pipeline: transcription -> chat -> speech as one server-side

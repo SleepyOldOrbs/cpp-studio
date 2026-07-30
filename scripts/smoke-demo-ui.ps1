@@ -78,6 +78,13 @@ Stop-FixtureListener -Port $VisionPort -ExpectedPath $fixtureCommand
 Assert-PortFree -Port $VisionPort -Label "fixture vision"
 & $fixtureExe speech --text "fixture input" --out $inputWav
 
+# A bring-your-own-model directory with one stand-in file. The bytes are
+# deliberately not GGUF: the fit preflight must degrade to size-only
+# judgement rather than refuse the listing.
+$byomDir = Join-Path $OutDir "byom"
+New-Item -ItemType Directory -Force -Path $byomDir | Out-Null
+Set-Content -Encoding ascii -Path (Join-Path $byomDir "smoke-model.gguf") -Value "stand-in model bytes"
+
 $config = [ordered]@{
   gateway = [ordered]@{
     host = "127.0.0.1"
@@ -86,12 +93,20 @@ $config = [ordered]@{
   engines = [ordered]@{
     llama = [ordered]@{
       command = $fixtureCommand
-      args = @("server", "--host", "127.0.0.1", "--port", "$LlamaPort")
       mode = "server"
       healthUrl = "http://127.0.0.1:$LlamaPort/health"
       startupTimeoutSeconds = 10
       shutdownTimeoutSeconds = 5
       requestTimeoutSeconds = 30
+      defaultVariant = "fixture"
+      byomDir = $byomDir
+      byomArgs = @("server", "--host", "127.0.0.1", "--port", "$LlamaPort", "-m", "{model}")
+      variants = [ordered]@{
+        fixture = [ordered]@{
+          label = "fixture default"
+          args = @("server", "--host", "127.0.0.1", "--port", "$LlamaPort")
+        }
+      }
     }
     vision = [ordered]@{
       command = $fixtureCommand
@@ -325,6 +340,42 @@ try {
   $list = Invoke-RestMethod "$base/v1/stories"
   if (-not $list.stories -or -not ($list.stories | Where-Object { $_.id -eq $created.id })) {
     throw "story list did not include created story"
+  }
+
+  # Bring-your-own-model: the listing synthesizes a variant per byomDir
+  # file with its byte size, a switch restarts the fixture llama on it, a
+  # traversal-shaped id is refused, and the default comes back cleanly.
+  $variants = Invoke-RestMethod "$base/v1/engines/llama/variants"
+  $byomEntry = $variants.variants | Where-Object { $_.id -eq "byom:smoke-model.gguf" }
+  if (-not $byomEntry) {
+    throw "variant listing did not include the byom model: $($variants | ConvertTo-Json -Depth 5)"
+  }
+  if (-not $byomEntry.bytes -or $byomEntry.bytes -le 0) {
+    throw "byom entry carried no byte size"
+  }
+  $switched = Invoke-RestMethod -Method Post -Uri "$base/v1/engines/llama/variant" -ContentType "application/json" -Body '{"id":"byom:smoke-model.gguf"}'
+  $nowActive = $switched.variants | Where-Object { $_.active }
+  if ($nowActive.id -ne "byom:smoke-model.gguf") {
+    throw "expected the byom model active after the switch, got: $($nowActive.id)"
+  }
+  $traversalRefused = $false
+  try {
+    Invoke-RestMethod -Method Post -Uri "$base/v1/engines/llama/variant" -ContentType "application/json" -Body '{"id":"byom:..\\evil.gguf"}' | Out-Null
+  } catch {
+    $traversalRefused = $true
+  }
+  if (-not $traversalRefused) {
+    throw "a traversal-shaped byom id was accepted"
+  }
+  $restored = Invoke-RestMethod -Method Post -Uri "$base/v1/engines/llama/variant" -ContentType "application/json" -Body '{"id":"fixture"}'
+  if (-not ($restored.variants | Where-Object { $_.id -eq "fixture" -and $_.active })) {
+    throw "switching back to the configured variant failed"
+  }
+  # Each swap restarted llama; re-capture the pid the cleanup must target.
+  $llamaPid = (Invoke-RestMethod "$base/health").engines.llama.pid
+  $voiceAfterSwap = Invoke-RestMethod -Method Post -Uri "$base/v1/voice" -Form @{ message = "still chatting after the swaps?" }
+  if (-not $voiceAfterSwap.reply) {
+    throw "voice loop returned no reply after variant swaps"
   }
 
   [pscustomobject]@{

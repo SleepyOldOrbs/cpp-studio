@@ -177,6 +177,91 @@ func TestLoadEngineVariants(t *testing.T) {
 	}
 }
 
+func TestLoadEngineByom(t *testing.T) {
+	path := writeConfig(t, `{
+  "gateway": {"host": "127.0.0.1", "port": 8765},
+  "vars": {"root": "C:\\studio", "model": "should-not-be-touched"},
+  "engines": {"llama": {
+    "command": "llama-server",
+    "mode": "server",
+    "defaultVariant": "base",
+    "variants": {"base": {"args": ["-m", "${root}\\base.gguf"]}},
+    "byomDir": "${root}\\byom",
+    "byomArgs": ["--port", "8733", "-m", "{model}", "-c", "8192"]
+  }}
+}`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	llama := cfg.Engines["llama"]
+	if llama.ByomDir != `C:\studio\byom` {
+		t.Fatalf("expected vars expanded in byomDir, got %q", llama.ByomDir)
+	}
+	// {model} must survive expansion even when a "model" var exists — it
+	// is the launch-time placeholder, not a config token.
+	if got := llama.ByomArgs[3]; got != "{model}" {
+		t.Fatalf("expected {model} placeholder untouched, got %q", got)
+	}
+}
+
+func TestLoadRejectsBadByomConfigs(t *testing.T) {
+	variants := `"defaultVariant":"a","variants":{"a":{"args":[]}}`
+	rejects := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "byomDir without byomArgs",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"server",` + variants + `,"byomDir":"d"}}}`,
+			want: "byomDir and byomArgs together",
+		},
+		{
+			name: "byomArgs without byomDir",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"server",` + variants + `,"byomArgs":["-m","{model}"]}}}`,
+			want: "byomDir and byomArgs together",
+		},
+		{
+			name: "byomDir without variants",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"server","byomDir":"d","byomArgs":["-m","{model}"]}}}`,
+			want: "requires a variants block",
+		},
+		{
+			name: "missing model placeholder",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"server",` + variants + `,"byomDir":"d","byomArgs":["-m","x.gguf"]}}}`,
+			want: "exactly once, found 0",
+		},
+		{
+			name: "two model placeholders",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"server",` + variants + `,"byomDir":"d","byomArgs":["-m","{model}","--lora","{model}"]}}}`,
+			want: "exactly once, found 2",
+		},
+		{
+			name: "dollar model placeholder",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"server",` + variants + `,"byomDir":"d","byomArgs":["-m","${model}"]}}}`,
+			want: "use {model}",
+		},
+		{
+			name: "variant id in the byom namespace",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"server","defaultVariant":"byom:a","variants":{"byom:a":{"args":[]}}}}}`,
+			want: "reserved byom: namespace",
+		},
+		{
+			name: "byom on a subprocess engine",
+			body: `{"gateway":{},"engines":{"x":{"command":"c","mode":"subprocess","byomDir":"d","byomArgs":["-m","{model}"]}}}`,
+			want: "requires a variants block",
+		},
+	}
+	for _, tt := range rejects {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := Load(writeConfig(t, tt.body)); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.json")

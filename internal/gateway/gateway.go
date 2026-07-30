@@ -28,6 +28,7 @@ import (
 	"cpp-studio/internal/config"
 	"cpp-studio/internal/demo"
 	"cpp-studio/internal/engine"
+	"cpp-studio/internal/gguf"
 	"cpp-studio/internal/jobs"
 	"cpp-studio/internal/library"
 	"cpp-studio/internal/lifecycle"
@@ -60,6 +61,20 @@ type router struct {
 	verifyMu      sync.Mutex
 	verifyStates  map[string]string
 	verifyRunning bool
+
+	// gpuQuery is the nvidia-smi seam, swappable in tests. gpuMu guards a
+	// short-lived snapshot so the variants listing (hit on every panel
+	// init and after every switch) does not shell out each time.
+	gpuQuery gpuQueryFunc
+	gpuMu    sync.Mutex
+	gpuAt    time.Time
+	gpuLast  []gpuInfo
+	gpuErr   error
+
+	// ggufMu guards the header-read cache for byom fit preflight, keyed by
+	// path and revalidated against size+mtime.
+	ggufMu    sync.Mutex
+	ggufCache map[string]ggufCacheEntry
 }
 
 const (
@@ -72,13 +87,15 @@ const (
 // NewRouter builds the cpp-studio gateway HTTP routes.
 func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	r := &router{
-		cfg:     cfg,
-		manager: manager,
-		client:  http.DefaultClient,
-		engines: engine.NewRunner(cfg.Engines, manager),
-		voices:  voice.NewStore(""),
-		jobs:    jobs.NewRegistry(),
-		library: library.NewStore(""),
+		cfg:       cfg,
+		manager:   manager,
+		client:    http.DefaultClient,
+		engines:   engine.NewRunner(cfg.Engines, manager),
+		voices:    voice.NewStore(""),
+		jobs:      jobs.NewRegistry(),
+		library:   library.NewStore(""),
+		gpuQuery:  defaultGPUQuery,
+		ggufCache: map[string]ggufCacheEntry{},
 	}
 	storyOptions := story.ManagerOptions{
 		ReserveEngine:        r.reserveEngine,
@@ -322,13 +339,7 @@ func (r *router) handleEngines(w http.ResponseWriter, req *http.Request) {
 		if !requireMethod(w, req, http.MethodGet) {
 			return
 		}
-		variants, ok := r.manager.Variants(parts[0])
-		if !ok {
-			writeJSONError(w, http.StatusNotFound, fmt.Sprintf("engine %q has no variants", parts[0]))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"variants": variants})
+		r.writeVariantListing(w, req, parts[0])
 		return
 	}
 	if parts[1] == "variant" {
@@ -336,20 +347,38 @@ func (r *router) handleEngines(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		var body struct {
-			ID string `json:"id"`
+			ID     string `json:"id"`
+			Remedy string `json:"remedy"`
 		}
 		req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
 			writeJSONError(w, http.StatusBadRequest, "body must be {\"id\": \"<variant>\"}")
 			return
 		}
-		if err := r.manager.SetVariant(req.Context(), parts[0], body.ID); err != nil {
+		var extra []string
+		if body.Remedy != "" {
+			args, ok := remedyArgs[body.Remedy]
+			if !ok {
+				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown remedy %q", body.Remedy))
+				return
+			}
+			if err := r.checkRemedyApplies(parts[0], body.ID, body.Remedy); err != nil {
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			extra = args
+		}
+		// Story production scripts through the same llama the chat model
+		// picker restarts; a swap mid-production would fail the job.
+		if parts[0] == "llama" && r.stories != nil && r.stories.Active() {
+			writeJSONError(w, http.StatusConflict, "a story production is running; switching the chat model would restart the engine writing it")
+			return
+		}
+		if err := r.manager.SetVariant(req.Context(), parts[0], body.ID, extra...); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		variants, _ := r.manager.Variants(parts[0])
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"variants": variants})
+		r.writeVariantListing(w, req, parts[0])
 		return
 	}
 	if !requireMethod(w, req, http.MethodPost) {
@@ -441,25 +470,27 @@ func isServerEngine(cfg config.EngineConfig) bool {
 	return cfg.Mode == "" || cfg.Mode == "server"
 }
 
-// handleGPU reports overall GPU memory via nvidia-smi when available, so the
-// Engines tab can show the VRAM effect of profile changes. Machines without
-// nvidia-smi report available:false rather than erroring.
-func (r *router) handleGPU(w http.ResponseWriter, req *http.Request) {
-	if !requireMethod(w, req, http.MethodGet) {
-		return
-	}
-	ctx, cancel := context.WithTimeout(req.Context(), 3*time.Second)
+// gpuInfo is one GPU's memory picture, as nvidia-smi reports it.
+type gpuInfo struct {
+	Name     string `json:"name"`
+	TotalMiB int    `json:"totalMiB"`
+	UsedMiB  int    `json:"usedMiB"`
+}
+
+// gpuQueryFunc is the seam between the gateway and nvidia-smi, swappable
+// in tests for canned memory pictures.
+type gpuQueryFunc func(ctx context.Context) ([]gpuInfo, error)
+
+// defaultGPUQuery is what NewRouter wires in; tests swap it for canned
+// memory pictures and restore it on cleanup.
+var defaultGPUQuery gpuQueryFunc = queryNvidiaSMI
+
+func queryNvidiaSMI(ctx context.Context) ([]gpuInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=name,memory.total,memory.used", "--format=csv,noheader,nounits").Output()
-	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
-		_ = json.NewEncoder(w).Encode(map[string]any{"available": false})
-		return
-	}
-	type gpuInfo struct {
-		Name     string `json:"name"`
-		TotalMiB int    `json:"totalMiB"`
-		UsedMiB  int    `json:"usedMiB"`
+		return nil, err
 	}
 	var gpus []gpuInfo
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -474,7 +505,269 @@ func (r *router) handleGPU(w http.ResponseWriter, req *http.Request) {
 		}
 		gpus = append(gpus, gpuInfo{Name: strings.TrimSpace(fields[0]), TotalMiB: total, UsedMiB: used})
 	}
+	if len(gpus) == 0 {
+		return nil, fmt.Errorf("nvidia-smi output had no parseable GPUs")
+	}
+	return gpus, nil
+}
+
+// gpuSnapshot serves a briefly-cached memory picture. Two seconds is long
+// enough to make the listing's double-hit (render, then post-switch
+// resync) free, and short enough to stay honest across profile changes.
+func (r *router) gpuSnapshot(ctx context.Context) ([]gpuInfo, error) {
+	r.gpuMu.Lock()
+	defer r.gpuMu.Unlock()
+	if time.Since(r.gpuAt) < 2*time.Second {
+		return r.gpuLast, r.gpuErr
+	}
+	r.gpuLast, r.gpuErr = r.gpuQuery(ctx)
+	r.gpuAt = time.Now()
+	return r.gpuLast, r.gpuErr
+}
+
+// handleGPU reports overall GPU memory via nvidia-smi when available, so the
+// Engines tab can show the VRAM effect of profile changes. Machines without
+// nvidia-smi report available:false rather than erroring.
+func (r *router) handleGPU(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodGet) {
+		return
+	}
+	gpus, err := r.gpuSnapshot(req.Context())
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"available": false})
+		return
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"available": len(gpus) > 0, "gpus": gpus})
+}
+
+// ggufCacheEntry memoizes one model file's header reading; the walk skims
+// real metadata and should not rerun on every listing.
+type ggufCacheEntry struct {
+	size  int64
+	mtime time.Time
+	info  gguf.Info
+	err   error
+}
+
+func (r *router) ggufInfo(path string) (gguf.Info, error) {
+	stat, err := os.Stat(path)
+	if err != nil {
+		return gguf.Info{}, err
+	}
+	r.ggufMu.Lock()
+	entry, ok := r.ggufCache[path]
+	r.ggufMu.Unlock()
+	if ok && entry.size == stat.Size() && entry.mtime.Equal(stat.ModTime()) {
+		return entry.info, entry.err
+	}
+	info, err := gguf.ReadInfo(path)
+	r.ggufMu.Lock()
+	r.ggufCache[path] = ggufCacheEntry{size: stat.Size(), mtime: stat.ModTime(), info: info, err: err}
+	r.ggufMu.Unlock()
+	return info, err
+}
+
+// Fit preflight: whether a byom model's weights leave room to actually
+// serve. The numbers are calibrated for the -c 8192 context the byomArgs
+// templates use — KV cache plus compute buffers plus CUDA context land
+// between 1.5 and 2.5 GiB for 4B-35B models, so weights plus headroom is
+// a promise and weights plus floor is the bare survival line. Between the
+// two is "tight": it should load, but expect context pressure.
+const (
+	fitHeadroomMiB = 2560
+	fitFloorMiB    = 1280
+)
+
+func fitVerdict(fileMiB, freeMiB int) string {
+	switch {
+	case fileMiB+fitHeadroomMiB <= freeMiB:
+		return "fits"
+	case fileMiB+fitFloorMiB <= freeMiB:
+		return "tight"
+	default:
+		return "too_big"
+	}
+}
+
+type fitRemedy struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+type fitInfo struct {
+	Verdict  string      `json:"verdict"`
+	Detail   string      `json:"detail"`
+	Remedies []fitRemedy `json:"remedies"`
+}
+
+// variantView is a variant on the wire, optionally decorated with byom
+// fit data. Engines without a byom directory serve plain VariantInfo.
+type variantView struct {
+	lifecycle.VariantInfo
+	Bytes int64    `json:"bytes,omitempty"`
+	Fit   *fitInfo `json:"fit,omitempty"`
+}
+
+// remedyArgs maps the remedy contract's ids to the flags they stand for.
+// Remedies are server-defined by design: the switch route accepts a name
+// from this table, never client-supplied arguments.
+var remedyArgs = map[string][]string{
+	"cpu-moe": {"--cpu-moe"},
+}
+
+const cpuMoeLabel = "Load with experts on CPU (--cpu-moe)"
+
+func mib(bytes int64) int { return int(bytes >> 20) }
+
+func gib(bytes int64) string { return fmt.Sprintf("%.1f GiB", float64(bytes)/(1<<30)) }
+
+// modelArgPath digs the model file out of a configured variant's args, so
+// the fit check can credit back the VRAM the current model will free on
+// swap. llama-specific flag knowledge stays here in the gateway, next to
+// the llama-specific URL inference.
+func modelArgPath(args []string) string {
+	for i, arg := range args {
+		if (arg == "-m" || arg == "--model") && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// writeVariantListing serves an engine's variants — plain for engines
+// without a byom directory (byte-identical to the pre-byom payload), and
+// decorated with size, fit and the active remedy when byom entries exist.
+func (r *router) writeVariantListing(w http.ResponseWriter, req *http.Request, name string) {
+	variants, ok := r.manager.Variants(name)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("engine %q has no variants", name))
+		return
+	}
+	hasByom := false
+	for _, v := range variants {
+		if v.ModelPath != "" {
+			hasByom = true
+			break
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if !hasByom {
+		_ = json.NewEncoder(w).Encode(map[string]any{"variants": variants})
+		return
+	}
+	views := r.decorateByomVariants(req.Context(), name, variants)
+	activeRemedy := ""
+	if remedy := r.manager.Health().Engines[name].Remedy; remedy != "" {
+		for id, args := range remedyArgs {
+			if strings.Join(args, " ") == remedy {
+				activeRemedy = id
+				break
+			}
+		}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"variants": views, "activeRemedy": activeRemedy})
+}
+
+// checkRemedyApplies enforces that a remedy is only accepted where the
+// listing could have offered it: cpu-moe needs a byom model whose header
+// says mixture-of-experts. The GPU verdict is deliberately not re-checked
+// — VRAM moves between listing and click, and a button the UI honestly
+// offered must not bounce.
+func (r *router) checkRemedyApplies(engineName, id, remedy string) error {
+	if !strings.HasPrefix(id, "byom:") {
+		return fmt.Errorf("remedies apply only to byom models")
+	}
+	engineCfg, ok := r.engine(engineName)
+	if !ok || engineCfg.ByomDir == "" {
+		return fmt.Errorf("engine %q has no byom directory", engineName)
+	}
+	fname := strings.TrimPrefix(id, "byom:")
+	if fname == "" || fname != filepath.Base(fname) || strings.ContainsAny(fname, `/\`) {
+		return fmt.Errorf("byom model name %q is invalid", fname)
+	}
+	info, err := r.ggufInfo(filepath.Join(engineCfg.ByomDir, fname))
+	if err != nil {
+		return fmt.Errorf("cannot read %q to confirm the remedy applies: %v", fname, err)
+	}
+	if remedy == "cpu-moe" && info.ExpertCount == 0 {
+		return fmt.Errorf("%q is not a mixture-of-experts model; --cpu-moe would do nothing", fname)
+	}
+	return nil
+}
+
+// decorateByomVariants attaches size and fit to synthesized entries. The
+// free-VRAM basis is the best GPU's headline free memory plus the running
+// engine's current model file size — its VRAM frees the moment the swap
+// stops it. Per-process attribution would be more precise but is
+// unreliable under Windows WDDM, so the file size stands in.
+func (r *router) decorateByomVariants(ctx context.Context, name string, variants []lifecycle.VariantInfo) []variantView {
+	views := make([]variantView, len(variants))
+	for i, v := range variants {
+		views[i] = variantView{VariantInfo: v}
+	}
+	gpus, gpuErr := r.gpuSnapshot(ctx)
+	freeMiB, gpuName := 0, ""
+	for _, gpu := range gpus {
+		if free := gpu.TotalMiB - gpu.UsedMiB; free > freeMiB {
+			freeMiB, gpuName = free, gpu.Name
+		}
+	}
+	if gpuErr == nil {
+		health := r.manager.Health().Engines[name]
+		if health.PID != 0 {
+			activePath := ""
+			for _, v := range variants {
+				if v.Active {
+					activePath = v.ModelPath
+					break
+				}
+			}
+			if activePath == "" {
+				engineCfg, _ := r.engine(name)
+				activePath = modelArgPath(engineCfg.Variants[health.Variant].Args)
+			}
+			if activePath != "" {
+				if stat, err := os.Stat(activePath); err == nil {
+					freeMiB += mib(stat.Size())
+				}
+			}
+		}
+	}
+	for i := range views {
+		path := views[i].ModelPath
+		if path == "" {
+			continue
+		}
+		stat, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		views[i].Bytes = stat.Size()
+		fit := &fitInfo{Remedies: []fitRemedy{}}
+		info, infoErr := r.ggufInfo(path)
+		label := info.SizeLabel
+		if label == "" && infoErr == nil {
+			label = info.Architecture
+		}
+		if label != "" {
+			label += " · "
+		}
+		if gpuErr != nil {
+			fit.Verdict = "no_gpu_info"
+			fit.Detail = fmt.Sprintf("%s%s weights; nvidia-smi is unavailable, so fit cannot be judged", label, gib(stat.Size()))
+		} else {
+			fit.Verdict = fitVerdict(mib(stat.Size()), freeMiB)
+			fit.Detail = fmt.Sprintf("%sneeds ~%s (%s weights + ~%s KV/compute at this context); ~%s free on %s",
+				label, gib(stat.Size()+int64(fitHeadroomMiB)<<20), gib(stat.Size()),
+				gib(int64(fitHeadroomMiB)<<20), gib(int64(freeMiB)<<20), gpuName)
+			if fit.Verdict == "too_big" && infoErr == nil && info.ExpertCount > 0 {
+				fit.Remedies = append(fit.Remedies, fitRemedy{ID: "cpu-moe", Label: cpuMoeLabel})
+			}
+		}
+		views[i].Fit = fit
+	}
+	return views
 }
 
 // handleJobs lists every tracked async job, newest first.

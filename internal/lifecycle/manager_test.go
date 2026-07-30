@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -493,5 +494,218 @@ func TestSetVariantRevertsWhenTheNewVariantCannotStart(t *testing.T) {
 	engine := waitForEngine(t, manager, "sd", func(e EngineHealth) bool { return e.Ready })
 	if engine.Variant != "works" {
 		t.Fatalf("expected the previous variant back in service, got %q", engine.Variant)
+	}
+}
+
+// byomTestConfig builds a helper-process engine whose byomDir is a temp
+// directory seeded with the given files.
+func byomTestConfig(t *testing.T, files ...string) (config.Config, string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("stub"), 0o644); err != nil {
+			t.Fatalf("seed byom file: %v", err)
+		}
+	}
+	cfg := config.Config{
+		Gateway: config.GatewayConfig{Host: "127.0.0.1", Port: 8765},
+		Engines: map[string]config.EngineConfig{
+			"llama": {
+				Command:        os.Args[0],
+				Mode:           "server",
+				DefaultVariant: "base",
+				Variants: map[string]config.EngineVariant{
+					"base": {Label: "studio default", Args: []string{"-test.run=TestHelperProcess", "--", "sleep"}},
+				},
+				ByomDir:                dir,
+				ByomArgs:               []string{"-test.run=TestHelperProcess", "--", "sleep", "{model}"},
+				StartupTimeoutSeconds:  2,
+				ShutdownTimeoutSeconds: 2,
+			},
+		},
+	}
+	return cfg, dir
+}
+
+func TestVariantsListsByomModelsAfterConfiguredOnes(t *testing.T) {
+	cfg, dir := byomTestConfig(t, "beta.gguf", "Alpha.GGUF", "notes.txt")
+	if err := os.Mkdir(filepath.Join(dir, "nested.gguf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(cfg)
+
+	variants, ok := manager.Variants("llama")
+	if !ok || len(variants) != 3 {
+		t.Fatalf("expected base + two byom entries, got %+v ok=%v", variants, ok)
+	}
+	if variants[0].ID != "base" || !variants[0].Active || variants[0].ModelPath != "" {
+		t.Fatalf("expected the configured variant first and active, got %+v", variants[0])
+	}
+	if variants[1].ID != "byom:Alpha.GGUF" || variants[1].Label != "Alpha" {
+		t.Fatalf("unexpected first byom entry %+v", variants[1])
+	}
+	if variants[2].ID != "byom:beta.gguf" || variants[2].ModelPath != filepath.Join(dir, "beta.gguf") {
+		t.Fatalf("unexpected second byom entry %+v", variants[2])
+	}
+}
+
+func TestVariantsIgnoresAMissingByomDir(t *testing.T) {
+	cfg, dir := byomTestConfig(t)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(cfg)
+	variants, ok := manager.Variants("llama")
+	if !ok || len(variants) != 1 || variants[0].ID != "base" {
+		t.Fatalf("expected the configured variant alone, got %+v ok=%v", variants, ok)
+	}
+}
+
+func TestSetVariantStartsAByomModelWithSubstitutedArgs(t *testing.T) {
+	cfg, dir := byomTestConfig(t, "brought.gguf")
+	manager := NewManager(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := manager.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+	defer manager.StopAll(context.Background())
+	first := waitForEngine(t, manager, "llama", func(e EngineHealth) bool { return e.PID != 0 })
+
+	if err := manager.SetVariant(ctx, "llama", "byom:brought.gguf"); err != nil {
+		t.Fatalf("SetVariant returned error: %v", err)
+	}
+	engine := waitForEngine(t, manager, "llama", func(e EngineHealth) bool { return e.PID != 0 && e.PID != first.PID })
+	if engine.Variant != "byom:brought.gguf" {
+		t.Fatalf("expected the byom variant active, got %q", engine.Variant)
+	}
+	manager.mu.Lock()
+	args := append([]string{}, manager.engines["llama"].cfg.Args...)
+	manager.mu.Unlock()
+	want := filepath.Join(dir, "brought.gguf")
+	if args[len(args)-1] != want {
+		t.Fatalf("expected the model path substituted into args, got %v", args)
+	}
+}
+
+func TestSetVariantRejectsByomTraversalAndNonGGUFNames(t *testing.T) {
+	cfg, _ := byomTestConfig(t, "real.gguf", "notes.txt")
+	manager := NewManager(cfg)
+	ctx := context.Background()
+
+	bad := []string{
+		"byom:",
+		"byom:../real.gguf",
+		"byom:..\\real.gguf",
+		"byom:sub/real.gguf",
+		"byom:sub\\real.gguf",
+		"byom:notes.txt",
+	}
+	for _, id := range bad {
+		if err := manager.SetVariant(ctx, "llama", id); err == nil || !strings.Contains(err.Error(), "invalid") {
+			t.Fatalf("expected %q to be rejected as invalid, got %v", id, err)
+		}
+	}
+}
+
+func TestSetVariantRejectsAMissingByomFile(t *testing.T) {
+	cfg, _ := byomTestConfig(t)
+	manager := NewManager(cfg)
+	if err := manager.SetVariant(context.Background(), "llama", "byom:ghost.gguf"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected a missing byom file to be refused, got %v", err)
+	}
+}
+
+func TestSetVariantAppliesAndClearsExtraArgs(t *testing.T) {
+	cfg, _ := byomTestConfig(t, "moe.gguf")
+	manager := NewManager(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := manager.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+	defer manager.StopAll(context.Background())
+	first := waitForEngine(t, manager, "llama", func(e EngineHealth) bool { return e.PID != 0 })
+
+	if err := manager.SetVariant(ctx, "llama", "byom:moe.gguf", "--cpu-moe"); err != nil {
+		t.Fatalf("SetVariant with extra returned error: %v", err)
+	}
+	engine := waitForEngine(t, manager, "llama", func(e EngineHealth) bool { return e.PID != 0 && e.PID != first.PID })
+	if engine.Remedy != "--cpu-moe" {
+		t.Fatalf("expected the remedy recorded in health, got %+v", engine)
+	}
+	manager.mu.Lock()
+	args := append([]string{}, manager.engines["llama"].cfg.Args...)
+	manager.mu.Unlock()
+	if args[len(args)-1] != "--cpu-moe" {
+		t.Fatalf("expected the remedy appended to args, got %v", args)
+	}
+
+	// Same selection again: a no-op, same process.
+	remedyPID := engine.PID
+	if err := manager.SetVariant(ctx, "llama", "byom:moe.gguf", "--cpu-moe"); err != nil {
+		t.Fatalf("SetVariant no-op returned error: %v", err)
+	}
+	if got := manager.Health().Engines["llama"].PID; got != remedyPID {
+		t.Fatalf("re-selecting the same remedy restarted the engine: %d -> %d", remedyPID, got)
+	}
+
+	// Same model without the remedy: that is a different launch — restart.
+	if err := manager.SetVariant(ctx, "llama", "byom:moe.gguf"); err != nil {
+		t.Fatalf("SetVariant without extra returned error: %v", err)
+	}
+	engine = waitForEngine(t, manager, "llama", func(e EngineHealth) bool { return e.PID != 0 && e.PID != remedyPID })
+	if engine.Remedy != "" {
+		t.Fatalf("expected the remedy cleared, got %+v", engine)
+	}
+}
+
+func TestSetVariantRevertsWhenTheByomModelCannotStart(t *testing.T) {
+	port := freePort(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "broken.gguf"), []byte("stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		Gateway: config.GatewayConfig{Host: "127.0.0.1", Port: 8765},
+		Engines: map[string]config.EngineConfig{
+			"llama": {
+				Command:        os.Args[0],
+				Mode:           "server",
+				HealthURL:      fmt.Sprintf("http://127.0.0.1:%d/health", port),
+				DefaultVariant: "works",
+				Variants: map[string]config.EngineVariant{
+					"works": {Args: []string{"-test.run=TestHelperProcess", "--", "http", fmt.Sprint(port)}},
+				},
+				// The byom launch just sleeps, so its health check times
+				// out — the same shape as a model llama-server rejects.
+				ByomDir:                dir,
+				ByomArgs:               []string{"-test.run=TestHelperProcess", "--", "sleep", "{model}"},
+				StartupTimeoutSeconds:  2,
+				ShutdownTimeoutSeconds: 2,
+			},
+		},
+	}
+	manager := NewManager(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if err := manager.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+	defer manager.StopAll(context.Background())
+
+	err := manager.SetVariant(ctx, "llama", "byom:broken.gguf", "--cpu-moe")
+	if err == nil {
+		t.Fatalf("expected the byom variant to fail")
+	}
+	if !strings.Contains(err.Error(), "reverted to \"works\"") {
+		t.Fatalf("expected the error to say it reverted, got %v", err)
+	}
+	engine := waitForEngine(t, manager, "llama", func(e EngineHealth) bool { return e.Ready })
+	if engine.Variant != "works" || engine.Remedy != "" {
+		t.Fatalf("expected the previous variant back with no remedy, got %+v", engine)
 	}
 }
