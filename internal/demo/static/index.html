@@ -49,13 +49,18 @@
           <div class="record-row">
             <button class="record-button" id="recordButton" type="button" aria-pressed="false">Push to record</button>
             <button class="live-button" id="liveButton" type="button" aria-pressed="false">Live transcribe</button>
+            <button class="live-button hf-button" id="handsFreeButton" type="button" aria-pressed="false">Hands-free</button>
             <label class="file-button">
               <input id="wavInput" type="file" accept=".wav,audio/wav,audio/x-wav">
               <span>Choose WAV</span>
             </label>
           </div>
           <div class="vu-meter" aria-hidden="true"><i id="vuLevel"></i></div>
-          <small class="hint">Live transcribe streams your mic to whisper every few seconds; stop to keep the take as the WAV source.</small>
+          <div class="source-row hf-status" id="handsFreeStatus" aria-live="polite" hidden>
+            <span class="source-label">Hands-free</span>
+            <span id="handsFreeStateText">Off</span>
+          </div>
+          <small class="hint">Live transcribe streams your mic to whisper every few seconds; stop to keep the take as the WAV source. Hands-free keeps the mic open — a pause ends your turn, the reply plays, then it listens again; whisper large-v3-turbo (picker in Extract) keeps turns snappy.</small>
 
           <div class="source-row">
             <span class="source-label">WAV source</span>

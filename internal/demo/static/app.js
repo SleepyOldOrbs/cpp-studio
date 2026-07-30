@@ -11,6 +11,9 @@
   var messageInput = document.getElementById("messageInput");
   var recordButton = document.getElementById("recordButton");
   var liveButton = document.getElementById("liveButton");
+  var handsFreeButton = document.getElementById("handsFreeButton");
+  var handsFreeStatus = document.getElementById("handsFreeStatus");
+  var handsFreeStateText = document.getElementById("handsFreeStateText");
   var wavInput = document.getElementById("wavInput");
   var wavStatus = document.getElementById("wavStatus");
   var wavSaveButton = document.getElementById("wavSaveButton");
@@ -131,11 +134,44 @@
   var LIVE_MAX_FAILURES = 3;
   var CONVO_MAX_TURNS = 40;
 
+  // Hands-free endpointing knobs. Frames are ScriptProcessor peaks at
+  // 4096 samples (~85ms at 48k); durations convert to frame counts at
+  // runtime so the numbers here stay in ms. The start bar adapts to the
+  // noise floor with hysteresis (the stop bar sits below the start bar),
+  // and noiseSuppression upstream is what makes the absolute floors safe.
+  var HF_START_PEAK = 0.04;        // absolute minimum start bar
+  var HF_START_MULT = 3;           // adaptive start = noise floor x3
+  var HF_START_CEIL = 0.15;        // a loud room can never outshout speech
+  var HF_STOP_PEAK = 0.025;        // absolute minimum stop bar
+  var HF_STOP_MULT = 2;
+  var HF_FLOOR_ALPHA = 0.05;       // EMA per frame => ~1.7s time constant
+  var HF_FLOOR_INIT = 0.01;
+  var HF_START_FRAMES = 2;         // ~170ms over the bar; ignores clicks
+  var HF_PREROLL_MS = 250;         // ring buffer so onsets are not clipped
+  var HF_HANG_MS = 800;            // trailing silence that ends a turn
+  var HF_MIN_SPEECH_MS = 430;      // voiced frames needed to submit at all
+  var HF_MAX_UTTERANCE_MS = 30000; // forced endpoint
+  var HF_MAX_FAILURES = 3;         // mirrors LIVE_MAX_FAILURES
+
   var conversation = [];
 
   var running = false;
   var recording = false;
   var live = false;
+  var handsFree = false;
+  var handsFreeSetupPending = false;
+  var hfState = "off";
+  var hfSessionToken = 0;
+  var hfCapture = null;
+  var hfVad = null;
+  var hfRing = [];
+  var hfRingLength = 0;
+  var hfChunks = [];
+  var hfChunksLength = 0;
+  var hfFailures = 0;
+  var hfHeardStartedAt = 0;
+  var hfChipTimer = 0;
+  var hfSpeakWatch = 0;
   var liveCapture = null;
   var livePassBusy = false;
   var liveLabelTimer = 0;
@@ -305,6 +341,11 @@
     // Only mutating studio calls are tracked: the half-second status polls
     // would otherwise flicker the toast forever.
     var tracked = method !== "GET" && path.indexOf("/v1/") === 0;
+    if (handsFree && path.indexOf("/v1/voice") === 0) {
+      // The hands-free chip narrates each turn; the toast would say the
+      // same thing over it every few seconds.
+      tracked = false;
+    }
     if (!tracked) {
       return nativeFetch(input, init);
     }
@@ -383,16 +424,17 @@
   }
 
   function syncControls() {
-    var busy = running || recording || recordSetupPending || live || cloneRecording || cloneSetupPending;
+    var busy = running || recording || recordSetupPending || live || cloneRecording || cloneSetupPending || handsFree || handsFreeSetupPending;
     apiControls.forEach(function (control) {
       control.disabled = busy;
     });
     if (activeStoryID) {
       storyGenerateButton.disabled = true;
     }
-    recordButton.disabled = running || live || cloneRecording || cloneSetupPending || (!recording && !recordSetupPending && !canRecord());
-    liveButton.disabled = running || recording || recordSetupPending || cloneRecording || cloneSetupPending || (!live && !canRecord());
-    cloneRecordButton.disabled = running || live || recording || recordSetupPending || (!cloneRecording && !cloneSetupPending && !canRecord());
+    recordButton.disabled = running || live || handsFree || handsFreeSetupPending || cloneRecording || cloneSetupPending || (!recording && !recordSetupPending && !canRecord());
+    liveButton.disabled = running || recording || recordSetupPending || handsFree || handsFreeSetupPending || cloneRecording || cloneSetupPending || (!live && !canRecord());
+    cloneRecordButton.disabled = running || live || handsFree || handsFreeSetupPending || recording || recordSetupPending || (!cloneRecording && !cloneSetupPending && !canRecord());
+    handsFreeButton.disabled = running || recording || recordSetupPending || live || cloneRecording || cloneSetupPending || (!handsFree && !handsFreeSetupPending && !canRecord());
     describeImageButton.disabled = busy || imagePreview.hidden || !imagePreview.src;
     designSaveButton.disabled = busy || !designCandidate;
     storyDraftButton.disabled = busy || Boolean(activeStoryID);
@@ -801,7 +843,11 @@
       return;
     }
     var body = await readErrorBody(response);
-    throw new Error(label + " failed: HTTP " + response.status + ": " + body);
+    var error = new Error(label + " failed: HTTP " + response.status + ": " + body);
+    // Callers that must branch on the status (hands-free's soft-miss and
+    // busy paths) read it here rather than parsing the message.
+    error.status = response.status;
+    throw error;
   }
 
   async function refreshHealth(silent) {
@@ -1779,6 +1825,60 @@
     }
   }
 
+  // performVoiceTurn is the shared POST /v1/voice core used by the form
+  // path and hands-free: builds the multipart body, submits, surfaces the
+  // transcript and reply, records the exchange, and stages the reply audio
+  // in replyAudio. Callers own validation, playback, busy chrome, and
+  // error surfacing. options:
+  //   file       - File to submit (wins over message)
+  //   message    - typed text when there is no file
+  //   onAccepted - called right after the exchange is recorded, before
+  //                the reply audio is staged (the form path clears its
+  //                inputs here)
+  async function performVoiceTurn(options) {
+    var form = new FormData();
+    if (options.file) {
+      form.append("file", options.file, options.file.name || "input.wav");
+    } else {
+      form.append("message", options.message);
+      log("Using typed message as transcript");
+    }
+    if (conversation.length > 0) {
+      form.append("history", JSON.stringify(conversation));
+    }
+    if (voiceSelect.value) {
+      form.append("voice", voiceSelect.value);
+      var chosen = voiceSelect.options[voiceSelect.selectedIndex];
+      log("Speaking with cloned voice: " + (chosen ? chosen.textContent : voiceSelect.value));
+    }
+
+    log("POST /v1/voice");
+    var response = await fetch("/v1/voice", {
+      method: "POST",
+      body: form
+    });
+    await ensureOk(response, "Voice loop");
+    var data = await response.json();
+    transcriptOutput.value = data.transcript || "";
+    replyOutput.value = data.reply || "";
+    if (!data.audio_b64) {
+      throw new Error("Voice loop returned no audio");
+    }
+    var speech = base64ToBlob(data.audio_b64, "audio/wav");
+    recordExchange(data.transcript || "", data.reply || "");
+    if (options.onAccepted) {
+      options.onAccepted();
+    }
+    log("Voice loop complete: " + formatBytes(speech.size) + " WAV");
+
+    activeAudioUrl = URL.createObjectURL(speech);
+    replyAudio.src = activeAudioUrl;
+    replyAudio.load();
+    saveReplyButton.disabled = false;
+    libraryReplyButton.disabled = false;
+    return data;
+  }
+
   async function runVoiceLoop(event) {
     if (event) {
       event.preventDefault();
@@ -1788,51 +1888,23 @@
     setBusy(runButton, "Running...");
     try {
       resetOutputs();
-      var form = new FormData();
-      if (activeWavFile) {
-        form.append("file", activeWavFile, activeWavFile.name || "input.wav");
-      } else {
-        var text = messageInput.value.trim();
+      var text = "";
+      if (!activeWavFile) {
+        text = messageInput.value.trim();
         if (!text) {
           throw new Error("Record audio, choose a WAV, or type a message");
         }
-        form.append("message", text);
-        log("Using typed message as transcript");
       }
-      if (conversation.length > 0) {
-        form.append("history", JSON.stringify(conversation));
-      }
-      if (voiceSelect.value) {
-        form.append("voice", voiceSelect.value);
-        var chosen = voiceSelect.options[voiceSelect.selectedIndex];
-        log("Speaking with cloned voice: " + (chosen ? chosen.textContent : voiceSelect.value));
-      }
-
-      log("POST /v1/voice");
-      var response = await fetch("/v1/voice", {
-        method: "POST",
-        body: form
+      await performVoiceTurn({
+        file: activeWavFile,
+        message: text,
+        onAccepted: function () {
+          // The turn is in the conversation now; clear the inputs so the
+          // next recording or message is a fresh follow-up.
+          clearActiveWav();
+          messageInput.value = "";
+        }
       });
-      await ensureOk(response, "Voice loop");
-      var data = await response.json();
-      transcriptOutput.value = data.transcript || "";
-      replyOutput.value = data.reply || "";
-      if (!data.audio_b64) {
-        throw new Error("Voice loop returned no audio");
-      }
-      var speech = base64ToBlob(data.audio_b64, "audio/wav");
-      recordExchange(data.transcript || "", data.reply || "");
-      // The turn is in the conversation now; clear the inputs so the next
-      // recording or message is a fresh follow-up.
-      clearActiveWav();
-      messageInput.value = "";
-      log("Voice loop complete: " + formatBytes(speech.size) + " WAV");
-
-      activeAudioUrl = URL.createObjectURL(speech);
-      replyAudio.src = activeAudioUrl;
-      replyAudio.load();
-      saveReplyButton.disabled = false;
-      libraryReplyButton.disabled = false;
       try {
         await replyAudio.play();
       } catch (error) {
@@ -3174,6 +3246,8 @@
     var percent = Math.min(100, Math.round(peak * 140));
     element.style.width = percent + "%";
     element.classList.toggle("hot", percent > 92);
+    // Hands-free reads the same peak the meter shows: one pass per frame.
+    return peak;
   }
 
   function resetVuInto(element) {
@@ -3426,6 +3500,346 @@
     }
   }
 
+  // ---------- hands-free voice chat ----------
+  // The conversation loop: leave the mic open, speak, pause, hear the
+  // reply, keep talking. Endpointing is client-side — frame peaks (the
+  // same ones the VU meter shows) run through a small state machine that
+  // adapts to the noise floor; a pause ends the turn and the clip goes
+  // through the same POST /v1/voice the form path uses. Half-duplex by
+  // design: while the reply plays, frames still drive the meter but are
+  // dropped, so the studio never hears itself. A generation token guards
+  // every await against stop/restart races.
+
+  function hfNewVad(framesPerSecond) {
+    return {
+      fps: framesPerSecond,
+      floor: HF_FLOOR_INIT,
+      speaking: false,
+      startRun: 0,
+      speechFrames: 0,
+      silentFrames: 0,
+      totalFrames: 0
+    };
+  }
+
+  // hfVadStep is the pure endpointing decision for one frame peak. No
+  // DOM, no captures — it can be driven with synthetic peaks to verify
+  // the thresholds without a microphone. Returns:
+  //   "idle"      quiet, still listening (trains the noise floor)
+  //   "hold"      over the start bar, not yet confirmed
+  //   "start"     speech confirmed; capture begins
+  //   "speech"    utterance continues
+  //   "end"       trailing silence ended the utterance
+  //   "force-end" utterance hit the length cap
+  function hfVadStep(vad, peak) {
+    var startBar = Math.min(HF_START_CEIL, Math.max(HF_START_PEAK, vad.floor * HF_START_MULT));
+    var stopBar = Math.max(HF_STOP_PEAK, vad.floor * HF_STOP_MULT);
+    if (!vad.speaking) {
+      if (peak >= startBar) {
+        vad.startRun += 1;
+        if (vad.startRun >= HF_START_FRAMES) {
+          vad.speaking = true;
+          vad.speechFrames = vad.startRun;
+          vad.silentFrames = 0;
+          vad.totalFrames = vad.startRun;
+          vad.startRun = 0;
+          return "start";
+        }
+        return "hold";
+      }
+      vad.startRun = 0;
+      // Only quiet listening frames train the floor, so reply playback
+      // bleed and speech never teach the studio that noise is normal.
+      vad.floor = vad.floor + HF_FLOOR_ALPHA * (peak - vad.floor);
+      return "idle";
+    }
+    vad.totalFrames += 1;
+    if (peak >= stopBar) {
+      vad.speechFrames += 1;
+      vad.silentFrames = 0;
+    } else {
+      vad.silentFrames += 1;
+    }
+    if (vad.totalFrames >= Math.round(vad.fps * HF_MAX_UTTERANCE_MS / 1000)) {
+      vad.speaking = false;
+      return "force-end";
+    }
+    if (vad.silentFrames >= Math.round(vad.fps * HF_HANG_MS / 1000)) {
+      vad.speaking = false;
+      return "end";
+    }
+    return "speech";
+  }
+
+  function hfHeardLabel() {
+    var elapsed = Math.max(0, (Date.now() - hfHeardStartedAt) / 1000);
+    var minutes = Math.floor(elapsed / 60);
+    var seconds = Math.floor(elapsed % 60);
+    return "Heard " + minutes + ":" + (seconds < 10 ? "0" : "") + seconds;
+  }
+
+  // hfSetState is the single writer for the hands-free state and its
+  // chip, and owns the two per-state timers: the "Heard m:ss" ticker
+  // while capturing, and the speaking watchdog that resumes listening if
+  // the 'ended' event never arrives (autoplay refusal, user pause).
+  function hfSetState(state, chipText) {
+    hfState = state;
+    if (hfChipTimer) {
+      window.clearInterval(hfChipTimer);
+      hfChipTimer = 0;
+    }
+    if (hfSpeakWatch) {
+      window.clearInterval(hfSpeakWatch);
+      hfSpeakWatch = 0;
+    }
+    if (state === "off") {
+      handsFreeStatus.hidden = true;
+      return;
+    }
+    handsFreeStatus.hidden = false;
+    handsFreeStateText.textContent = chipText || "";
+    if (state === "capturing") {
+      hfChipTimer = window.setInterval(function () {
+        handsFreeStateText.textContent = hfHeardLabel();
+      }, 250);
+    }
+    if (state === "speaking") {
+      hfSpeakWatch = window.setInterval(function () {
+        if (replyAudio.paused || replyAudio.ended) {
+          hfPlaybackSettled();
+        }
+      }, 1000);
+    }
+  }
+
+  function hfResetUtterance() {
+    hfRing = [];
+    hfRingLength = 0;
+    hfChunks = [];
+    hfChunksLength = 0;
+    if (hfVad) {
+      hfVad.speaking = false;
+      hfVad.startRun = 0;
+      hfVad.speechFrames = 0;
+      hfVad.silentFrames = 0;
+      hfVad.totalFrames = 0;
+    }
+  }
+
+  function hfHandleFrame(samples) {
+    var peak = updateVuInto(vuLevel, samples);
+    if (hfState !== "listening" && hfState !== "capturing") {
+      return;
+    }
+    var copy = new Float32Array(samples.length);
+    copy.set(samples);
+    if (hfState === "listening") {
+      hfRing.push(copy);
+      hfRingLength += copy.length;
+      var maxRing = Math.max(1, Math.round(hfVad.fps * HF_PREROLL_MS / 1000));
+      while (hfRing.length > maxRing) {
+        hfRingLength -= hfRing.shift().length;
+      }
+    } else {
+      hfChunks.push(copy);
+      hfChunksLength += copy.length;
+    }
+    var verdict = hfVadStep(hfVad, peak);
+    if (verdict === "start") {
+      // The ring holds the onset (pre-roll plus the confirming frames);
+      // it becomes the head of the capture so first syllables survive.
+      hfChunks = hfRing;
+      hfChunksLength = hfRingLength;
+      hfRing = [];
+      hfRingLength = 0;
+      hfHeardStartedAt = Date.now();
+      hfSetState("capturing", hfHeardLabel());
+    } else if (verdict === "end" || verdict === "force-end") {
+      hfEndpoint();
+    }
+  }
+
+  function hfEndpoint() {
+    var chunks = hfChunks;
+    var length = hfChunksLength;
+    var voicedFrames = hfVad.speechFrames;
+    var minVoiced = Math.max(1, Math.round(hfVad.fps * HF_MIN_SPEECH_MS / 1000));
+    hfResetUtterance();
+    if (voicedFrames < minVoiced || length === 0) {
+      // A click, a cough, a chair creak: not worth a round trip.
+      hfSetState("listening", "Listening…");
+      return;
+    }
+    var samples = mergeChunks(chunks, length);
+    var rate = hfCapture.sampleRate;
+    if (rate > LIVE_TARGET_RATE) {
+      samples = downsampleForLive(samples, rate);
+      rate = LIVE_TARGET_RATE;
+    }
+    var wavBlob = encodeWav(samples, rate);
+    var file = new File([wavBlob], "utterance.wav", { type: "audio/wav" });
+    hfSubmitUtterance(file);
+  }
+
+  async function hfSubmitUtterance(file) {
+    var token = hfSessionToken;
+    hfSetState("submitting", "Thinking…");
+    try {
+      resetOutputs();
+      await performVoiceTurn({ file: file });
+      if (!handsFree || token !== hfSessionToken) {
+        return;
+      }
+      hfFailures = 0;
+      hfSetState("speaking", "Speaking…");
+      try {
+        await replyAudio.play();
+      } catch (playError) {
+        // Nothing will ever fire 'ended' for a refused play; move on.
+        hfPlaybackSettled();
+      }
+    } catch (error) {
+      if (!handsFree || token !== hfSessionToken) {
+        return;
+      }
+      var message = error && error.message ? error.message : String(error);
+      if (error && error.status === 502 && message.indexOf("transcription returned no text") !== -1) {
+        // Whisper heard nothing worth words — not a failure, keep going.
+        hfSetState("listening", "Didn't catch that — still listening…");
+        return;
+      }
+      if (error && error.status === 429) {
+        // Another job holds the engines (a story render, most likely).
+        // Not this session's fault; never count it toward auto-stop.
+        hfSetState("listening", "Studio is busy — say that again in a moment");
+        return;
+      }
+      hfFailures += 1;
+      if (hfFailures >= HF_MAX_FAILURES) {
+        setError(new Error("Hands-free stopped after repeated failures: " + message));
+        stopHandsFree();
+        return;
+      }
+      log("Hands-free turn failed: " + message, "error");
+      hfSetState("listening", "Turn failed — still listening…");
+    }
+  }
+
+  function hfPlaybackSettled() {
+    if (!handsFree || hfState !== "speaking") {
+      return;
+    }
+    hfSetState("listening", "Listening…");
+  }
+
+  function setHandsFree(value) {
+    handsFree = value;
+    handsFreeButton.classList.toggle("active", value);
+    handsFreeButton.setAttribute("aria-pressed", value ? "true" : "false");
+    handsFreeButton.textContent = value ? "Stop hands-free" : "Hands-free";
+    syncControls();
+  }
+
+  async function startHandsFree() {
+    if (handsFree || handsFreeSetupPending || running || recording || recordSetupPending || live || cloneRecording || cloneSetupPending) {
+      return;
+    }
+    if (!canRecord()) {
+      setError(new Error("Audio recording is not available in this browser"));
+      return;
+    }
+    clearError();
+    handsFreeSetupPending = true;
+    syncControls();
+    var stream = null;
+    var audioContext = null;
+    var source = null;
+    var processor = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      });
+      var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      audioContext = new AudioContextClass();
+      source = audioContext.createMediaStreamSource(stream);
+      processor = audioContext.createScriptProcessor(4096, 1, 1);
+      var capture = {
+        active: true,
+        audioContext: audioContext,
+        processor: processor,
+        sampleRate: audioContext.sampleRate,
+        source: source,
+        stream: stream
+      };
+
+      processor.onaudioprocess = function (processEvent) {
+        if (!capture.active) {
+          return;
+        }
+        hfHandleFrame(processEvent.inputBuffer.getChannelData(0));
+        processEvent.outputBuffer.getChannelData(0).fill(0);
+      };
+
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+
+      stream.getAudioTracks().forEach(function (track) {
+        track.addEventListener("ended", function () {
+          if (hfCapture === capture) {
+            setError(new Error("Microphone was disconnected — hands-free stopped"));
+            stopHandsFree();
+          }
+        });
+      });
+
+      hfSessionToken += 1;
+      hfCapture = capture;
+      hfVad = hfNewVad(audioContext.sampleRate / 4096);
+      hfResetUtterance();
+      hfFailures = 0;
+      handsFreeSetupPending = false;
+      setHandsFree(true);
+      hfSetState("listening", "Listening…");
+      log("Hands-free started at " + audioContext.sampleRate + " Hz");
+    } catch (error) {
+      await cleanupRecorderResources({
+        audioContext: audioContext,
+        processor: processor,
+        source: source,
+        stream: stream
+      });
+      hfCapture = null;
+      handsFreeSetupPending = false;
+      syncControls();
+      setError(error);
+    }
+  }
+
+  async function stopHandsFree() {
+    if (!handsFree && !handsFreeSetupPending) {
+      return;
+    }
+    hfSessionToken += 1;
+    var capture = hfCapture;
+    hfCapture = null;
+    if (capture) {
+      capture.active = false;
+    }
+    hfSetState("off");
+    handsFreeSetupPending = false;
+    setHandsFree(false);
+    hfResetUtterance();
+    resetVuLevel();
+    if (capture) {
+      await cleanupRecorderResources(capture);
+    }
+    log("Hands-free stopped");
+  }
+
   function chooseWav(event) {
     clearError();
     var file = event.target.files && event.target.files[0];
@@ -3640,6 +4054,18 @@
       startLive();
     }
   });
+
+  handsFreeButton.addEventListener("click", function () {
+    if (handsFree || handsFreeSetupPending) {
+      stopHandsFree();
+    } else {
+      startHandsFree();
+    }
+  });
+  // Greenfield listeners: nothing else in the app observes replyAudio
+  // completion. Both are gated on the speaking state inside.
+  replyAudio.addEventListener("ended", hfPlaybackSettled);
+  replyAudio.addEventListener("error", hfPlaybackSettled);
 
   recordButton.addEventListener("pointerdown", startRecording);
   recordButton.addEventListener("pointerup", stopRecording);

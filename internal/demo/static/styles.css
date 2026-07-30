@@ -485,6 +485,24 @@ textarea[readonly] {
   50% { box-shadow: 0 0 0 7px rgba(240, 166, 75, 0); }
 }
 
+/* Hands-free wears ready-green rather than live-amber: same specificity
+   as .live-button.active, so this must come after it. */
+.hf-button.active {
+  border-color: var(--ready);
+  background: var(--ready-soft);
+  color: var(--ready);
+  animation: hf-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes hf-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(88, 201, 124, 0.45); }
+  50% { box-shadow: 0 0 0 7px rgba(88, 201, 124, 0); }
+}
+
+.hf-status {
+  font-variant-numeric: tabular-nums;
+}
+
 .file-button {
   position: relative;
   display: inline-flex;
@@ -1457,7 +1475,8 @@ pre {
 @media (prefers-reduced-motion: reduce) {
   .led.starting,
   .record-button.recording,
-  .live-button.active {
+  .live-button.active,
+  .hf-button.active {
     animation: none;
   }
 }

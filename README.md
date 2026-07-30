@@ -47,7 +47,9 @@ profiles trade resident models against your card's budget.
 
 - **Talk** — a multi-turn voice loop: record or type, whisper transcribes,
   llama replies, TTS speaks the answer in ~1.5 s round trips. Live
-  transcription re-transcribes your growing take as you speak.
+  transcription re-transcribes your growing take as you speak — or go
+  hands-free: the mic stays open, a pause ends each turn, and the reply
+  speaks back before it listens again.
 - **Voices** — clone a voice from 5–15 seconds of reference audio, or design
   one from a written description across three voice-design engines
   (VoxCPM2, OmniVoice, Qwen3 TTS), audition it, and keep it in a library.

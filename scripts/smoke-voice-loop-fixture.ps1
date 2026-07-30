@@ -230,6 +230,23 @@ try {
   [System.IO.File]::WriteAllBytes((Join-Path (Resolve-Path $OutDir).Path "voice-reply.wav"), [Convert]::FromBase64String($voice.audio_b64))
   $voiceWavInfo = Get-WavInfo -Path $voiceWavPath
 
+  # Hands-free pattern: a second WAV turn carrying the first exchange as
+  # history, exactly as the browser submits consecutive utterances.
+  $historyJson = ConvertTo-Json -Compress -Depth 4 @(
+    @{ role = "user"; text = $voice.transcript },
+    @{ role = "assistant"; text = $voice.reply }
+  )
+  $voice2 = Invoke-RestMethod -Uri "http://127.0.0.1:$GatewayPort/v1/voice" -Method Post -Form @{
+    file = Get-Item $inputWav
+    history = $historyJson
+  }
+  if ($voice2.transcript -ne "fixture transcript") {
+    throw "unexpected second-turn transcript: $($voice2.transcript)"
+  }
+  if (-not $voice2.reply -or -not $voice2.audio_b64) {
+    throw "second voice turn missing reply or audio"
+  }
+
   $imageBody = @{ prompt = "fixture image"; size = "64x64"; response_format = "b64_json" } | ConvertTo-Json
   $image = Invoke-RestMethod -Uri "http://127.0.0.1:$GatewayPort/v1/images/generations" -Method Post -ContentType "application/json" -Body $imageBody
   if (-not $image.data -or -not $image.data[0].b64_json) {

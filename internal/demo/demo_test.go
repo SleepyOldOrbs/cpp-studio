@@ -50,6 +50,12 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "chatModelWarn") {
 		t.Fatalf("expected chat model fit warning marker, got %q", body)
 	}
+	if !strings.Contains(body, "handsFreeButton") {
+		t.Fatalf("expected hands-free toggle marker, got %q", body)
+	}
+	if !strings.Contains(body, "handsFreeStatus") {
+		t.Fatalf("expected hands-free status chip marker, got %q", body)
+	}
 	if !strings.Contains(body, "storyLibraryButton") {
 		t.Fatalf("expected story library marker, got %q", body)
 	}
@@ -304,6 +310,24 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/app.js",
 			contentType: "javascript",
 			needle:      "chatModelHooks",
+		},
+		{
+			name:        "javascript hands-free",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "startHandsFree",
+		},
+		{
+			name:        "javascript shared voice turn",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "performVoiceTurn",
+		},
+		{
+			name:        "css hands-free",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".hf-button",
 		},
 		{
 			name:        "css byom fit warning",
