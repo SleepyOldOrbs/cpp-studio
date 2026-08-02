@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"cpp-studio/internal/audiobook"
 	"cpp-studio/internal/config"
 	"cpp-studio/internal/engine"
 	"cpp-studio/internal/lifecycle"
@@ -4441,6 +4442,9 @@ func TestAudiobookUploadNarratesAndServes(t *testing.T) {
 	if job.Result["title"] != "The Keeper" {
 		t.Fatalf("unexpected result: %+v", job.Result)
 	}
+	if job.Result["engine"] != audiobook.DefaultEngineID {
+		t.Fatalf("expected default audiobook engine provenance, got %+v", job.Result)
+	}
 
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, job.Result["artifactUrl"], nil))
@@ -4453,6 +4457,243 @@ func TestAudiobookUploadNarratesAndServes(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "The Keeper") {
 		t.Fatalf("list: got %d: %s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestAudiobookDramaBoxSubprocessRoutesAndRecordsProvenance(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio":    helperEngine("speech-tone"),
+		"dramabox": helperEngine("speech-tone"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := postAudiobook(t, router, map[string]string{
+		"engine":    audiobook.DramaBoxEngineID,
+		"direction": "Quiet, precise documentary delivery.",
+	})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("submit: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	job := waitGatewayAudiobookJob(t, router, created.ID)
+	if job.Status != "complete" || job.Result["engine"] != audiobook.DramaBoxEngineID {
+		t.Fatalf("unexpected job: %+v", job)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/audiobooks", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"engine":"dramabox"`) || !strings.Contains(rec.Body.String(), `"direction":"Quiet, precise documentary delivery."`) {
+		t.Fatalf("missing DramaBox manifest provenance: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAudiobookDramaBoxResidentServerSupportsTextOnlyAndClone(t *testing.T) {
+	t.Chdir(t.TempDir())
+	type capturedSpeech struct {
+		body audioServerSpeechRequest
+		raw  string
+	}
+	requests := make(chan capturedSpeech, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		data, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+		}
+		var body audioServerSpeechRequest
+		if err := json.Unmarshal(data, &body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		requests <- capturedSpeech{body: body, raw: string(data)}
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(wav.SyntheticTone(1600))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig(map[string]config.EngineConfig{
+		"dramabox": {
+			Command:   "audiocpp_server",
+			Mode:      "server",
+			HealthURL: upstream.URL + "/health",
+		},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := postAudiobook(t, router, map[string]string{"engine": "dramabox", "direction": "Measured."})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("text-only submit: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&created)
+	waitGatewayAudiobookJob(t, router, created.ID)
+	textOnly := <-requests
+	if textOnly.body.VoiceRef != "" || textOnly.body.ReferenceText != "" {
+		t.Fatalf("text-only DramaBox unexpectedly sent a reference: %+v", textOnly.body)
+	}
+	if strings.Contains(textOnly.raw, "voice_ref") || strings.Contains(textOnly.raw, "reference_text") {
+		t.Fatalf("text-only DramaBox must omit reference fields, got %s", textOnly.raw)
+	}
+
+	var voiceBody bytes.Buffer
+	writer := multipart.NewWriter(&voiceBody)
+	_ = writer.WriteField("name", "Book Clone")
+	_ = writer.WriteField("transcript", "reference words")
+	part, _ := writer.CreateFormFile("file", "reference.wav")
+	_, _ = part.Write(validWAVBytes())
+	_ = writer.Close()
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voices", &voiceBody)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create clone: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var clone voiceCloneSummary
+	_ = json.NewDecoder(rec.Body).Decode(&clone)
+
+	rec = postAudiobook(t, router, map[string]string{"engine": "dramabox", "voice": clone.ID})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("clone submit: got %d: %s", rec.Code, rec.Body.String())
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&created)
+	waitGatewayAudiobookJob(t, router, created.ID)
+	cloned := <-requests
+	if !strings.HasSuffix(cloned.body.VoiceRef, "/ref.wav") || cloned.body.ReferenceText != "reference words" {
+		t.Fatalf("DramaBox clone reference was not forwarded: %+v", cloned.body)
+	}
+}
+
+func TestAudiobookEngineValidationAndAvailabilityStatuses(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio":  helperEngine("speech-slow"),
+		"ffmpeg": helperEngine("speech"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	tests := []struct {
+		name   string
+		fields map[string]string
+	}{
+		{name: "unknown configured engine", fields: map[string]string{"engine": "ffmpeg"}},
+		{name: "direction on audio", fields: map[string]string{"direction": "Dramatic."}},
+		{name: "overlong direction", fields: map[string]string{"engine": "dramabox", "direction": strings.Repeat("x", audiobook.MaxDirectionRunes+1)}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rec := postAudiobook(t, router, test.fields)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	unconfiguredConfig := testConfig(map[string]config.EngineConfig{
+		"ffmpeg": helperEngine("speech"),
+	})
+	unconfigured := NewRouter(unconfiguredConfig, lifecycle.NewManager(unconfiguredConfig))
+	for _, fields := range []map[string]string{nil, {"engine": "dramabox"}} {
+		rec := postAudiobook(t, unconfigured, fields)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected unconfigured engine 503, got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	first := postAudiobook(t, router, nil)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first submit: got %d: %s", first.Code, first.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(first.Body).Decode(&created)
+	second := postAudiobook(t, router, nil)
+	if second.Code != http.StatusConflict {
+		t.Fatalf("expected busy 409, got %d: %s", second.Code, second.Body.String())
+	}
+	cancel := httptest.NewRecorder()
+	router.ServeHTTP(cancel, httptest.NewRequest(http.MethodPost, "/v1/jobs/"+created.ID+"/cancel", nil))
+}
+
+func TestAudiobookAcceptsExactDirectionRuneBoundary(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"dramabox": helperEngine("speech-slow"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	rec := postAudiobook(t, router, map[string]string{
+		"engine":    "dramabox",
+		"direction": strings.Repeat("é", audiobook.MaxDirectionRunes),
+	})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected exact rune boundary to be accepted, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	cancel := httptest.NewRecorder()
+	router.ServeHTTP(cancel, httptest.NewRequest(http.MethodPost, "/v1/jobs/"+created.ID+"/cancel", nil))
+	if cancel.Code != http.StatusOK {
+		t.Fatalf("cancel: got %d: %s", cancel.Code, cancel.Body.String())
+	}
+}
+
+func postAudiobook(t *testing.T, router http.Handler, fields map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "facts.txt")
+	if err != nil {
+		t.Fatalf("create audiobook upload: %v", err)
+	}
+	_, _ = part.Write([]byte("A documented fact. Another documented fact."))
+	for key, value := range fields {
+		_ = writer.WriteField(key, value)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close audiobook upload: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audiobooks", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func waitGatewayAudiobookJob(t *testing.T, router http.Handler, id string) struct {
+	Status string            `json:"status"`
+	Error  string            `json:"error"`
+	Result map[string]string `json:"result"`
+} {
+	t.Helper()
+	var job struct {
+		Status string            `json:"status"`
+		Error  string            `json:"error"`
+		Result map[string]string `json:"result"`
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id, nil))
+		if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+			t.Fatalf("decode audiobook job: %v", err)
+		}
+		if job.Status == "complete" || job.Status == "failed" || job.Status == "cancelled" {
+			return job
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("audiobook job %s did not finish: %+v", id, job)
+	return job
 }
 
 func TestAudiobookRejectsBadUploads(t *testing.T) {

@@ -55,7 +55,10 @@ profiles trade resident models against your card's budget.
   (VoxCPM2, OmniVoice, Qwen3 TTS), audition it, and keep it in a library.
 - **Audiobook** — upload a `.txt`, `.md`, or `.epub`; it is chunked on
   sentence boundaries, narrated chunk by chunk in any library voice, and
-  stitched into one WAV, with live progress and cancellation.
+  stitched into one WAV, with live progress and cancellation. The optional
+  audio.cpp 0.5 DramaBox engine adds prompt-directed expressive delivery for
+  factual books with no per-character/API fee; the existing fast narrator
+  remains the default.
 - **Story desk** — two modes, one desk. **Grounded**: paste sources, llama
   writes a fact-cited script for your cast, and no line ships that a source
   does not support. **Sketch**: give it a premise and a style instead, and
@@ -154,6 +157,22 @@ OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
 | `GET /v1/library` | persistent saved outputs |
 | `POST /v1/engines/{name}/{start,stop,reload}` · `/v1/engines/profiles/{name}` | engine power + VRAM profiles |
 | `GET /health` · `GET /v1/models/catalog` · `GET /v1/gpu` | health, model states, VRAM |
+
+### Optional expressive factual audiobooks
+
+DramaBox is an experimental English model from audio.cpp `release-0.5`. It
+can act a factual passage from a short performance direction, with an
+optional stored voice reference. To add it, review the upstream LTX-2
+Community License and model card, download
+`DramaBox-GGUF/dramabox-q8_0.gguf` from
+[`audio-cpp/audio.cpp-gguf`](https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main/DramaBox-GGUF),
+then copy `config.dramabox-local.example.json` and edit its one `root` value.
+The paired `dramabox-server.example.json` deliberately starts on CPU and
+lazy-loads the model: the 18,942,803,808-byte file is larger than the
+reference RTX 5080's 16,303 MiB VRAM. CPU latency and CUDA fit are unverified;
+keep the fast local narrator for normal use until a real chapter benchmark
+proves otherwise. Local generation avoids a hosted usage bill, but storage,
+compute, electricity, and licence obligations still exist.
 
 ## Verification
 

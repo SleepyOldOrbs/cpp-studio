@@ -16,6 +16,12 @@ import (
 )
 
 const (
+	// DefaultSpeechEngineID is the studio's backward-compatible speech lane.
+	DefaultSpeechEngineID = "audio"
+	// DramaBoxSpeechEngineID is the audio.cpp expressive, text-only-capable
+	// speech lane used by audiobooks.
+	DramaBoxSpeechEngineID = "dramabox"
+
 	DefaultTranscriptionTimeout = 120 * time.Second
 	DefaultSpeechTimeout        = 180 * time.Second
 	DefaultImageTimeout         = 300 * time.Second
@@ -46,6 +52,12 @@ const (
 	maxImagePixels       = MaxImageDimension * MaxImageDimension
 )
 
+// SpeechEngineAllowsTextOnly reports whether a resident speech server may
+// omit voice_ref. Qwen requires a configured reference; DramaBox does not.
+func SpeechEngineAllowsTextOnly(engineName string) bool {
+	return engineName == DramaBoxSpeechEngineID
+}
+
 // Voice identifies a cloned voice reference for speech synthesis: the
 // reference WAV on disk plus its transcript. A nil *Voice means the config
 // default voice.
@@ -68,6 +80,12 @@ func SpeechSpec(input string) Spec {
 // --reference-text. The transcript is sanitized like the spoken text (same
 // ANSI argv constraint).
 func SpeechVoiceSpec(input string, voice *Voice) Spec {
+	return SpeechVoiceSpecFor(DefaultSpeechEngineID, input, voice)
+}
+
+// SpeechVoiceSpecFor builds the common audio.cpp CLI contract for a named
+// speech engine. The legacy wrappers continue to select "audio".
+func SpeechVoiceSpecFor(engineName string, input string, voice *Voice) Spec {
 	text := sanitizeSpeechText(input)
 	var overrides map[string]string
 	if voice != nil {
@@ -77,8 +95,8 @@ func SpeechVoiceSpec(input string, voice *Voice) Spec {
 		}
 	}
 	return Spec{
-		Engine:        "audio",
-		Label:         "audio speech command",
+		Engine:        engineName,
+		Label:         engineName + " speech command",
 		Timeout:       DefaultSpeechTimeout,
 		OutputPattern: "cpp-studio-speech-*.wav",
 		OutputLabel:   "generated wav",

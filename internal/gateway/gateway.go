@@ -118,7 +118,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	r.stories = story.NewManager(storyOptions)
 	r.audiobooks = audiobook.NewManager(audiobook.ManagerOptions{
 		ReserveEngine: r.reserveEngine,
-		Synthesize:    r.synthesizeSpeech,
+		Synthesize:    r.synthesizeAudiobook,
 		Jobs:          r.jobs,
 	})
 
@@ -945,14 +945,29 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 		}
-
-		id, chunks, err := r.audiobooks.Submit(req.Context(), audiobook.Request{
-			Title:   title,
-			Text:    text,
-			VoiceID: voiceID,
+		bookRequest, err := audiobook.NormalizeRequest(audiobook.Request{
+			Title:     title,
+			Text:      text,
+			VoiceID:   voiceID,
+			EngineID:  req.FormValue("engine"),
+			Direction: req.FormValue("direction"),
 		})
 		if err != nil {
-			writeJSONError(w, http.StatusConflict, err.Error())
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if _, ok := r.engine(bookRequest.EngineID); !ok {
+			writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("audiobook engine %q is not configured; add it to config or choose another narrator", bookRequest.EngineID))
+			return
+		}
+
+		id, chunks, err := r.audiobooks.Submit(req.Context(), bookRequest)
+		if err != nil {
+			status := http.StatusConflict
+			if audiobook.IsRequestError(err) {
+				status = http.StatusBadRequest
+			}
+			writeJSONError(w, status, err.Error())
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -1078,12 +1093,19 @@ const audioServerModelID = "tts"
 // otherwise. reserved skips taking the engine's slot for callers that
 // already hold it (story jobs reserve audio for the whole run).
 func (r *router) speak(ctx context.Context, text string, clonedVoice *engine.Voice, reserved bool) ([]byte, error) {
-	engineCfg, ok := r.engine("audio")
+	return r.speakWithEngine(ctx, engine.DefaultSpeechEngineID, text, clonedVoice, reserved)
+}
+
+// speakWithEngine synthesizes through one configured speech backend. The
+// normal audio server retains its required default voice reference, while
+// DramaBox supports both text-only requests and explicit stored clones.
+func (r *router) speakWithEngine(ctx context.Context, engineName string, text string, clonedVoice *engine.Voice, reserved bool) ([]byte, error) {
+	engineCfg, ok := r.engine(engineName)
 	if !ok {
-		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "audio" is not configured`}
+		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("engine %q is not configured", engineName)}
 	}
 	if engineCfg.Mode != "server" {
-		spec := engine.SpeechVoiceSpec(text, clonedVoice)
+		spec := engine.SpeechVoiceSpecFor(engineName, text, clonedVoice)
 		var res engine.Result
 		var err error
 		if reserved {
@@ -1098,15 +1120,15 @@ func (r *router) speak(ctx context.Context, text string, clonedVoice *engine.Voi
 	}
 
 	if !reserved {
-		release, ok := r.engines.Reserve("audio")
+		release, ok := r.engines.Reserve(engineName)
 		if !ok {
-			return nil, &engine.Error{Kind: engine.KindBusy, Message: `engine "audio" is busy`}
+			return nil, &engine.Error{Kind: engine.KindBusy, Message: fmt.Sprintf("engine %q is busy", engineName)}
 		}
 		defer release()
 	}
 	upstreamURL, ok := inferEngineURL(engineCfg.HealthURL, "/v1/audio/speech")
 	if !ok {
-		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "audio" healthUrl must end in /health to infer /v1/audio/speech`}
+		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("engine %q healthUrl must end in /health to infer /v1/audio/speech", engineName)}
 	}
 	refPath := engineCfg.DefaultVoiceRef
 	refText := engineCfg.DefaultVoiceText
@@ -1114,8 +1136,8 @@ func (r *router) speak(ctx context.Context, text string, clonedVoice *engine.Voi
 		refPath = clonedVoice.RefWAVPath
 		refText = clonedVoice.RefText
 	}
-	if refPath == "" {
-		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `server-mode engine "audio" needs defaultVoiceRef configured`}
+	if refPath == "" && !engine.SpeechEngineAllowsTextOnly(engineName) {
+		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("server-mode engine %q needs defaultVoiceRef configured", engineName)}
 	}
 	payload, err := json.Marshal(audioServerSpeechRequest{
 		Model:         audioServerModelID,
@@ -1137,30 +1159,30 @@ func (r *router) speak(ctx context.Context, text string, clonedVoice *engine.Voi
 
 	resp, err := r.client.Do(upstreamReq)
 	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("audio upstream request failed: %v", err)}
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("%s upstream request failed: %v", engineName, err)}
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, engine.MaxSpeechOutputBytes+1))
 	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read audio upstream response: %v", err)}
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read %s upstream response: %v", engineName, err)}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("audio upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))}
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("%s upstream returned status %d: %s", engineName, resp.StatusCode, strings.TrimSpace(string(data)))}
 	}
 	if int64(len(data)) > engine.MaxSpeechOutputBytes {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: "audio upstream produced an oversized WAV"}
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("%s upstream produced an oversized WAV", engineName)}
 	}
 	if err := wav.ValidateBytes(data); err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("audio upstream produced an invalid WAV: %v", err)}
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("%s upstream produced an invalid WAV: %v", engineName, err)}
 	}
-	r.manager.MarkSuccess("audio")
+	r.manager.MarkSuccess(engineName)
 	return data, nil
 }
 
 type audioServerSpeechRequest struct {
 	Model         string `json:"model"`
 	Input         string `json:"input"`
-	VoiceRef      string `json:"voice_ref"`
+	VoiceRef      string `json:"voice_ref,omitempty"`
 	ReferenceText string `json:"reference_text,omitempty"`
 }
 
@@ -3011,6 +3033,16 @@ func (r *router) synthesizeSpeech(ctx context.Context, text string, voiceID stri
 		return nil, err
 	}
 	return r.speak(ctx, text, clonedVoice, true)
+}
+
+// synthesizeAudiobook routes each prepared chunk through the engine selected
+// on the book request. The manager already holds that engine's reservation.
+func (r *router) synthesizeAudiobook(ctx context.Context, text string, voiceID string, engineID string) ([]byte, error) {
+	clonedVoice, err := r.resolveVoice(voiceID)
+	if err != nil {
+		return nil, err
+	}
+	return r.speakWithEngine(ctx, engineID, text, clonedVoice, true)
 }
 
 // synthesisFingerprint names the audio synthesis configuration for take

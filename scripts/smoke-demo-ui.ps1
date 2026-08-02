@@ -7,7 +7,8 @@ param(
 
 # Exercises every API flow the browser demo (internal/demo/static/app.js)
 # makes, against the deterministic fixture engines: demo assets, health,
-# transcription, the voice loop with conversation history, voice cloning
+# transcription, the voice loop with conversation history, voice cloning,
+# a DramaBox-routed factual audiobook with persisted provenance,
 # (create / list / play / speak-with / delete), image generation, and a
 # fixed-voice story with a stitched WAV artifact.
 
@@ -129,6 +130,12 @@ $config = [ordered]@{
       mode = "subprocess"
       requestTimeoutSeconds = 30
     }
+    dramabox = [ordered]@{
+      command = $fixtureCommand
+      args = @("speech")
+      mode = "subprocess"
+      requestTimeoutSeconds = 30
+    }
     voicedesign = [ordered]@{
       command = $fixtureCommand
       args = @("design")
@@ -178,15 +185,24 @@ try {
   }
   $llamaPid = $health.engines.llama.pid
   $visionPid = $health.engines.vision.pid
+  if (-not ($health.engines.PSObject.Properties.Name -contains "dramabox")) {
+    throw "health did not report the configured DramaBox engine"
+  }
 
   # Demo assets, exactly as the browser fetches them.
   $index = Invoke-WebRequest -Uri "$base/demo/" -UseBasicParsing
   if ($index.Content -notlike "*cpp-studio local studio*") {
     throw "demo index is missing its title marker"
   }
+  if ($index.Content -notlike "*audiobookDramaBoxOption*" -or $index.Content -notlike "*audiobookDramaBoxWarning*") {
+    throw "demo index is missing DramaBox audiobook controls"
+  }
   $appJs = Invoke-WebRequest -Uri "$base/demo/app.js" -UseBasicParsing
   if ($appJs.Content -notlike "*refreshStoryLibrary*") {
     throw "demo app.js is missing its marker"
+  }
+  if ($appJs.Content -notlike "*updateAudiobookEngines*" -or $appJs.Content -notlike '*form.append("direction"*') {
+    throw "demo app.js is missing DramaBox health or direction behavior"
   }
   $css = Invoke-WebRequest -Uri "$base/demo/styles.css" -UseBasicParsing
   if ($css.Content -notlike "*.story-library-item*") {
@@ -288,6 +304,41 @@ try {
   }
   Assert-WavBytes -Bytes ([Convert]::FromBase64String($describe.audio_b64)) -Label "image description"
 
+  # Expressive factual audiobook: the model-free fixture stands in for the
+  # DramaBox executable, but the browser-facing selection, prompt path,
+  # selected-engine routing, job lifecycle, manifest, and artifact are real.
+  $bookTextPath = Join-Path (Resolve-Path $OutDir).Path "facts.txt"
+  Set-Content -Encoding UTF8 -Path $bookTextPath -Value "Saturn is the sixth planet from the Sun. Its rings contain ice and rock."
+  $bookDirection = "Warm, precise documentary delivery."
+  $bookCreate = Invoke-RestMethod -Uri "$base/v1/audiobooks" -Method Post -Form @{
+    file = Get-Item $bookTextPath
+    title = "Smoke Facts"
+    engine = "dramabox"
+    direction = $bookDirection
+  }
+  if (-not $bookCreate.id -or $bookCreate.chunks -lt 1) {
+    throw "unexpected audiobook create response: $($bookCreate | ConvertTo-Json -Depth 4)"
+  }
+  $bookJob = $null
+  $bookDeadline = (Get-Date).AddSeconds(30)
+  do {
+    Start-Sleep -Milliseconds 100
+    $bookJob = Invoke-RestMethod "$base/v1/jobs/$($bookCreate.id)"
+    if ($bookJob.status -eq "failed" -or $bookJob.status -eq "cancelled") {
+      throw "DramaBox audiobook failed: $($bookJob | ConvertTo-Json -Depth 6)"
+    }
+  } until ($bookJob.status -eq "complete" -or (Get-Date) -gt $bookDeadline)
+  if ($bookJob.status -ne "complete" -or $bookJob.result.engine -ne "dramabox") {
+    throw "DramaBox audiobook did not complete with provenance: $($bookJob | ConvertTo-Json -Depth 6)"
+  }
+  $books = Invoke-RestMethod "$base/v1/audiobooks"
+  $bookManifest = $books.audiobooks | Where-Object { $_.id -eq $bookCreate.id }
+  if (-not $bookManifest -or $bookManifest.engine -ne "dramabox" -or $bookManifest.direction -ne $bookDirection) {
+    throw "DramaBox audiobook manifest lost provenance: $($books | ConvertTo-Json -Depth 6)"
+  }
+  $bookWav = Invoke-WebRequest -Uri "$base$($bookJob.result.artifactUrl)" -UseBasicParsing
+  Assert-WavBytes -Bytes $bookWav.Content -Label "DramaBox audiobook artifact"
+
   # Fixed-voice story: every line synthesized through the audio engine and
   # stitched into one WAV artifact.
   $storyBody = [ordered]@{
@@ -386,6 +437,9 @@ try {
     designed_voice = $designedVoice.id
     image_bytes = $png.Length
     image_description = $describe.description
+    audiobook = $bookCreate.id
+    audiobook_engine = $bookJob.result.engine
+    audiobook_wav_bytes = $bookWav.Content.Length
     story = $created.id
     story_status = $status.status
     story_wav_bytes = $storyWav.Content.Length

@@ -3,6 +3,7 @@ package audiobook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,12 +11,29 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"cpp-studio/internal/engine"
 	"cpp-studio/internal/jobs"
 	"cpp-studio/internal/wav"
 )
 
 const DefaultRootDir = "out/audiobooks"
+
+const (
+	// DefaultEngineID preserves the original audiobook narrator when a
+	// caller does not opt into an expressive backend.
+	DefaultEngineID = engine.DefaultSpeechEngineID
+	// DramaBoxEngineID is the only expressive engine accepted by the
+	// audiobook contract in this release.
+	DramaBoxEngineID = engine.DramaBoxSpeechEngineID
+	// MaxDirectionRunes bounds user-authored delivery direction before it is
+	// repeated for every narration chunk.
+	MaxDirectionRunes = 500
+	// DefaultDramaBoxDirection keeps factual narration restrained when the
+	// user selects DramaBox without writing custom direction.
+	DefaultDramaBoxDirection = "Warm, measured documentary narration with clear diction, restrained emotion, and thoughtful pauses."
+)
 
 // ArtifactName is the stitched narration file inside an audiobook's dir.
 const ArtifactName = "book.wav"
@@ -30,8 +48,9 @@ const artifactPad = 300 * time.Millisecond
 // ReserveEngineFunc reserves the audio engine for the whole narration run.
 type ReserveEngineFunc func(ctx context.Context, name string) (func(), bool)
 
-// SynthesizeFunc speaks one chunk; voiceID "" means the studio default.
-type SynthesizeFunc func(ctx context.Context, text string, voiceID string) ([]byte, error)
+// SynthesizeFunc speaks one chunk through engineID; voiceID "" means that
+// engine's default or, for DramaBox, its supported text-only mode.
+type SynthesizeFunc func(ctx context.Context, text string, voiceID string, engineID string) ([]byte, error)
 
 type ManagerOptions struct {
 	RootDir       string
@@ -41,11 +60,14 @@ type ManagerOptions struct {
 	Now           func() time.Time
 }
 
-// Request is a validated narration order: extracted text plus voice and title.
+// Request carries narration intent. NormalizeRequest and Submit validate and
+// normalize its engine and direction before any job starts.
 type Request struct {
-	Title   string
-	Text    string
-	VoiceID string
+	Title     string
+	Text      string
+	VoiceID   string
+	EngineID  string
+	Direction string
 }
 
 // Manifest describes one finished audiobook on disk.
@@ -53,6 +75,8 @@ type Manifest struct {
 	ID              string    `json:"id"`
 	Title           string    `json:"title"`
 	VoiceID         string    `json:"voiceId,omitempty"`
+	EngineID        string    `json:"engine,omitempty"`
+	Direction       string    `json:"direction,omitempty"`
 	Chunks          int       `json:"chunks"`
 	DurationSeconds int       `json:"durationSeconds"`
 	CreatedAt       time.Time `json:"createdAt"`
@@ -90,11 +114,72 @@ func NewManager(opts ManagerOptions) *Manager {
 	}
 }
 
+// RequestError identifies invalid audiobook intent. HTTP callers map these
+// errors to 400, while active-job and reservation conflicts remain 409.
+type RequestError struct {
+	message string
+}
+
+func (e *RequestError) Error() string { return e.message }
+
+func requestErrorf(format string, args ...any) error {
+	return &RequestError{message: fmt.Sprintf(format, args...)}
+}
+
+// IsRequestError reports whether err is safe to classify as invalid input.
+func IsRequestError(err error) bool {
+	var requestErr *RequestError
+	return errors.As(err, &requestErr)
+}
+
+// NormalizeRequest applies the public engine/direction policy without
+// touching the document. It is shared by the HTTP boundary and Manager so
+// direct callers receive the same validation.
+func NormalizeRequest(req Request) (Request, error) {
+	req.EngineID = strings.ToLower(strings.TrimSpace(req.EngineID))
+	if req.EngineID == "" {
+		req.EngineID = DefaultEngineID
+	}
+	if req.EngineID != DefaultEngineID && req.EngineID != DramaBoxEngineID {
+		return Request{}, requestErrorf("audiobook engine must be audio or dramabox, got %q", req.EngineID)
+	}
+	req.Direction = strings.TrimSpace(req.Direction)
+	if utf8.RuneCountInString(req.Direction) > MaxDirectionRunes {
+		return Request{}, requestErrorf("audiobook direction must be at most %d characters", MaxDirectionRunes)
+	}
+	if req.EngineID == DefaultEngineID && req.Direction != "" {
+		return Request{}, requestErrorf("audiobook direction is only supported with dramabox")
+	}
+	if req.EngineID == DramaBoxEngineID && req.Direction == "" {
+		req.Direction = DefaultDramaBoxDirection
+	}
+	return req, nil
+}
+
+// BuildDramaBoxPrompt places delivery direction outside a single quoted
+// source passage. Double-quote punctuation is changed to apostrophes so
+// neither source nor direction can close that passage early; all source
+// words remain unchanged.
+func BuildDramaBoxPrompt(direction, chunk string) string {
+	direction = strings.Join(strings.Fields(normalizePromptQuotes(direction)), " ")
+	chunk = normalizePromptQuotes(chunk)
+	return direction + ` "` + chunk + `"`
+}
+
+func normalizePromptQuotes(value string) string {
+	return strings.NewReplacer(`"`, `'`, "“", `'`, "”", `'`).Replace(value)
+}
+
 // Submit validates, chunks, and starts a narration job. One audiobook runs
 // at a time: narration monopolizes the audio engine for minutes.
 func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) {
 	if m.synthesize == nil {
-		return "", 0, fmt.Errorf(`audiobooks need a configured "audio" engine`)
+		return "", 0, requestErrorf("audiobooks need a configured speech engine")
+	}
+	var err error
+	req, err = NormalizeRequest(req)
+	if err != nil {
+		return "", 0, err
 	}
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
@@ -102,10 +187,10 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 	}
 	chunks := Chunk(req.Text, DefaultChunkChars)
 	if len(chunks) == 0 {
-		return "", 0, fmt.Errorf("document contains no narratable text")
+		return "", 0, requestErrorf("document contains no narratable text")
 	}
 	if len(chunks) > MaxChunks {
-		return "", 0, fmt.Errorf("document needs %d chunks, max is %d; narrate it in parts", len(chunks), MaxChunks)
+		return "", 0, requestErrorf("document needs %d chunks, max is %d; narrate it in parts", len(chunks), MaxChunks)
 	}
 
 	m.mu.Lock()
@@ -116,9 +201,9 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 	var release func()
 	if m.reserveEngine != nil {
 		var ok bool
-		release, ok = m.reserveEngine(ctx, "audio")
+		release, ok = m.reserveEngine(ctx, req.EngineID)
 		if !ok {
-			return "", 0, fmt.Errorf(`engine "audio" is busy`)
+			return "", 0, fmt.Errorf("engine %q is busy", req.EngineID)
 		}
 	}
 	m.counter++
@@ -130,11 +215,11 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 		m.registry.Track(id, "audiobook", cancel)
 	}
 
-	go m.run(jobCtx, id, title, req.VoiceID, chunks, release)
+	go m.run(jobCtx, id, title, req, chunks, release)
 	return id, len(chunks), nil
 }
 
-func (m *Manager) run(ctx context.Context, id, title, voiceID string, chunks []string, release func()) {
+func (m *Manager) run(ctx context.Context, id, title string, req Request, chunks []string, release func()) {
 	defer func() {
 		if release != nil {
 			release()
@@ -147,33 +232,68 @@ func (m *Manager) run(ctx context.Context, id, title, voiceID string, chunks []s
 		m.mu.Unlock()
 	}()
 
-	clips := make([][]byte, 0, len(chunks))
+	if err := os.MkdirAll(m.rootDir, 0o755); err != nil {
+		if m.registry != nil {
+			m.registry.Fail(id, "create audiobook staging dir: "+err.Error())
+		}
+		return
+	}
+	clipDir, err := os.MkdirTemp(m.rootDir, "."+id+".clips-")
+	if err != nil {
+		if m.registry != nil {
+			m.registry.Fail(id, "create audiobook staging dir: "+err.Error())
+		}
+		return
+	}
+	defer os.RemoveAll(clipDir)
+	clipPaths := make([]string, 0, len(chunks))
 	for i, chunk := range chunks {
 		if ctx.Err() != nil {
 			m.markCancelled(id)
 			return
 		}
 		if m.registry != nil {
-			m.registry.Update(id, float64(i)/float64(len(chunks)), fmt.Sprintf("narrating chunk %d/%d", i+1, len(chunks)))
+			detail := fmt.Sprintf("narrating chunk %d/%d", i+1, len(chunks))
+			if req.EngineID != DefaultEngineID {
+				detail += " with " + req.EngineID
+			}
+			m.registry.Update(id, float64(i)/float64(len(chunks)), detail)
 		}
-		clip, err := m.synthesize(ctx, chunk, voiceID)
+		text := chunk
+		if req.EngineID == DramaBoxEngineID {
+			text = BuildDramaBoxPrompt(req.Direction, chunk)
+		}
+		clip, err := m.synthesize(ctx, text, req.VoiceID, req.EngineID)
 		if err != nil {
 			if ctx.Err() != nil {
 				m.markCancelled(id)
 				return
 			}
 			if m.registry != nil {
-				m.registry.Fail(id, fmt.Sprintf("narrate chunk %d/%d: %v", i+1, len(chunks), err))
+				m.registry.Fail(id, fmt.Sprintf("narrate chunk %d/%d with %s: %v", i+1, len(chunks), req.EngineID, err))
 			}
 			return
 		}
-		clips = append(clips, clip)
+		clipPath := filepath.Join(clipDir, fmt.Sprintf("chunk-%04d.wav", i+1))
+		if err := os.WriteFile(clipPath, clip, 0o600); err != nil {
+			if m.registry != nil {
+				m.registry.Fail(id, fmt.Sprintf("stage chunk %d/%d with %s: %v", i+1, len(chunks), req.EngineID, err))
+			}
+			return
+		}
+		clipPaths = append(clipPaths, clipPath)
 	}
 
 	if m.registry != nil {
 		m.registry.Update(id, 0.97, "stitching")
 	}
-	stitched, err := wav.Concatenate(clips, chunkGap)
+	gaps := make([]time.Duration, len(clipPaths))
+	for i := range gaps {
+		gaps[i] = chunkGap
+	}
+	stitched, err := wav.ConcatenateGapsFrom(len(clipPaths), gaps, func(i int) ([]byte, error) {
+		return os.ReadFile(clipPaths[i])
+	})
 	if err != nil {
 		if m.registry != nil {
 			m.registry.Fail(id, "stitch narration: "+err.Error())
@@ -183,7 +303,9 @@ func (m *Manager) run(ctx context.Context, id, title, voiceID string, chunks []s
 	manifest := Manifest{
 		ID:        id,
 		Title:     title,
-		VoiceID:   voiceID,
+		VoiceID:   req.VoiceID,
+		EngineID:  req.EngineID,
+		Direction: req.Direction,
 		Chunks:    len(chunks),
 		CreatedAt: m.now(),
 	}
@@ -206,7 +328,7 @@ func (m *Manager) run(ctx context.Context, id, title, voiceID string, chunks []s
 		return
 	}
 	if m.registry != nil {
-		m.registry.Complete(id, map[string]string{"artifactUrl": manifest.ArtifactURL, "title": manifest.Title})
+		m.registry.Complete(id, map[string]string{"artifactUrl": manifest.ArtifactURL, "title": manifest.Title, "engine": manifest.EngineID})
 	}
 }
 

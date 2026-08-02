@@ -1,11 +1,67 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestDramaBoxExamplesKeepExistingAudioAndUseSafeServerPosture(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	cfg, err := Load(filepath.Join(repoRoot, "config.dramabox-local.example.json"))
+	if err != nil {
+		t.Fatalf("load DramaBox gateway example: %v", err)
+	}
+	if _, ok := cfg.Engines["audio"]; !ok {
+		t.Fatal("DramaBox example must preserve the existing audio narrator")
+	}
+	drama, ok := cfg.Engines["dramabox"]
+	if !ok || drama.Mode != "server" || drama.HealthURL != "http://127.0.0.1:8740/health" {
+		t.Fatalf("unexpected DramaBox gateway engine: %+v", drama)
+	}
+	if drama.GPU {
+		t.Fatal("reference DramaBox engine must not claim the shared GPU slot")
+	}
+	if drama.DefaultVoiceRef != "" {
+		t.Fatal("text-only DramaBox example must not require a default voice reference")
+	}
+
+	serverPath := filepath.Join(repoRoot, "dramabox-server.example.json")
+	file, err := os.Open(serverPath)
+	if err != nil {
+		t.Fatalf("open DramaBox server example: %v", err)
+	}
+	defer file.Close()
+	var server struct {
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Backend  string `json:"backend"`
+		LazyLoad bool   `json:"lazy_load"`
+		Models   []struct {
+			ID     string `json:"id"`
+			Family string `json:"family"`
+			Path   string `json:"path"`
+			Task   string `json:"task"`
+			Mode   string `json:"mode"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(file).Decode(&server); err != nil {
+		t.Fatalf("decode DramaBox server example: %v", err)
+	}
+	if server.Host != "127.0.0.1" || server.Port != 8740 || server.Backend != "cpu" || !server.LazyLoad {
+		t.Fatalf("unsafe DramaBox server posture: %+v", server)
+	}
+	if len(server.Models) != 1 || server.Models[0].ID != "tts" || server.Models[0].Family != "dramabox" || server.Models[0].Task != "tts" || server.Models[0].Mode != "offline" {
+		t.Fatalf("unexpected DramaBox server model contract: %+v", server.Models)
+	}
+	resolvedModel := filepath.Clean(filepath.Join(filepath.Dir(serverPath), filepath.FromSlash(server.Models[0].Path)))
+	wantModel := filepath.Clean(filepath.Join(repoRoot, "..", "audio.cpp", "models", "DramaBox-GGUF", "dramabox-q8_0.gguf"))
+	if resolvedModel != wantModel {
+		t.Fatalf("DramaBox server model resolves to %q, want documented sibling layout %q", resolvedModel, wantModel)
+	}
+}
 
 func TestLoadRejectsUnknownFields(t *testing.T) {
 	path := writeConfig(t, `{

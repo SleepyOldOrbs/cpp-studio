@@ -495,10 +495,24 @@
             <select class="text-input" id="audiobookVoiceSelect">
               <option value="" selected>Studio default</option>
             </select>
-            <small class="hint">Any voice from your library &mdash; cloned or designed.</small>
+            <small class="hint" id="audiobookVoiceHint">Any voice from your library &mdash; cloned or designed.</small>
+          </label>
+          <label class="field compact-field">
+            <span>Narration engine</span>
+            <select class="text-input" id="audiobookEngineSelect">
+              <option id="audiobookAudioOption" value="audio" selected disabled>Fast local narrator (checking configuration)</option>
+              <option id="audiobookDramaBoxOption" value="dramabox" disabled>DramaBox expressive (not configured)</option>
+            </select>
+            <small class="hint">Fast local stays the default. Available choices follow the engines in this cpp-studio configuration.</small>
+          </label>
+          <label class="field" id="audiobookDirectionField" hidden>
+            <span>Performance direction</span>
+            <textarea id="audiobookDirectionInput" rows="3" maxlength="500">Warm, measured documentary narration with clear diction, restrained emotion, and thoughtful pauses.</textarea>
+            <small class="hint">Direct the delivery, not the facts. DramaBox keeps your source words inside one quoted passage.</small>
+            <span class="warn-box" id="audiobookDramaBoxWarning">Experimental English model: an 18.9 GB download with heavy local compute and an upstream licence. There is no per-character or API fee, but CPU speed and 16 GB GPU fit are not proven.</span>
           </label>
           <div class="action-row">
-            <button class="primary" id="audiobookNarrateButton" type="submit">Narrate</button>
+            <button class="primary" id="audiobookNarrateButton" type="submit" disabled>Narrate</button>
             <button class="secondary" id="audiobookCancelButton" type="button" disabled>Cancel</button>
           </div>
           <p class="error-box" id="audiobookErrorBox" hidden></p>

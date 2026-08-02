@@ -1,0 +1,20 @@
+{
+  "host": "127.0.0.1",
+  "port": 8740,
+  "backend": "cpu",
+  "threads": 8,
+  "lazy_load": true,
+  "models": [
+    {
+      "id": "tts",
+      "family": "dramabox",
+      "path": "../audio.cpp/models/DramaBox-GGUF/dramabox-q8_0.gguf",
+      "task": "tts",
+      "mode": "offline",
+      "session_options": {
+        "dramabox.perf_mode": "off",
+        "dramabox.mem_saver": "false"
+      }
+    }
+  ]
+}

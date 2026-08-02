@@ -126,7 +126,7 @@
   var saveSpeakButton = document.getElementById("saveSpeakButton");
   var speakAudio = document.getElementById("speakAudio");
 
-  var ENGINE_NAMES = ["llama", "whisper", "audio", "sd", "vision", "voicedesign"];
+  var ENGINE_NAMES = ["llama", "whisper", "audio", "dramabox", "sd", "vision", "voicedesign"];
   var HEALTH_POLL_MS = 20000;
   var LIVE_TICK_MS = 2500;
   var LIVE_MAX_SECONDS = 90;
@@ -650,6 +650,7 @@
     renderStatus(data.status);
     renderEngineRack(data.engines);
     updateDesignModels(data.engines);
+    updateAudiobookEngines(data.engines);
     // The Detect speakers button only exists when a diarize engine is
     // configured; without one the Extractor stays manual-tagging only.
     var hasDiarize = Boolean(data.engines && data.engines.diarize);
@@ -868,6 +869,7 @@
     } catch (error) {
       renderStatus("error");
       renderEngineRack(null);
+      updateAudiobookEngines(null);
       healthUpdated.textContent = "Health check failed";
       lastHealthStatus = "error";
       log("Error: " + (error && error.message ? error.message : String(error)), "error");
@@ -4351,6 +4353,12 @@
   var audiobookFileStatus = document.getElementById("audiobookFileStatus");
   var audiobookTitleInput = document.getElementById("audiobookTitleInput");
   var audiobookVoiceSelect = document.getElementById("audiobookVoiceSelect");
+  var audiobookVoiceHint = document.getElementById("audiobookVoiceHint");
+  var audiobookEngineSelect = document.getElementById("audiobookEngineSelect");
+  var audiobookAudioOption = document.getElementById("audiobookAudioOption");
+  var audiobookDramaBoxOption = document.getElementById("audiobookDramaBoxOption");
+  var audiobookDirectionField = document.getElementById("audiobookDirectionField");
+  var audiobookDirectionInput = document.getElementById("audiobookDirectionInput");
   var audiobookNarrateButton = document.getElementById("audiobookNarrateButton");
   var audiobookCancelButton = document.getElementById("audiobookCancelButton");
   var audiobookErrorBox = document.getElementById("audiobookErrorBox");
@@ -4362,6 +4370,48 @@
   var audiobookShelf = document.getElementById("audiobookShelf");
   var activeBookId = "";
   var bookPollTimer = null;
+  var audiobookBusy = false;
+
+  function syncAudiobookEngineControls() {
+    var selected = audiobookEngineSelect.options[audiobookEngineSelect.selectedIndex];
+    var available = Boolean(selected && !selected.disabled);
+    audiobookDirectionField.hidden = !(available && audiobookEngineSelect.value === "dramabox");
+    var fallbackVoice = audiobookVoiceSelect.options[0];
+    if (fallbackVoice) {
+      fallbackVoice.textContent = audiobookEngineSelect.value === "dramabox" ? "DramaBox text-only voice" : "Studio default";
+    }
+    audiobookVoiceHint.textContent = audiobookEngineSelect.value === "dramabox" ?
+      "Choose a stored voice to clone it, or leave this on text-only generation." :
+      "Any voice from your library — cloned or designed.";
+    audiobookNarrateButton.disabled = audiobookBusy || !available;
+  }
+
+  // Health is the source of truth for what the operator configured. Keep the
+  // expressive choice visible for discovery, but never present it as usable
+  // when the dramabox engine is absent.
+  function updateAudiobookEngines(engines) {
+    var configured = engines || {};
+    var hasAudio = Object.prototype.hasOwnProperty.call(configured, "audio");
+    var hasDramaBox = Object.prototype.hasOwnProperty.call(configured, "dramabox");
+    audiobookAudioOption.disabled = !hasAudio;
+    audiobookAudioOption.textContent = hasAudio ? "Fast local narrator" : "Fast local narrator (not configured)";
+    audiobookDramaBoxOption.disabled = !hasDramaBox;
+    audiobookDramaBoxOption.textContent = hasDramaBox ? "DramaBox expressive" : "DramaBox expressive (not configured)";
+
+    var selected = audiobookEngineSelect.options[audiobookEngineSelect.selectedIndex];
+    if (!selected || selected.disabled) {
+      if (hasAudio) {
+        audiobookEngineSelect.value = "audio";
+      } else if (hasDramaBox) {
+        audiobookEngineSelect.value = "dramabox";
+      } else {
+        audiobookEngineSelect.selectedIndex = -1;
+      }
+    }
+    syncAudiobookEngineControls();
+  }
+
+  audiobookEngineSelect.addEventListener("change", syncAudiobookEngineControls);
 
   function renderAudiobookVoices(voices) {
     var previous = audiobookVoiceSelect.value;
@@ -4378,6 +4428,7 @@
     if (audiobookVoiceSelect.value !== previous) {
       audiobookVoiceSelect.value = "";
     }
+    syncAudiobookEngineControls();
   }
 
   audiobookFileInput.addEventListener("change", function () {
@@ -4386,7 +4437,8 @@
   });
 
   function setAudiobookBusy(busy) {
-    audiobookNarrateButton.disabled = busy;
+    audiobookBusy = busy;
+    syncAudiobookEngineControls();
     audiobookCancelButton.disabled = !busy;
   }
 
@@ -4451,6 +4503,10 @@
     if (audiobookVoiceSelect.value) {
       form.append("voice", audiobookVoiceSelect.value);
     }
+    form.append("engine", audiobookEngineSelect.value);
+    if (audiobookEngineSelect.value === "dramabox") {
+      form.append("direction", audiobookDirectionInput.value.trim());
+    }
     setAudiobookBusy(true);
     audiobookStatus.textContent = "Uploading…";
     audiobookProgress.value = 0;
@@ -4506,8 +4562,9 @@
       books.forEach(function (book) {
         var item = createElement("div", "story-library-item");
         var title = createElement("div", "story-library-title", book.title);
+        var engineLabel = book.engine === "dramabox" ? "DramaBox" : "Fast local";
         var meta = createElement("div", "story-library-meta",
-          new Date(book.createdAt).toLocaleString() + " · " + book.chunks + " chunks · " + Math.floor(book.durationSeconds / 60) + "m" + (book.durationSeconds % 60) + "s");
+          new Date(book.createdAt).toLocaleString() + " · " + engineLabel + " · " + book.chunks + " chunks · " + Math.floor(book.durationSeconds / 60) + "m" + (book.durationSeconds % 60) + "s");
         item.appendChild(title);
         item.appendChild(meta);
         item.addEventListener("click", function () {
@@ -4532,6 +4589,7 @@
   audiobookRefreshButton.addEventListener("click", function () {
     refreshAudiobooks(false);
   });
+  syncAudiobookEngineControls();
 
   // --- The Extractor -----------------------------------------------------
   // Load audio/video, scrub a waveform, read a whisper transcript timeline,

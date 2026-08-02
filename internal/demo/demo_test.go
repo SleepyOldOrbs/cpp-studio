@@ -1,10 +1,13 @@
 package demo
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"cpp-studio/internal/audiobook"
 )
 
 func TestHandlerServesIndex(t *testing.T) {
@@ -155,6 +158,24 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "audiobookShelf") {
 		t.Fatalf("expected audiobook shelf marker, got %q", body)
 	}
+	if !strings.Contains(body, "audiobookEngineSelect") || !strings.Contains(body, "audiobookDramaBoxOption") {
+		t.Fatalf("expected audiobook engine choice markers, got %q", body)
+	}
+	if !strings.Contains(body, "audiobookDirectionField") || !strings.Contains(body, "audiobookDirectionInput") {
+		t.Fatalf("expected conditional DramaBox direction markers, got %q", body)
+	}
+	if !strings.Contains(body, "18.9 GB") || !strings.Contains(body, "no per-character or API fee") {
+		t.Fatalf("expected honest DramaBox cost/hardware warning, got %q", body)
+	}
+	if !strings.Contains(body, `class="warn-box" id="audiobookDramaBoxWarning"`) {
+		t.Fatalf("expected the material DramaBox warning to use the accessible warning treatment")
+	}
+	if !strings.Contains(body, `id="audiobookAudioOption" value="audio" selected disabled`) || !strings.Contains(body, `id="audiobookNarrateButton" type="submit" disabled`) {
+		t.Fatalf("audiobook controls must wait for health-backed engine availability")
+	}
+	if !strings.Contains(body, fmt.Sprintf(`maxlength="%d"`, audiobook.MaxDirectionRunes)) || !strings.Contains(body, audiobook.DefaultDramaBoxDirection) {
+		t.Fatalf("audiobook direction UI drifted from the Go contract")
+	}
 	if !strings.Contains(body, "extractCanvas") {
 		t.Fatalf("expected extractor waveform marker, got %q", body)
 	}
@@ -244,6 +265,18 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/app.js",
 			contentType: "javascript",
 			needle:      "refreshAudiobooks",
+		},
+		{
+			name:        "javascript audiobook engine availability",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "updateAudiobookEngines",
+		},
+		{
+			name:        "javascript audiobook direction submit",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      `form.append("direction"`,
 		},
 		{
 			name:        "javascript extractor",

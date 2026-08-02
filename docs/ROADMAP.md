@@ -307,11 +307,15 @@ mattered was that none of them should come first:
   TTS turns out to be peaky enough that the ceiling usually binds before
   the loudness target, which is exactly the case the review said must never
   be papered over.
-- **Per-line delivery direction — CUT.** Not reachable: the resident audio
-  server takes `{model, input, voice_ref, reference_text}`, `SynthesizeFunc`
-  is `(ctx, text, voiceID)`, and `--instruct` belongs to the voice *design*
-  engines, not cloned speech. A direction field would be inert metadata
-  pretending to be a feature.
+- **Per-line Story delivery direction — still CUT; audiobook exception
+  shipped 2026-08-02.** The original Qwen path still has no performance
+  instruction input, so Story must not expose an inert direction field.
+  audio.cpp 0.5 DramaBox changed the narrower audiobook premise: its prompt
+  contract accepts delivery direction around quoted source text. Audiobooks
+  can now opt into a separately configured `dramabox` engine and persist the
+  book-level direction; Story/take-room direction remains deferred until its
+  synthesis provenance and resume fingerprint change together. See
+  [`PLAN-DRAMABOX.md`](PLAN-DRAMABOX.md).
 - **Resumable production — later, and bigger than it looks.** Story
   synthesis still holds every clip in memory and writes takes only after the
   story is stored, so resume needs a work-in-progress layout first. Line id

@@ -303,7 +303,7 @@ Set `"gpu": true` on subprocess engines that are heavy GPU users (typically `aud
 The gateway appends request arguments to the configured base args:
 
 - `whisper`: appends `-f <uploaded-temp-wav>`.
-- `audio`: appends `--text <input> --out <generated-temp-wav>`, plus `--voice-ref <wav> --reference-text <transcript>` when the request selects a cloned voice (per-run values replace matching config flags in place).
+- `audio` / `dramabox`: append `--text <input> --out <generated-temp-wav>`, plus `--voice-ref <wav> --reference-text <transcript>` when the request selects a cloned voice (per-run values replace matching config flags in place). DramaBox also supports text-only requests with no reference.
 - `sd`: appends `--prompt <prompt> --output <generated-temp-png>`, plus `--width <px> --height <px>` when the request includes `size`.
 - `voicedesign` / `omnivoice`: append `--instruct <description> --text <sample> --out <generated-temp-wav>`.
 - `voxcpm2`: appends `--text "(<description>)<sample>" --out <generated-temp-wav>`.
@@ -337,6 +337,33 @@ with id `"tts"` in the audiocpp_server config. `defaultVoiceRef` /
 `defaultVoiceText` replace the `--voice-ref`/`--reference-text` args of the
 subprocess shape (cloned voices are passed per request). Subprocess mode
 keeps working unchanged — the gateway routes per the configured `mode`.
+
+### Optional DramaBox audiobook engine
+
+`config.dramabox-local.example.json` keeps the existing `audio` narrator and
+adds a separately named `dramabox` resident server. The Audiobook desk enables
+DramaBox only when that engine is present in `/health`; removing the engine
+from config is the rollback. Engine selection is deliberately limited to
+`audio` and `dramabox`, even if other tools are configured.
+
+The example requires audio.cpp `release-0.5` and pairs with
+`dramabox-server.example.json`. Put the official
+`DramaBox-GGUF/dramabox-q8_0.gguf` under `audio.cpp/models`, edit the gateway
+example's `root`, and start cpp-studio with that copied config. The server
+registers model id `tts`, lazy-loads it on the first expressive book, and
+keeps it resident afterward. Text-only DramaBox requests omit `voice_ref`;
+selecting a stored voice sends its reference WAV. The existing Qwen `audio`
+server still requires `defaultVoiceRef`. Keep the paired server JSON beside
+the gateway example: audio.cpp resolves its `../audio.cpp/models/...` model
+path relative to that JSON file, not the process working directory.
+
+The shipped server example uses `"backend": "cpu"`. This is a conservative
+startup posture, not a speed recommendation: the GGUF is 18,942,803,808 bytes,
+larger than the 16,303 MiB reference GPU, and CPU inference has not been timed.
+Only switch the server JSON to `cuda` after a representative chapter proves
+load, peak VRAM, factual fidelity, and real-time factor on your machine. If it
+is too slow or fails to fit, select Fast local narrator or remove `dramabox`;
+existing WAVs and manifests remain usable.
 
 ## Voice Design Engines
 

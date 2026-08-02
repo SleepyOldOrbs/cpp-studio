@@ -134,6 +134,20 @@ func TestSpeechVoiceSpecOverridesVoiceFlags(t *testing.T) {
 	}
 }
 
+func TestSpeechVoiceSpecForTargetsNamedEngine(t *testing.T) {
+	spec := SpeechVoiceSpecFor("dramabox", "hello", nil)
+	if spec.Engine != "dramabox" {
+		t.Fatalf("expected dramabox engine, got %q", spec.Engine)
+	}
+	if spec.Label != "dramabox speech command" {
+		t.Fatalf("unexpected label %q", spec.Label)
+	}
+	legacy := SpeechVoiceSpec("hello", nil)
+	if legacy.Engine != "audio" {
+		t.Fatalf("legacy wrapper changed engine: %q", legacy.Engine)
+	}
+}
+
 func TestVoiceDesignSpecSanitizesArgs(t *testing.T) {
 	spec := VoiceDesignSpec("Deep “gravelly” cowboy", "It’s a sample")
 

@@ -141,15 +141,26 @@ stitched WAV. Runs as an `audiobook` job on the jobs surface.
 
 - `POST /v1/audiobooks` — multipart form: `file` (.txt, .md, or .epub; 16 MB
   cap; PDFs are rejected with a pointer to export as text), optional `title`
-  (defaults to the file name), optional `voice` (a stored voice id; ""
-  narrates with the studio default). The document is chunked on paragraph and
-  sentence boundaries (~300 chars per spoken chunk, 600-chunk cap). Returns
-  `202 {"id":"book_...","chunks":42,"statusUrl":"/v1/jobs/book_..."}`; `409`
-  when another narration is running or the audio engine is busy.
-- `GET /v1/jobs/{id}` — narration progress (`"narrating chunk 12/42"`), and
+  (defaults to the file name), optional `voice` (a stored voice id; blank uses
+  the configured default for `audio` and text-only generation for DramaBox), optional
+  `engine` (`audio` by default or configured `dramabox`), and optional
+  `direction` (up to 500 characters, DramaBox only). Blank DramaBox direction
+  gets a restrained documentary default. Its direction is placed outside one
+  quoted source passage; embedded double-quote punctuation is changed to
+  apostrophes so it cannot close that passage, while the source words remain
+  unchanged. The document is chunked on paragraph and sentence boundaries
+  (~300 chars per spoken chunk, 600-chunk cap). Returns
+  `202 {"id":"book_...","chunks":42,"statusUrl":"/v1/jobs/book_..."}`.
+  Unknown engines and invalid direction return `400`; a recognized engine
+  missing from this gateway returns `503`; only an active narration or busy
+  selected engine returns `409`.
+- `GET /v1/jobs/{id}` — narration progress (`"narrating chunk 12/42"` for the
+  default engine or `"narrating chunk 12/42 with dramabox"`), and
   `POST /v1/jobs/{id}/cancel` stops it.
-- `GET /v1/audiobooks` — finished narrations, newest first:
-  `{"audiobooks":[{"id":"book_...","title":"...","chunks":42,"durationSeconds":312,"artifactUrl":"/v1/audiobooks/book_.../artifact/book.wav"}]}`.
+- `GET /v1/audiobooks` — finished narrations, newest first. New manifests
+  include `engine` and optional `direction`; older manifests without them
+  remain readable:
+  `{"audiobooks":[{"id":"book_...","title":"...","engine":"dramabox","direction":"Measured documentary delivery.","chunks":42,"durationSeconds":312,"artifactUrl":"/v1/audiobooks/book_.../artifact/book.wav"}]}`.
 - `GET /v1/audiobooks/{id}/artifact/book.wav` — the narration WAV.
 
 Finished audiobooks persist in `out/audiobooks` and survive restarts.

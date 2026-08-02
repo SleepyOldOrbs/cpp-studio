@@ -35,6 +35,26 @@ func TestLoadRejectsDuplicateAndMissingFields(t *testing.T) {
 	}
 }
 
+func TestTrackedManifestDeclaresExactDramaBoxPackage(t *testing.T) {
+	manifest, err := Load(filepath.Join("..", "..", "models.json"))
+	if err != nil {
+		t.Fatalf("load tracked model manifest: %v", err)
+	}
+	for _, model := range manifest.Models {
+		if model.ID != "dramabox-q8-0" {
+			continue
+		}
+		if model.Engine != "dramabox" || model.Family != "dramabox" || model.Bytes != 18942803808 {
+			t.Fatalf("unexpected DramaBox package identity: %+v", model)
+		}
+		if model.Path != "audio.cpp/models/DramaBox-GGUF/dramabox-q8_0.gguf" || model.Source == "" || model.License != "LTX-2 Community License" {
+			t.Fatalf("missing DramaBox package provenance: %+v", model)
+		}
+		return
+	}
+	t.Fatal("tracked manifest is missing DramaBox")
+}
+
 func TestStatusesReflectDisk(t *testing.T) {
 	root := t.TempDir()
 	// present with matching size

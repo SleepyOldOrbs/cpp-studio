@@ -100,6 +100,16 @@
       "description": "Resident TTS base model for speech and voice cloning."
     },
     {
+      "id": "dramabox-q8-0",
+      "engine": "dramabox",
+      "family": "dramabox",
+      "path": "audio.cpp/models/DramaBox-GGUF/dramabox-q8_0.gguf",
+      "bytes": 18942803808,
+      "source": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main/DramaBox-GGUF",
+      "license": "LTX-2 Community License",
+      "description": "Optional experimental English expressive TTS and voice cloning for factual audiobooks; no hosted API fee, but substantial local storage and compute."
+    },
+    {
       "id": "qwen3-tts-1.7b-voicedesign",
       "engine": "voicedesign",
       "family": "qwen3-tts-voicedesign",
