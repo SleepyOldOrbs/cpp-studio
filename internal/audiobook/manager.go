@@ -124,6 +124,7 @@ type Service interface {
 	Status(string) (Manifest, bool, error)
 	List() ([]Manifest, error)
 	ArtifactPath(string, string) (string, error)
+	AttemptPath(string, string, string) (string, error)
 	VerificationPath(string) (string, error)
 	RetrySection(context.Context, string, string, RetryMode) (string, error)
 	SelectAttempt(context.Context, string, string, string) (string, error)
@@ -1529,6 +1530,31 @@ func (m *Manager) ArtifactPath(id, filename string) (string, error) {
 		return "", fmt.Errorf("audiobook artifact is not a valid WAV")
 	}
 	return path, nil
+}
+
+func (m *Manager) AttemptPath(id, sectionID, attemptID string) (string, error) {
+	if !validSectionID(sectionID) || !validAttemptID(attemptID) {
+		return "", fmt.Errorf("audiobook attempt not found")
+	}
+	manifest, _, err := m.store.LoadDurableFinal(id)
+	if err != nil {
+		return "", fmt.Errorf("audiobook attempt not found")
+	}
+	for _, section := range manifest.Sections {
+		if section.ID != sectionID {
+			continue
+		}
+		for _, attempt := range section.Attempts {
+			if attempt.ID == attemptID {
+				path, pathErr := m.store.AttemptPathFinal(id, section, attempt)
+				if pathErr != nil {
+					return "", fmt.Errorf("audiobook attempt not found")
+				}
+				return path, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("audiobook attempt not found")
 }
 
 func validateBookID(id string) error {

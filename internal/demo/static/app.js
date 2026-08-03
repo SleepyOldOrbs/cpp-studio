@@ -4152,6 +4152,7 @@
     }
     if (name === "audiobook") {
       refreshAudiobooks(true);
+      refreshAudiobookBenchmarks();
     }
     if (name === "extract" && ex.samples) {
       // The canvas has zero width while its tab is hidden; repaint on entry.
@@ -4371,6 +4372,9 @@
   var audiobookChunkDuration = document.getElementById("audiobookChunkDuration");
   var audiobookCrossFade = document.getElementById("audiobookCrossFade");
   var audiobookVerificationSelect = document.getElementById("audiobookVerificationSelect");
+  var audiobookBenchmarkButton = document.getElementById("audiobookBenchmarkButton");
+  var audiobookBenchmarkCancel = document.getElementById("audiobookBenchmarkCancel");
+  var audiobookBenchmarkStatus = document.getElementById("audiobookBenchmarkStatus");
   var audiobookOptionsJSON = document.getElementById("audiobookOptionsJSON");
   var audiobookPreviewButton = document.getElementById("audiobookPreviewButton");
   var audiobookRequestPreview = document.getElementById("audiobookRequestPreview");
@@ -4379,6 +4383,7 @@
   var audiobookErrorBox = document.getElementById("audiobookErrorBox");
   var audiobookStatus = document.getElementById("audiobookStatus");
   var audiobookProgress = document.getElementById("audiobookProgress");
+  var audiobookTimingStatus = document.getElementById("audiobookTimingStatus");
   var audiobookVerificationStatus = document.getElementById("audiobookVerificationStatus");
   var audiobookVerificationLink = document.getElementById("audiobookVerificationLink");
   var audiobookAudio = document.getElementById("audiobookAudio");
@@ -4390,6 +4395,13 @@
   var audiobookBusy = false;
   var audiobookResolvedKey = "";
   var activeBookUsesSections = false;
+  var activeBookStartedAt = 0;
+  var activeBookPhaseStartedAt = 0;
+  var activeBookPhase = "";
+  var audiobookBenchmarkJobId = "";
+  var audiobookBenchmarkTimer = null;
+  var audiobookBenchmarkBlocked = false;
+  var audiobookBenchmarkResults = [];
 
   function audiobookOptionsText() {
     if (audiobookEngineSelect.value !== "dramabox") {
@@ -4433,6 +4445,7 @@
   function invalidateAudiobookPreview() {
     audiobookResolvedKey = "";
     audiobookRequestPreview.textContent = "Request changed. Resolve it before narration.";
+    showMatchingAudiobookBenchmark();
     syncAudiobookEngineControls();
   }
 
@@ -4454,7 +4467,8 @@
       "Choose a stored voice to clone it, or leave this on text-only generation." :
       "Any voice from your library — cloned or designed.";
     audiobookPreviewButton.disabled = audiobookBusy || !available;
-    audiobookNarrateButton.disabled = audiobookBusy || !available || audiobookResolvedKey !== audiobookRequestKey();
+    audiobookBenchmarkButton.disabled = audiobookBusy || Boolean(audiobookBenchmarkJobId) || !available || audiobookEngineSelect.value !== "dramabox";
+    audiobookNarrateButton.disabled = audiobookBusy || Boolean(audiobookBenchmarkJobId) || !available || audiobookBenchmarkBlocked || audiobookResolvedKey !== audiobookRequestKey();
   }
 
   // Health is the source of truth for what the operator configured. Keep the
@@ -4580,6 +4594,120 @@
     audiobookVoicePreview.src = clone.audio_url;
   }
 
+  function audiobookBenchmarkMatches(result) {
+    if (!result || audiobookEngineSelect.value !== "dramabox" || result.backend !== "cpu") {
+      return false;
+    }
+    var selectedVoice = audiobookVoiceSelect.value || "default";
+    if (!result.voice || result.voice.id !== selectedVoice) {
+      return false;
+    }
+    if (result.direction !== audiobookDirectionInput.value.trim()) {
+      return false;
+    }
+    try {
+      var selectedOptions = JSON.parse(audiobookOptionsText());
+      return ["num_inference_steps", "guidance_scale", "audio_chunk_threshold_sec", "audio_chunk_duration_sec", "cross_fade_duration_sec"].every(function (key) {
+        return Number(result.options && result.options[key]) === Number(selectedOptions[key]);
+      });
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function showMatchingAudiobookBenchmark() {
+    var result = audiobookBenchmarkResults.find(audiobookBenchmarkMatches);
+    audiobookBenchmarkBlocked = Boolean(result && !result.identityChanged && result.status === "failed");
+    if (!result) {
+      audiobookBenchmarkStatus.textContent = "No benchmark matches this narrator, voice reference, and effective option set.";
+      syncAudiobookEngineControls();
+      return;
+    }
+    var stale = result.identityChanged ? " · stale: " + (result.identityChangeReason || "identity changed") : "";
+    var verification = (result.cases || []).find(function (item) { return item.id === "fidelity.asr"; });
+    var memory = result.peakVramMiB == null ? "VRAM not measured" : "peak VRAM " + result.peakVramMiB + " MiB";
+    audiobookBenchmarkStatus.textContent = "Measured " + new Date(result.createdAt).toLocaleString() +
+      " · cold RTF " + Number(result.coldRtf || 0).toFixed(2) +
+      " · warm RTF " + Number(result.warmRtf || 0).toFixed(2) +
+      " · projected 10,000-word chapter " + shortElapsed(Number(result.projectedChapterSeconds || 0) * 1000) +
+      " · " + memory + " · fidelity " + (verification ? verification.status : "not recorded") + stale +
+      (audiobookBenchmarkBlocked ? " · BLOCKED: matching benchmark failed; change the configuration and rerun" : "");
+    syncAudiobookEngineControls();
+  }
+
+  async function refreshAudiobookBenchmarks() {
+    try {
+      var response = await fetch("/v1/audiobooks/benchmark/results", { method: "GET" });
+      if (!response.ok) {
+        return;
+      }
+      var payload = await response.json();
+      audiobookBenchmarkResults = payload.results || [];
+      showMatchingAudiobookBenchmark();
+    } catch (_) {
+      audiobookBenchmarkStatus.textContent = "Benchmark history is unavailable.";
+    }
+  }
+
+  function pollAudiobookBenchmark(id) {
+    window.clearTimeout(audiobookBenchmarkTimer);
+    audiobookBenchmarkTimer = window.setTimeout(async function () {
+      try {
+        var response = await fetch("/v1/jobs/" + encodeURIComponent(id), { method: "GET" });
+        if (!response.ok) {
+          throw new Error(await readErrorBody(response));
+        }
+        var job = await response.json();
+        audiobookBenchmarkStatus.textContent = "Benchmark " + (job.detail || job.status) + " · " + Math.round(Number(job.progress || 0) * 100) + "%";
+        if (job.status === "complete" || job.status === "failed" || job.status === "cancelled") {
+          audiobookBenchmarkJobId = "";
+          audiobookBenchmarkCancel.disabled = true;
+          await refreshAudiobookBenchmarks();
+          syncAudiobookEngineControls();
+          return;
+        }
+        pollAudiobookBenchmark(id);
+      } catch (err) {
+        audiobookBenchmarkJobId = "";
+        audiobookBenchmarkCancel.disabled = true;
+        audiobookBenchmarkStatus.textContent = "Benchmark status failed: " + err.message;
+        syncAudiobookEngineControls();
+      }
+    }, 1200);
+  }
+
+  audiobookBenchmarkButton.addEventListener("click", async function () {
+    try {
+      var response = await fetch("/v1/audiobooks/benchmark", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          backend: "cpu",
+          voiceId: audiobookVoiceSelect.value,
+          direction: audiobookDirectionInput.value.trim(),
+          options: JSON.parse(audiobookOptionsText())
+        })
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorBody(response));
+      }
+      var created = await response.json();
+      audiobookBenchmarkJobId = created.id;
+      audiobookBenchmarkCancel.disabled = false;
+      audiobookBenchmarkStatus.textContent = "Benchmark queued…";
+      syncAudiobookEngineControls();
+      pollAudiobookBenchmark(created.id);
+    } catch (err) {
+      audiobookBenchmarkStatus.textContent = "Benchmark failed to start: " + err.message;
+    }
+  });
+
+  audiobookBenchmarkCancel.addEventListener("click", async function () {
+    if (audiobookBenchmarkJobId) {
+      await fetch("/v1/jobs/" + encodeURIComponent(audiobookBenchmarkJobId) + "/cancel", { method: "POST" });
+    }
+  });
+
   audiobookFileInput.addEventListener("change", function () {
     var file = audiobookFileInput.files && audiobookFileInput.files[0];
     audiobookFileStatus.textContent = file ? file.name + " (" + Math.round(file.size / 1024) + " KB)" : "None";
@@ -4589,6 +4717,38 @@
     audiobookBusy = busy;
     syncAudiobookEngineControls();
     audiobookCancelButton.disabled = !busy;
+  }
+
+  function shortElapsed(milliseconds) {
+    var seconds = Math.max(0, Math.round(milliseconds / 1000));
+    return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s";
+  }
+
+  function showAudiobookTimings(book) {
+    var parts = [];
+    if (activeBookStartedAt) {
+      parts.push("total elapsed " + shortElapsed(Date.now() - activeBookStartedAt));
+    }
+    if (activeBookPhaseStartedAt && activeBookPhase) {
+      parts.push(activeBookPhase + " phase " + shortElapsed(Date.now() - activeBookPhaseStartedAt));
+    }
+    var completed = (book && book.sections || []).filter(function (section) { return section.status && section.status !== "pending"; });
+    if (completed.length) {
+      var synthesis = completed.reduce(function (sum, section) {
+        var selected = (section.attempts || []).find(function (attempt) { return attempt.selected; });
+        return sum + Number(selected && selected.synthesisMs || 0);
+      }, 0);
+      var verification = completed.reduce(function (sum, section) {
+        var selected = (section.attempts || []).find(function (attempt) { return attempt.selected; });
+        return sum + Number(selected && selected.verificationMs || 0);
+      }, 0);
+      parts.push(completed.length + "/" + book.sections.length + " sections complete");
+      parts.push("measured synthesis " + (synthesis / 1000).toFixed(1) + "s");
+      if (verification) {
+        parts.push("measured verification " + (verification / 1000).toFixed(1) + "s");
+      }
+    }
+    audiobookTimingStatus.textContent = parts.length ? parts.join(" · ") : "No timing evidence yet.";
   }
 
   function showAudiobookVerification(book) {
@@ -4615,6 +4775,7 @@
     }
     var book = await response.json();
     showAudiobookVerification(book);
+    showAudiobookTimings(book);
     return book;
   }
 
@@ -4629,7 +4790,12 @@
         var job = await response.json();
         audiobookProgress.value = job.progress || 0;
         var detail = job.detail || job.status;
+        if (detail !== activeBookPhase) {
+          activeBookPhase = detail;
+          activeBookPhaseStartedAt = Date.now();
+        }
         audiobookStatus.textContent = activeBookUsesSections ? detail.replace("chunk", "section") : detail;
+        loadAudiobookManifest(id).catch(function () { showAudiobookTimings(null); });
         if (detail.indexOf("verifying section") === 0) {
           audiobookVerificationStatus.textContent = "Verifying";
         }
@@ -4638,6 +4804,7 @@
           audiobookProgress.value = 1;
           setAudiobookBusy(false);
           activeBookId = "";
+          activeBookPhase = "complete";
           if (job.result && job.result.artifactUrl) {
             audiobookAudio.src = job.result.artifactUrl;
             audiobookSaveButton.disabled = false;
@@ -4706,6 +4873,9 @@
       }
       var created = await response.json();
       activeBookId = created.id;
+      activeBookStartedAt = Date.now();
+      activeBookPhaseStartedAt = activeBookStartedAt;
+      activeBookPhase = "narrating";
       activeBookUsesSections = typeof created.sections === "number";
       var unitCount = activeBookUsesSections ? created.sections : created.chunks;
       var unitLabel = activeBookUsesSections ? " sections" : " chunks";
@@ -4754,6 +4924,9 @@
         return;
       }
       activeBookId = result.id;
+      activeBookStartedAt = Date.now();
+      activeBookPhaseStartedAt = activeBookStartedAt;
+      activeBookPhase = action;
       activeBookUsesSections = typeof result.sections === "number";
       setAudiobookBusy(true);
       audiobookStatus.textContent = action === "resume" ? "Resuming sections…" : "Restarting as " + result.id + "…";
@@ -4782,6 +4955,123 @@
       evidence.addEventListener("click", function (event) { event.stopPropagation(); });
       item.appendChild(evidence);
     }
+  }
+
+  function pollAudiobookRepair(jobId, bookId) {
+    window.clearTimeout(bookPollTimer);
+    bookPollTimer = window.setTimeout(async function () {
+      try {
+        var response = await fetch("/v1/jobs/" + encodeURIComponent(jobId), { method: "GET" });
+        if (!response.ok) {
+          throw new Error(await readErrorBody(response));
+        }
+        var job = await response.json();
+        audiobookStatus.textContent = job.detail || job.status;
+        audiobookProgress.value = job.progress || 0;
+        if (job.status === "complete") {
+          setAudiobookBusy(false);
+          activeBookId = "";
+          audiobookProgress.value = 1;
+          var book = await loadAudiobookManifest(bookId);
+          if (book && job.result && job.result.artifactUrl) {
+            audiobookAudio.src = job.result.artifactUrl;
+            audiobookSaveButton.disabled = false;
+            audiobookSaveButton.dataset.url = job.result.artifactUrl;
+          }
+          refreshAudiobooks(true);
+          return;
+        }
+        if (job.status === "failed" || job.status === "cancelled") {
+          setAudiobookBusy(false);
+          activeBookId = "";
+          audiobookStatus.textContent = job.status + (job.error ? ": " + job.error : "");
+          refreshAudiobooks(true);
+          return;
+        }
+        pollAudiobookRepair(jobId, bookId);
+      } catch (err) {
+        setAudiobookBusy(false);
+        activeBookId = "";
+        audiobookStatus.textContent = "Repair status failed: " + err.message;
+      }
+    }, 900);
+  }
+
+  async function runAudiobookRepair(bookId, sectionId, mode, attemptId) {
+    var path = "/v1/audiobooks/" + encodeURIComponent(bookId) + "/sections/" + encodeURIComponent(sectionId);
+    var options = { method: "POST" };
+    if (mode === "select") {
+      path += "/attempts/" + encodeURIComponent(attemptId) + "/select";
+    } else {
+      path += "/retry";
+      options.headers = { "Content-Type": "application/json" };
+      options.body = JSON.stringify({ mode: mode });
+    }
+    try {
+      var response = await fetch(path, options);
+      if (!response.ok) {
+        throw new Error(await readErrorBody(response));
+      }
+      var created = await response.json();
+      activeBookId = created.id;
+      setAudiobookBusy(true);
+      audiobookProgress.value = 0;
+      audiobookStatus.textContent = mode === "select" ? "Publishing a new render revision…" : (mode === "reproduce" ? "Reproducing section…" : "Creating a new variation…");
+      pollAudiobookRepair(created.id, bookId);
+    } catch (err) {
+      audiobookErrorBox.textContent = err.message;
+      audiobookErrorBox.hidden = false;
+    }
+  }
+
+  function appendAudiobookAttempts(item, book) {
+    if (book.engine !== "dramabox" || !(book.sections || []).length) {
+      return;
+    }
+    var details = document.createElement("details");
+    details.className = "story-library-detail";
+    details.addEventListener("click", function (event) { event.stopPropagation(); });
+    var summary = document.createElement("summary");
+    var attemptCount = book.sections.reduce(function (count, section) { return count + (section.attempts || []).length; }, 0);
+    summary.textContent = "Repair and audition · " + attemptCount + " attempts · " + (book.currentRenderId || "original render");
+    details.appendChild(summary);
+    book.sections.forEach(function (section) {
+      var sectionPanel = createElement("div", "voice-item");
+      sectionPanel.appendChild(createElement("div", "story-library-title", section.id + " · " + (section.status || "pending")));
+      var sectionActions = createElement("div", "story-library-actions");
+      ["reproduce", "variation"].forEach(function (mode) {
+        var retry = createElement("button", "secondary compact-button", mode === "reproduce" ? "Reproduce same seed" : "New-seed variation");
+        retry.type = "button";
+        retry.addEventListener("click", function () { runAudiobookRepair(book.id, section.id, mode); });
+        sectionActions.appendChild(retry);
+      });
+      sectionPanel.appendChild(sectionActions);
+      (section.attempts || []).forEach(function (attempt) {
+        var attemptPanel = createElement("div", "story-library-detail");
+        var actualSeed = attempt.actualSeed == null ? "not reported" : attempt.actualSeed;
+        var metrics = "requested seed " + attempt.requestedSeed + " · actual " + actualSeed + " (" + (attempt.seedStatus || "requested") + ")" +
+          " · synthesis " + Number(attempt.synthesisMs || 0).toFixed(1) + " ms" +
+          " · verification " + Number(attempt.verificationMs || 0).toFixed(1) + " ms" +
+          " · audio " + (Number(attempt.durationMs || 0) / 1000).toFixed(2) + "s" +
+          " · " + (attempt.verificationStatus || "not verified") + (attempt.deterministicMatch == null ? "" : " · byte match " + attempt.deterministicMatch);
+        attemptPanel.appendChild(createElement("strong", "", attempt.id + (attempt.selected ? " · selected" : "")));
+        attemptPanel.appendChild(createElement("div", "story-library-meta", metrics));
+        var audio = document.createElement("audio");
+        audio.controls = true;
+        audio.preload = "none";
+        audio.src = "/v1/audiobooks/" + encodeURIComponent(book.id) + "/sections/" + encodeURIComponent(section.id) + "/attempts/" + encodeURIComponent(attempt.id) + "/audio";
+        attemptPanel.appendChild(audio);
+        if (!attempt.selected) {
+          var select = createElement("button", "secondary compact-button", "Select and publish new render");
+          select.type = "button";
+          select.addEventListener("click", function () { runAudiobookRepair(book.id, section.id, "select", attempt.id); });
+          attemptPanel.appendChild(select);
+        }
+        sectionPanel.appendChild(attemptPanel);
+      });
+      details.appendChild(sectionPanel);
+    });
+    item.appendChild(details);
   }
 
   function renderAudiobookCard(book, interrupted) {
@@ -4823,6 +5113,7 @@
       item.appendChild(actions);
       return item;
     }
+    appendAudiobookAttempts(item, book);
     item.addEventListener("click", function () {
       audiobookAudio.src = book.artifactUrl;
       audiobookSaveButton.disabled = false;
@@ -4862,6 +5153,7 @@
 
   audiobookRefreshButton.addEventListener("click", function () {
     refreshAudiobooks(false);
+    refreshAudiobookBenchmarks();
   });
   syncAudiobookEngineControls();
 

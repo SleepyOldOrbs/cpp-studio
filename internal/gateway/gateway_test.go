@@ -4876,6 +4876,12 @@ func TestAudiobookDurableLifecycleRoutes(t *testing.T) {
 	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"id":"attempt-0002"`) || !strings.Contains(status.Body.String(), `"selected":false`) {
 		t.Fatalf("immutable retry attempt not visible: %d %s", status.Code, status.Body.String())
 	}
+	audition := httptest.NewRecorder()
+	router.ServeHTTP(audition, httptest.NewRequest(http.MethodGet,
+		"/v1/audiobooks/"+resumeID+"/sections/section-0001/attempts/attempt-0002/audio", nil))
+	if audition.Code != http.StatusOK || audition.Header().Get("Content-Type") != "audio/wav" {
+		t.Fatalf("attempt audition: %d %s", audition.Code, audition.Body.String())
+	}
 	selectAttempt := httptest.NewRecorder()
 	router.ServeHTTP(selectAttempt, httptest.NewRequest(http.MethodPost,
 		"/v1/audiobooks/"+resumeID+"/sections/section-0001/attempts/attempt-0002/select", nil))

@@ -326,6 +326,18 @@ func TestHandlerServesAssets(t *testing.T) {
 			needle:      "runAudiobookLifecycle",
 		},
 		{
+			name:        "javascript audiobook benchmark projection",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "showMatchingAudiobookBenchmark",
+		},
+		{
+			name:        "javascript audiobook repair attempts",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "appendAudiobookAttempts",
+		},
+		{
 			name:        "javascript extractor",
 			path:        "/app.js",
 			contentType: "javascript",

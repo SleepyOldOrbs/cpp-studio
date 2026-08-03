@@ -530,6 +530,14 @@
               </select>
               <small class="hint">Compares a Whisper transcript with each exact source section. This is useful evidence, not a substitute for listening.</small>
             </label>
+            <div class="field">
+              <div class="action-row">
+                <button class="secondary" id="audiobookBenchmarkButton" type="button">Benchmark this narrator</button>
+                <button class="plain" id="audiobookBenchmarkCancel" type="button" disabled>Cancel benchmark</button>
+              </div>
+              <small class="hint">Uses the checked-in factual fixture. Local generation has no API fee, but consumes compute, memory, time, and storage.</small>
+              <pre id="audiobookBenchmarkStatus" aria-live="polite">No matching benchmark loaded.</pre>
+            </div>
             <label class="compact-field">
               <span>Inference steps</span>
               <input class="text-input" id="audiobookInferenceSteps" type="number" min="1" max="100" step="1" value="30">
@@ -584,6 +592,7 @@
             <span id="audiobookStatus">Idle</span>
           </div>
           <progress id="audiobookProgress" max="1" value="0"></progress>
+          <div class="story-library-detail" id="audiobookTimingStatus">No timing evidence yet.</div>
           <div class="source-row">
             <span class="source-label">Factual verification</span>
             <span id="audiobookVerificationStatus">Not run</span>

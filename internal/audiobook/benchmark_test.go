@@ -4,11 +4,23 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"cpp-studio/internal/jobs"
 	"cpp-studio/internal/wav"
 )
+
+func TestBenchmarkFixtureMatchesCheckedInHarnessFixture(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "benchmark", "dramabox-factual.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if strings.TrimSpace(normalized) != strings.TrimSpace(BenchmarkFixture) {
+		t.Fatal("server benchmark fixture drifted from the checked-in harness fixture")
+	}
+}
 
 func TestBenchmarkJobPersistsFingerprintMetricsAndStaleness(t *testing.T) {
 	root := t.TempDir()

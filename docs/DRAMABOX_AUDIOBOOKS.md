@@ -129,3 +129,16 @@ options, requested backend, and canonical fixture. A current mismatch is returne
 `identityChanged`, so old performance is never silently projected onto new assets.
 CPU/GPU memory fields remain absent when the platform cannot measure them, and the
 fresh-server mem-saver cases remain `profile-required` until run in those profiles.
+
+The Audiobook desk loads the newest matching benchmark for the selected voice,
+direction, and effective options. It shows cold/warm RTF, a measured 10,000-word
+projection, available VRAM evidence, fidelity state, date, and staleness. Overnight is
+an informed choice rather than a block; a matching result that failed to load or
+produce valid audio blocks Narrate until configuration changes and a new run succeeds.
+
+Finished DramaBox cards expose every immutable section attempt. Reproduce, new-seed
+Variation, per-attempt requested/actual seed state and timings, audition playback, and
+explicit Select are available together. Select publishes a new render revision and
+the card loads its new artifact without overwriting earlier audio. Live work reports
+total/phase elapsed time plus measured completed-section synthesis and verification;
+it does not invent native progress precision the runtime did not return.
