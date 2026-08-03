@@ -1253,7 +1253,10 @@ Names may adjust during implementation, but responsibilities must remain separat
 - [x] P0-11: Add interrupted/identity-conflict/verification UI states.
 - [x] P0-12: Update docs and examples.
 - [x] P0-13: Run full fixture verification, including Manager interface and crash-ordering tests.
-- [ ] P0-14: Run real release-0.5 acceptance if the model is locally available.
+- [x] P0-14: Run real release-0.5 acceptance if the model is locally available.
+  Checked 2026-08-03: the exact DramaBox GGUF is absent and the sibling audio.cpp
+  checkout is `release-0.4.2` (`27d87ba`), so real acceptance was not runnable.
+  P0 remains fixture-verified and explicitly runtime-unverified.
 
 ### P1 task order
 
