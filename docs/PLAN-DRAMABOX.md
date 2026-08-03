@@ -1,5 +1,12 @@
 # DramaBox expressive audiobook integration
 
+> Historical baseline: this plan records the first fixture-proven integration.
+> Durable seeded sections, Resume/Restart/Discard, streamed crossfade assembly,
+> typed request controls, and optional fidelity reports are implemented by the
+> follow-on [`PLAN-DRAMABOX-HARDENING.md`](PLAN-DRAMABOX-HARDENING.md). Where this
+> document describes 300-character DramaBox chunks or whole-book in-memory assembly,
+> the hardening roadmap and current API documentation supersede it.
+
 Status: IMPLEMENTED AND VERIFIED
 
 - Date: 2026-08-02

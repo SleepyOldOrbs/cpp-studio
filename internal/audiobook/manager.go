@@ -625,7 +625,11 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 			return
 		}
 		if m.registry != nil {
-			detail := fmt.Sprintf("narrating chunk %d/%d", i+1, len(units))
+			unitName := "chunk"
+			if req.EngineID == DramaBoxEngineID {
+				unitName = "section"
+			}
+			detail := fmt.Sprintf("narrating %s %d/%d", unitName, i+1, len(units))
 			if req.EngineID != DefaultEngineID {
 				detail += " with " + req.EngineID
 			}

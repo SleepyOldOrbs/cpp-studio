@@ -477,6 +477,31 @@ func TestDefaultNarrationPreservesLegacyProgressDetail(t *testing.T) {
 	waitForAudiobookJob(t, registry, id)
 }
 
+func TestDramaBoxNarrationReportsSectionProgress(t *testing.T) {
+	registry := jobs.NewRegistry()
+	entered := make(chan struct{}, 1)
+	unblock := make(chan struct{})
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(), Jobs: registry,
+		Synthesize: func(context.Context, SynthesisRequest) ([]byte, error) {
+			entered <- struct{}{}
+			<-unblock
+			return wav.SyntheticTone(160), nil
+		},
+	})
+	id, _, err := manager.Submit(context.Background(), Request{Text: "A fact.", EngineID: DramaBoxEngineID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	job, _ := registry.Get(id)
+	if job.Detail != "narrating section 1/1 with dramabox" {
+		t.Fatalf("DramaBox progress is not section-based: %q", job.Detail)
+	}
+	close(unblock)
+	waitForAudiobookJob(t, registry, id)
+}
+
 func TestDramaBoxFailureReleasesReservationAndRecovers(t *testing.T) {
 	registry := jobs.NewRegistry()
 	released := make(chan string, 2)

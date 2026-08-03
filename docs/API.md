@@ -179,7 +179,7 @@ stitched WAV. Runs as an `audiobook` job on the jobs surface.
   Manager freezes those identities before planning or reservation. The browser
   requires a current preview before enabling Narrate.
 - `GET /v1/jobs/{id}` — narration progress (`"narrating chunk 12/42"` for the
-  default engine or `"narrating chunk 12/42 with dramabox"`), and
+  default engine or `"narrating section 12/42 with dramabox"`), and
   `POST /v1/jobs/{id}/cancel` stops it.
 - `GET /v1/audiobooks` — finished narrations and recoverable WIPs, newest first:
   `{"audiobooks":[...],"interrupted":[...]}`. New manifests include `engine`,

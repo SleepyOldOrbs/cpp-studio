@@ -303,7 +303,7 @@ Set `"gpu": true` on subprocess engines that are heavy GPU users (typically `aud
 The gateway appends request arguments to the configured base args:
 
 - `whisper`: appends `-f <uploaded-temp-wav>`.
-- `audio` / `dramabox`: append `--text <input> --out <generated-temp-wav>`, plus `--voice-ref <wav> --reference-text <transcript>` when the request selects a cloned voice (per-run values replace matching config flags in place). DramaBox also supports text-only requests with no reference.
+- `audio` / `dramabox`: append `--text <input> --out <generated-temp-wav>`, plus `--voice-ref <wav> --reference-text <transcript>` when the request selects a cloned voice (per-run values replace matching config flags in place). DramaBox also supports text-only requests with no reference. Its typed per-section options map to fixed allowlisted CLI/server fields; cpp-studio owns the seed and never accepts an arbitrary native argument from HTTP.
 - `sd`: appends `--prompt <prompt> --output <generated-temp-png>`, plus `--width <px> --height <px>` when the request includes `size`.
 - `voicedesign` / `omnivoice`: append `--instruct <description> --text <sample> --out <generated-temp-wav>`.
 - `voxcpm2`: appends `--text "(<description>)<sample>" --out <generated-temp-wav>`.
@@ -364,6 +364,19 @@ Only switch the server JSON to `cuda` after a representative chapter proves
 load, peak VRAM, factual fidelity, and real-time factor on your machine. If it
 is too slow or fails to fit, select Fast local narrator or remove `dramabox`;
 existing WAVs and manifests remain usable.
+
+The DramaBox example intentionally does not invent a Whisper path. Merge the
+`whisper` engine from your working base config to enable factual verification.
+`auto` then compares each section when Whisper is present and otherwise records
+`unavailable`; `required` refuses creation if Whisper is absent and retains an
+interrupted WIP if ASR later fails; `off` records `skipped`. Verification runs
+serially after synthesis, so it does not race section generation for local compute.
+
+Every returned DramaBox production ID already has a private
+`out/audiobooks/.book_....wip` containing `source.txt`, the complete seeded plan,
+and the frozen synthesis identity. Do not edit these files in place. Use the
+Audiobook desk or the Resume/Restart/Discard API described in
+[`DRAMABOX_AUDIOBOOKS.md`](DRAMABOX_AUDIOBOOKS.md).
 
 ## Voice Design Engines
 

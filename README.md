@@ -153,6 +153,7 @@ OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
 | `POST /v1/images/descriptions` | VLM describes an image, spoken aloud |
 | `POST /v1/stories` | multi-voice story jobs, grounded or sketch |
 | `POST /v1/audiobooks` | document → single-narrator audiobook job |
+| `POST /v1/audiobooks/{id}/{resume,restart,discard}` | recover or explicitly remove interrupted audiobook work |
 | `GET /v1/jobs` · `POST /v1/jobs/{id}/cancel` | every async job, one surface |
 | `GET /v1/library` | persistent saved outputs |
 | `POST /v1/engines/{name}/{start,stop,reload}` · `/v1/engines/profiles/{name}` | engine power + VRAM profiles |
@@ -174,6 +175,16 @@ keep the fast local narrator for normal use until a real chapter benchmark
 proves otherwise. Local generation avoids a hosted usage bill, but storage,
 compute, electricity, and licence obligations still exist.
 
+DramaBox books are durable from the moment an ID is returned: canonical source,
+resolved engine/voice/options, every section range, and every random seed are stored
+before synthesis starts. Cancellation, a native-engine failure, or a cpp-studio
+restart retains completed sections. Resume is identity-strict; Restart preserves the
+old work and creates a new production under current configuration; only Discard
+deletes a WIP. A configured Whisper engine enables optional per-section factual
+comparison (`auto`, `required`, or `off`) with raw transcripts and visible warnings.
+It is evidence, not a replacement for listening. See
+[`docs/DRAMABOX_AUDIOBOOKS.md`](docs/DRAMABOX_AUDIOBOOKS.md).
+
 ## Verification
 
 ```powershell
@@ -181,7 +192,7 @@ compute, electricity, and licence obligations still exist.
 ```
 
 gofmt, `go test ./...`, vet, config checks, and the deterministic
-browser-demo smoke (voice loop, cloning, design, image, story) in one call.
+browser-demo smoke (voice loop, cloning, design, image, durable audiobook, story) in one call.
 Individual fixture smokes: `smoke-voice-loop-fixture.ps1`,
 `smoke-story-fixture.ps1`, `smoke-demo-ui.ps1`. Measured local-engine
 latencies and policies: [`docs/LOCAL_ENGINE_PROFILE.md`](docs/LOCAL_ENGINE_PROFILE.md).

@@ -316,13 +316,13 @@ mattered was that none of them should come first:
   book-level direction; Story/take-room direction remains deferred until its
   synthesis provenance and resume fingerprint change together. See
   [`PLAN-DRAMABOX.md`](PLAN-DRAMABOX.md).
-- **Resumable production — later, and bigger than it looks.** Story
-  synthesis still holds every clip in memory and writes takes only after the
-  story is stored, so resume needs a work-in-progress layout first. Line id
-  plus text is not a sufficient cache key either: an engine or model change
-  between runs would splice an inconsistent episode together silently.
-  Audiobooks have no take layout at all, so story resume would not help the
-  long-form case that motivates it.
+- **Durable DramaBox audiobook production — shipped 2026-08-03.** The long-form
+  path now persists canonical source, a complete seeded section plan, frozen
+  synthesis identity, section WAV/checkpoint evidence, optional fidelity reports,
+  and a streamed final assembly. Cancellation and restart retain WIP; Resume is
+  identity-strict, Restart forks, and Discard is explicit. Story keeps its separate
+  take-room lifecycle; shared persistence concepts do not merge the domain models.
+  See [`PLAN-DRAMABOX-HARDENING.md`](PLAN-DRAMABOX-HARDENING.md).
 
 ### M10 — Episodes  ·  *the wall between here and the destination*
 
