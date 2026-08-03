@@ -4578,7 +4578,7 @@ func TestAudiobookDramaBoxResidentServerSupportsTextOnlyAndClone(t *testing.T) {
 	_ = writer.WriteField("name", "Book Clone")
 	_ = writer.WriteField("transcript", "reference words")
 	part, _ := writer.CreateFormFile("file", "reference.wav")
-	_, _ = part.Write(validWAVBytes())
+	_, _ = part.Write(wav.SyntheticTone(10 * wav.ToneSampleRate))
 	_ = writer.Close()
 	rec = httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/voices", &voiceBody)

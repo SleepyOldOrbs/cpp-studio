@@ -4445,6 +4445,11 @@
     if (fallbackVoice) {
       fallbackVoice.textContent = audiobookEngineSelect.value === "dramabox" ? "DramaBox text-only voice" : "Studio default";
     }
+    Array.prototype.forEach.call(audiobookVoiceSelect.options, function (option, index) {
+      if (index > 0) {
+        option.disabled = audiobookEngineSelect.value === "dramabox" && option.dataset.dramaboxEligible !== "true";
+      }
+    });
     audiobookVoiceHint.textContent = audiobookEngineSelect.value === "dramabox" ?
       "Choose a stored voice to clone it, or leave this on text-only generation." :
       "Any voice from your library — cloned or designed.";
@@ -4538,6 +4543,10 @@
       var duration = analysis.duration_seconds ? " · " + analysis.duration_seconds.toFixed(1) + "s" : "";
       var option = createElement("option", "", (clone.name || clone.id) + duration);
       option.value = clone.id;
+      option.dataset.dramaboxEligible = String(analysis.fitness !== "unsupported" && Number(analysis.usable_speech_seconds || 0) >= 10);
+      if (option.dataset.dramaboxEligible !== "true") {
+        option.title = "DramaBox requires at least 10 seconds of usable 16-bit PCM speech; other narrators can still use this voice.";
+      }
       audiobookVoiceSelect.appendChild(option);
     });
     audiobookVoiceSelect.value = previous;
@@ -4564,7 +4573,10 @@
     var source = clone.source || {};
     var provenance = source.name ? "Source: " + source.name + (source.speaker ? " · " + source.speaker : "") : "Source provenance was not supplied";
     var warnings = (analysis.warnings || []).join("; ");
-    audiobookVoiceProvenance.textContent = clone.id + (analysis.content_sha256 ? " · SHA-256 " + analysis.content_sha256 : "") + " · " + provenance + (warnings ? " · " + warnings : "");
+    var dramaBoxFitness = analysis.fitness !== "unsupported" && Number(analysis.usable_speech_seconds || 0) >= 10 ?
+      "DramaBox eligible (" + Number(analysis.usable_speech_seconds).toFixed(1) + "s usable speech)" :
+      "DramaBox disabled for this reference: needs at least 10s usable 16-bit PCM speech; other engines remain available";
+    audiobookVoiceProvenance.textContent = clone.id + (analysis.content_sha256 ? " · SHA-256 " + analysis.content_sha256 : "") + " · " + provenance + " · " + dramaBoxFitness + (warnings ? " · " + warnings : "");
     audiobookVoicePreview.src = clone.audio_url;
   }
 

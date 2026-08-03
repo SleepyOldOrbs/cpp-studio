@@ -107,6 +107,29 @@ func TestManagerResolvesAndFreezesEngineAndVoiceBeforeSynthesis(t *testing.T) {
 	}
 }
 
+func TestDramaBoxRejectsOnlyIneligibleCloneReferences(t *testing.T) {
+	manager := NewManager(ManagerOptions{
+		ResolveEngine: func(_ context.Context, engineID string) (EngineIdentity, error) {
+			return EngineIdentity{ID: engineID, Mode: "subprocess", ModelID: engineID, Fingerprint: engineID}, nil
+		},
+		ResolveVoice: func(_ context.Context, voiceID string) (VoiceIdentity, error) {
+			return VoiceIdentity{
+				ID: voiceID, Fingerprint: voiceID,
+				Reference:                &engine.Voice{RefWAVPath: "ref.wav", RefText: "words"},
+				DramaBoxIneligibleReason: "requires at least 10 seconds of usable speech; measured 4.0 seconds via pcm-heuristic-v1",
+			}, nil
+		},
+	})
+	_, err := manager.Preview(context.Background(), Request{EngineID: DramaBoxEngineID, VoiceID: "short"})
+	if err == nil || !IsRequestError(err) || !strings.Contains(err.Error(), "10 seconds") {
+		t.Fatalf("DramaBox accepted an ineligible clone: %v", err)
+	}
+	resolved, err := manager.Preview(context.Background(), Request{EngineID: DefaultEngineID, VoiceID: "short"})
+	if err != nil || resolved.Voice.ID != "short" {
+		t.Fatalf("engine-specific eligibility broke fast narration: resolved=%+v err=%v", resolved, err)
+	}
+}
+
 type countingReader struct{ reads int }
 
 func (reader *countingReader) Read([]byte) (int, error) {

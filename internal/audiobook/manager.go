@@ -248,6 +248,9 @@ func (m *Manager) resolveRequest(ctx context.Context, req Request) (ResolvedRequ
 	if err != nil {
 		return ResolvedRequest{}, requestErrorf("resolve audiobook voice %q: %v", req.VoiceID, err)
 	}
+	if req.EngineID == DramaBoxEngineID && resolvedVoice.Reference != nil && resolvedVoice.DramaBoxIneligibleReason != "" {
+		return ResolvedRequest{}, requestErrorf("DramaBox voice reference %q is not eligible: %s", resolvedVoice.ID, resolvedVoice.DramaBoxIneligibleReason)
+	}
 	return ResolvedRequest{Request: req, Engine: resolvedEngine, Voice: resolvedVoice}, nil
 }
 

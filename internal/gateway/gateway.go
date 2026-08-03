@@ -1065,15 +1065,19 @@ func (r *router) handleAudiobookPreview(w http.ResponseWriter, req *http.Request
 		mapping = engine.DescribeSynthesisMapping(resolved.Engine.Mode)
 	}
 	response := map[string]any{
-		"engine":            resolved.Engine.ID,
-		"engineFingerprint": resolved.Engine.Fingerprint,
-		"model":             resolved.Engine.ModelID,
-		"voice":             resolved.Voice.ID,
-		"voiceFingerprint":  resolved.Voice.Fingerprint,
-		"direction":         resolved.Request.Direction,
-		"options":           previewOptions,
-		"seedPolicy":        "one server-assigned uint64 seed per section",
-		"verification":      resolved.Request.Verification,
+		"engine":                   resolved.Engine.ID,
+		"engineFingerprint":        resolved.Engine.Fingerprint,
+		"model":                    resolved.Engine.ModelID,
+		"voice":                    resolved.Voice.ID,
+		"voiceFingerprint":         resolved.Voice.Fingerprint,
+		"voiceReferenceSha256":     resolved.Voice.ReferenceSHA256,
+		"voiceUsableSpeechSeconds": resolved.Voice.UsableSpeechSeconds,
+		"voiceFitnessMethod":       resolved.Voice.FitnessMethod,
+		"voiceFitnessWarnings":     resolved.Voice.FitnessWarnings,
+		"direction":                resolved.Request.Direction,
+		"options":                  previewOptions,
+		"seedPolicy":               "one server-assigned uint64 seed per section",
+		"verification":             resolved.Request.Verification,
 		"transport": map[string]any{
 			"mode":    resolved.Engine.Mode,
 			"mapping": mapping,
@@ -3335,6 +3339,13 @@ func (r *router) resolveAudiobookVoice(_ context.Context, voiceID string) (audio
 	if voiceID == "" || voiceID == "default" {
 		return audiobook.VoiceIdentity{ID: "default", Fingerprint: "default"}, nil
 	}
+	clone, ok, err := r.voices.Load(voiceID)
+	if err != nil {
+		return audiobook.VoiceIdentity{}, err
+	}
+	if !ok {
+		return audiobook.VoiceIdentity{}, fmt.Errorf("voice %q not found", voiceID)
+	}
 	resolved, err := r.resolveVoice(voiceID)
 	if err != nil {
 		return audiobook.VoiceIdentity{}, err
@@ -3354,11 +3365,25 @@ func (r *router) resolveAudiobookVoice(_ context.Context, voiceID string) (audio
 	}
 	referenceSHA := hex.EncodeToString(h.Sum(nil))
 	identityHash := sha256.Sum256([]byte(voiceID + "\x00" + referenceSHA + "\x00" + resolved.RefText))
+	usableSpeech, fitnessMethod := 0.0, "analysis unavailable"
+	warnings := []string(nil)
+	ineligibleReason := "reference analysis is unavailable; re-save or inspect the voice"
+	if clone.Analysis != nil {
+		usableSpeech = clone.Analysis.UsableSpeechSeconds
+		fitnessMethod = clone.Analysis.Method
+		warnings = append(warnings, clone.Analysis.Warnings...)
+		if clone.Analysis.Fitness == "unsupported" {
+			ineligibleReason = "reference format is unsupported for usable-speech analysis"
+		} else if usableSpeech < 10 {
+			ineligibleReason = fmt.Sprintf("requires at least 10 seconds of usable speech; measured %.1f seconds via %s", usableSpeech, fitnessMethod)
+		} else {
+			ineligibleReason = ""
+		}
+	}
 	return audiobook.VoiceIdentity{
-		ID:              voiceID,
-		Fingerprint:     hex.EncodeToString(identityHash[:]),
-		ReferenceSHA256: referenceSHA,
-		Reference:       resolved,
+		ID: voiceID, Fingerprint: hex.EncodeToString(identityHash[:]), ReferenceSHA256: referenceSHA,
+		UsableSpeechSeconds: usableSpeech, FitnessMethod: fitnessMethod, FitnessWarnings: warnings,
+		DramaBoxIneligibleReason: ineligibleReason, Reference: resolved,
 	}, nil
 }
 

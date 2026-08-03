@@ -24,10 +24,14 @@ type EngineIdentity struct {
 // VoiceIdentity records the authorized reference selected for production.
 // Reference is runtime-only; manifests retain its content identity, not a host path.
 type VoiceIdentity struct {
-	ID              string        `json:"id"`
-	Fingerprint     string        `json:"fingerprint"`
-	ReferenceSHA256 string        `json:"referenceSha256,omitempty"`
-	Reference       *engine.Voice `json:"-"`
+	ID                       string        `json:"id"`
+	Fingerprint              string        `json:"fingerprint"`
+	ReferenceSHA256          string        `json:"referenceSha256,omitempty"`
+	UsableSpeechSeconds      float64       `json:"usableSpeechSeconds,omitempty"`
+	FitnessMethod            string        `json:"fitnessMethod,omitempty"`
+	FitnessWarnings          []string      `json:"fitnessWarnings,omitempty"`
+	DramaBoxIneligibleReason string        `json:"dramaboxIneligibleReason,omitempty"`
+	Reference                *engine.Voice `json:"-"`
 }
 
 // SynthesisIdentity is the immutable base identity used to decide whether

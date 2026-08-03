@@ -74,6 +74,11 @@ the timestamped speech spans replace only the usable-duration estimate and the m
 is stored as `configured-vad+pcm-v1`. Missing VAD is `not-configured`; failure remains
 a visible warning and safely retains the PCM estimate.
 
+DramaBox cloning requires at least 10.0 seconds of usable speech from that stored
+analysis. Short or unsupported references are disabled only for DramaBox and produce
+the same bounded server-side rejection if submitted directly; the fast narrator and
+other voice consumers remain available. Text-only DramaBox is always an option.
+
 ## Verification states
 
 - `auto`: use configured Whisper; finish as `unavailable` if it is absent or fails.
