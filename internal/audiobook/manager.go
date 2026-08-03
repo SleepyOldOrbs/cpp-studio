@@ -2,9 +2,11 @@ package audiobook
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -56,8 +58,11 @@ type ManagerOptions struct {
 	RootDir       string
 	ReserveEngine ReserveEngineFunc
 	Synthesize    SynthesizeFunc
-	Jobs          *jobs.Registry
-	Now           func() time.Time
+	// SeedSource supplies full-range DramaBox section seeds. Nil uses
+	// crypto/rand.Reader; tests may inject deterministic or failing readers.
+	SeedSource io.Reader
+	Jobs       *jobs.Registry
+	Now        func() time.Time
 }
 
 // Request carries narration intent. NormalizeRequest and Submit validate and
@@ -70,11 +75,16 @@ type Request struct {
 	Direction string
 }
 
+type narrationUnit struct {
+	text string
+}
+
 type Manager struct {
 	mu            sync.Mutex
 	rootDir       string
 	reserveEngine ReserveEngineFunc
 	synthesize    SynthesizeFunc
+	seedSource    io.Reader
 	registry      *jobs.Registry
 	now           func() time.Time
 	counter       int
@@ -91,10 +101,15 @@ func NewManager(opts ManagerOptions) *Manager {
 	if rootDir == "" {
 		rootDir = DefaultRootDir
 	}
+	seedSource := opts.SeedSource
+	if seedSource == nil {
+		seedSource = rand.Reader
+	}
 	return &Manager{
 		rootDir:       rootDir,
 		reserveEngine: opts.ReserveEngine,
 		synthesize:    opts.Synthesize,
+		seedSource:    seedSource,
 		registry:      opts.Jobs,
 		now:           now,
 		cancels:       make(map[string]context.CancelFunc),
@@ -172,19 +187,37 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 	if title == "" {
 		title = "Untitled audiobook"
 	}
-	chunks := Chunk(req.Text, DefaultChunkChars)
-	if len(chunks) == 0 {
-		return "", 0, requestErrorf("document contains no narratable text")
-	}
-	if len(chunks) > MaxChunks {
-		return "", 0, requestErrorf("document needs %d chunks, max is %d; narrate it in parts", len(chunks), MaxChunks)
-	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.activeID != "" {
 		return "", 0, fmt.Errorf("another audiobook is already narrating")
 	}
+
+	var units []narrationUnit
+	if req.EngineID == DramaBoxEngineID {
+		sections, err := planDramaBoxSections(req.Text, m.seedSource)
+		if err != nil {
+			return "", 0, fmt.Errorf("plan DramaBox sections: %w", err)
+		}
+		units = make([]narrationUnit, len(sections))
+		for i, section := range sections {
+			units[i] = narrationUnit{text: req.Text[section.StartByte:section.EndByte]}
+		}
+	} else {
+		chunks := Chunk(req.Text, DefaultChunkChars)
+		units = make([]narrationUnit, len(chunks))
+		for i, chunk := range chunks {
+			units[i] = narrationUnit{text: chunk}
+		}
+	}
+	if len(units) == 0 {
+		return "", 0, requestErrorf("document contains no narratable text")
+	}
+	if len(units) > MaxChunks {
+		return "", 0, requestErrorf("document needs %d chunks, max is %d; narrate it in parts", len(units), MaxChunks)
+	}
+
 	var release func()
 	if m.reserveEngine != nil {
 		var ok bool
@@ -202,11 +235,11 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 		m.registry.Track(id, "audiobook", cancel)
 	}
 
-	go m.run(jobCtx, id, title, req, chunks, release)
-	return id, len(chunks), nil
+	go m.run(jobCtx, id, title, req, units, release)
+	return id, len(units), nil
 }
 
-func (m *Manager) run(ctx context.Context, id, title string, req Request, chunks []string, release func()) {
+func (m *Manager) run(ctx context.Context, id, title string, req Request, units []narrationUnit, release func()) {
 	defer func() {
 		if release != nil {
 			release()
@@ -233,22 +266,22 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, chunks
 		return
 	}
 	defer os.RemoveAll(clipDir)
-	clipPaths := make([]string, 0, len(chunks))
-	for i, chunk := range chunks {
+	clipPaths := make([]string, 0, len(units))
+	for i, unit := range units {
 		if ctx.Err() != nil {
 			m.markCancelled(id)
 			return
 		}
 		if m.registry != nil {
-			detail := fmt.Sprintf("narrating chunk %d/%d", i+1, len(chunks))
+			detail := fmt.Sprintf("narrating chunk %d/%d", i+1, len(units))
 			if req.EngineID != DefaultEngineID {
 				detail += " with " + req.EngineID
 			}
-			m.registry.Update(id, float64(i)/float64(len(chunks)), detail)
+			m.registry.Update(id, float64(i)/float64(len(units)), detail)
 		}
-		text := chunk
+		text := unit.text
 		if req.EngineID == DramaBoxEngineID {
-			text = BuildDramaBoxPrompt(req.Direction, chunk)
+			text = BuildDramaBoxPrompt(req.Direction, unit.text)
 		}
 		clip, err := m.synthesize(ctx, text, req.VoiceID, req.EngineID)
 		if err != nil {
@@ -257,14 +290,14 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, chunks
 				return
 			}
 			if m.registry != nil {
-				m.registry.Fail(id, fmt.Sprintf("narrate chunk %d/%d with %s: %v", i+1, len(chunks), req.EngineID, err))
+				m.registry.Fail(id, fmt.Sprintf("narrate chunk %d/%d with %s: %v", i+1, len(units), req.EngineID, err))
 			}
 			return
 		}
 		clipPath := filepath.Join(clipDir, fmt.Sprintf("chunk-%04d.wav", i+1))
 		if err := os.WriteFile(clipPath, clip, 0o600); err != nil {
 			if m.registry != nil {
-				m.registry.Fail(id, fmt.Sprintf("stage chunk %d/%d with %s: %v", i+1, len(chunks), req.EngineID, err))
+				m.registry.Fail(id, fmt.Sprintf("stage chunk %d/%d with %s: %v", i+1, len(units), req.EngineID, err))
 			}
 			return
 		}
@@ -293,7 +326,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, chunks
 		VoiceID:   req.VoiceID,
 		EngineID:  req.EngineID,
 		Direction: req.Direction,
-		Chunks:    len(chunks),
+		Chunks:    len(units),
 		CreatedAt: m.now(),
 	}
 	if duration, err := wav.Duration(stitched); err == nil {

@@ -148,8 +148,12 @@ stitched WAV. Runs as an `audiobook` job on the jobs surface.
   gets a restrained documentary default. Its direction is placed outside one
   quoted source passage; embedded double-quote punctuation is changed to
   apostrophes so it cannot close that passage, while the source words remain
-  unchanged. The document is chunked on paragraph and sentence boundaries
-  (~300 chars per spoken chunk, 600-chunk cap). Returns
+  unchanged. The default `audio` narrator keeps paragraph/sentence chunks of
+  approximately 300 characters. DramaBox instead plans larger app-level sections at
+  150 words per minute, targeting approximately 75 seconds and hard-capping the
+  estimate at 110 seconds so audio.cpp can perform its native long-form splitting.
+  Both paths retain the 600-unit cap; the compatibility `chunks` response field is the
+  selected path's unit count. Returns
   `202 {"id":"book_...","chunks":42,"statusUrl":"/v1/jobs/book_..."}`.
   Unknown engines and invalid direction return `400`; a recognized engine
   missing from this gateway returns `503`; only an active narration or busy

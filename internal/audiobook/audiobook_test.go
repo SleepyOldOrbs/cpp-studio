@@ -376,6 +376,74 @@ func TestDramaBoxNarrationReservesSelectedEngineAndRecordsProvenance(t *testing.
 	}
 }
 
+func TestDramaBoxNarrationUsesLongSectionsWithoutChangingFastChunks(t *testing.T) {
+	text := repeatedWords("documentary", 100)
+	if len(text) <= DefaultChunkChars {
+		t.Fatalf("test text must exceed the legacy chunk limit, got %d bytes", len(text))
+	}
+
+	run := func(t *testing.T, engineID string) int {
+		t.Helper()
+		registry := jobs.NewRegistry()
+		var calls atomic.Int32
+		manager := NewManager(ManagerOptions{
+			RootDir: t.TempDir(),
+			Jobs:    registry,
+			Synthesize: func(context.Context, string, string, string) ([]byte, error) {
+				calls.Add(1)
+				return wav.SyntheticTone(160), nil
+			},
+		})
+		id, _, err := manager.Submit(context.Background(), Request{Text: text, EngineID: engineID})
+		if err != nil {
+			t.Fatalf("submit %s audiobook: %v", engineID, err)
+		}
+		waitForAudiobookJob(t, registry, id)
+		return int(calls.Load())
+	}
+
+	fastCalls := run(t, DefaultEngineID)
+	if fastCalls <= 1 {
+		t.Fatalf("fast narrator calls = %d, want multiple legacy chunks", fastCalls)
+	}
+	if dramaBoxCalls := run(t, DramaBoxEngineID); dramaBoxCalls != 1 {
+		t.Fatalf("DramaBox calls = %d, want one app-level section", dramaBoxCalls)
+	}
+}
+
+func TestDramaBoxSeedFailurePrecedesReservationAndJobCreation(t *testing.T) {
+	registry := jobs.NewRegistry()
+	reserved := false
+	manager := NewManager(ManagerOptions{
+		RootDir:    t.TempDir(),
+		Jobs:       registry,
+		SeedSource: bytes.NewReader(nil),
+		ReserveEngine: func(context.Context, string) (func(), bool) {
+			reserved = true
+			return func() {}, true
+		},
+		Synthesize: func(context.Context, string, string, string) ([]byte, error) {
+			return wav.SyntheticTone(160), nil
+		},
+	})
+
+	if _, _, err := manager.Submit(context.Background(), Request{Text: "A fact.", EngineID: DramaBoxEngineID}); err == nil || !strings.Contains(err.Error(), "assign seed") {
+		t.Fatalf("expected seed-assignment failure, got %v", err)
+	}
+	if reserved {
+		t.Fatal("engine was reserved before section seeds were assigned")
+	}
+	if jobs := registry.List(); len(jobs) != 0 {
+		t.Fatalf("seed failure created jobs: %+v", jobs)
+	}
+
+	id, _, err := manager.Submit(context.Background(), Request{Text: "Fast narrator remains independent."})
+	if err != nil {
+		t.Fatalf("default narrator consumed DramaBox entropy: %v", err)
+	}
+	waitForAudiobookJob(t, registry, id)
+}
+
 func TestDefaultNarrationPreservesLegacyProgressDetail(t *testing.T) {
 	registry := jobs.NewRegistry()
 	entered := make(chan struct{}, 1)
