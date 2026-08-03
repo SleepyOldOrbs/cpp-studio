@@ -187,7 +187,10 @@ creation first publishes an owner-only `.book_....wip` directory containing the
 canonical `source.txt`, resolved synthesis identity, complete section plan, and all
 section seeds. The API returns its production id only after that durable transition;
 the finished directory retains the source and per-section WAV evidence beside
-`book.wav`.
+`book.wav`. Cancellation, synthesis failure, or process restart retains the WIP as
+`interrupted`. Resume is identity-strict and reuses only section WAVs whose source
+range, seed checkpoint, selected attempt, WAV structure, and content hash all match;
+Restart creates a separate production, and only explicit Discard removes a WIP.
 
 ## Library
 

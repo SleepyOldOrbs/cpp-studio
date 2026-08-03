@@ -3,10 +3,14 @@ package audiobook
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -112,6 +116,41 @@ func TestManagerBusyDoesNotPublishDramaBoxProduction(t *testing.T) {
 	}
 }
 
+func TestStoreTrustsOnlyMatchingSectionAudio(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(root)
+	manifest := durableTestManifest(t, "book_20260803_100000_002", "A durable section.")
+	staged, err := store.StageInitial(manifest, "A durable section.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PublishInitial(staged); err != nil {
+		t.Fatal(err)
+	}
+	audio := wav.SyntheticTone(800)
+	path, err := store.SaveSectionWIP(manifest.ID, manifest.Sections[0].ID, audio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(audio)
+	section := &manifest.Sections[0]
+	section.Status = SectionStatusSynthesized
+	section.AudioSHA256 = hex.EncodeToString(sum[:])
+	section.Attempts = []Attempt{{
+		ID: "attempt-0001", Seed: section.Seed, CheckpointFingerprint: section.CheckpointFingerprint,
+		AudioFile: section.AudioFile, AudioSHA256: section.AudioSHA256, Selected: true, CreatedAt: time.Now().UTC(),
+	}}
+	if got, trusted, err := store.TrustedSectionWIP(manifest, *section); err != nil || !trusted || got != path {
+		t.Fatalf("matching section was not trusted: path=%q trusted=%v err=%v", got, trusted, err)
+	}
+	if err := os.WriteFile(path, append([]byte(nil), audio[:len(audio)-1]...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, trusted, err := store.TrustedSectionWIP(manifest, *section); err != nil || trusted {
+		t.Fatalf("tampered section was trusted: trusted=%v err=%v", trusted, err)
+	}
+}
+
 func TestManagerPublishesCompleteWIPBeforeDramaBoxSynthesis(t *testing.T) {
 	root := t.TempDir()
 	registry := jobs.NewRegistry()
@@ -182,3 +221,146 @@ func TestManagerPublishesCompleteWIPBeforeDramaBoxSynthesis(t *testing.T) {
 type testStoreError struct{ message string }
 
 func (e *testStoreError) Error() string { return e.message }
+
+func TestDramaBoxCancelPersistsAndResumeSkipsTrustedSections(t *testing.T) {
+	root := t.TempDir()
+	firstRegistry := jobs.NewRegistry()
+	secondStarted := make(chan struct{}, 1)
+	var firstCalls atomic.Int32
+	manager := NewManager(ManagerOptions{
+		RootDir: root, Jobs: firstRegistry,
+		Synthesize: func(ctx context.Context, _ SynthesisRequest) ([]byte, error) {
+			if firstCalls.Add(1) == 1 {
+				return wav.SyntheticTone(800), nil
+			}
+			secondStarted <- struct{}{}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	})
+	source := repeatedWords("first", 130) + "\n\n" + repeatedWords("second", 130)
+	id, sections, err := manager.Submit(context.Background(), Request{Text: source, EngineID: DramaBoxEngineID})
+	if err != nil || sections != 2 {
+		t.Fatalf("submit: sections=%d err=%v", sections, err)
+	}
+	select {
+	case <-secondStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second section did not start")
+	}
+	if _, err := firstRegistry.Cancel(id); err != nil {
+		t.Fatal(err)
+	}
+	if job := waitForAudiobookTerminal(t, firstRegistry, id); job.Status != jobs.StatusCancelled {
+		t.Fatalf("cancel status: %+v", job)
+	}
+	interrupted, _, err := manager.store.LoadDurableWIP(id)
+	if err != nil || interrupted.Status != ProductionStatusInterrupted || interrupted.Sections[0].Status != SectionStatusSynthesized || interrupted.Sections[1].Status != SectionStatusPending {
+		t.Fatalf("interrupted checkpoint: err=%v manifest=%+v", err, interrupted)
+	}
+
+	secondRegistry := jobs.NewRegistry()
+	var resumedCalls atomic.Int32
+	resumed := NewManager(ManagerOptions{
+		RootDir: root, Jobs: secondRegistry,
+		Synthesize: func(context.Context, SynthesisRequest) ([]byte, error) {
+			resumedCalls.Add(1)
+			return wav.SyntheticTone(800), nil
+		},
+	})
+	if resumedSections, err := resumed.Resume(context.Background(), id); err != nil || resumedSections != 2 {
+		t.Fatalf("resume: sections=%d err=%v", resumedSections, err)
+	}
+	waitForAudiobookJob(t, secondRegistry, id)
+	if resumedCalls.Load() != 1 {
+		t.Fatalf("resume synthesized %d sections, want only the missing section", resumedCalls.Load())
+	}
+	final, ok, err := loadManifest(filepath.Join(root, id, manifestFileName))
+	if err != nil || !ok || final.Status != ProductionStatusComplete || len(final.Sections) != 2 {
+		t.Fatalf("resumed final manifest: ok=%v err=%v manifest=%+v", ok, err, final)
+	}
+}
+
+func TestResumeRejectsIdentityChangeAndRestartPreservesOriginal(t *testing.T) {
+	root := t.TempDir()
+	registry := jobs.NewRegistry()
+	manager := NewManager(ManagerOptions{
+		RootDir: root, Jobs: registry,
+		Synthesize: func(context.Context, SynthesisRequest) ([]byte, error) {
+			return nil, &testStoreError{"planned failure"}
+		},
+	})
+	id, _, err := manager.Submit(context.Background(), Request{Text: "Preserve this source.", EngineID: DramaBoxEngineID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := waitForAudiobookTerminal(t, registry, id); job.Status != jobs.StatusFailed {
+		t.Fatalf("planned job did not fail: %+v", job)
+	}
+	original, _, err := manager.store.LoadDurableWIP(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changedRegistry := jobs.NewRegistry()
+	changed := NewManager(ManagerOptions{
+		RootDir: root, Jobs: changedRegistry,
+		ResolveEngine: func(context.Context, string) (EngineIdentity, error) {
+			return EngineIdentity{ID: DramaBoxEngineID, Mode: "subprocess", ModelID: "new-model", Fingerprint: "new-engine-fingerprint"}, nil
+		},
+		Synthesize: func(context.Context, SynthesisRequest) ([]byte, error) {
+			return wav.SyntheticTone(800), nil
+		},
+	})
+	if _, err := changed.Resume(context.Background(), id); !errors.Is(err, ErrSynthesisIdentityChanged) {
+		t.Fatalf("resume accepted changed identity: %v", err)
+	}
+	stillOriginal, _, err := changed.store.LoadDurableWIP(id)
+	if err != nil || stillOriginal.SynthesisFingerprint != original.SynthesisFingerprint || stillOriginal.Status != ProductionStatusInterrupted {
+		t.Fatalf("identity conflict mutated original: err=%v manifest=%+v", err, stillOriginal)
+	}
+	newID, _, err := changed.Restart(context.Background(), id)
+	if err != nil || newID == id {
+		t.Fatalf("restart: old=%s new=%s err=%v", id, newID, err)
+	}
+	waitForAudiobookJob(t, changedRegistry, newID)
+	if _, _, err := changed.store.LoadDurableWIP(id); err != nil {
+		t.Fatalf("restart removed original WIP: %v", err)
+	}
+	restarted, ok, err := loadManifest(filepath.Join(root, newID, manifestFileName))
+	if err != nil || !ok || restarted.SynthesisFingerprint == original.SynthesisFingerprint {
+		t.Fatalf("restart did not use new identity: ok=%v err=%v manifest=%+v", ok, err, restarted)
+	}
+	if err := changed.Discard(id); err != nil {
+		t.Fatalf("discard original: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "."+id+".wip")); !os.IsNotExist(err) {
+		t.Fatalf("discard left WIP: %v", err)
+	}
+}
+
+func TestResumeRejectsCanonicalSourceCorruption(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(root)
+	manifest := durableTestManifest(t, "book_20260803_100000_009", "Canonical source.")
+	manifest.Status = ProductionStatusInterrupted
+	staged, err := store.StageInitial(func() Manifest { copy := manifest; copy.Status = ProductionStatusSynthesizing; return copy }(), "Canonical source.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PublishInitial(staged); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveManifestWIP(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "."+manifest.ID+".wip", sourceFileName), []byte("Tampered source."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(ManagerOptions{RootDir: root, Synthesize: func(context.Context, SynthesisRequest) ([]byte, error) {
+		return wav.SyntheticTone(800), nil
+	}})
+	if _, err := manager.Resume(context.Background(), manifest.ID); !errors.Is(err, ErrStoreCorrupt) {
+		t.Fatalf("resume accepted corrupt canonical source: %v", err)
+	}
+}

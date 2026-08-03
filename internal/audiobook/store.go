@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,11 @@ import (
 	"strings"
 
 	"cpp-studio/internal/wav"
+)
+
+var (
+	ErrProductionNotFound = errors.New("audiobook production not found")
+	ErrStoreCorrupt       = errors.New("audiobook store is corrupt")
 )
 
 const (
@@ -33,6 +39,20 @@ func NewStore(rootDir string) *Store {
 
 func (s *Store) wipDir(id string) string {
 	return filepath.Join(s.rootDir, "."+id+".wip")
+}
+
+func (s *Store) IDExists(id string) (bool, error) {
+	if err := validateBookID(id); err != nil {
+		return false, err
+	}
+	for _, path := range []string{filepath.Join(s.rootDir, id), s.wipDir(id)} {
+		if _, err := os.Stat(path); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 type stagedProduction struct {
@@ -206,6 +226,140 @@ func (s *Store) ListWIP() ([]Manifest, error) {
 	}
 	sort.Slice(manifests, func(i, j int) bool { return manifests[i].CreatedAt.After(manifests[j].CreatedAt) })
 	return manifests, nil
+}
+
+// LoadDurableWIP validates the immutable source, synthesis identity, section
+// plan, and checkpoints before returning any source text to orchestration.
+func (s *Store) LoadDurableWIP(id string) (Manifest, string, error) {
+	manifest, ok, err := s.LoadWIP(id)
+	if err != nil {
+		return Manifest{}, "", err
+	}
+	if !ok {
+		return Manifest{}, "", ErrProductionNotFound
+	}
+	source, err := os.ReadFile(filepath.Join(s.wipDir(id), sourceFileName))
+	if err != nil {
+		return Manifest{}, "", fmt.Errorf("%w: read canonical source: %v", ErrStoreCorrupt, err)
+	}
+	if err := validateDurableManifest(manifest, string(source)); err != nil {
+		return Manifest{}, "", fmt.Errorf("%w: %v", ErrStoreCorrupt, err)
+	}
+	return manifest, string(source), nil
+}
+
+func validateDurableManifest(manifest Manifest, source string) error {
+	if err := validateBookID(manifest.ID); err != nil {
+		return err
+	}
+	if manifest.SchemaVersion != CurrentManifestSchemaVersion || manifest.SynthesisIdentity == nil {
+		return fmt.Errorf("unsupported or missing manifest identity")
+	}
+	if manifest.SourceFile != sourceFileName || manifest.SynthesisFingerprint == "" {
+		return fmt.Errorf("missing canonical source identity")
+	}
+	sourceSum := sha256.Sum256([]byte(source))
+	if got := hex.EncodeToString(sourceSum[:]); got != manifest.SourceSHA256 || got != manifest.SynthesisIdentity.SourceSHA256 {
+		return fmt.Errorf("canonical source hash does not match")
+	}
+	if manifest.SynthesisIdentity.Fingerprint != manifest.SynthesisFingerprint || len(manifest.Sections) == 0 || manifest.Chunks != len(manifest.Sections) {
+		return fmt.Errorf("synthesis identity or section table does not match")
+	}
+	for i, section := range manifest.Sections {
+		if section.ID != fmt.Sprintf("section-%04d", i+1) || section.StartByte < 0 || section.EndByte <= section.StartByte || section.EndByte > int64(len(source)) {
+			return fmt.Errorf("section %d has an invalid identity or source range", i+1)
+		}
+		textSum := sha256.Sum256([]byte(source[section.StartByte:section.EndByte]))
+		if section.TextSHA256 != hex.EncodeToString(textSum[:]) {
+			return fmt.Errorf("section %s source hash does not match", section.ID)
+		}
+		if section.AudioFile != filepath.ToSlash(filepath.Join(sectionsDirName, section.ID+".wav")) {
+			return fmt.Errorf("section %s audio path is invalid", section.ID)
+		}
+		if section.CheckpointFingerprint != sectionCheckpointFingerprint(manifest.SynthesisFingerprint, section) {
+			return fmt.Errorf("section %s checkpoint does not match", section.ID)
+		}
+	}
+	return nil
+}
+
+// TrustedSectionWIP returns a reusable section only when its manifest
+// projection, selected attempt, hash, checkpoint, and WAV all agree.
+func (s *Store) TrustedSectionWIP(manifest Manifest, section Section) (string, bool, error) {
+	if section.Status != SectionStatusSynthesized && section.Status != SectionStatusVerified && section.Status != SectionStatusFlagged {
+		return "", false, nil
+	}
+	if section.AudioSHA256 == "" || len(section.Attempts) == 0 {
+		return "", false, nil
+	}
+	var selected *Attempt
+	for i := range section.Attempts {
+		if section.Attempts[i].Selected {
+			if selected != nil {
+				return "", false, nil
+			}
+			selected = &section.Attempts[i]
+		}
+	}
+	if selected == nil || selected.Seed != section.Seed || selected.CheckpointFingerprint != section.CheckpointFingerprint || selected.AudioFile != section.AudioFile || selected.AudioSHA256 != section.AudioSHA256 {
+		return "", false, nil
+	}
+	path := filepath.Join(s.wipDir(manifest.ID), filepath.FromSlash(section.AudioFile))
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if err := wav.ValidateBytes(data); err != nil {
+		return "", false, nil
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != section.AudioSHA256 {
+		return "", false, nil
+	}
+	return path, true, nil
+}
+
+// RecoverInterrupted marks unfinished productions found after process startup.
+// Corrupt WIPs remain untouched for manual recovery and are never synthesized.
+func (s *Store) RecoverInterrupted() error {
+	manifests, err := s.ListWIP()
+	if err != nil {
+		return err
+	}
+	for _, item := range manifests {
+		manifest, _, err := s.LoadDurableWIP(item.ID)
+		if err != nil {
+			continue
+		}
+		if manifest.Status != ProductionStatusInterrupted {
+			manifest.Status = ProductionStatusInterrupted
+			if err := s.SaveManifestWIP(manifest); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) DiscardWIP(id string) error {
+	if err := validateBookID(id); err != nil {
+		return err
+	}
+	path := s.wipDir(id)
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return ErrProductionNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: WIP path is not a directory", ErrStoreCorrupt)
+	}
+	return os.RemoveAll(path)
 }
 
 // FinalizeWIP writes the validated book beside its durable source/sections and

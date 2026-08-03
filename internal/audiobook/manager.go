@@ -42,6 +42,12 @@ const (
 // ArtifactName is the stitched narration file inside an audiobook's dir.
 const ArtifactName = "book.wav"
 
+var (
+	ErrProductionNotInterrupted = errors.New("audiobook production is not interrupted")
+	ErrSynthesisIdentityChanged = errors.New("audiobook synthesis identity changed")
+	ErrProductionActive         = errors.New("audiobook production is active")
+)
+
 // chunkGap is the silence between narrated chunks; paragraph pacing comes
 // from chunk boundaries, so the gap stays short.
 const chunkGap = 400 * time.Millisecond
@@ -87,6 +93,7 @@ type narrationUnit struct {
 	text    string
 	seed    Seed
 	section *Section
+	audio   string
 }
 
 type Manager struct {
@@ -133,7 +140,7 @@ func NewManager(opts ManagerOptions) *Manager {
 			return VoiceIdentity{ID: voiceID, Fingerprint: voiceID}, nil
 		}
 	}
-	return &Manager{
+	manager := &Manager{
 		rootDir:       rootDir,
 		store:         NewStore(rootDir),
 		reserveEngine: opts.ReserveEngine,
@@ -145,6 +152,8 @@ func NewManager(opts ManagerOptions) *Manager {
 		now:           now,
 		cancels:       make(map[string]context.CancelFunc),
 	}
+	_ = manager.store.RecoverInterrupted()
+	return manager
 }
 
 // Preview resolves exactly the engine, voice, direction, and effective options
@@ -270,8 +279,10 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 
 	var units []narrationUnit
 	var initial *Manifest
-	m.counter++
-	id := fmt.Sprintf("book_%s_%03d", m.now().Format("20060102_150405"), m.counter)
+	id, err := m.nextID()
+	if err != nil {
+		return "", 0, err
+	}
 	if req.EngineID == DramaBoxEngineID {
 		sections, err := planDramaBoxSections(req.Text, m.seedSource)
 		if err != nil {
@@ -345,6 +356,137 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 	return id, len(units), nil
 }
 
+func (m *Manager) nextID() (string, error) {
+	timestamp := m.now().Format("20060102_150405")
+	for {
+		m.counter++
+		id := fmt.Sprintf("book_%s_%03d", timestamp, m.counter)
+		exists, err := m.store.IDExists(id)
+		if err != nil {
+			return "", fmt.Errorf("check audiobook id: %w", err)
+		}
+		if !exists {
+			return id, nil
+		}
+	}
+}
+
+// Resume continues one durable interrupted DramaBox production under exactly
+// its frozen engine, voice, option, prompt, and section identities.
+func (m *Manager) Resume(ctx context.Context, id string) (int, error) {
+	if m.synthesize == nil {
+		return 0, requestErrorf("audiobooks need a configured speech engine")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeID != "" {
+		return 0, fmt.Errorf("another audiobook is already narrating")
+	}
+	manifest, source, err := m.store.LoadDurableWIP(id)
+	if err != nil {
+		return 0, err
+	}
+	if manifest.Status != ProductionStatusInterrupted {
+		return 0, ErrProductionNotInterrupted
+	}
+	if manifest.EngineID != DramaBoxEngineID || manifest.ResolvedOptions == nil {
+		return 0, fmt.Errorf("only durable DramaBox productions can resume")
+	}
+	req, err := NormalizeRequest(Request{
+		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
+		EngineID: manifest.EngineID, Direction: manifest.Direction, Options: *manifest.ResolvedOptions,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("stored audiobook request: %w", err)
+	}
+	resolved, err := m.resolveRequest(ctx, req)
+	if err != nil {
+		return 0, err
+	}
+	identity := buildSynthesisIdentity(req, resolved.Engine, resolved.Voice)
+	if identity.Fingerprint != manifest.SynthesisFingerprint {
+		return 0, fmt.Errorf("%w: Restart creates a new production under the current engine and voice", ErrSynthesisIdentityChanged)
+	}
+	units := make([]narrationUnit, len(manifest.Sections))
+	for i := range manifest.Sections {
+		section := &manifest.Sections[i]
+		trustedPath, trusted, err := m.store.TrustedSectionWIP(manifest, *section)
+		if err != nil {
+			return 0, err
+		}
+		if !trusted {
+			section.Status = SectionStatusPending
+			section.AudioSHA256 = ""
+			section.DurationMS = 0
+			section.TranscriptFile = ""
+			section.Attempts = nil
+		}
+		units[i] = narrationUnit{
+			text: source[section.StartByte:section.EndByte], seed: section.Seed,
+			section: section, audio: trustedPath,
+		}
+	}
+	var release func()
+	if m.reserveEngine != nil {
+		var ok bool
+		release, ok = m.reserveEngine(ctx, req.EngineID)
+		if !ok {
+			return 0, fmt.Errorf("engine %q is busy", req.EngineID)
+		}
+	}
+	manifest.Status = ProductionStatusSynthesizing
+	if err := m.store.SaveManifestWIP(manifest); err != nil {
+		if release != nil {
+			release()
+		}
+		return 0, err
+	}
+	jobCtx, cancel := context.WithCancel(context.Background())
+	m.activeID = id
+	m.cancels[id] = cancel
+	if m.registry != nil {
+		m.registry.Track(id, "audiobook", cancel)
+	}
+	go m.run(jobCtx, id, manifest.Title, req, identity, resolved.Voice, units, &manifest, release)
+	return len(units), nil
+}
+
+// Restart creates a separate production from a hash-valid interrupted source.
+// The original WIP remains untouched and current resolvers define the new identity.
+func (m *Manager) Restart(ctx context.Context, id string) (string, int, error) {
+	manifest, source, err := m.store.LoadDurableWIP(id)
+	if err != nil {
+		return "", 0, err
+	}
+	if manifest.Status != ProductionStatusInterrupted {
+		return "", 0, ErrProductionNotInterrupted
+	}
+	if manifest.ResolvedOptions == nil {
+		return "", 0, fmt.Errorf("stored audiobook options are missing")
+	}
+	return m.Submit(ctx, Request{
+		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
+		EngineID: manifest.EngineID, Direction: manifest.Direction, Options: *manifest.ResolvedOptions,
+	})
+}
+
+// Discard explicitly removes an inactive interrupted WIP and its evidence.
+func (m *Manager) Discard(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeID == id {
+		return ErrProductionActive
+	}
+	manifest, _, err := m.store.LoadDurableWIP(id)
+	if err != nil {
+		return err
+	}
+	if manifest.Status != ProductionStatusInterrupted {
+		return ErrProductionNotInterrupted
+	}
+	return m.store.DiscardWIP(id)
+}
+
 func (m *Manager) run(ctx context.Context, id, title string, req Request, identity SynthesisIdentity, resolvedVoice VoiceIdentity, units []narrationUnit, initial *Manifest, release func()) {
 	defer func() {
 		if release != nil {
@@ -359,9 +501,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 	}()
 
 	if err := os.MkdirAll(m.rootDir, 0o755); err != nil {
-		if m.registry != nil {
-			m.registry.Fail(id, "create audiobook staging dir: "+err.Error())
-		}
+		m.finishRunError(id, initial, "create audiobook staging dir: "+err.Error(), false)
 		return
 	}
 	clipDir := ""
@@ -369,9 +509,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		var err error
 		clipDir, err = os.MkdirTemp(m.rootDir, "."+id+".clips-")
 		if err != nil {
-			if m.registry != nil {
-				m.registry.Fail(id, "create audiobook staging dir: "+err.Error())
-			}
+			m.finishRunError(id, initial, "create audiobook staging dir: "+err.Error(), false)
 			return
 		}
 		defer os.RemoveAll(clipDir)
@@ -379,7 +517,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 	clipPaths := make([]string, 0, len(units))
 	for i, unit := range units {
 		if ctx.Err() != nil {
-			m.markCancelled(id)
+			m.finishRunError(id, initial, "audiobook narration was cancelled", true)
 			return
 		}
 		if m.registry != nil {
@@ -388,6 +526,10 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 				detail += " with " + req.EngineID
 			}
 			m.registry.Update(id, float64(i)/float64(len(units)), detail)
+		}
+		if unit.audio != "" {
+			clipPaths = append(clipPaths, unit.audio)
+			continue
 		}
 		text := unit.text
 		if req.EngineID == DramaBoxEngineID {
@@ -404,12 +546,10 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		})
 		if err != nil {
 			if ctx.Err() != nil {
-				m.markCancelled(id)
+				m.finishRunError(id, initial, "audiobook narration was cancelled", true)
 				return
 			}
-			if m.registry != nil {
-				m.registry.Fail(id, fmt.Sprintf("narrate chunk %d/%d with %s: %v", i+1, len(units), req.EngineID, err))
-			}
+			m.finishRunError(id, initial, fmt.Sprintf("narrate chunk %d/%d with %s: %v", i+1, len(units), req.EngineID, err), false)
 			return
 		}
 		clipPath := filepath.Join(clipDir, fmt.Sprintf("chunk-%04d.wav", i+1))
@@ -419,9 +559,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 			err = os.WriteFile(clipPath, clip, 0o600)
 		}
 		if err != nil {
-			if m.registry != nil {
-				m.registry.Fail(id, fmt.Sprintf("stage chunk %d/%d with %s: %v", i+1, len(units), req.EngineID, err))
-			}
+			m.finishRunError(id, initial, fmt.Sprintf("stage chunk %d/%d with %s: %v", i+1, len(units), req.EngineID, err), false)
 			return
 		}
 		if unit.section != nil {
@@ -438,12 +576,23 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 				AudioFile:             unit.section.AudioFile, AudioSHA256: unit.section.AudioSHA256,
 				Selected: true, CreatedAt: m.now(), Options: &attemptOptions,
 			}}
+			if err := m.store.SaveManifestWIP(*initial); err != nil {
+				m.finishRunError(id, initial, "checkpoint audiobook section: "+err.Error(), false)
+				return
+			}
 		}
 		clipPaths = append(clipPaths, clipPath)
 	}
 
 	if m.registry != nil {
 		m.registry.Update(id, 0.97, "stitching")
+	}
+	if initial != nil {
+		initial.Status = ProductionStatusStitching
+		if err := m.store.SaveManifestWIP(*initial); err != nil {
+			m.finishRunError(id, initial, "checkpoint audiobook stitching: "+err.Error(), false)
+			return
+		}
 	}
 	gaps := make([]time.Duration, len(clipPaths))
 	for i := range gaps {
@@ -453,9 +602,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		return os.ReadFile(clipPaths[i])
 	})
 	if err != nil {
-		if m.registry != nil {
-			m.registry.Fail(id, "stitch narration: "+err.Error())
-		}
+		m.finishRunError(id, initial, "stitch narration: "+err.Error(), false)
 		return
 	}
 	manifest := Manifest{
@@ -488,7 +635,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 	manifest.ArtifactURL = "/v1/audiobooks/" + id + "/artifact/" + ArtifactName
 
 	if ctx.Err() != nil {
-		m.markCancelled(id)
+		m.finishRunError(id, initial, "audiobook narration was cancelled", true)
 		return
 	}
 	if initial != nil {
@@ -497,9 +644,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		err = m.save(manifest, stitched)
 	}
 	if err != nil {
-		if m.registry != nil {
-			m.registry.Fail(id, "save audiobook: "+err.Error())
-		}
+		m.finishRunError(id, initial, "save audiobook: "+err.Error(), false)
 		return
 	}
 	if m.registry != nil {
@@ -507,10 +652,21 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 	}
 }
 
-func (m *Manager) markCancelled(id string) {
-	if m.registry != nil {
-		m.registry.MarkCancelled(id)
+func (m *Manager) finishRunError(id string, manifest *Manifest, message string, cancelled bool) {
+	if manifest != nil {
+		manifest.Status = ProductionStatusInterrupted
+		if err := m.store.SaveManifestWIP(*manifest); err != nil {
+			message += "; persist interrupted state: " + err.Error()
+		}
 	}
+	if m.registry == nil {
+		return
+	}
+	if cancelled {
+		m.registry.MarkCancelled(id)
+		return
+	}
+	m.registry.Fail(id, message)
 }
 
 func (m *Manager) save(manifest Manifest, audio []byte) error {
@@ -539,7 +695,7 @@ func (m *Manager) save(manifest Manifest, audio []byte) error {
 	return os.Rename(tmpDir, filepath.Join(m.rootDir, manifest.ID))
 }
 
-// List returns finished audiobooks, newest first.
+// List returns finished and recoverable interrupted audiobooks, newest first.
 func (m *Manager) List() ([]Manifest, error) {
 	entries, err := os.ReadDir(m.rootDir)
 	if os.IsNotExist(err) {
@@ -563,6 +719,22 @@ func (m *Manager) List() ([]Manifest, error) {
 		}
 		out = append(out, manifest)
 	}
+	m.mu.Lock()
+	activeID := m.activeID
+	m.mu.Unlock()
+	wips, err := m.store.ListWIP()
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range wips {
+		if candidate.ID == activeID {
+			continue
+		}
+		manifest, _, err := m.store.LoadDurableWIP(candidate.ID)
+		if err == nil && manifest.Status == ProductionStatusInterrupted {
+			out = append(out, manifest)
+		}
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].ID > out[j].ID
@@ -570,6 +742,21 @@ func (m *Manager) List() ([]Manifest, error) {
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
 	return out, nil
+}
+
+// Status loads either a finished production or a hash-valid durable WIP.
+func (m *Manager) Status(id string) (Manifest, bool, error) {
+	if err := validateBookID(id); err != nil {
+		return Manifest{}, false, nil
+	}
+	if manifest, ok, err := loadManifest(filepath.Join(m.rootDir, id, manifestFileName)); err != nil || ok {
+		return manifest, ok, err
+	}
+	manifest, _, err := m.store.LoadDurableWIP(id)
+	if errors.Is(err, ErrProductionNotFound) {
+		return Manifest{}, false, nil
+	}
+	return manifest, err == nil, err
 }
 
 // ArtifactPath resolves an audiobook's WAV for serving.
