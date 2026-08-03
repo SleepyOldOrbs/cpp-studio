@@ -106,3 +106,16 @@ Fixture verification proves orchestration without the 18.9 GB model:
 
 This does not prove real-model quality, peak VRAM, or real-time factor. Keep those
 claims runtime-unverified until P0-14 real acceptance succeeds.
+
+Plan or run the dedicated evidence harness with:
+
+```powershell
+.\scripts\benchmark-dramabox-audiobook.ps1 -PlanOnly
+.\scripts\test-benchmark-dramabox-audiobook.ps1
+```
+
+The plan covers cold/warm text, native long form, conditional authorized cloning,
+fresh mem-saver modes, CPU, explicitly requested CUDA, cancel/restart recovery, and
+ASR fidelity. Real runs use the tracked benchmark API/job and retain the full metric
+schema; they accept loopback gateways only. Labels are descriptive (`interactive`,
+`batch-usable`, `overnight`, or `failed`) and never certify subjective quality.
