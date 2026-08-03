@@ -197,6 +197,10 @@ func (s *Store) SaveManifestWIP(manifest Manifest) error {
 	return writeManifestAtomic(filepath.Join(s.wipDir(manifest.ID), manifestFileName), manifest)
 }
 
+func (s *Store) bookWIPPath(id string) string {
+	return filepath.Join(s.wipDir(id), ArtifactName)
+}
+
 func (s *Store) LoadWIP(id string) (Manifest, bool, error) {
 	if err := validateBookID(id); err != nil {
 		return Manifest{}, false, err
@@ -386,6 +390,31 @@ func (s *Store) FinalizeWIP(manifest Manifest, audio []byte) error {
 	}
 	if err := writeFileAtomic(filepath.Join(wip, ArtifactName), audio); err != nil {
 		return fmt.Errorf("write narration wav: %w", err)
+	}
+	return s.FinalizeWIPFile(manifest)
+}
+
+// FinalizeWIPFile publishes an already streamed and validated book.wav without
+// reading it back into a whole-book byte slice.
+func (s *Store) FinalizeWIPFile(manifest Manifest) error {
+	if err := validateBookID(manifest.ID); err != nil {
+		return err
+	}
+	if manifest.Status != ProductionStatusComplete {
+		return fmt.Errorf("final audiobook manifest must be complete")
+	}
+	wip := s.wipDir(manifest.ID)
+	if info, err := os.Stat(wip); err != nil || !info.IsDir() {
+		return fmt.Errorf("audiobook %s has no work in progress", manifest.ID)
+	}
+	if _, err := wav.DurationFile(s.bookWIPPath(manifest.ID)); err != nil {
+		return fmt.Errorf("validate streamed narration: %w", err)
+	}
+	finalDir := filepath.Join(s.rootDir, manifest.ID)
+	if _, err := os.Stat(finalDir); err == nil {
+		return fmt.Errorf("audiobook %s already exists", manifest.ID)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat final audiobook: %w", err)
 	}
 	if err := writeManifestAtomic(filepath.Join(wip, manifestFileName), manifest); err != nil {
 		return err

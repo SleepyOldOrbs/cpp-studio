@@ -281,6 +281,32 @@ func TestDramaBoxCancelPersistsAndResumeSkipsTrustedSections(t *testing.T) {
 	}
 }
 
+func TestDramaBoxFinalAssemblyUsesSectionCrossfade(t *testing.T) {
+	root := t.TempDir()
+	registry := jobs.NewRegistry()
+	format := wav.Format{Channels: 1, SampleRate: 1000, BitsPerSample: 16}
+	pcm := make([]byte, 1000*2)
+	manager := NewManager(ManagerOptions{
+		RootDir: root, Jobs: registry,
+		Synthesize: func(context.Context, SynthesisRequest) ([]byte, error) {
+			return wav.Encode(format, pcm), nil
+		},
+	})
+	source := repeatedWords("first", 130) + "\n\n" + repeatedWords("second", 130)
+	id, sections, err := manager.Submit(context.Background(), Request{Text: source, EngineID: DramaBoxEngineID})
+	if err != nil || sections != 2 {
+		t.Fatalf("submit: sections=%d err=%v", sections, err)
+	}
+	waitForAudiobookJob(t, registry, id)
+	duration, err := wav.DurationFile(filepath.Join(root, id, ArtifactName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 2550 * time.Millisecond; duration != want {
+		t.Fatalf("streamed audiobook duration=%s want=%s", duration, want)
+	}
+}
+
 func TestResumeRejectsIdentityChangeAndRestartPreservesOriginal(t *testing.T) {
 	root := t.TempDir()
 	registry := jobs.NewRegistry()

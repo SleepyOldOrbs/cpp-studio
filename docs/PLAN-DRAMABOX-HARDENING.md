@@ -1247,7 +1247,7 @@ Names may adjust during implementation, but responsibilities must remain separat
 - [x] P0-05: Add injected engine/voice resolution and freeze the audiobook synthesis identity.
 - [x] P0-06: Add the durable audiobook store and atomic source/plan/seed creation.
 - [x] P0-07: Deepen the Manager around create/cancel/fail/resume/restart/discard store transitions.
-- [ ] P0-08: Add streaming WAV crossfade assembly and RIFF boundary guard.
+- [x] P0-08: Add streaming WAV crossfade assembly and RIFF boundary guard.
 - [ ] P0-09: Add injected fidelity verification and report storage.
 - [ ] P0-10: Extend API routes and error mapping.
 - [ ] P0-11: Add interrupted/identity-conflict/verification UI states.

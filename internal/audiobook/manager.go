@@ -52,6 +52,8 @@ var (
 // from chunk boundaries, so the gap stays short.
 const chunkGap = 400 * time.Millisecond
 
+const sectionCrossfade = 50 * time.Millisecond
+
 // artifactPad is the lead/trail silence around the finished narration.
 const artifactPad = 300 * time.Millisecond
 
@@ -593,6 +595,28 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 			m.finishRunError(id, initial, "checkpoint audiobook stitching: "+err.Error(), false)
 			return
 		}
+		bookPath := m.store.bookWIPPath(id)
+		if err := wav.AssembleFiles(bookPath, clipPaths, sectionCrossfade, artifactPad, artifactPad); err != nil {
+			m.finishRunError(id, initial, "assemble narration: "+err.Error(), false)
+			return
+		}
+		manifest := *initial
+		manifest.Status = ProductionStatusComplete
+		if duration, err := wav.DurationFile(bookPath); err == nil {
+			manifest.DurationSeconds = int(duration.Round(time.Second) / time.Second)
+		}
+		if ctx.Err() != nil {
+			m.finishRunError(id, initial, "audiobook narration was cancelled", true)
+			return
+		}
+		if err := m.store.FinalizeWIPFile(manifest); err != nil {
+			m.finishRunError(id, initial, "save audiobook: "+err.Error(), false)
+			return
+		}
+		if m.registry != nil {
+			m.registry.Complete(id, map[string]string{"artifactUrl": manifest.ArtifactURL, "title": manifest.Title, "engine": manifest.EngineID})
+		}
+		return
 	}
 	gaps := make([]time.Duration, len(clipPaths))
 	for i := range gaps {
@@ -619,10 +643,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		PromptPolicyVersion:  identity.PromptPolicyVersion,
 		SynthesisIdentity:    &identity,
 	}
-	if initial != nil {
-		manifest = *initial
-		manifest.Status = ProductionStatusComplete
-	} else if req.EngineID == DramaBoxEngineID {
+	if req.EngineID == DramaBoxEngineID {
 		options := req.Options
 		manifest.ResolvedOptions = &options
 	}
@@ -638,11 +659,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		m.finishRunError(id, initial, "audiobook narration was cancelled", true)
 		return
 	}
-	if initial != nil {
-		err = m.store.FinalizeWIP(manifest, stitched)
-	} else {
-		err = m.save(manifest, stitched)
-	}
+	err = m.save(manifest, stitched)
 	if err != nil {
 		m.finishRunError(id, initial, "save audiobook: "+err.Error(), false)
 		return

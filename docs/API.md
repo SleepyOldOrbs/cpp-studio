@@ -191,6 +191,9 @@ the finished directory retains the source and per-section WAV evidence beside
 `interrupted`. Resume is identity-strict and reuses only section WAVs whose source
 range, seed checkpoint, selected attempt, WAV structure, and content hash all match;
 Restart creates a separate production, and only explicit Discard removes a WIP.
+DramaBox final assembly streams section files into the WIP `book.wav`, applies a
+50 ms equal-power boundary crossfade plus 300 ms lead/trail padding, validates the
+completed PCM file, and refuses the 32-bit RIFF limit with a narrate-in-parts remedy.
 
 ## Library
 
