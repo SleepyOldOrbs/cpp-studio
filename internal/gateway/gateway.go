@@ -119,6 +119,8 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	r.audiobooks = audiobook.NewManager(audiobook.ManagerOptions{
 		ReserveEngine: r.reserveEngine,
 		Synthesize:    r.synthesizeAudiobook,
+		ResolveEngine: r.resolveAudiobookEngine,
+		ResolveVoice:  r.resolveAudiobookVoice,
 		Jobs:          r.jobs,
 	})
 
@@ -940,12 +942,6 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 			title = strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
 		}
 		voiceID := strings.TrimSpace(req.FormValue("voice"))
-		if voiceID != "" {
-			if _, ok, err := r.voices.Load(voiceID); err != nil || !ok {
-				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown voice %q", voiceID))
-				return
-			}
-		}
 		bookRequest, err := audiobook.NormalizeRequest(audiobook.Request{
 			Title:       title,
 			Text:        text,
@@ -958,13 +954,13 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if _, ok := r.engine(bookRequest.EngineID); !ok {
-			writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("audiobook engine %q is not configured; add it to config or choose another narrator", bookRequest.EngineID))
-			return
-		}
-
 		id, chunks, err := r.audiobooks.Submit(req.Context(), bookRequest)
 		if err != nil {
+			var engineErr *engine.Error
+			if errors.As(err, &engineErr) {
+				writeEngineError(w, err)
+				return
+			}
 			status := http.StatusConflict
 			if audiobook.IsRequestError(err) {
 				status = http.StatusBadRequest
@@ -1010,44 +1006,41 @@ func (r *router) handleAudiobookPreview(w http.ResponseWriter, req *http.Request
 	if len(body.Options) > 0 {
 		optionsJSON = string(body.Options)
 	}
-	resolved, err := audiobook.NormalizeRequest(audiobook.Request{
+	resolved, err := r.audiobooks.Preview(req.Context(), audiobook.Request{
 		EngineID:    body.EngineID,
 		VoiceID:     strings.TrimSpace(body.VoiceID),
 		Direction:   body.Direction,
 		OptionsJSON: optionsJSON,
 	})
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	engineCfg, ok := r.engine(resolved.EngineID)
-	if !ok {
-		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("audiobook engine %q is not configured; add it to config or choose another narrator", resolved.EngineID))
-		return
-	}
-	voiceID := resolved.VoiceID
-	if voiceID == "" {
-		voiceID = "default"
-	} else if _, ok, err := r.voices.Load(voiceID); err != nil || !ok {
-		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown voice %q", voiceID))
+		var engineErr *engine.Error
+		if errors.As(err, &engineErr) {
+			writeEngineError(w, err)
+		} else if audiobook.IsRequestError(err) {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		} else {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
 		return
 	}
 
 	var previewOptions any = map[string]any{}
 	var mapping any = map[string]any{}
-	if resolved.EngineID == audiobook.DramaBoxEngineID {
-		previewOptions = resolved.Options
-		mapping = engine.DescribeSynthesisMapping(engineCfg.Mode)
+	if resolved.Request.EngineID == audiobook.DramaBoxEngineID {
+		previewOptions = resolved.Request.Options
+		mapping = engine.DescribeSynthesisMapping(resolved.Engine.Mode)
 	}
 	response := map[string]any{
-		"engine":     resolved.EngineID,
-		"model":      audioServerModelID,
-		"voice":      voiceID,
-		"direction":  resolved.Direction,
-		"options":    previewOptions,
-		"seedPolicy": "one server-assigned uint64 seed per section",
+		"engine":            resolved.Engine.ID,
+		"engineFingerprint": resolved.Engine.Fingerprint,
+		"model":             resolved.Engine.ModelID,
+		"voice":             resolved.Voice.ID,
+		"voiceFingerprint":  resolved.Voice.Fingerprint,
+		"direction":         resolved.Request.Direction,
+		"options":           previewOptions,
+		"seedPolicy":        "one server-assigned uint64 seed per section",
 		"transport": map[string]any{
-			"mode":    engineCfg.Mode,
+			"mode":    resolved.Engine.Mode,
 			"mapping": mapping,
 		},
 	}
@@ -3102,6 +3095,57 @@ func (r *router) reserveEngine(ctx context.Context, name string) (func(), bool) 
 	return r.engines.Reserve(name)
 }
 
+func (r *router) resolveAudiobookEngine(_ context.Context, engineID string) (audiobook.EngineIdentity, error) {
+	engineCfg, ok := r.engine(engineID)
+	if !ok {
+		return audiobook.EngineIdentity{}, &engine.Error{
+			Kind:    engine.KindNotConfigured,
+			Message: fmt.Sprintf("audiobook engine %q is not configured; add it to config or choose another narrator", engineID),
+		}
+	}
+	mode := engineCfg.Mode
+	if mode == "" {
+		mode = "server"
+	}
+	return audiobook.EngineIdentity{
+		ID:          engineID,
+		Mode:        mode,
+		ModelID:     audioServerModelID,
+		Fingerprint: fullSynthesisFingerprint(engineCfg),
+	}, nil
+}
+
+func (r *router) resolveAudiobookVoice(_ context.Context, voiceID string) (audiobook.VoiceIdentity, error) {
+	if voiceID == "" || voiceID == "default" {
+		return audiobook.VoiceIdentity{ID: "default", Fingerprint: "default"}, nil
+	}
+	resolved, err := r.resolveVoice(voiceID)
+	if err != nil {
+		return audiobook.VoiceIdentity{}, err
+	}
+	file, err := os.Open(resolved.RefWAVPath)
+	if err != nil {
+		return audiobook.VoiceIdentity{}, fmt.Errorf("open voice reference: %w", err)
+	}
+	h := sha256.New()
+	_, copyErr := io.Copy(h, io.LimitReader(file, voice.MaxReferenceWAVBytes+1))
+	closeErr := file.Close()
+	if copyErr != nil {
+		return audiobook.VoiceIdentity{}, fmt.Errorf("hash voice reference: %w", copyErr)
+	}
+	if closeErr != nil {
+		return audiobook.VoiceIdentity{}, fmt.Errorf("close voice reference: %w", closeErr)
+	}
+	referenceSHA := hex.EncodeToString(h.Sum(nil))
+	identityHash := sha256.Sum256([]byte(voiceID + "\x00" + referenceSHA + "\x00" + resolved.RefText))
+	return audiobook.VoiceIdentity{
+		ID:              voiceID,
+		Fingerprint:     hex.EncodeToString(identityHash[:]),
+		ReferenceSHA256: referenceSHA,
+		Reference:       resolved,
+	}, nil
+}
+
 // synthesizeSpeech is the story pipeline's SynthesizeFunc. It speaks without
 // re-reserving: the story manager already holds the audio slot for the whole
 // job. voiceID selects a stored cloned voice; "" keeps the studio default.
@@ -3116,11 +3160,7 @@ func (r *router) synthesizeSpeech(ctx context.Context, text string, voiceID stri
 // synthesizeAudiobook routes each prepared chunk through the engine selected
 // on the book request. The manager already holds that engine's reservation.
 func (r *router) synthesizeAudiobook(ctx context.Context, request audiobook.SynthesisRequest) ([]byte, error) {
-	clonedVoice, err := r.resolveVoice(request.VoiceID)
-	if err != nil {
-		return nil, err
-	}
-	return r.speakSynthesis(ctx, request, clonedVoice, true)
+	return r.speakSynthesis(ctx, request, request.Voice, true)
 }
 
 // synthesisFingerprint names the audio synthesis configuration for take
@@ -3134,6 +3174,14 @@ func (r *router) synthesizeAudiobook(ctx context.Context, request audiobook.Synt
 // episode spoken by two different engines, which is why file identity is
 // included deliberately.
 func synthesisFingerprint(cfg config.EngineConfig) string {
+	full := fullSynthesisFingerprint(cfg)
+	if full == "" {
+		return ""
+	}
+	return full[:16]
+}
+
+func fullSynthesisFingerprint(cfg config.EngineConfig) string {
 	if cfg.Command == "" {
 		return ""
 	}
@@ -3143,12 +3191,17 @@ func synthesisFingerprint(cfg config.EngineConfig) string {
 		h.Write([]byte{0})
 	}
 	addFileIdentity := func(path string) {
+		if !filepath.IsAbs(path) && cfg.WorkingDir != "" {
+			path = filepath.Join(cfg.WorkingDir, path)
+		}
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			add(fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano()))
 		}
 	}
 	add(cfg.Command)
 	addFileIdentity(cfg.Command)
+	add(cfg.Mode)
+	add(cfg.WorkingDir)
 	for _, arg := range cfg.Args {
 		add(arg)
 		addFileIdentity(arg)
@@ -3156,7 +3209,7 @@ func synthesisFingerprint(cfg config.EngineConfig) string {
 	add(cfg.DefaultVoiceRef)
 	addFileIdentity(cfg.DefaultVoiceRef)
 	add(cfg.DefaultVoiceText)
-	return hex.EncodeToString(h.Sum(nil))[:16]
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // storyScriptSystemPrompt instructs llama to write grounded audio stories

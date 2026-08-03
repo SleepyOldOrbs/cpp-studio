@@ -4487,7 +4487,7 @@ func TestAudiobookDramaBoxSubprocessRoutesAndRecordsProvenance(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/audiobooks", nil))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"engine":"dramabox"`) || !strings.Contains(rec.Body.String(), `"direction":"Quiet, precise documentary delivery."`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"engine":"dramabox"`) || !strings.Contains(rec.Body.String(), `"direction":"Quiet, precise documentary delivery."`) || !strings.Contains(rec.Body.String(), `"synthesisIdentity"`) {
 		t.Fatalf("missing DramaBox manifest provenance: %d %s", rec.Code, rec.Body.String())
 	}
 }
@@ -4577,6 +4577,18 @@ func TestAudiobookDramaBoxResidentServerSupportsTextOnlyAndClone(t *testing.T) {
 	if !strings.HasSuffix(cloned.body.VoiceRef, "/ref.wav") || cloned.body.ReferenceText != "reference words" {
 		t.Fatalf("DramaBox clone reference was not forwarded: %+v", cloned.body)
 	}
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/audiobooks", nil))
+	var listed struct {
+		Audiobooks []audiobook.Manifest `json:"audiobooks"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&listed); err != nil || len(listed.Audiobooks) < 1 {
+		t.Fatalf("decode audiobook identities: %v, body=%s", err, rec.Body.String())
+	}
+	identity := listed.Audiobooks[0].SynthesisIdentity
+	if identity == nil || identity.Voice.ID != clone.ID || len(identity.Voice.ReferenceSHA256) != 64 || len(identity.Voice.Fingerprint) != 64 {
+		t.Fatalf("stored clone identity is incomplete: %+v", identity)
+	}
 }
 
 func TestAudiobookPreviewReturnsCompleteEffectiveOptionsWithoutStartingWork(t *testing.T) {
@@ -4598,18 +4610,23 @@ func TestAudiobookPreviewReturnsCompleteEffectiveOptionsWithoutStartingWork(t *t
 		t.Fatalf("preview: got %d: %s", rec.Code, rec.Body.String())
 	}
 	var preview struct {
-		Engine     string                     `json:"engine"`
-		Model      string                     `json:"model"`
-		Voice      string                     `json:"voice"`
-		Options    audiobook.SynthesisOptions `json:"options"`
-		SeedPolicy string                     `json:"seedPolicy"`
-		Transport  map[string]json.RawMessage `json:"transport"`
+		Engine            string                     `json:"engine"`
+		EngineFingerprint string                     `json:"engineFingerprint"`
+		Model             string                     `json:"model"`
+		Voice             string                     `json:"voice"`
+		VoiceFingerprint  string                     `json:"voiceFingerprint"`
+		Options           audiobook.SynthesisOptions `json:"options"`
+		SeedPolicy        string                     `json:"seedPolicy"`
+		Transport         map[string]json.RawMessage `json:"transport"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&preview); err != nil {
 		t.Fatalf("decode preview: %v", err)
 	}
 	if preview.Engine != "dramabox" || preview.Model != audioServerModelID || preview.Voice != "default" {
 		t.Fatalf("preview identities wrong: %+v", preview)
+	}
+	if len(preview.EngineFingerprint) != 64 || preview.VoiceFingerprint != "default" {
+		t.Fatalf("preview did not expose frozen runtime identities: %+v", preview)
 	}
 	if preview.Options.GuidanceScale != 3.25 || preview.Options.NumInferenceSteps != 30 || preview.Options.AudioChunkThresholdSec != 45 || preview.Options.Seed != 0 {
 		t.Fatalf("preview options are not complete and seed-independent: %+v", preview.Options)

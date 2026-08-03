@@ -169,8 +169,10 @@ stitched WAV. Runs as an `audiobook` job on the jobs surface.
   and optional `options`) resolved without creating a job, reserving an
   engine, or invoking it. Returns selected engine/model/voice identities, the
   complete effective option set, the per-section server seed policy, and the
-  semantic server/subprocess mapping. The browser requires a current preview
-  before enabling Narrate.
+  semantic server/subprocess mapping. Engine and voice fingerprints identify
+  the exact resolved runtime configuration and stored reference content; the
+  Manager freezes those identities before planning or reservation. The browser
+  requires a current preview before enabling Narrate.
 - `GET /v1/jobs/{id}` — narration progress (`"narrating chunk 12/42"` for the
   default engine or `"narrating chunk 12/42 with dramabox"`), and
   `POST /v1/jobs/{id}/cancel` stops it.

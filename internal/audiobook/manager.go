@@ -58,6 +58,8 @@ type ManagerOptions struct {
 	RootDir       string
 	ReserveEngine ReserveEngineFunc
 	Synthesize    SynthesizeFunc
+	ResolveEngine ResolveEngineFunc
+	ResolveVoice  ResolveVoiceFunc
 	// SeedSource supplies full-range DramaBox section seeds. Nil uses
 	// crypto/rand.Reader; tests may inject deterministic or failing readers.
 	SeedSource io.Reader
@@ -89,6 +91,8 @@ type Manager struct {
 	rootDir       string
 	reserveEngine ReserveEngineFunc
 	synthesize    SynthesizeFunc
+	resolveEngine ResolveEngineFunc
+	resolveVoice  ResolveVoiceFunc
 	seedSource    io.Reader
 	registry      *jobs.Registry
 	now           func() time.Time
@@ -110,15 +114,54 @@ func NewManager(opts ManagerOptions) *Manager {
 	if seedSource == nil {
 		seedSource = rand.Reader
 	}
+	resolveEngine := opts.ResolveEngine
+	if resolveEngine == nil {
+		resolveEngine = func(_ context.Context, engineID string) (EngineIdentity, error) {
+			return EngineIdentity{ID: engineID, Mode: "subprocess", ModelID: engineID, Fingerprint: engineID}, nil
+		}
+	}
+	resolveVoice := opts.ResolveVoice
+	if resolveVoice == nil {
+		resolveVoice = func(_ context.Context, voiceID string) (VoiceIdentity, error) {
+			if voiceID == "" {
+				voiceID = "default"
+			}
+			return VoiceIdentity{ID: voiceID, Fingerprint: voiceID}, nil
+		}
+	}
 	return &Manager{
 		rootDir:       rootDir,
 		reserveEngine: opts.ReserveEngine,
 		synthesize:    opts.Synthesize,
+		resolveEngine: resolveEngine,
+		resolveVoice:  resolveVoice,
 		seedSource:    seedSource,
 		registry:      opts.Jobs,
 		now:           now,
 		cancels:       make(map[string]context.CancelFunc),
 	}
+}
+
+// Preview resolves exactly the engine, voice, direction, and effective options
+// Submit will use, without planning seeds, reserving an engine, or creating work.
+func (m *Manager) Preview(ctx context.Context, req Request) (ResolvedRequest, error) {
+	normalized, err := NormalizeRequest(req)
+	if err != nil {
+		return ResolvedRequest{}, err
+	}
+	return m.resolveRequest(ctx, normalized)
+}
+
+func (m *Manager) resolveRequest(ctx context.Context, req Request) (ResolvedRequest, error) {
+	resolvedEngine, err := m.resolveEngine(ctx, req.EngineID)
+	if err != nil {
+		return ResolvedRequest{}, fmt.Errorf("resolve audiobook engine %q: %w", req.EngineID, err)
+	}
+	resolvedVoice, err := m.resolveVoice(ctx, req.VoiceID)
+	if err != nil {
+		return ResolvedRequest{}, requestErrorf("resolve audiobook voice %q: %v", req.VoiceID, err)
+	}
+	return ResolvedRequest{Request: req, Engine: resolvedEngine, Voice: resolvedVoice}, nil
 }
 
 // RequestError identifies invalid audiobook intent. HTTP callers map these
@@ -214,6 +257,11 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 	if m.activeID != "" {
 		return "", 0, fmt.Errorf("another audiobook is already narrating")
 	}
+	resolved, err := m.resolveRequest(ctx, req)
+	if err != nil {
+		return "", 0, err
+	}
+	identity := buildSynthesisIdentity(req, resolved.Engine, resolved.Voice)
 
 	var units []narrationUnit
 	if req.EngineID == DramaBoxEngineID {
@@ -256,11 +304,11 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 		m.registry.Track(id, "audiobook", cancel)
 	}
 
-	go m.run(jobCtx, id, title, req, units, release)
+	go m.run(jobCtx, id, title, req, identity, resolved.Voice, units, release)
 	return id, len(units), nil
 }
 
-func (m *Manager) run(ctx context.Context, id, title string, req Request, units []narrationUnit, release func()) {
+func (m *Manager) run(ctx context.Context, id, title string, req Request, identity SynthesisIdentity, resolvedVoice VoiceIdentity, units []narrationUnit, release func()) {
 	defer func() {
 		if release != nil {
 			release()
@@ -311,6 +359,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, units 
 			VoiceID:  req.VoiceID,
 			EngineID: req.EngineID,
 			Options:  options,
+			Voice:    resolvedVoice.Reference,
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -349,13 +398,18 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, units 
 		return
 	}
 	manifest := Manifest{
-		ID:        id,
-		Title:     title,
-		VoiceID:   req.VoiceID,
-		EngineID:  req.EngineID,
-		Direction: req.Direction,
-		Chunks:    len(units),
-		CreatedAt: m.now(),
+		ID:                   id,
+		Title:                title,
+		VoiceID:              req.VoiceID,
+		EngineID:             req.EngineID,
+		Direction:            req.Direction,
+		Chunks:               len(units),
+		CreatedAt:            m.now(),
+		SynthesisFingerprint: identity.Fingerprint,
+		SourceSHA256:         identity.SourceSHA256,
+		SectionPolicyVersion: identity.SectionPolicyVersion,
+		PromptPolicyVersion:  identity.PromptPolicyVersion,
+		SynthesisIdentity:    &identity,
 	}
 	if req.EngineID == DramaBoxEngineID {
 		options := req.Options

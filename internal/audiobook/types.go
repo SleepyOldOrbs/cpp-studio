@@ -118,4 +118,5 @@ type Manifest struct {
 	Sections             []Section            `json:"sections,omitempty"`
 	Verification         *VerificationSummary `json:"verification,omitempty"`
 	ResolvedOptions      *SynthesisOptions    `json:"resolvedOptions,omitempty"`
+	SynthesisIdentity    *SynthesisIdentity   `json:"synthesisIdentity,omitempty"`
 }

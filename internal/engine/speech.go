@@ -65,6 +65,9 @@ type SynthesisRequest struct {
 	VoiceID  string           `json:"voice_id,omitempty"`
 	EngineID string           `json:"engine_id"`
 	Options  SynthesisOptions `json:"options,omitempty"`
+	// Voice is the reference resolved and frozen by the owning product before
+	// native work starts. It is runtime-only and never serialized.
+	Voice *Voice `json:"-"`
 }
 
 // DefaultDramaBoxOptions pins the effective release-0.5 values. Persisting
