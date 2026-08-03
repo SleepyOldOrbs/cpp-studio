@@ -919,11 +919,17 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if books == nil {
-			books = []audiobook.Manifest{}
+		finished := make([]audiobook.Manifest, 0, len(books))
+		interrupted := make([]audiobook.Manifest, 0)
+		for _, book := range books {
+			if book.Status == audiobook.ProductionStatusInterrupted {
+				interrupted = append(interrupted, book)
+			} else {
+				finished = append(finished, book)
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"audiobooks": books})
+		_ = json.NewEncoder(w).Encode(map[string]any{"audiobooks": finished, "interrupted": interrupted})
 	case http.MethodPost:
 		req.Body = http.MaxBytesReader(w, req.Body, audiobook.MaxDocumentBytes+1024*1024)
 		file, header, err := req.FormFile("file")
@@ -941,11 +947,6 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("read uploaded file: %v", err))
 			return
 		}
-		text, err := audiobook.Extract(header.Filename, data)
-		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, err.Error())
-			return
-		}
 		title := strings.TrimSpace(req.FormValue("title"))
 		if title == "" {
 			title = strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
@@ -953,7 +954,6 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 		voiceID := strings.TrimSpace(req.FormValue("voice"))
 		bookRequest, err := audiobook.NormalizeRequest(audiobook.Request{
 			Title:        title,
-			Text:         text,
 			VoiceID:      voiceID,
 			EngineID:     req.FormValue("engine"),
 			Direction:    req.FormValue("direction"),
@@ -964,27 +964,27 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		id, chunks, err := r.audiobooks.Submit(req.Context(), bookRequest)
+		id, chunks, err := r.audiobooks.SubmitDocument(req.Context(), header.Filename, data, bookRequest)
 		if err != nil {
 			var engineErr *engine.Error
 			if errors.As(err, &engineErr) {
 				writeEngineError(w, err)
 				return
 			}
-			status := http.StatusConflict
-			if audiobook.IsRequestError(err) {
-				status = http.StatusBadRequest
-			}
-			writeJSONError(w, status, err.Error())
+			writeAudiobookError(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		response := map[string]any{
 			"id":        id,
 			"chunks":    chunks,
 			"statusUrl": "/v1/jobs/" + id,
-		})
+		}
+		if bookRequest.EngineID == audiobook.DramaBoxEngineID {
+			response["sections"] = chunks
+		}
+		_ = json.NewEncoder(w).Encode(response)
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1061,15 +1061,109 @@ func (r *router) handleAudiobookPreview(w http.ResponseWriter, req *http.Request
 	_ = json.NewEncoder(w).Encode(response)
 }
 
-// handleAudiobook serves GET /v1/audiobooks/{id}/artifact/book.wav.
-func (r *router) handleAudiobook(w http.ResponseWriter, req *http.Request) {
-	if !requireMethod(w, req, http.MethodGet) {
+func writeAudiobookError(w http.ResponseWriter, err error) {
+	var engineErr *engine.Error
+	if errors.As(err, &engineErr) {
+		writeEngineError(w, err)
 		return
 	}
+	status := http.StatusInternalServerError
+	switch {
+	case audiobook.IsRequestError(err):
+		status = http.StatusBadRequest
+	case errors.Is(err, audiobook.ErrProductionNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, audiobook.ErrVerificationUnavailable):
+		status = http.StatusServiceUnavailable
+	case errors.Is(err, audiobook.ErrProductionNotInterrupted),
+		errors.Is(err, audiobook.ErrSynthesisIdentityChanged),
+		errors.Is(err, audiobook.ErrProductionActive),
+		errors.Is(err, audiobook.ErrStoreCorrupt),
+		strings.Contains(err.Error(), "already narrating"), strings.Contains(err.Error(), "is busy"):
+		status = http.StatusConflict
+	}
+	writeJSONError(w, status, err.Error())
+}
+
+// handleAudiobook serves durable production state and lifecycle actions.
+func (r *router) handleAudiobook(w http.ResponseWriter, req *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(req.URL.Path, "/v1/audiobooks/"), "/")
 	parts := strings.Split(rest, "/")
-	if len(parts) != 3 || parts[1] != "artifact" {
+	if len(parts) == 1 && parts[0] != "" {
+		if !requireMethod(w, req, http.MethodGet) {
+			return
+		}
+		manifest, ok, err := r.audiobooks.Status(parts[0])
+		if err != nil {
+			writeAudiobookError(w, err)
+			return
+		}
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "audiobook production not found")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(manifest)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "resume" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		sections, err := r.audiobooks.Resume(req.Context(), parts[0])
+		if err != nil {
+			writeAudiobookError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": parts[0], "chunks": sections, "sections": sections, "statusUrl": "/v1/jobs/" + parts[0]})
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "restart" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		id, sections, err := r.audiobooks.Restart(req.Context(), parts[0])
+		if err != nil {
+			writeAudiobookError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "chunks": sections, "sections": sections, "statusUrl": "/v1/jobs/" + id})
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "discard" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		if err := r.audiobooks.Discard(parts[0]); err != nil {
+			writeAudiobookError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": parts[0], "discarded": true})
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "verification" {
+		if !requireMethod(w, req, http.MethodGet) {
+			return
+		}
+		path, err := r.audiobooks.VerificationPath(parts[0])
+		if err != nil {
+			writeAudiobookError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		http.ServeFile(w, req, path)
+		return
+	}
+	if len(parts) != 3 || parts[0] == "" || parts[1] != "artifact" {
 		http.NotFound(w, req)
+		return
+	}
+	if !requireMethod(w, req, http.MethodGet) {
 		return
 	}
 	path, err := r.audiobooks.ArtifactPath(parts[0], parts[2])

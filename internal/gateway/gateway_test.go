@@ -2148,6 +2148,9 @@ func TestGatewayHelperProcess(t *testing.T) {
 		case "speech-slow":
 			time.Sleep(500 * time.Millisecond)
 			runSpeechHelper(helperArgs)
+		case "speech-tone-slow":
+			time.Sleep(500 * time.Millisecond)
+			runToneSpeechHelper(helperArgs)
 		case "speech-invalid":
 			runInvalidSpeechHelper(helperArgs)
 		case "speech-flaky":
@@ -4726,7 +4729,7 @@ func TestAudiobookEngineValidationAndAvailabilityStatuses(t *testing.T) {
 func TestAudiobookAcceptsExactDirectionRuneBoundary(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cfg := testConfig(map[string]config.EngineConfig{
-		"dramabox": helperEngine("speech-slow"),
+		"dramabox": helperEngine("speech-tone-slow"),
 	})
 	router := NewRouter(cfg, lifecycle.NewManager(cfg))
 	rec := postAudiobook(t, router, map[string]string{
@@ -4746,6 +4749,111 @@ func TestAudiobookAcceptsExactDirectionRuneBoundary(t *testing.T) {
 	router.ServeHTTP(cancel, httptest.NewRequest(http.MethodPost, "/v1/jobs/"+created.ID+"/cancel", nil))
 	if cancel.Code != http.StatusOK {
 		t.Fatalf("cancel: got %d: %s", cancel.Code, cancel.Body.String())
+	}
+}
+
+func TestAudiobookDurableLifecycleRoutes(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"dramabox": helperEngine("speech-tone-slow"),
+		"whisper":  helperEngine("transcribe"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	createInterrupted := func(t *testing.T) string {
+		t.Helper()
+		rec := postAudiobook(t, router, map[string]string{"engine": "dramabox", "verification": "off"})
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+		}
+		var created struct {
+			ID       string `json:"id"`
+			Sections int    `json:"sections"`
+		}
+		_ = json.NewDecoder(rec.Body).Decode(&created)
+		if created.ID == "" || created.Sections != 1 {
+			t.Fatalf("create omitted durable section count: %+v", created)
+		}
+		cancel := httptest.NewRecorder()
+		router.ServeHTTP(cancel, httptest.NewRequest(http.MethodPost, "/v1/jobs/"+created.ID+"/cancel", nil))
+		if cancel.Code != http.StatusOK {
+			t.Fatalf("cancel: %d %s", cancel.Code, cancel.Body.String())
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		lastStatus := ""
+		for time.Now().Before(deadline) {
+			status := httptest.NewRecorder()
+			router.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/"+created.ID, nil))
+			if status.Code == http.StatusOK && strings.Contains(status.Body.String(), `"status":"interrupted"`) {
+				return created.ID
+			}
+			lastStatus = fmt.Sprintf("%d %s", status.Code, status.Body.String())
+			time.Sleep(20 * time.Millisecond)
+		}
+		jobStatus := httptest.NewRecorder()
+		router.ServeHTTP(jobStatus, httptest.NewRequest(http.MethodGet, "/v1/jobs/"+created.ID, nil))
+		t.Fatalf("cancelled production did not become durably interrupted: production=%s job=%d %s", lastStatus, jobStatus.Code, jobStatus.Body.String())
+		return ""
+	}
+
+	originalID := createInterrupted(t)
+	listed := httptest.NewRecorder()
+	router.ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/v1/audiobooks", nil))
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), `"interrupted":[`) || !strings.Contains(listed.Body.String(), originalID) {
+		t.Fatalf("interrupted list: %d %s", listed.Code, listed.Body.String())
+	}
+	restart := httptest.NewRecorder()
+	router.ServeHTTP(restart, httptest.NewRequest(http.MethodPost, "/v1/audiobooks/"+originalID+"/restart", nil))
+	if restart.Code != http.StatusAccepted {
+		t.Fatalf("restart: %d %s", restart.Code, restart.Body.String())
+	}
+	var restarted struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(restart.Body).Decode(&restarted)
+	if restarted.ID == "" || restarted.ID == originalID {
+		t.Fatalf("restart reused production id: %+v", restarted)
+	}
+	if job := waitGatewayAudiobookJob(t, router, restarted.ID); job.Status != "complete" {
+		t.Fatalf("restart job: %+v", job)
+	}
+	discard := httptest.NewRecorder()
+	router.ServeHTTP(discard, httptest.NewRequest(http.MethodPost, "/v1/audiobooks/"+originalID+"/discard", nil))
+	if discard.Code != http.StatusOK || !strings.Contains(discard.Body.String(), `"discarded":true`) {
+		t.Fatalf("discard: %d %s", discard.Code, discard.Body.String())
+	}
+
+	resumeID := createInterrupted(t)
+	resume := httptest.NewRecorder()
+	router.ServeHTTP(resume, httptest.NewRequest(http.MethodPost, "/v1/audiobooks/"+resumeID+"/resume", nil))
+	if resume.Code != http.StatusAccepted {
+		t.Fatalf("resume: %d %s", resume.Code, resume.Body.String())
+	}
+	if job := waitGatewayAudiobookJob(t, router, resumeID); job.Status != "complete" {
+		t.Fatalf("resume job: %+v", job)
+	}
+	verification := httptest.NewRecorder()
+	router.ServeHTTP(verification, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/"+resumeID+"/verification", nil))
+	if verification.Code != http.StatusOK || !strings.Contains(verification.Body.String(), `"status": "skipped"`) {
+		t.Fatalf("verification report: %d %s", verification.Code, verification.Body.String())
+	}
+	conflict := httptest.NewRecorder()
+	router.ServeHTTP(conflict, httptest.NewRequest(http.MethodPost, "/v1/audiobooks/"+resumeID+"/discard", nil))
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("discard complete production should conflict: %d %s", conflict.Code, conflict.Body.String())
+	}
+}
+
+func TestAudiobookRequiredVerificationUnavailableIs503(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{"dramabox": helperEngine("speech-tone")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	rec := postAudiobook(t, router, map[string]string{"engine": "dramabox", "verification": "required"})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("required verification without Whisper: %d %s", rec.Code, rec.Body.String())
+	}
+	if entries, err := os.ReadDir("out/audiobooks"); err == nil && len(entries) != 0 {
+		t.Fatalf("503 created durable state: %+v", entries)
 	}
 }
 

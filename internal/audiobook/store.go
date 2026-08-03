@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"cpp-studio/internal/wav"
 )
@@ -510,7 +512,17 @@ func writeFileAtomic(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := os.Rename(tmpPath, path)
+		if err == nil {
+			return nil
+		}
+		if runtime.GOOS != "windows" || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func loadManifest(path string) (Manifest, bool, error) {

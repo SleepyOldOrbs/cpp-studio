@@ -46,6 +46,7 @@ var (
 	ErrProductionNotInterrupted = errors.New("audiobook production is not interrupted")
 	ErrSynthesisIdentityChanged = errors.New("audiobook synthesis identity changed")
 	ErrProductionActive         = errors.New("audiobook production is active")
+	ErrVerificationUnavailable  = errors.New("audiobook verification is unavailable")
 )
 
 // chunkGap is the silence between narrated chunks; paragraph pacing comes
@@ -114,6 +115,7 @@ type Manager struct {
 	now           func() time.Time
 	counter       int
 	activeID      string
+	creating      bool
 	cancels       map[string]context.CancelFunc
 }
 
@@ -268,6 +270,36 @@ func normalizePromptQuotes(value string) string {
 // Submit validates, chunks, and starts a narration job. One audiobook runs
 // at a time: narration monopolizes the audio engine for minutes.
 func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) {
+	return m.submit(ctx, req, false)
+}
+
+// SubmitDocument keeps upload extraction inside the Manager's single-create
+// transition so concurrent callers cannot plan competing productions.
+func (m *Manager) SubmitDocument(ctx context.Context, filename string, data []byte, req Request) (string, int, error) {
+	m.mu.Lock()
+	if m.activeID != "" || m.creating {
+		m.mu.Unlock()
+		return "", 0, fmt.Errorf("another audiobook is already narrating")
+	}
+	m.creating = true
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.creating = false
+		m.mu.Unlock()
+	}()
+	text, err := Extract(filename, data)
+	if err != nil {
+		return "", 0, requestErrorf("%v", err)
+	}
+	req.Text = text
+	if strings.TrimSpace(req.Title) == "" {
+		req.Title = strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
+	}
+	return m.submit(ctx, req, true)
+}
+
+func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (string, int, error) {
 	if m.synthesize == nil {
 		return "", 0, requestErrorf("audiobooks need a configured speech engine")
 	}
@@ -277,7 +309,7 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 		return "", 0, err
 	}
 	if req.EngineID == DramaBoxEngineID && req.Verification == VerificationModeRequired && m.verify == nil {
-		return "", 0, requestErrorf("required audiobook verification needs a configured Whisper engine")
+		return "", 0, fmt.Errorf("%w: required mode needs a configured Whisper engine", ErrVerificationUnavailable)
 	}
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
@@ -286,7 +318,7 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.activeID != "" {
+	if m.activeID != "" || (m.creating && !ownsCreation) {
 		return "", 0, fmt.Errorf("another audiobook is already narrating")
 	}
 	resolved, err := m.resolveRequest(ctx, req)
@@ -420,7 +452,7 @@ func (m *Manager) Resume(ctx context.Context, id string) (int, error) {
 		return 0, fmt.Errorf("stored audiobook request: %w", err)
 	}
 	if req.Verification == VerificationModeRequired && m.verify == nil {
-		return 0, requestErrorf("required audiobook verification needs a configured Whisper engine")
+		return 0, fmt.Errorf("%w: required mode needs a configured Whisper engine", ErrVerificationUnavailable)
 	}
 	resolved, err := m.resolveRequest(ctx, req)
 	if err != nil {
@@ -510,6 +542,13 @@ func (m *Manager) Discard(id string) error {
 	}
 	manifest, _, err := m.store.LoadDurableWIP(id)
 	if err != nil {
+		if errors.Is(err, ErrProductionNotFound) {
+			if _, ok, statusErr := m.Status(id); statusErr != nil {
+				return statusErr
+			} else if ok {
+				return ErrProductionNotInterrupted
+			}
+		}
 		return err
 	}
 	if manifest.Status != ProductionStatusInterrupted {
@@ -798,16 +837,18 @@ func (m *Manager) verifySections(ctx context.Context, id string, req Request, ma
 }
 
 func (m *Manager) finishRunError(id string, manifest *Manifest, message string, cancelled bool) {
+	persisted := true
 	if manifest != nil {
 		manifest.Status = ProductionStatusInterrupted
 		if err := m.store.SaveManifestWIP(*manifest); err != nil {
+			persisted = false
 			message += "; persist interrupted state: " + err.Error()
 		}
 	}
 	if m.registry == nil {
 		return
 	}
-	if cancelled {
+	if cancelled && persisted {
 		m.registry.MarkCancelled(id)
 		return
 	}
@@ -902,6 +943,10 @@ func (m *Manager) Status(id string) (Manifest, bool, error) {
 		return Manifest{}, false, nil
 	}
 	return manifest, err == nil, err
+}
+
+func (m *Manager) VerificationPath(id string) (string, error) {
+	return m.store.VerificationPath(id)
 }
 
 // ArtifactPath resolves an audiobook's WAV for serving.

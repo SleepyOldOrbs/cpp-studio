@@ -1249,7 +1249,7 @@ Names may adjust during implementation, but responsibilities must remain separat
 - [x] P0-07: Deepen the Manager around create/cancel/fail/resume/restart/discard store transitions.
 - [x] P0-08: Add streaming WAV crossfade assembly and RIFF boundary guard.
 - [x] P0-09: Add injected fidelity verification and report storage.
-- [ ] P0-10: Extend API routes and error mapping.
+- [x] P0-10: Extend API routes and error mapping.
 - [ ] P0-11: Add interrupted/identity-conflict/verification UI states.
 - [ ] P0-12: Update docs and examples.
 - [ ] P0-13: Run full fixture verification, including Manager interface and crash-ordering tests.

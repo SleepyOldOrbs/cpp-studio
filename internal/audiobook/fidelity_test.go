@@ -118,7 +118,7 @@ func TestRequiredVerificationRejectsBeforeDurableCreation(t *testing.T) {
 	id, _, err := manager.Submit(context.Background(), Request{
 		Text: "Verification is mandatory.", EngineID: DramaBoxEngineID, Verification: VerificationModeRequired,
 	})
-	if err == nil || id != "" || !IsRequestError(err) {
+	if err == nil || id != "" || !errors.Is(err, ErrVerificationUnavailable) {
 		t.Fatalf("required verification without Whisper: id=%q err=%v", id, err)
 	}
 	if entries, readErr := os.ReadDir(root); readErr == nil && len(entries) != 0 {

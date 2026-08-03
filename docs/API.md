@@ -181,10 +181,19 @@ stitched WAV. Runs as an `audiobook` job on the jobs surface.
 - `GET /v1/jobs/{id}` — narration progress (`"narrating chunk 12/42"` for the
   default engine or `"narrating chunk 12/42 with dramabox"`), and
   `POST /v1/jobs/{id}/cancel` stops it.
-- `GET /v1/audiobooks` — finished narrations, newest first. New manifests
-  include `engine` and optional `direction`; older manifests without them
-  remain readable:
-  `{"audiobooks":[{"id":"book_...","title":"...","engine":"dramabox","direction":"Measured documentary delivery.","chunks":42,"durationSeconds":312,"artifactUrl":"/v1/audiobooks/book_.../artifact/book.wav"}]}`.
+- `GET /v1/audiobooks` — finished narrations and recoverable WIPs, newest first:
+  `{"audiobooks":[...],"interrupted":[...]}`. New manifests include `engine`,
+  optional `direction`, status, sections, and verification; older finished manifests
+  without those fields remain readable.
+- `GET /v1/audiobooks/{id}` — one finished or hash-valid durable production.
+- `POST /v1/audiobooks/{id}/resume` — continue the same interrupted id only when
+  its resolved synthesis identity still matches.
+- `POST /v1/audiobooks/{id}/restart` — fork the stored hash-valid source into a new
+  production under the current resolved identity, preserving the original WIP.
+- `POST /v1/audiobooks/{id}/discard` — explicitly remove an inactive interrupted
+  production. Finished or active productions return `409`.
+- `GET /v1/audiobooks/{id}/verification` — aggregate fidelity evidence, including
+  section metrics and the honest passed/flagged/unavailable/skipped status.
 - `GET /v1/audiobooks/{id}/artifact/book.wav` — the narration WAV.
 
 Finished audiobooks persist in `out/audiobooks` and survive restarts. DramaBox
