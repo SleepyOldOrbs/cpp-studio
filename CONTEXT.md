@@ -6,9 +6,9 @@ entry names the module that owns the concept.
 ## Gateway
 
 The local HTTP server (`internal/gateway`) exposing OpenAI-shaped routes for
-the native `*.cpp` inference family. HTTP handlers are thin: they validate
-requests, cross the engine seam, and shape responses. Orchestration lives
-behind that seam, not in handlers.
+the native `*.cpp` inference family. HTTP handlers validate envelopes, call
+the owning product module or Engine invocation for direct routes, and shape
+responses; orchestration never lives in handlers.
 
 ## Engine
 
@@ -105,6 +105,25 @@ readers keep working. Takes and renders only accumulate; the manifest is the
 one mutable file, which is what makes an edit visible. Because `Status`
 prefers a tracked in-memory job over the store, every take-room mutation must
 republish the manifest that job is serving.
+
+## Audiobook production
+
+An Audiobook production is a long-running narration of one immutable source
+document into a playable book. It advances through durable sections so
+completed work survives interruption, and resume reuses only sections sharing
+its synthesis identity.
+
+## Synthesis identity
+
+A Synthesis identity is the immutable combination of source, engine, model,
+voice, direction, request options, and production policies that determines
+whether generated speech belongs to the same Audiobook production.
+
+## Audiobook lifecycle
+
+Resume continues an interrupted Audiobook production only under its original
+Synthesis identity, while Restart creates a separate production from the same
+source. Cancel preserves durable work; Discard is the only action that deletes it.
 
 ## WAV knowledge (`internal/wav`)
 
