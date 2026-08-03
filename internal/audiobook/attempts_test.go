@@ -3,6 +3,7 @@ package audiobook
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -11,6 +12,81 @@ import (
 	"cpp-studio/internal/jobs"
 	"cpp-studio/internal/wav"
 )
+
+func TestVariationAndAttemptSelectionCreateImmutableRenderRevision(t *testing.T) {
+	root := t.TempDir()
+	registry := jobs.NewRegistry()
+	seedBytes := append([]byte{0, 0, 0, 0, 0, 0, 0, 42}, []byte{0, 0, 0, 0, 0, 0, 0, 99}...)
+	manager := NewManager(ManagerOptions{
+		RootDir: root, Jobs: registry, SeedSource: bytes.NewReader(seedBytes),
+		SynthesizeDetailed: func(_ context.Context, request SynthesisRequest) (SynthesisResult, error) {
+			actual := request.Options.Seed
+			samples := 800
+			if request.Options.Seed == 99 {
+				samples = 1200
+			}
+			return SynthesisResult{Audio: wav.SyntheticTone(samples), ActualSeed: &actual}, nil
+		},
+	})
+	id, _, err := manager.Submit(context.Background(), Request{Text: "A fact with a deliberate variation.", EngineID: DramaBoxEngineID, Verification: VerificationModeOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForAudiobookJob(t, registry, id)
+	originalPath := filepath.Join(root, id, ArtifactName)
+	original, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalHash := sha256.Sum256(original)
+
+	retryJobID, err := manager.RetrySection(context.Background(), id, "section-0001", RetryModeVariation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryJob := waitForAudiobookJob(t, registry, retryJobID)
+	if _, ok := retryJob.Result["deterministicMatch"]; ok {
+		t.Fatalf("variation claimed a deterministic comparison: %+v", retryJob.Result)
+	}
+	manifest, _, err := manager.store.LoadDurableFinal(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Sections[0].Attempts) != 2 {
+		t.Fatalf("variation attempt missing: %+v", manifest.Sections[0].Attempts)
+	}
+	variation := manifest.Sections[0].Attempts[1]
+	if variation.RequestedSeed != 99 || variation.ActualSeed == nil || *variation.ActualSeed != 99 || variation.Selected || variation.DeterministicMatch != nil || variation.DurationMS <= 0 {
+		t.Fatalf("variation evidence is incomplete: %+v", variation)
+	}
+
+	renderJobID, err := manager.SelectAttempt(context.Background(), id, "section-0001", variation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForAudiobookJob(t, registry, renderJobID)
+	manifest, _, err = manager.store.LoadDurableFinal(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.CurrentRenderID != "render-0002" || len(manifest.RenderRevisions) != 2 || manifest.Sections[0].Attempts[0].Selected || !manifest.Sections[0].Attempts[1].Selected {
+		t.Fatalf("attempt selection was not durably projected: %+v", manifest)
+	}
+	if manifest.RenderRevisions[0].ArtifactFile != ArtifactName || manifest.RenderRevisions[1].ArtifactFile != "book.render-0002.wav" || manifest.RenderRevisions[1].SelectedAttempts["section-0001"] != variation.ID {
+		t.Fatalf("render lineage is incomplete: %+v", manifest.RenderRevisions)
+	}
+	currentPath, err := manager.ArtifactPath(id, "book.render-0002.wav")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(currentPath); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := os.ReadFile(originalPath)
+	if err != nil || sha256.Sum256(unchanged) != originalHash {
+		t.Fatalf("original render was changed: err=%v", err)
+	}
+}
 
 func TestReproduceSectionRetainsImmutableAttemptAndSeedEvidence(t *testing.T) {
 	root := t.TempDir()

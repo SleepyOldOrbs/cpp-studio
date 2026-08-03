@@ -1261,7 +1261,7 @@ Names may adjust during implementation, but responsibilities must remain separat
 ### P1 task order
 
 - [x] P1-01: Add immutable section attempts, requested/actual seed reporting, and same-seed reproduction.
-- [ ] P1-02: Add new-seed variation, attempt selection, per-attempt timings, and render revisions.
+- [x] P1-02: Add new-seed variation, attempt selection, per-attempt timings, and render revisions.
 - [ ] P1-03: Implement PCM reference analysis, persisted fitness metadata, and select/preview/clear reference UX.
 - [ ] P1-04: Add optional VAD integration and honest fallback.
 - [ ] P1-05: Enforce DramaBox-only 10-second usable-speech eligibility.

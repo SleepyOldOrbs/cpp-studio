@@ -1195,6 +1195,20 @@ func (r *router) handleAudiobook(w http.ResponseWriter, req *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": jobID, "statusUrl": "/v1/jobs/" + jobID})
 		return
 	}
+	if len(parts) == 6 && parts[0] != "" && parts[1] == "sections" && parts[2] != "" && parts[3] == "attempts" && parts[4] != "" && parts[5] == "select" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		jobID, err := r.audiobooks.SelectAttempt(req.Context(), parts[0], parts[2], parts[4])
+		if err != nil {
+			writeAudiobookError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": jobID, "statusUrl": "/v1/jobs/" + jobID})
+		return
+	}
 	if len(parts) != 3 || parts[0] == "" || parts[1] != "artifact" {
 		http.NotFound(w, req)
 		return

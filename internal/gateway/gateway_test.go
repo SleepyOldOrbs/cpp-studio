@@ -4856,6 +4856,29 @@ func TestAudiobookDurableLifecycleRoutes(t *testing.T) {
 	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"id":"attempt-0002"`) || !strings.Contains(status.Body.String(), `"selected":false`) {
 		t.Fatalf("immutable retry attempt not visible: %d %s", status.Code, status.Body.String())
 	}
+	selectAttempt := httptest.NewRecorder()
+	router.ServeHTTP(selectAttempt, httptest.NewRequest(http.MethodPost,
+		"/v1/audiobooks/"+resumeID+"/sections/section-0001/attempts/attempt-0002/select", nil))
+	if selectAttempt.Code != http.StatusAccepted {
+		t.Fatalf("select attempt: %d %s", selectAttempt.Code, selectAttempt.Body.String())
+	}
+	var selected struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(selectAttempt.Body).Decode(&selected)
+	if job := waitGatewayAudiobookJob(t, router, selected.ID); job.Status != "complete" {
+		t.Fatalf("render job: %+v", job)
+	}
+	status = httptest.NewRecorder()
+	router.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/"+resumeID, nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"currentRenderId":"render-0002"`) || !strings.Contains(status.Body.String(), `book.render-0002.wav`) {
+		t.Fatalf("render revision not visible: %d %s", status.Code, status.Body.String())
+	}
+	artifact := httptest.NewRecorder()
+	router.ServeHTTP(artifact, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/"+resumeID+"/artifact/book.render-0002.wav", nil))
+	if artifact.Code != http.StatusOK || artifact.Header().Get("Content-Type") != "audio/wav" {
+		t.Fatalf("render artifact: %d %s", artifact.Code, artifact.Body.String())
+	}
 	conflict := httptest.NewRecorder()
 	router.ServeHTTP(conflict, httptest.NewRequest(http.MethodPost, "/v1/audiobooks/"+resumeID+"/discard", nil))
 	if conflict.Code != http.StatusConflict {

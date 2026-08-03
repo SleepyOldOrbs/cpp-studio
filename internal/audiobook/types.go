@@ -73,7 +73,19 @@ type Attempt struct {
 	CreatedAt             time.Time         `json:"createdAt"`
 	Options               *SynthesisOptions `json:"options,omitempty"`
 	SynthesisMS           float64           `json:"synthesisMs,omitempty"`
+	VerificationMS        float64           `json:"verificationMs,omitempty"`
+	DurationMS            int64             `json:"durationMs,omitempty"`
+	VerificationStatus    SectionStatus     `json:"verificationStatus,omitempty"`
 	DeterministicMatch    *bool             `json:"deterministicMatch,omitempty"`
+}
+
+type RenderRevision struct {
+	ID               string            `json:"id"`
+	ArtifactFile     string            `json:"artifactFile"`
+	ArtifactURL      string            `json:"artifactUrl"`
+	SelectedAttempts map[string]string `json:"selectedAttempts"`
+	CreatedAt        time.Time         `json:"createdAt"`
+	DurationSeconds  int               `json:"durationSeconds"`
 }
 
 // Section binds a stable canonical-source byte range to its durable outputs.
@@ -127,4 +139,6 @@ type Manifest struct {
 	Verification         *VerificationSummary `json:"verification,omitempty"`
 	ResolvedOptions      *SynthesisOptions    `json:"resolvedOptions,omitempty"`
 	SynthesisIdentity    *SynthesisIdentity   `json:"synthesisIdentity,omitempty"`
+	RenderRevisions      []RenderRevision     `json:"renderRevisions,omitempty"`
+	CurrentRenderID      string               `json:"currentRenderId,omitempty"`
 }

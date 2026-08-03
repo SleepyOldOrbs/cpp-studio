@@ -125,6 +125,7 @@ type Service interface {
 	ArtifactPath(string, string) (string, error)
 	VerificationPath(string) (string, error)
 	RetrySection(context.Context, string, string, RetryMode) (string, error)
+	SelectAttempt(context.Context, string, string, string) (string, error)
 }
 
 type RetryMode string
@@ -660,8 +661,8 @@ func (m *Manager) CanResume(ctx context.Context, id string) error {
 // RetrySection creates an immutable, unselected same-seed attempt. Selecting
 // and rendering attempts is a separate explicit transition.
 func (m *Manager) RetrySection(ctx context.Context, id, sectionID string, mode RetryMode) (string, error) {
-	if mode != RetryModeReproduce {
-		return "", requestErrorf("retry mode must be reproduce")
+	if mode != RetryModeReproduce && mode != RetryModeVariation {
+		return "", requestErrorf("retry mode must be reproduce or variation")
 	}
 	if m.synthesizeDetailed == nil {
 		return "", requestErrorf("audiobooks need a configured speech engine")
@@ -703,6 +704,12 @@ func (m *Manager) RetrySection(ctx context.Context, id, sectionID string, mode R
 	if requestedSeed == 0 {
 		requestedSeed = parent.Seed
 	}
+	if mode == RetryModeVariation {
+		requestedSeed, err = readSectionSeed(m.seedSource)
+		if err != nil {
+			return "", fmt.Errorf("assign variation seed: %w", err)
+		}
+	}
 	req, err := NormalizeRequest(Request{
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
 		EngineID: manifest.EngineID, Direction: manifest.Direction, Options: *manifest.ResolvedOptions,
@@ -735,11 +742,11 @@ func (m *Manager) RetrySection(ctx context.Context, id, sectionID string, mode R
 		m.registry.Track(jobID, "audiobook-retry", func() { _ = m.Cancel(jobID) })
 	}
 	sectionText := source[section.StartByte:section.EndByte]
-	go m.runSectionRetry(jobCtx, jobID, manifest, sectionIndex, sectionText, req, resolved.Voice, requestedSeed, parent.ID, parent.AudioSHA256, release)
+	go m.runSectionRetry(jobCtx, jobID, manifest, sectionIndex, sectionText, req, resolved.Voice, mode, requestedSeed, parent.ID, parent.AudioSHA256, release)
 	return jobID, nil
 }
 
-func (m *Manager) runSectionRetry(ctx context.Context, jobID string, manifest Manifest, sectionIndex int, sectionText string, req Request, voice VoiceIdentity, requestedSeed Seed, parentID, parentHash string, release func()) {
+func (m *Manager) runSectionRetry(ctx context.Context, jobID string, manifest Manifest, sectionIndex int, sectionText string, req Request, voice VoiceIdentity, mode RetryMode, requestedSeed Seed, parentID, parentHash string, release func()) {
 	defer func() {
 		if release != nil {
 			release()
@@ -775,6 +782,10 @@ func (m *Manager) runSectionRetry(ctx context.Context, jobID string, manifest Ma
 	sum := sha256.Sum256(result.Audio)
 	audioHash := hex.EncodeToString(sum[:])
 	match := audioHash == parentHash
+	var deterministicMatch *bool
+	if mode == RetryModeReproduce {
+		deterministicMatch = &match
+	}
 	section := &manifest.Sections[sectionIndex]
 	var attemptID, audioFile string
 	for number := len(section.Attempts) + 1; number <= 9999; number++ {
@@ -803,13 +814,19 @@ func (m *Manager) runSectionRetry(ctx context.Context, jobID string, manifest Ma
 			ID: section.ID, StartByte: section.StartByte, EndByte: section.EndByte, TextSHA256: section.TextSHA256, Seed: requestedSeed,
 		}),
 		AudioFile: audioFile, AudioSHA256: audioHash, Selected: false, CreatedAt: m.now(),
-		Options: &options, SynthesisMS: float64(result.Elapsed) / float64(time.Millisecond), DeterministicMatch: &match,
+		Options: &options, SynthesisMS: float64(result.Elapsed) / float64(time.Millisecond), DeterministicMatch: deterministicMatch,
+	}
+	if duration, durationErr := wav.Duration(result.Audio); durationErr == nil {
+		attempt.DurationMS = duration.Milliseconds()
 	}
 	if req.Verification != VerificationModeOff && m.verify != nil {
+		verificationStarted := time.Now()
 		verification, verifyErr := m.verify(ctx, sectionText, result.Audio)
+		attempt.VerificationMS = float64(time.Since(verificationStarted)) / float64(time.Millisecond)
 		if verifyErr == nil {
 			report := evaluateFidelity(*section, sectionText, verification, m.now())
 			attempt.TranscriptFile, attempt.VerificationFile, err = m.store.SaveAttemptVerificationFinal(manifest.ID, section.ID, attemptID, verification, report)
+			attempt.VerificationStatus = report.Status
 			if err != nil {
 				m.finishRetry(jobID, err)
 				return
@@ -825,10 +842,14 @@ func (m *Manager) runSectionRetry(ctx context.Context, jobID string, manifest Ma
 		return
 	}
 	if m.registry != nil {
-		m.registry.Complete(jobID, map[string]string{
+		jobResult := map[string]string{
 			"bookId": manifest.ID, "sectionId": section.ID, "attemptId": attempt.ID,
-			"deterministicMatch": fmt.Sprintf("%t", match),
-		})
+			"mode": string(mode),
+		}
+		if deterministicMatch != nil {
+			jobResult["deterministicMatch"] = fmt.Sprintf("%t", match)
+		}
+		m.registry.Complete(jobID, jobResult)
 	}
 }
 
@@ -841,6 +862,168 @@ func (m *Manager) finishRetry(jobID string, err error) {
 		return
 	}
 	m.registry.Fail(jobID, err.Error())
+}
+
+// SelectAttempt creates and publishes a new immutable full-book render. The
+// prior render and every attempt remain available in the manifest and on disk.
+func (m *Manager) SelectAttempt(ctx context.Context, id, sectionID, attemptID string) (string, error) {
+	if !validSectionID(sectionID) || !validAttemptID(attemptID) {
+		return "", requestErrorf("invalid generated section or attempt id")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeID != "" || m.creating {
+		return "", fmt.Errorf("another audiobook is already narrating")
+	}
+	manifest, _, err := m.store.LoadDurableFinal(id)
+	if err != nil {
+		return "", err
+	}
+	ensureInitialRender(&manifest)
+	sectionIndex, attemptIndex := -1, -1
+	for i := range manifest.Sections {
+		if manifest.Sections[i].ID != sectionID {
+			continue
+		}
+		sectionIndex = i
+		for j := range manifest.Sections[i].Attempts {
+			if manifest.Sections[i].Attempts[j].ID == attemptID {
+				attemptIndex = j
+				break
+			}
+		}
+		break
+	}
+	if sectionIndex < 0 || attemptIndex < 0 {
+		return "", requestErrorf("unknown generated audiobook section or attempt")
+	}
+	if manifest.Sections[sectionIndex].Attempts[attemptIndex].Selected {
+		return "", requestErrorf("attempt %s is already selected", attemptID)
+	}
+	m.retryCounter++
+	jobID := fmt.Sprintf("render_%s_%03d", id, m.retryCounter)
+	jobCtx, cancel := context.WithCancel(context.Background())
+	m.activeID = jobID
+	m.cancels[jobID] = cancel
+	if m.registry != nil {
+		m.registry.Track(jobID, "audiobook-render", func() { _ = m.Cancel(jobID) })
+	}
+	go m.runAttemptSelection(jobCtx, jobID, manifest, sectionIndex, attemptIndex)
+	_ = ctx
+	return jobID, nil
+}
+
+func (m *Manager) runAttemptSelection(ctx context.Context, jobID string, manifest Manifest, targetSection, targetAttempt int) {
+	defer func() {
+		m.mu.Lock()
+		if m.activeID == jobID {
+			m.activeID = ""
+		}
+		delete(m.cancels, jobID)
+		m.mu.Unlock()
+	}()
+	if m.registry != nil {
+		m.registry.Update(jobID, 0.2, "assembling selected attempts")
+	}
+	paths := make([]string, len(manifest.Sections))
+	selected := make(map[string]string, len(manifest.Sections))
+	for i := range manifest.Sections {
+		attemptIndex := -1
+		if i == targetSection {
+			attemptIndex = targetAttempt
+		} else {
+			for j := range manifest.Sections[i].Attempts {
+				if manifest.Sections[i].Attempts[j].Selected {
+					attemptIndex = j
+					break
+				}
+			}
+		}
+		if attemptIndex < 0 {
+			m.finishRetry(jobID, fmt.Errorf("section %s has no selected attempt", manifest.Sections[i].ID))
+			return
+		}
+		attempt := manifest.Sections[i].Attempts[attemptIndex]
+		path, err := m.store.AttemptPathFinal(manifest.ID, manifest.Sections[i], attempt)
+		if err != nil {
+			m.finishRetry(jobID, err)
+			return
+		}
+		paths[i] = path
+		selected[manifest.Sections[i].ID] = attempt.ID
+	}
+	var renderID, filename, outputPath string
+	for number := len(manifest.RenderRevisions) + 1; number <= 9999; number++ {
+		renderID = fmt.Sprintf("render-%04d", number)
+		filename = fmt.Sprintf("book.render-%04d.wav", number)
+		var err error
+		outputPath, err = m.store.RenderPathFinal(manifest.ID, filename)
+		if err != nil {
+			m.finishRetry(jobID, err)
+			return
+		}
+		if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+			break
+		}
+		outputPath = ""
+	}
+	if outputPath == "" {
+		m.finishRetry(jobID, fmt.Errorf("audiobook render limit reached"))
+		return
+	}
+	if err := wav.AssembleFiles(outputPath, paths, sectionCrossfade, artifactPad, artifactPad); err != nil {
+		m.finishRetry(jobID, err)
+		return
+	}
+	if ctx.Err() != nil {
+		_ = os.Remove(outputPath)
+		m.finishRetry(jobID, ctx.Err())
+		return
+	}
+	for i := range manifest.Sections {
+		for j := range manifest.Sections[i].Attempts {
+			choose := manifest.Sections[i].Attempts[j].ID == selected[manifest.Sections[i].ID]
+			manifest.Sections[i].Attempts[j].Selected = choose
+			if choose {
+				attempt := manifest.Sections[i].Attempts[j]
+				manifest.Sections[i].Seed = attempt.RequestedSeed
+				if manifest.Sections[i].Seed == 0 {
+					manifest.Sections[i].Seed = attempt.Seed
+				}
+				manifest.Sections[i].CheckpointFingerprint = attempt.CheckpointFingerprint
+				manifest.Sections[i].AudioFile = attempt.AudioFile
+				manifest.Sections[i].AudioSHA256 = attempt.AudioSHA256
+				manifest.Sections[i].TranscriptFile = attempt.TranscriptFile
+				manifest.Sections[i].VerificationFile = attempt.VerificationFile
+				manifest.Sections[i].DurationMS = attempt.DurationMS
+				manifest.Sections[i].Status = attempt.VerificationStatus
+				if manifest.Sections[i].Status == "" {
+					manifest.Sections[i].Status = SectionStatusSynthesized
+				}
+			}
+		}
+	}
+	durationSeconds := 0
+	if duration, err := wav.DurationFile(outputPath); err == nil {
+		durationSeconds = int(duration.Round(time.Second) / time.Second)
+	}
+	artifactURL := "/v1/audiobooks/" + manifest.ID + "/artifact/" + filename
+	manifest.RenderRevisions = append(manifest.RenderRevisions, RenderRevision{
+		ID: renderID, ArtifactFile: filename, ArtifactURL: artifactURL,
+		SelectedAttempts: selected, CreatedAt: m.now(), DurationSeconds: durationSeconds,
+	})
+	manifest.CurrentRenderID = renderID
+	manifest.ArtifactURL = artifactURL
+	manifest.DurationSeconds = durationSeconds
+	if err := m.store.SaveManifestFinal(manifest); err != nil {
+		m.finishRetry(jobID, err)
+		return
+	}
+	if m.registry != nil {
+		m.registry.Complete(jobID, map[string]string{
+			"bookId": manifest.ID, "renderId": renderID, "artifactUrl": artifactURL,
+		})
+	}
 }
 
 // Discard explicitly removes an inactive interrupted WIP and its evidence.
@@ -968,6 +1151,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 				CheckpointFingerprint: unit.section.CheckpointFingerprint,
 				AudioFile:             unit.section.AudioFile, AudioSHA256: unit.section.AudioSHA256,
 				Selected: true, CreatedAt: m.now(), Options: &attemptOptions, SynthesisMS: float64(synthesis.Elapsed) / float64(time.Millisecond),
+				DurationMS: unit.section.DurationMS,
 			}}
 			if err := m.store.SaveManifestWIP(*initial); err != nil {
 				m.finishRunError(id, initial, "checkpoint audiobook section: "+err.Error(), false)
@@ -999,6 +1183,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		if duration, err := wav.DurationFile(bookPath); err == nil {
 			manifest.DurationSeconds = int(duration.Round(time.Second) / time.Second)
 		}
+		ensureInitialRender(&manifest)
 		if ctx.Err() != nil {
 			m.finishRunError(id, initial, "audiobook narration was cancelled", true)
 			return
@@ -1063,6 +1248,26 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 	}
 }
 
+func ensureInitialRender(manifest *Manifest) {
+	if len(manifest.RenderRevisions) > 0 {
+		return
+	}
+	selected := make(map[string]string, len(manifest.Sections))
+	for _, section := range manifest.Sections {
+		for _, attempt := range section.Attempts {
+			if attempt.Selected {
+				selected[section.ID] = attempt.ID
+				break
+			}
+		}
+	}
+	manifest.RenderRevisions = []RenderRevision{{
+		ID: "render-0001", ArtifactFile: ArtifactName, ArtifactURL: manifest.ArtifactURL,
+		SelectedAttempts: selected, CreatedAt: manifest.CreatedAt, DurationSeconds: manifest.DurationSeconds,
+	}}
+	manifest.CurrentRenderID = "render-0001"
+}
+
 func (m *Manager) verifySections(ctx context.Context, id string, req Request, manifest *Manifest, units []narrationUnit, clipPaths []string) bool {
 	aggregate := FidelityAggregate{Mode: req.Verification, Status: VerificationStatusPending}
 	finish := func(status VerificationStatus, message string) bool {
@@ -1107,7 +1312,9 @@ func (m *Manager) verifySections(ctx context.Context, id string, req Request, ma
 			m.finishRunError(id, manifest, fmt.Sprintf("read section %d for verification: %v", i+1, err), false)
 			return false
 		}
+		verificationStarted := time.Now()
 		verification, err := m.verify(ctx, units[i].text, audio)
+		verificationMS := float64(time.Since(verificationStarted)) / float64(time.Millisecond)
 		if err != nil {
 			if ctx.Err() != nil {
 				m.finishRunError(id, manifest, "audiobook verification was cancelled", true)
@@ -1140,6 +1347,8 @@ func (m *Manager) verifySections(ctx context.Context, id string, req Request, ma
 			if section.Attempts[attemptIndex].Selected {
 				section.Attempts[attemptIndex].TranscriptFile = transcriptFile
 				section.Attempts[attemptIndex].VerificationFile = reportFile
+				section.Attempts[attemptIndex].VerificationStatus = report.Status
+				section.Attempts[attemptIndex].VerificationMS = verificationMS
 			}
 		}
 		aggregate.Sections = append(aggregate.Sections, report)
@@ -1278,7 +1487,23 @@ func (m *Manager) ArtifactPath(id, filename string) (string, error) {
 		return "", fmt.Errorf("audiobook not found")
 	}
 	if filename != ArtifactName {
-		return "", fmt.Errorf("unsupported audiobook artifact")
+		if !validRenderFile(filename) {
+			return "", fmt.Errorf("unsupported audiobook artifact")
+		}
+		manifest, _, err := m.store.LoadDurableFinal(id)
+		if err != nil {
+			return "", fmt.Errorf("audiobook artifact not found")
+		}
+		known := false
+		for _, revision := range manifest.RenderRevisions {
+			if revision.ArtifactFile == filename {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return "", fmt.Errorf("unsupported audiobook artifact")
+		}
 	}
 	path := filepath.Join(m.rootDir, id, filename)
 	file, err := os.Open(path)

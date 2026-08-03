@@ -40,6 +40,29 @@ published under `out/audiobooks/.book_....wip`. Synthesis checkpoints every sect
 The jobs registry is live progress only. After a process restart, recoverable work is
 discovered from its manifest and appears in the Audiobook desk without a job entry.
 
+## Repair attempts and render revisions
+
+Finished durable productions retain immutable per-section attempts. Reproduce uses
+the selected attempt's requested seed; Variation allocates a new server-side random
+seed. The request cannot supply a seed or path:
+
+```text
+POST /v1/audiobooks/{id}/sections/{sectionId}/retry
+{"mode":"reproduce|variation"}
+```
+
+Retries remain unselected. An explicit selection publishes a new full-book render
+without overwriting `book.wav` or any prior revision:
+
+```text
+POST /v1/audiobooks/{id}/sections/{sectionId}/attempts/{attemptId}/select
+```
+
+The manifest records requested and reported actual seeds, hashes, options, synthesis
+and verification timings, duration, verification evidence, parent lineage, selection,
+and the exact attempt map used by every render revision. A reported seed mismatch
+fails the attempt; unavailable actual-seed reporting remains labelled `requested`.
+
 ## Verification states
 
 - `auto`: use configured Whisper; finish as `unavailable` if it is absent or fails.

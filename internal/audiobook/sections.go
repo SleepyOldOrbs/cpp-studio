@@ -57,8 +57,8 @@ func planDramaBoxSections(canonicalSource string, entropy io.Reader) ([]Section,
 	}
 	sections := make([]Section, 0, len(ranges))
 	for i, sourceRange := range ranges {
-		seedBytes := make([]byte, 8)
-		if _, err := io.ReadFull(entropy, seedBytes); err != nil {
+		seed, err := readSectionSeed(entropy)
+		if err != nil {
 			return nil, fmt.Errorf("assign seed for section %d: %w", i+1, err)
 		}
 		text := canonicalSource[sourceRange.start:sourceRange.end]
@@ -68,11 +68,19 @@ func planDramaBoxSections(canonicalSource string, entropy io.Reader) ([]Section,
 			StartByte:  int64(sourceRange.start),
 			EndByte:    int64(sourceRange.end),
 			TextSHA256: hex.EncodeToString(sum[:]),
-			Seed:       Seed(binary.BigEndian.Uint64(seedBytes)),
+			Seed:       seed,
 			Status:     SectionStatusPending,
 		})
 	}
 	return sections, nil
+}
+
+func readSectionSeed(entropy io.Reader) (Seed, error) {
+	seedBytes := make([]byte, 8)
+	if _, err := io.ReadFull(entropy, seedBytes); err != nil {
+		return 0, err
+	}
+	return Seed(binary.BigEndian.Uint64(seedBytes)), nil
 }
 
 type rangePacker struct {

@@ -352,6 +352,47 @@ func validAttemptID(id string) bool {
 	return true
 }
 
+func (s *Store) AttemptPathFinal(id string, section Section, attempt Attempt) (string, error) {
+	if err := validateBookID(id); err != nil || !validSectionID(section.ID) || !validAttemptID(attempt.ID) {
+		return "", fmt.Errorf("invalid audiobook attempt")
+	}
+	expected := expectedAttemptAudioFile(section.ID, attempt.ID)
+	if attempt.AudioFile != expected {
+		return "", fmt.Errorf("%w: attempt audio path does not match its generated id", ErrStoreCorrupt)
+	}
+	path := filepath.Join(s.rootDir, id, filepath.FromSlash(expected))
+	if err := wav.ValidateFile(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func expectedAttemptAudioFile(sectionID, attemptID string) string {
+	if attemptID == "attempt-0001" {
+		return filepath.ToSlash(filepath.Join(sectionsDirName, sectionID+".wav"))
+	}
+	return filepath.ToSlash(filepath.Join(sectionsDirName, sectionID+"."+attemptID+".wav"))
+}
+
+func validRenderFile(filename string) bool {
+	if len(filename) != len("book.render-0000.wav") || !strings.HasPrefix(filename, "book.render-") || !strings.HasSuffix(filename, ".wav") {
+		return false
+	}
+	for _, r := range filename[len("book.render-"):len("book.render-0000")] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Store) RenderPathFinal(id, filename string) (string, error) {
+	if err := validateBookID(id); err != nil || !validRenderFile(filename) {
+		return "", fmt.Errorf("invalid audiobook render")
+	}
+	return filepath.Join(s.rootDir, id, filename), nil
+}
+
 func (s *Store) SaveManifestFinal(manifest Manifest) error {
 	if err := validateBookID(manifest.ID); err != nil {
 		return err
@@ -409,11 +450,49 @@ func validateDurableManifest(manifest Manifest, source string) error {
 		if section.TextSHA256 != hex.EncodeToString(textSum[:]) {
 			return fmt.Errorf("section %s source hash does not match", section.ID)
 		}
-		if section.AudioFile != filepath.ToSlash(filepath.Join(sectionsDirName, section.ID+".wav")) {
-			return fmt.Errorf("section %s audio path is invalid", section.ID)
-		}
 		if section.CheckpointFingerprint != sectionCheckpointFingerprint(manifest.SynthesisFingerprint, section) {
 			return fmt.Errorf("section %s checkpoint does not match", section.ID)
+		}
+		if len(section.Attempts) == 0 {
+			if section.AudioFile != expectedAttemptAudioFile(section.ID, "attempt-0001") {
+				return fmt.Errorf("section %s audio path is invalid", section.ID)
+			}
+			continue
+		}
+		selected := -1
+		for j, attempt := range section.Attempts {
+			expectedID := fmt.Sprintf("attempt-%04d", j+1)
+			if attempt.ID != expectedID || attempt.AudioFile != expectedAttemptAudioFile(section.ID, expectedID) {
+				return fmt.Errorf("section %s attempt table is invalid", section.ID)
+			}
+			attemptSeed := attempt.RequestedSeed
+			if attemptSeed == 0 {
+				attemptSeed = attempt.Seed
+			}
+			expectedCheckpoint := sectionCheckpointFingerprint(manifest.SynthesisFingerprint, Section{
+				ID: section.ID, StartByte: section.StartByte, EndByte: section.EndByte,
+				TextSHA256: section.TextSHA256, Seed: attemptSeed,
+			})
+			if attempt.CheckpointFingerprint != expectedCheckpoint {
+				return fmt.Errorf("section %s attempt checkpoint does not match", section.ID)
+			}
+			if attempt.Selected {
+				if selected >= 0 {
+					return fmt.Errorf("section %s has multiple selected attempts", section.ID)
+				}
+				selected = j
+			}
+		}
+		if selected < 0 {
+			return fmt.Errorf("section %s has no selected attempt", section.ID)
+		}
+		attempt := section.Attempts[selected]
+		attemptSeed := attempt.RequestedSeed
+		if attemptSeed == 0 {
+			attemptSeed = attempt.Seed
+		}
+		if section.Seed != attemptSeed || section.AudioFile != attempt.AudioFile || section.AudioSHA256 != attempt.AudioSHA256 || section.CheckpointFingerprint != attempt.CheckpointFingerprint {
+			return fmt.Errorf("section %s does not project its selected attempt", section.ID)
 		}
 	}
 	return nil
