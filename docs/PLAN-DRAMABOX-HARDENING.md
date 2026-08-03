@@ -1,6 +1,6 @@
 # DramaBox audiobook hardening roadmap: P0, P1, P2
 
-Status: PLANNED ONLY — implementation is explicitly deferred
+Status: IN PROGRESS — P0 implementation began 2026-08-03
 
 - Date: 2026-08-02
 - Architecture reconciled: 2026-08-03
@@ -108,8 +108,8 @@ P0 delivers the minimum trustworthy DramaBox audiobook workflow.
 1. Build audio.cpp `release-0.5` in a side-by-side checkout or worktree. Do not replace
    the proven `release-0.4.2` runtime in place.
 2. Confirm `audiocpp_cli --list-loaders --json` includes `dramabox`.
-3. Confirm a loopback `audiocpp_server` starts from the checked-in DramaBox example,
-   reports healthy, and accepts a text-only speech request.
+3. Confirm a loopback `audiocpp_server` starts from the checked-in server template and
+   DramaBox model example, reports healthy, and accepts a text-only speech request.
 4. Keep the 18.9 GB model download manual. The setup flow must show source, expected
    size, licence, free disk space requirement, and the fact that local electricity and
    compute are not free.
@@ -123,6 +123,35 @@ Exit gate:
 - Fixture-backed development may begin once the release contract is pinned.
 - Live qualification requires one valid real DramaBox WAV and a recorded runtime
   identity. Audio quality still requires human listening and remains a separate gate.
+
+Qualification evidence (2026-08-03):
+
+- Existing `release-0.4.2` checkout remains clean at
+  `27d87ba4804e7f22f28fc90d6b211b91c7c156c8`.
+- Side-by-side `release-0.5` worktree is pinned at
+  `3178daf4028fa8f48ef63299aa1524ee2d3a4bb7`; its tag matched the remote tag.
+- CPU `audiocpp_cli.exe` SHA-256 is
+  `627bf21f7b04758c88e109589a040a7e3a17b268fb00bd6ea7230acc120bee61`;
+  CPU `audiocpp_server.exe` SHA-256 is
+  `806560fb69fba6bc50da4a4d802fe8c3a06866941d4b2fc0a21c5cb1983aa423`.
+- `dramabox-q8_0.gguf` is 18,942,803,808 bytes with SHA-256
+  `75e7e80fc748defb188cb902c34c62bc12539a7bba477215dccf59a7218a451e`.
+- Loader inspection exposed `tts` and `clon` offline routes. A lazy loopback CPU
+  server reported healthy and completed a seeded text-only request with
+  `seed="42"`, one diffusion step, CFG 1, `duration_sec=1.5`, and
+  `dramabox.mem_saver=true`.
+- The qualification device was an AMD Ryzen 7 9800X3D (8 cores, 16 logical
+  processors), with 16 runtime threads. The server config was derived from
+  `app/server/README.md` plus the `docs/tts.md` DramaBox example and had SHA-256
+  `107477b90fbadaffb2382792f8bd7dadccd4692cd8d20917e109c920e0a45c0b`; the request
+  JSON had SHA-256 `d59a06719fa49bceda86d863ded6a21f5e4700642a90d81e3db3afe14a7de7e7`.
+- The real output was a valid 48 kHz stereo PCM WAV: 1.61 seconds, 309,164 bytes,
+  SHA-256 `5cb96e65030f022a20ae7159e55eaf9c3d46daeb093d363b5a77a1413cc92434`.
+  Runtime trace reported 157,479.767 ms wall time on the CPU qualification path.
+- The CUDA 120a build configured but failed in the two audio.cpp CUDA runtime
+  translation units because NVCC received a malformed MSVC optimization argument.
+  CUDA qualification and human listening remain separate follow-up gates; neither
+  invalidates the completed CPU runtime-contract qualification.
 
 #### P0.1 — engine-specific section planning
 
@@ -266,7 +295,17 @@ Manifest additions:
       "audioFile": "sections/section-0001.wav",
       "audioSha256": "...",
       "durationMs": 78231,
-      "attempts": 1
+      "attempts": [
+        {
+          "id": "attempt-0001",
+          "seed": "1844674407370955161",
+          "checkpointFingerprint": "...",
+          "audioFile": "sections/section-0001.wav",
+          "audioSha256": "...",
+          "selected": true,
+          "createdAt": "2026-08-03T10:00:00Z"
+        }
+      ]
     }
   ],
   "verification": {
@@ -277,6 +316,10 @@ Manifest additions:
   }
 }
 ```
+
+P0-04 adds the typed DramaBox request options to each attempt before attempts are
+persisted by the durable store. That addition is optional for readers of this schema
+and does not change existing field meanings.
 
 The base synthesis fingerprint covers:
 
@@ -962,8 +1005,8 @@ Names may adjust during implementation, but responsibilities must remain separat
 
 ### P0 task order
 
-- [ ] P0-01: Pin and qualify the release-0.5 runtime contract without replacing 0.4.2.
-- [ ] P0-02: Introduce versioned audiobook manifest, section, verification, and attempt types.
+- [x] P0-01: Pin and qualify the release-0.5 runtime contract without replacing 0.4.2.
+- [x] P0-02: Introduce versioned audiobook manifest, section, verification, and attempt types.
 - [ ] P0-03: Add DramaBox duration-based section planning and stable seed assignment; preserve fast chunking.
 - [ ] P0-04: Replace the positional synthesis callback with typed request/options and engine-owned server/subprocess mapping.
 - [ ] P0-05: Add injected engine/voice resolution and freeze the audiobook synthesis identity.

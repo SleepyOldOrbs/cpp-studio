@@ -70,19 +70,6 @@ type Request struct {
 	Direction string
 }
 
-// Manifest describes one finished audiobook on disk.
-type Manifest struct {
-	ID              string    `json:"id"`
-	Title           string    `json:"title"`
-	VoiceID         string    `json:"voiceId,omitempty"`
-	EngineID        string    `json:"engine,omitempty"`
-	Direction       string    `json:"direction,omitempty"`
-	Chunks          int       `json:"chunks"`
-	DurationSeconds int       `json:"durationSeconds"`
-	CreatedAt       time.Time `json:"createdAt"`
-	ArtifactURL     string    `json:"artifactUrl"`
-}
-
 type Manager struct {
 	mu            sync.Mutex
 	rootDir       string
