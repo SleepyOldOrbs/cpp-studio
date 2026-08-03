@@ -298,6 +298,92 @@ func (s *Store) LoadDurableWIP(id string) (Manifest, string, error) {
 	return manifest, string(source), nil
 }
 
+func (s *Store) LoadDurableFinal(id string) (Manifest, string, error) {
+	if err := validateBookID(id); err != nil {
+		return Manifest{}, "", err
+	}
+	dir := filepath.Join(s.rootDir, id)
+	manifest, ok, err := loadManifest(filepath.Join(dir, manifestFileName))
+	if err != nil {
+		return Manifest{}, "", err
+	}
+	if !ok {
+		return Manifest{}, "", ErrProductionNotFound
+	}
+	source, err := os.ReadFile(filepath.Join(dir, sourceFileName))
+	if err != nil {
+		return Manifest{}, "", fmt.Errorf("%w: read canonical source: %v", ErrStoreCorrupt, err)
+	}
+	if err := validateDurableManifest(manifest, string(source)); err != nil {
+		return Manifest{}, "", fmt.Errorf("%w: %v", ErrStoreCorrupt, err)
+	}
+	return manifest, string(source), nil
+}
+
+func (s *Store) SaveAttemptFinal(id, sectionID, attemptID string, audio []byte) (string, error) {
+	if err := validateBookID(id); err != nil || !validSectionID(sectionID) || !validAttemptID(attemptID) {
+		return "", fmt.Errorf("invalid audiobook attempt")
+	}
+	if err := wav.ValidateBytes(audio); err != nil {
+		return "", err
+	}
+	rel := filepath.ToSlash(filepath.Join(sectionsDirName, sectionID+"."+attemptID+".wav"))
+	path := filepath.Join(s.rootDir, id, filepath.FromSlash(rel))
+	if _, err := os.Stat(path); err == nil {
+		return "", fmt.Errorf("audiobook attempt already exists")
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := writeFileAtomic(path, audio); err != nil {
+		return "", err
+	}
+	return rel, nil
+}
+
+func validAttemptID(id string) bool {
+	if len(id) != len("attempt-0000") || !strings.HasPrefix(id, "attempt-") {
+		return false
+	}
+	for _, r := range id[len("attempt-"):] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Store) SaveManifestFinal(manifest Manifest) error {
+	if err := validateBookID(manifest.ID); err != nil {
+		return err
+	}
+	dir := filepath.Join(s.rootDir, manifest.ID)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return ErrProductionNotFound
+	}
+	return writeManifestAtomic(filepath.Join(dir, manifestFileName), manifest)
+}
+
+func (s *Store) SaveAttemptVerificationFinal(id, sectionID, attemptID string, verification Verification, report FidelityReport) (string, string, error) {
+	if err := validateBookID(id); err != nil || !validSectionID(sectionID) || !validAttemptID(attemptID) {
+		return "", "", fmt.Errorf("invalid audiobook attempt")
+	}
+	base := sectionID + "." + attemptID
+	transcriptRel := filepath.ToSlash(filepath.Join(sectionsDirName, base+".transcript.txt"))
+	reportRel := filepath.ToSlash(filepath.Join(sectionsDirName, base+".verification.json"))
+	dir := filepath.Join(s.rootDir, id)
+	if err := writeFileAtomic(filepath.Join(dir, filepath.FromSlash(transcriptRel)), []byte(verification.Transcript)); err != nil {
+		return "", "", err
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	if err := writeFileAtomic(filepath.Join(dir, filepath.FromSlash(reportRel)), append(data, '\n')); err != nil {
+		return "", "", err
+	}
+	return transcriptRel, reportRel, nil
+}
+
 func validateDurableManifest(manifest Manifest, source string) error {
 	if err := validateBookID(manifest.ID); err != nil {
 		return err

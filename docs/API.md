@@ -194,6 +194,12 @@ stitched WAV. Runs as an `audiobook` job on the jobs surface.
   production. Finished or active productions return `409`.
 - `GET /v1/audiobooks/{id}/verification` — aggregate fidelity evidence, including
   section metrics and the honest passed/flagged/unavailable/skipped status.
+- `POST /v1/audiobooks/{id}/sections/{sectionId}/retry` with
+  `{"mode":"reproduce"}` — synthesize the exact selected text/prompt/options/voice/
+  model/seed again as an immutable, unselected attempt. The attempt records requested
+  seed, actual seed when reported by audio.cpp, measured synthesis time, content hash,
+  optional fidelity evidence, and whether the bytes match its parent. An actual-seed
+  mismatch fails the job and is never made Resume-eligible.
 - `GET /v1/audiobooks/{id}/artifact/book.wav` — the narration WAV.
 
 Finished audiobooks persist in `out/audiobooks` and survive restarts. DramaBox

@@ -61,6 +61,9 @@ type Attempt struct {
 	ID                    string            `json:"id"`
 	ParentAttemptID       string            `json:"parentAttemptId,omitempty"`
 	Seed                  Seed              `json:"seed"`
+	RequestedSeed         Seed              `json:"requestedSeed"`
+	ActualSeed            *Seed             `json:"actualSeed,omitempty"`
+	SeedStatus            string            `json:"seedStatus,omitempty"`
 	CheckpointFingerprint string            `json:"checkpointFingerprint"`
 	AudioFile             string            `json:"audioFile"`
 	AudioSHA256           string            `json:"audioSha256"`
@@ -69,6 +72,8 @@ type Attempt struct {
 	Selected              bool              `json:"selected"`
 	CreatedAt             time.Time         `json:"createdAt"`
 	Options               *SynthesisOptions `json:"options,omitempty"`
+	SynthesisMS           float64           `json:"synthesisMs,omitempty"`
+	DeterministicMatch    *bool             `json:"deterministicMatch,omitempty"`
 }
 
 // Section binds a stable canonical-source byte range to its durable outputs.

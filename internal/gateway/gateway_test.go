@@ -4837,6 +4837,25 @@ func TestAudiobookDurableLifecycleRoutes(t *testing.T) {
 	if verification.Code != http.StatusOK || !strings.Contains(verification.Body.String(), `"status": "skipped"`) {
 		t.Fatalf("verification report: %d %s", verification.Code, verification.Body.String())
 	}
+	retry := httptest.NewRecorder()
+	router.ServeHTTP(retry, httptest.NewRequest(http.MethodPost,
+		"/v1/audiobooks/"+resumeID+"/sections/section-0001/retry",
+		strings.NewReader(`{"mode":"reproduce"}`)))
+	if retry.Code != http.StatusAccepted {
+		t.Fatalf("retry: %d %s", retry.Code, retry.Body.String())
+	}
+	var retried struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(retry.Body).Decode(&retried)
+	if job := waitGatewayAudiobookJob(t, router, retried.ID); job.Status != "complete" {
+		t.Fatalf("retry job: %+v", job)
+	}
+	status := httptest.NewRecorder()
+	router.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/"+resumeID, nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"id":"attempt-0002"`) || !strings.Contains(status.Body.String(), `"selected":false`) {
+		t.Fatalf("immutable retry attempt not visible: %d %s", status.Code, status.Body.String())
+	}
 	conflict := httptest.NewRecorder()
 	router.ServeHTTP(conflict, httptest.NewRequest(http.MethodPost, "/v1/audiobooks/"+resumeID+"/discard", nil))
 	if conflict.Code != http.StatusConflict {

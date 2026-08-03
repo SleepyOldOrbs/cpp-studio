@@ -65,13 +65,22 @@ type ReserveEngineFunc func(ctx context.Context, name string) (func(), bool)
 // engine's default or, for DramaBox, its supported text-only mode.
 type SynthesizeFunc func(ctx context.Context, request SynthesisRequest) ([]byte, error)
 
+type SynthesisResult struct {
+	Audio      []byte
+	ActualSeed *Seed
+	Elapsed    time.Duration
+}
+
+type SynthesizeDetailedFunc func(ctx context.Context, request SynthesisRequest) (SynthesisResult, error)
+
 type ManagerOptions struct {
-	RootDir       string
-	ReserveEngine ReserveEngineFunc
-	Synthesize    SynthesizeFunc
-	ResolveEngine ResolveEngineFunc
-	ResolveVoice  ResolveVoiceFunc
-	Verify        VerifyFunc
+	RootDir            string
+	ReserveEngine      ReserveEngineFunc
+	Synthesize         SynthesizeFunc
+	SynthesizeDetailed SynthesizeDetailedFunc
+	ResolveEngine      ResolveEngineFunc
+	ResolveVoice       ResolveVoiceFunc
+	Verify             VerifyFunc
 	// SeedSource supplies full-range DramaBox section seeds. Nil uses
 	// crypto/rand.Reader; tests may inject deterministic or failing readers.
 	SeedSource io.Reader
@@ -115,7 +124,15 @@ type Service interface {
 	List() ([]Manifest, error)
 	ArtifactPath(string, string) (string, error)
 	VerificationPath(string) (string, error)
+	RetrySection(context.Context, string, string, RetryMode) (string, error)
 }
+
+type RetryMode string
+
+const (
+	RetryModeReproduce RetryMode = "reproduce"
+	RetryModeVariation RetryMode = "variation"
+)
 
 var _ Service = (*Manager)(nil)
 
@@ -127,21 +144,23 @@ type narrationUnit struct {
 }
 
 type Manager struct {
-	mu            sync.Mutex
-	rootDir       string
-	store         *Store
-	reserveEngine ReserveEngineFunc
-	synthesize    SynthesizeFunc
-	resolveEngine ResolveEngineFunc
-	resolveVoice  ResolveVoiceFunc
-	verify        VerifyFunc
-	seedSource    io.Reader
-	registry      *jobs.Registry
-	now           func() time.Time
-	counter       int
-	activeID      string
-	creating      bool
-	cancels       map[string]context.CancelFunc
+	mu                 sync.Mutex
+	rootDir            string
+	store              *Store
+	reserveEngine      ReserveEngineFunc
+	synthesize         SynthesizeFunc
+	synthesizeDetailed SynthesizeDetailedFunc
+	resolveEngine      ResolveEngineFunc
+	resolveVoice       ResolveVoiceFunc
+	verify             VerifyFunc
+	seedSource         io.Reader
+	registry           *jobs.Registry
+	now                func() time.Time
+	counter            int
+	retryCounter       int
+	activeID           string
+	creating           bool
+	cancels            map[string]context.CancelFunc
 }
 
 func NewManager(opts ManagerOptions) *Manager {
@@ -172,21 +191,41 @@ func NewManager(opts ManagerOptions) *Manager {
 			return VoiceIdentity{ID: voiceID, Fingerprint: voiceID}, nil
 		}
 	}
+	synthesizeDetailed := opts.SynthesizeDetailed
+	if synthesizeDetailed == nil && opts.Synthesize != nil {
+		synthesizeDetailed = func(ctx context.Context, request SynthesisRequest) (SynthesisResult, error) {
+			audio, err := opts.Synthesize(ctx, request)
+			return SynthesisResult{Audio: audio}, err
+		}
+	}
 	manager := &Manager{
-		rootDir:       rootDir,
-		store:         NewStore(rootDir),
-		reserveEngine: opts.ReserveEngine,
-		synthesize:    opts.Synthesize,
-		resolveEngine: resolveEngine,
-		resolveVoice:  resolveVoice,
-		verify:        opts.Verify,
-		seedSource:    seedSource,
-		registry:      opts.Jobs,
-		now:           now,
-		cancels:       make(map[string]context.CancelFunc),
+		rootDir:            rootDir,
+		store:              NewStore(rootDir),
+		reserveEngine:      opts.ReserveEngine,
+		synthesize:         opts.Synthesize,
+		synthesizeDetailed: synthesizeDetailed,
+		resolveEngine:      resolveEngine,
+		resolveVoice:       resolveVoice,
+		verify:             opts.Verify,
+		seedSource:         seedSource,
+		registry:           opts.Jobs,
+		now:                now,
+		cancels:            make(map[string]context.CancelFunc),
 	}
 	_ = manager.store.RecoverInterrupted()
 	return manager
+}
+
+func (m *Manager) invokeSynthesis(ctx context.Context, request SynthesisRequest) (SynthesisResult, error) {
+	started := time.Now()
+	result, err := m.synthesizeDetailed(ctx, request)
+	if result.Elapsed <= 0 {
+		result.Elapsed = time.Since(started)
+		if result.Elapsed <= 0 {
+			result.Elapsed = time.Nanosecond
+		}
+	}
+	return result, err
 }
 
 // Preview resolves exactly the engine, voice, direction, and effective options
@@ -329,7 +368,7 @@ func (m *Manager) SubmitDocument(ctx context.Context, filename string, data []by
 }
 
 func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (string, int, error) {
-	if m.synthesize == nil {
+	if m.synthesizeDetailed == nil {
 		return "", 0, requestErrorf("audiobooks need a configured speech engine")
 	}
 	var err error
@@ -476,7 +515,7 @@ func (m *Manager) nextID() (string, error) {
 // Resume continues one durable interrupted DramaBox production under exactly
 // its frozen engine, voice, option, prompt, and section identities.
 func (m *Manager) Resume(ctx context.Context, id string) (int, error) {
-	if m.synthesize == nil {
+	if m.synthesizeDetailed == nil {
 		return 0, requestErrorf("audiobooks need a configured speech engine")
 	}
 	m.mu.Lock()
@@ -618,6 +657,192 @@ func (m *Manager) CanResume(ctx context.Context, id string) error {
 	return nil
 }
 
+// RetrySection creates an immutable, unselected same-seed attempt. Selecting
+// and rendering attempts is a separate explicit transition.
+func (m *Manager) RetrySection(ctx context.Context, id, sectionID string, mode RetryMode) (string, error) {
+	if mode != RetryModeReproduce {
+		return "", requestErrorf("retry mode must be reproduce")
+	}
+	if m.synthesizeDetailed == nil {
+		return "", requestErrorf("audiobooks need a configured speech engine")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeID != "" || m.creating {
+		return "", fmt.Errorf("another audiobook is already narrating")
+	}
+	manifest, source, err := m.store.LoadDurableFinal(id)
+	if err != nil {
+		return "", err
+	}
+	if manifest.Status != ProductionStatusComplete || manifest.EngineID != DramaBoxEngineID || manifest.ResolvedOptions == nil {
+		return "", fmt.Errorf("only complete durable DramaBox sections can be retried")
+	}
+	sectionIndex := -1
+	for i := range manifest.Sections {
+		if manifest.Sections[i].ID == sectionID {
+			sectionIndex = i
+			break
+		}
+	}
+	if sectionIndex < 0 || !validSectionID(sectionID) {
+		return "", requestErrorf("unknown generated audiobook section %q", sectionID)
+	}
+	section := &manifest.Sections[sectionIndex]
+	var parent *Attempt
+	for i := range section.Attempts {
+		if section.Attempts[i].Selected {
+			parent = &section.Attempts[i]
+			break
+		}
+	}
+	if parent == nil {
+		return "", fmt.Errorf("section %s has no selected attempt", sectionID)
+	}
+	requestedSeed := parent.RequestedSeed
+	if requestedSeed == 0 {
+		requestedSeed = parent.Seed
+	}
+	req, err := NormalizeRequest(Request{
+		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
+		EngineID: manifest.EngineID, Direction: manifest.Direction, Options: *manifest.ResolvedOptions,
+		Verification: manifestVerificationMode(manifest),
+	})
+	if err != nil {
+		return "", err
+	}
+	resolved, err := m.resolveRequest(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	if buildSynthesisIdentity(req, resolved.Engine, resolved.Voice).Fingerprint != manifest.SynthesisFingerprint {
+		return "", ErrSynthesisIdentityChanged
+	}
+	var release func()
+	if m.reserveEngine != nil {
+		var ok bool
+		release, ok = m.reserveEngine(ctx, req.EngineID)
+		if !ok {
+			return "", fmt.Errorf("engine %q is busy", req.EngineID)
+		}
+	}
+	m.retryCounter++
+	jobID := fmt.Sprintf("retry_%s_%03d", id, m.retryCounter)
+	jobCtx, cancel := context.WithCancel(context.Background())
+	m.activeID = jobID
+	m.cancels[jobID] = cancel
+	if m.registry != nil {
+		m.registry.Track(jobID, "audiobook-retry", func() { _ = m.Cancel(jobID) })
+	}
+	sectionText := source[section.StartByte:section.EndByte]
+	go m.runSectionRetry(jobCtx, jobID, manifest, sectionIndex, sectionText, req, resolved.Voice, requestedSeed, parent.ID, parent.AudioSHA256, release)
+	return jobID, nil
+}
+
+func (m *Manager) runSectionRetry(ctx context.Context, jobID string, manifest Manifest, sectionIndex int, sectionText string, req Request, voice VoiceIdentity, requestedSeed Seed, parentID, parentHash string, release func()) {
+	defer func() {
+		if release != nil {
+			release()
+		}
+		m.mu.Lock()
+		if m.activeID == jobID {
+			m.activeID = ""
+		}
+		delete(m.cancels, jobID)
+		m.mu.Unlock()
+	}()
+	if m.registry != nil {
+		m.registry.Update(jobID, 0.1, "reproducing "+manifest.Sections[sectionIndex].ID)
+	}
+	options := req.Options
+	options.Seed = requestedSeed
+	result, err := m.invokeSynthesis(ctx, SynthesisRequest{
+		Text: BuildDramaBoxPrompt(req.Direction, sectionText), VoiceID: req.VoiceID,
+		EngineID: req.EngineID, Options: options, Voice: voice.Reference,
+	})
+	if err != nil {
+		m.finishRetry(jobID, err)
+		return
+	}
+	if result.ActualSeed != nil && *result.ActualSeed != requestedSeed {
+		m.finishRetry(jobID, fmt.Errorf("engine reported actual seed %d, requested %d", uint64(*result.ActualSeed), uint64(requestedSeed)))
+		return
+	}
+	if err := wav.ValidateBytes(result.Audio); err != nil {
+		m.finishRetry(jobID, err)
+		return
+	}
+	sum := sha256.Sum256(result.Audio)
+	audioHash := hex.EncodeToString(sum[:])
+	match := audioHash == parentHash
+	section := &manifest.Sections[sectionIndex]
+	var attemptID, audioFile string
+	for number := len(section.Attempts) + 1; number <= 9999; number++ {
+		attemptID = fmt.Sprintf("attempt-%04d", number)
+		audioFile, err = m.store.SaveAttemptFinal(manifest.ID, section.ID, attemptID, result.Audio)
+		if err == nil {
+			break
+		}
+		if !strings.Contains(err.Error(), "already exists") {
+			m.finishRetry(jobID, err)
+			return
+		}
+	}
+	if audioFile == "" {
+		m.finishRetry(jobID, fmt.Errorf("section attempt limit reached"))
+		return
+	}
+	seedStatus := "requested"
+	if result.ActualSeed != nil {
+		seedStatus = "confirmed"
+	}
+	attempt := Attempt{
+		ID: attemptID, ParentAttemptID: parentID, Seed: requestedSeed,
+		RequestedSeed: requestedSeed, ActualSeed: result.ActualSeed, SeedStatus: seedStatus,
+		CheckpointFingerprint: sectionCheckpointFingerprint(manifest.SynthesisFingerprint, Section{
+			ID: section.ID, StartByte: section.StartByte, EndByte: section.EndByte, TextSHA256: section.TextSHA256, Seed: requestedSeed,
+		}),
+		AudioFile: audioFile, AudioSHA256: audioHash, Selected: false, CreatedAt: m.now(),
+		Options: &options, SynthesisMS: float64(result.Elapsed) / float64(time.Millisecond), DeterministicMatch: &match,
+	}
+	if req.Verification != VerificationModeOff && m.verify != nil {
+		verification, verifyErr := m.verify(ctx, sectionText, result.Audio)
+		if verifyErr == nil {
+			report := evaluateFidelity(*section, sectionText, verification, m.now())
+			attempt.TranscriptFile, attempt.VerificationFile, err = m.store.SaveAttemptVerificationFinal(manifest.ID, section.ID, attemptID, verification, report)
+			if err != nil {
+				m.finishRetry(jobID, err)
+				return
+			}
+		} else if req.Verification == VerificationModeRequired {
+			m.finishRetry(jobID, fmt.Errorf("verify retry: %w", verifyErr))
+			return
+		}
+	}
+	section.Attempts = append(section.Attempts, attempt)
+	if err := m.store.SaveManifestFinal(manifest); err != nil {
+		m.finishRetry(jobID, err)
+		return
+	}
+	if m.registry != nil {
+		m.registry.Complete(jobID, map[string]string{
+			"bookId": manifest.ID, "sectionId": section.ID, "attemptId": attempt.ID,
+			"deterministicMatch": fmt.Sprintf("%t", match),
+		})
+	}
+}
+
+func (m *Manager) finishRetry(jobID string, err error) {
+	if m.registry == nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) {
+		m.registry.MarkCancelled(jobID)
+		return
+	}
+	m.registry.Fail(jobID, err.Error())
+}
+
 // Discard explicitly removes an inactive interrupted WIP and its evidence.
 func (m *Manager) Discard(id string) error {
 	m.mu.Lock()
@@ -696,7 +921,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		}
 		options := req.Options
 		options.Seed = unit.seed
-		clip, err := m.synthesize(ctx, SynthesisRequest{
+		synthesis, err := m.invokeSynthesis(ctx, SynthesisRequest{
 			Text:     text,
 			VoiceID:  req.VoiceID,
 			EngineID: req.EngineID,
@@ -711,6 +936,11 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 			m.finishRunError(id, initial, fmt.Sprintf("narrate chunk %d/%d with %s: %v", i+1, len(units), req.EngineID, err), false)
 			return
 		}
+		if synthesis.ActualSeed != nil && *synthesis.ActualSeed != unit.seed {
+			m.finishRunError(id, initial, fmt.Sprintf("section %d engine reported actual seed %d, requested %d", i+1, uint64(*synthesis.ActualSeed), uint64(unit.seed)), false)
+			return
+		}
+		clip := synthesis.Audio
 		clipPath := filepath.Join(clipDir, fmt.Sprintf("chunk-%04d.wav", i+1))
 		if unit.section != nil {
 			clipPath, err = m.store.SaveSectionWIP(id, unit.section.ID, clip)
@@ -729,11 +959,15 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 				unit.section.DurationMS = duration.Milliseconds()
 			}
 			attemptOptions := options
+			seedStatus := "requested"
+			if synthesis.ActualSeed != nil {
+				seedStatus = "confirmed"
+			}
 			unit.section.Attempts = []Attempt{{
-				ID: "attempt-0001", Seed: unit.seed,
+				ID: "attempt-0001", Seed: unit.seed, RequestedSeed: unit.seed, ActualSeed: synthesis.ActualSeed, SeedStatus: seedStatus,
 				CheckpointFingerprint: unit.section.CheckpointFingerprint,
 				AudioFile:             unit.section.AudioFile, AudioSHA256: unit.section.AudioSHA256,
-				Selected: true, CreatedAt: m.now(), Options: &attemptOptions,
+				Selected: true, CreatedAt: m.now(), Options: &attemptOptions, SynthesisMS: float64(synthesis.Elapsed) / float64(time.Millisecond),
 			}}
 			if err := m.store.SaveManifestWIP(*initial); err != nil {
 				m.finishRunError(id, initial, "checkpoint audiobook section: "+err.Error(), false)

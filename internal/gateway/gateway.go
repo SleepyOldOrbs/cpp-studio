@@ -1171,6 +1171,30 @@ func (r *router) handleAudiobook(w http.ResponseWriter, req *http.Request) {
 		http.ServeFile(w, req, path)
 		return
 	}
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "sections" && parts[2] != "" && parts[3] == "retry" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
+		var body struct {
+			Mode audiobook.RetryMode `json:"mode"`
+		}
+		decoder := json.NewDecoder(req.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid audiobook retry request: "+err.Error())
+			return
+		}
+		jobID, err := r.audiobooks.RetrySection(req.Context(), parts[0], parts[2], body.Mode)
+		if err != nil {
+			writeAudiobookError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": jobID, "statusUrl": "/v1/jobs/" + jobID})
+		return
+	}
 	if len(parts) != 3 || parts[0] == "" || parts[1] != "artifact" {
 		http.NotFound(w, req)
 		return
