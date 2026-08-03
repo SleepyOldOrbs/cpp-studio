@@ -69,6 +69,10 @@ provenance, duration, sample rate, channels, bit depth, signal fitness, and warn
 Clear reference returns to text-only/default narration. Older voice manifests are
 analyzed lazily without changing the reference. The usable-speech value is explicitly
 the `pcm-heuristic-v1` low-energy estimate unless optional VAD evidence says otherwise.
+When the active server-mode Whisper configuration contains its fixed `--vad` option,
+the timestamped speech spans replace only the usable-duration estimate and the method
+is stored as `configured-vad+pcm-v1`. Missing VAD is `not-configured`; failure remains
+a visible warning and safely retains the PCM estimate.
 
 ## Verification states
 

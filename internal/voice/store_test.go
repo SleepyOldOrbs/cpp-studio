@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"cpp-studio/internal/wav"
 )
@@ -17,6 +18,31 @@ func validWAVBytes() []byte {
 		0x24, 0x00, 0x00, 0x00,
 		'W', 'A', 'V', 'E',
 		'f', 'm', 't', ' ',
+	}
+}
+
+func TestStoreUsesOptionalVADAndDisclosesFallback(t *testing.T) {
+	audio := wav.SyntheticTone(wav.ToneSampleRate)
+	withVAD := NewStoreWithOptions(filepath.Join(t.TempDir(), "voices"), StoreOptions{
+		AnalyzeVAD: func([]byte) (time.Duration, error) { return 750 * time.Millisecond, nil },
+	})
+	clone, err := withVAD.Save("VAD", "words", audio, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clone.Analysis.VADStatus != "used" || clone.Analysis.Method != "configured-vad+pcm-v1" || clone.Analysis.UsableSpeechSeconds != 0.75 {
+		t.Fatalf("configured VAD was not retained: %+v", clone.Analysis)
+	}
+
+	fallback := NewStoreWithOptions(filepath.Join(t.TempDir(), "voices"), StoreOptions{
+		AnalyzeVAD: func([]byte) (time.Duration, error) { return 0, errors.New("vad unavailable") },
+	})
+	clone, err = fallback.Save("Fallback", "words", audio, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clone.Analysis.VADStatus != "failed" || clone.Analysis.Method != "pcm-heuristic-v1" || clone.Analysis.VADError != "vad unavailable" || len(clone.Analysis.Warnings) == 0 {
+		t.Fatalf("failed VAD fallback was not disclosed: %+v", clone.Analysis)
 	}
 }
 

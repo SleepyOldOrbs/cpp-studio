@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -96,6 +97,15 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 		library:   library.NewStore(""),
 		gpuQuery:  defaultGPUQuery,
 		ggufCache: map[string]ggufCacheEntry{},
+	}
+	if whisperCfg, ok := cfg.Engines["whisper"]; ok && whisperVADConfigured(whisperCfg) {
+		r.voices = voice.NewStoreWithOptions("", voice.StoreOptions{AnalyzeVAD: func(wavBytes []byte) (time.Duration, error) {
+			segments, err := r.transcribeSegments(context.Background(), wavBytes)
+			if err != nil {
+				return 0, err
+			}
+			return spokenSegmentDuration(segments), nil
+		}})
 	}
 	storyOptions := story.ManagerOptions{
 		ReserveEngine:        r.reserveEngine,
@@ -2349,6 +2359,54 @@ func (r *router) transcribeSegments(ctx context.Context, wavBytes []byte) ([]tra
 	}
 	r.manager.MarkSuccess("whisper")
 	return segments, nil
+}
+
+func whisperVADConfigured(cfg config.EngineConfig) bool {
+	if cfg.Mode != "server" {
+		return false
+	}
+	args := cfg.Args
+	if len(cfg.Variants) > 0 {
+		variant, ok := cfg.Variants[cfg.DefaultVariant]
+		if !ok {
+			return false
+		}
+		args = variant.Args
+	}
+	for _, arg := range args {
+		if arg == "--vad" {
+			return true
+		}
+	}
+	return false
+}
+
+func spokenSegmentDuration(segments []transcriptSegment) time.Duration {
+	ranges := append([]transcriptSegment(nil), segments...)
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].Start < ranges[j].Start })
+	start, end, total := 0.0, 0.0, 0.0
+	haveRange := false
+	for _, segment := range ranges {
+		if segment.End <= segment.Start || segment.Start < 0 {
+			continue
+		}
+		if !haveRange {
+			start, end, haveRange = segment.Start, segment.End, true
+			continue
+		}
+		if segment.Start <= end {
+			if segment.End > end {
+				end = segment.End
+			}
+			continue
+		}
+		total += end - start
+		start, end = segment.Start, segment.End
+	}
+	if haveRange {
+		total += end - start
+	}
+	return time.Duration(total * float64(time.Second))
 }
 
 // transcribe produces the transcript for uploaded WAV bytes. Subprocess

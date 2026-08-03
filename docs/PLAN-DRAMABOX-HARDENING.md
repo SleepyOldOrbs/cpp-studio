@@ -1263,7 +1263,7 @@ Names may adjust during implementation, but responsibilities must remain separat
 - [x] P1-01: Add immutable section attempts, requested/actual seed reporting, and same-seed reproduction.
 - [x] P1-02: Add new-seed variation, attempt selection, per-attempt timings, and render revisions.
 - [x] P1-03: Implement PCM reference analysis, persisted fitness metadata, and select/preview/clear reference UX.
-- [ ] P1-04: Add optional VAD integration and honest fallback.
+- [x] P1-04: Add optional VAD integration and honest fallback.
 - [ ] P1-05: Enforce DramaBox-only 10-second usable-speech eligibility.
 - [ ] P1-06: Build and self-test the DramaBox benchmark harness.
 - [ ] P1-07: Add benchmark API/job and fingerprinted result persistence.

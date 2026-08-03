@@ -4560,7 +4560,7 @@
     var analysis = clone.analysis || {};
     var format = analysis.sample_rate ? analysis.sample_rate + " Hz · " + analysis.channels + " ch · " + analysis.bits_per_sample + "-bit" : "analysis unavailable";
     var fitness = analysis.fitness || "not analyzed";
-    audiobookVoiceFitness.textContent = (clone.name || clone.id) + " · " + Number(analysis.duration_seconds || 0).toFixed(1) + "s · " + format + " · " + fitness;
+    audiobookVoiceFitness.textContent = (clone.name || clone.id) + " · " + Number(analysis.duration_seconds || 0).toFixed(1) + "s · " + format + " · " + fitness + " · " + (analysis.method || "analysis unknown");
     var source = clone.source || {};
     var provenance = source.name ? "Source: " + source.name + (source.speaker ? " · " + source.speaker : "") : "Source provenance was not supplied";
     var warnings = (analysis.warnings || []).join("; ");

@@ -59,6 +59,8 @@ type ReferenceAnalysis struct {
 	TrailingLowEnergyRatio float64   `json:"trailing_low_energy_ratio"`
 	TotalLowEnergyRatio    float64   `json:"total_low_energy_ratio"`
 	Method                 string    `json:"method"`
+	VADStatus              string    `json:"vad_status"`
+	VADError               string    `json:"vad_error,omitempty"`
 	Fitness                string    `json:"fitness"`
 	Warnings               []string  `json:"warnings,omitempty"`
 	AnalyzedAt             time.Time `json:"analyzed_at"`
@@ -82,13 +84,26 @@ var ErrProtected = errors.New("voice is protected and cannot be deleted")
 // manifest.json, in the same shape as the story store.
 type Store struct {
 	rootDir string
+	vad     VADAnalyzer
+}
+
+// VADAnalyzer returns an optional measured spoken duration. The caller owns
+// the configured VAD capability; Store falls back to PCM facts on any error.
+type VADAnalyzer func([]byte) (time.Duration, error)
+
+type StoreOptions struct {
+	AnalyzeVAD VADAnalyzer
 }
 
 func NewStore(rootDir string) *Store {
+	return NewStoreWithOptions(rootDir, StoreOptions{})
+}
+
+func NewStoreWithOptions(rootDir string, options StoreOptions) *Store {
 	if rootDir == "" {
 		rootDir = DefaultVoicesRootDir
 	}
-	return &Store{rootDir: rootDir}
+	return &Store{rootDir: rootDir, vad: options.AnalyzeVAD}
 }
 
 // Save validates and persists a new cloned voice, returning it with a fresh
@@ -135,7 +150,7 @@ func (s *Store) SaveWithSource(name string, transcript string, refWAV []byte, pr
 		CreatedAt:  time.Now().UTC(),
 		Protected:  protected,
 		Source:     source,
-		Analysis:   analyzeReference(refWAV),
+		Analysis:   analyzeReference(refWAV, s.vad),
 	}
 
 	tmpDir := filepath.Join(s.rootDir, "."+clone.ID+".tmp")
@@ -181,7 +196,7 @@ func (s *Store) Load(id string) (Clone, bool, error) {
 		if readErr != nil {
 			return Clone{}, false, fmt.Errorf("analyze voice reference: %w", readErr)
 		}
-		clone.Analysis = analyzeReference(refWAV)
+		clone.Analysis = analyzeReference(refWAV, s.vad)
 		updated, marshalErr := json.MarshalIndent(clone, "", "  ")
 		if marshalErr != nil {
 			return Clone{}, false, fmt.Errorf("encode analyzed voice manifest: %w", marshalErr)
@@ -193,10 +208,10 @@ func (s *Store) Load(id string) (Clone, bool, error) {
 	return clone, true, nil
 }
 
-func analyzeReference(refWAV []byte) *ReferenceAnalysis {
+func analyzeReference(refWAV []byte, vad VADAnalyzer) *ReferenceAnalysis {
 	hash := sha256.Sum256(refWAV)
 	result := &ReferenceAnalysis{
-		ContentSHA256: hex.EncodeToString(hash[:]), Method: "pcm-heuristic-v1",
+		ContentSHA256: hex.EncodeToString(hash[:]), Method: "pcm-heuristic-v1", VADStatus: "not-configured",
 		Fitness: "good", AnalyzedAt: time.Now().UTC(),
 	}
 	format, _, decodeErr := wav.Decode(refWAV)
@@ -236,6 +251,24 @@ func analyzeReference(refWAV []byte) *ReferenceAnalysis {
 	}
 	if len(result.Warnings) > 0 {
 		result.Fitness = "warning"
+	}
+	if vad != nil {
+		spoken, vadErr := vad(refWAV)
+		if vadErr != nil {
+			result.VADStatus = "failed"
+			result.VADError = vadErr.Error()
+			result.Warnings = append(result.Warnings, "configured VAD failed; usable speech uses the PCM heuristic")
+			result.Fitness = "warning"
+		} else if spoken < 0 || spoken > analysis.Duration {
+			result.VADStatus = "failed"
+			result.VADError = "reported spoken duration is outside the reference duration"
+			result.Warnings = append(result.Warnings, "configured VAD returned an invalid duration; usable speech uses the PCM heuristic")
+			result.Fitness = "warning"
+		} else {
+			result.UsableSpeechSeconds = spoken.Seconds()
+			result.Method = "configured-vad+pcm-v1"
+			result.VADStatus = "used"
+		}
 	}
 	return result
 }

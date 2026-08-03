@@ -3270,6 +3270,23 @@ func TestVoiceCloneLifecycleAndClonedVoiceLoop(t *testing.T) {
 	}
 }
 
+func TestWhisperVADConfigurationAndSpokenDuration(t *testing.T) {
+	without := config.EngineConfig{Mode: "server", Args: []string{"--model", "whisper.bin"}}
+	with := config.EngineConfig{Mode: "server", Args: []string{"--vad", "--vad-model", "silero.bin"}}
+	variant := config.EngineConfig{Mode: "server", DefaultVariant: "quality", Variants: map[string]config.EngineVariant{
+		"quality": {Args: []string{"--vad"}},
+	}}
+	if whisperVADConfigured(without) || !whisperVADConfigured(with) || !whisperVADConfigured(variant) {
+		t.Fatalf("VAD configuration detection was not exact")
+	}
+	duration := spokenSegmentDuration([]transcriptSegment{
+		{Start: 2, End: 4}, {Start: 0, End: 1.5}, {Start: 1, End: 3}, {Start: -1, End: 20},
+	})
+	if duration != 4*time.Second {
+		t.Fatalf("overlapping VAD spans counted as %v", duration)
+	}
+}
+
 func TestSpeechViaResidentAudioServer(t *testing.T) {
 	t.Chdir(t.TempDir())
 	var gotRequests []audioServerSpeechRequest
