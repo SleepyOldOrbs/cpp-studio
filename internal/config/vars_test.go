@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -9,7 +11,10 @@ func TestVarsExpandAcrossFields(t *testing.T) {
 	path := writeConfig(t, `{
       "gateway": {"host":"127.0.0.1","port":8765},
       "vars": {"root":"${configDir}/..", "port":"8733"},
-      "models": {"manifest":"${configDir}/models.json", "root":"${root}"},
+	  "models": {"manifest":"${configDir}/models.json", "root":"${root}", "discovery":{
+	    "pythonCommand":"python", "managerScript":"${root}/audio.cpp/tools/model_manager_v2.py",
+	    "audioCli":"${root}/audio.cpp/audiocpp_cli", "workingDir":"${root}/audio.cpp", "allowedPackages":["dramabox_q8_0"], "timeoutSeconds":7
+	  }},
       "engines": {
         "llama": {
           "command":"${root}/engines/llama.cpp/llama-server.exe",
@@ -45,6 +50,9 @@ func TestVarsExpandAcrossFields(t *testing.T) {
 	}
 	if cfg.Models.Manifest != configDir+"/models.json" {
 		t.Errorf("models.manifest: got %q", cfg.Models.Manifest)
+	}
+	if cfg.Models.Discovery == nil || cfg.Models.Discovery.ManagerScript != wantRoot+"/audio.cpp/tools/model_manager_v2.py" || cfg.Models.Discovery.WorkingDir != wantRoot+"/audio.cpp" || cfg.Models.Discovery.TimeoutSeconds != 7 {
+		t.Errorf("models.discovery: got %+v", cfg.Models.Discovery)
 	}
 }
 
@@ -102,5 +110,42 @@ func TestUnknownModelsFieldRejected(t *testing.T) {
     }`)
 	if _, err := Load(path); err == nil {
 		t.Fatal("expected unknown models field to be rejected")
+	}
+}
+
+func TestUnknownModelDiscoveryFieldRejected(t *testing.T) {
+	path := writeConfig(t, `{
+	  "gateway":{"port":8765},
+	  "models":{"manifest":"m.json","root":".","discovery":{"allowedPackages":[],"arguments":["browser"]}},
+	  "engines":{"llama":{"command":"x"}}
+	}`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected browser-controlled discovery arguments to be rejected")
+	}
+}
+
+func TestModelDiscoveryTimeoutIsBounded(t *testing.T) {
+	for _, timeout := range []int{-1, 301} {
+		path := writeConfig(t, fmt.Sprintf(`{
+          "gateway":{"port":8765},
+          "models":{"manifest":"m.json","root":".","discovery":{"timeoutSeconds":%d}},
+          "engines":{"llama":{"command":"x"}}
+        }`, timeout))
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "between 0 and 300") {
+			t.Fatalf("unbounded discovery timeout %d accepted: %v", timeout, err)
+		}
+	}
+}
+
+func TestModelDiscoveryPackageIDsCannotBecomeArguments(t *testing.T) {
+	for _, packageID := range []string{"--help", "bad package", "line\nbreak"} {
+		path := writeConfig(t, fmt.Sprintf(`{
+          "gateway":{"port":8765},
+          "models":{"manifest":"m.json","root":".","discovery":{"allowedPackages":[%q]}},
+          "engines":{"llama":{"command":"x"}}
+        }`, packageID))
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "invalid models discovery package id") {
+			t.Fatalf("unsafe discovery package id %q accepted: %v", packageID, err)
+		}
 	}
 }

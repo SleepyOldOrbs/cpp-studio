@@ -33,7 +33,18 @@ The optional `models` block points at the tracked model registry
 
 ```json
 {
-  "models": { "manifest": "${configDir}/models.json", "root": "${root}" }
+  "models": {
+    "manifest": "${configDir}/models.json",
+    "root": "${root}",
+    "discovery": {
+      "pythonCommand": "python",
+      "managerScript": "${root}/audio.cpp/tools/model_manager_v2.py",
+      "audioCli": "${root}/audio.cpp/build/windows-cuda-release/bin/audiocpp_cli.exe",
+      "workingDir": "${root}/audio.cpp",
+      "allowedPackages": ["dramabox_q8_0"],
+      "timeoutSeconds": 10
+    }
+  }
 }
 ```
 
@@ -41,8 +52,18 @@ The optional `models` block points at the tracked model registry
 on-disk state (`present`, `missing`, `size-mismatch`, `unverified` for
 directory models without size checks), which powers the console's Models tab.
 Each manifest entry carries `id`, `engine`, `family`, relative `path`, and
-optionally `bytes`, `sha256`, `source`, `license`, and `description`. Without
+optionally `bytes`, `sha256`, `source`, `license`, and `description`. Immutable
+install entries additionally carry `packageId`, a pinned `revision`, and an HTTPS
+`downloadUrl`. Without
 a `models` block the catalog is empty and everything else works unchanged.
+
+Discovery is optional and server-owned. cpp-studio executes only the fixed manager
+`list`/allowlisted `info` commands and the fixed CLI loader query; HTTP requests can
+never choose a command, package, argument, source, token, or destination. Missing or
+old tools add `discoveryError` but do not hide the tracked catalog. Only packages in
+`allowedPackages` with complete immutable metadata become installable. Package ids
+are simple bounded identifiers and the allowlist is capped at 64 entries. Each command
+uses the configured timeout (10 seconds by default, bounded to at most 300 seconds).
 
 ## Bring Your Own Model
 
@@ -359,11 +380,25 @@ path relative to that JSON file, not the process working directory.
 
 The shipped server example uses `"backend": "cpu"`. This is a conservative
 startup posture, not a speed recommendation: the GGUF is 18,942,803,808 bytes,
-larger than the 16,303 MiB reference GPU, and CPU inference has not been timed.
+larger than the 16,303 MiB reference GPU. After correcting release-0.5's signed
+native `int` seed boundary, the canonical Ryzen 7 9800X3D resident run measured cold
+RTF 37.24 and warm RTF 27.11 (a 30.13-hour 10,000-word projection). A fresh
+`dramabox.mem_saver=true` run measured 32.05 and 25.21 (28.01 hours). Both required
+native long-form cases failed with `regex_error(error_stack)` insufficient memory on
+61.6 GiB RAM. cpp-studio therefore uses positive 31-bit section seeds, but that seed
+fix does not make this CPU machine long-form qualified. This is technical evidence,
+not a voice-quality claim.
 Only switch the server JSON to `cuda` after a representative chapter proves
 load, peak VRAM, factual fidelity, and real-time factor on your machine. If it
 is too slow or fails to fit, select Fast local narrator or remove `dramabox`;
 existing WAVs and manifests remain usable.
+
+The Models tab can install only the pinned `dramabox-q8-0` catalog artifact. Preview
+shows immutable source/revision, exact destination, licence, expected bytes, checksum,
+free space, and warnings. Confirmation is short-lived and single-use. The tracked job
+stages under the models root, streams progress, verifies size and SHA-256, never
+overwrites, and becomes non-cancellable only for atomic promotion and catalog refresh.
+Installation does not start or reload the engine; use the existing Engine controls.
 
 The DramaBox example intentionally does not invent a Whisper path. Merge the
 `whisper` engine from your working base config to enable factual verification.

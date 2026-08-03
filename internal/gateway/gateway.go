@@ -40,6 +40,7 @@ import (
 )
 
 type router struct {
+	mux        *http.ServeMux
 	cfg        config.Config
 	manager    *lifecycle.Manager
 	client     *http.Client
@@ -48,6 +49,7 @@ type router struct {
 	voices     *voice.Store
 	catalog    models.Manifest
 	modelsRoot string
+	installer  *models.Installer
 	jobs       *jobs.Registry
 	library    *library.Store
 	audiobooks audiobook.Service
@@ -62,6 +64,14 @@ type router struct {
 	verifyMu      sync.Mutex
 	verifyStates  map[string]string
 	verifyRunning bool
+
+	// discoveryMu guards the optional fixed-command audio.cpp discovery cache.
+	// The cache key incorporates configured command paths and file identities,
+	// so replacing a runtime causes the next catalog read to refresh it.
+	discoveryMu     sync.Mutex
+	discoveryConfig *models.DiscoveryConfig
+	discoveryRunner models.CommandRunner
+	discoveryLast   models.DiscoveryResult
 
 	// gpuQuery is the nvidia-smi seam, swappable in tests. gpuMu guards a
 	// short-lived snapshot so the variants listing (hit on every panel
@@ -151,6 +161,23 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 			r.modelsRoot = cfg.Models.Root
 		}
 	}
+	if cfg.Models != nil && cfg.Models.Discovery != nil {
+		discovery := cfg.Models.Discovery
+		timeout := 10 * time.Second
+		if discovery.TimeoutSeconds > 0 {
+			timeout = time.Duration(discovery.TimeoutSeconds) * time.Second
+		}
+		r.discoveryConfig = &models.DiscoveryConfig{
+			PythonCommand:   discovery.PythonCommand,
+			ManagerScript:   discovery.ManagerScript,
+			AudioCLI:        discovery.AudioCLI,
+			WorkingDir:      discovery.WorkingDir,
+			AllowedPackages: append([]string(nil), discovery.AllowedPackages...),
+			Timeout:         timeout,
+		}
+		r.discoveryRunner = models.ExecCommandRunner{WorkingDir: discovery.WorkingDir}
+		r.installer = models.NewInstaller(r.catalog, r.modelsRoot, discovery.AllowedPackages)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", r.handleRoot)
@@ -159,6 +186,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/health", r.handleHealth)
 	mux.HandleFunc("/v1/models/catalog", r.handleModelsCatalog)
 	mux.HandleFunc("/v1/models/verify", r.handleModelsVerify)
+	mux.HandleFunc("/v1/models/", r.handleModel)
 	mux.HandleFunc("/v1/engines/", r.handleEngines)
 	mux.HandleFunc("/v1/gpu", r.handleGPU)
 	mux.HandleFunc("/v1/jobs", r.handleJobs)
@@ -167,6 +195,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/library/", r.handleLibraryItem)
 	mux.HandleFunc("/v1/audiobooks", r.handleAudiobooks)
 	mux.HandleFunc("/v1/audiobooks/preview", r.handleAudiobookPreview)
+	mux.HandleFunc("/v1/audiobooks/preview-document", r.handleAudiobookDocumentPreview)
 	mux.HandleFunc("/v1/audiobooks/benchmark", r.handleAudiobookBenchmark)
 	mux.HandleFunc("/v1/audiobooks/benchmark/results", r.handleAudiobookBenchmarkResults)
 	mux.HandleFunc("/v1/audiobooks/benchmark/results/", r.handleAudiobookBenchmarkResult)
@@ -188,7 +217,12 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/voices", r.handleVoices)
 	mux.HandleFunc("/v1/voices/design", r.handleVoiceDesign)
 	mux.HandleFunc("/v1/voices/", r.handleVoiceClone)
-	return mux
+	r.mux = mux
+	return r
+}
+
+func (r *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	r.mux.ServeHTTP(w, req)
 }
 
 func (r *router) handleRoot(w http.ResponseWriter, req *http.Request) {
@@ -242,12 +276,178 @@ func (r *router) handleModelsCatalog(w http.ResponseWriter, req *http.Request) {
 	}
 	verifying := r.verifyRunning
 	r.verifyMu.Unlock()
+	discovery := r.modelDiscovery(req.Context())
+	allowedPackages := map[string]bool{}
+	if r.discoveryConfig != nil {
+		for _, id := range r.discoveryConfig.AllowedPackages {
+			allowedPackages[id] = true
+		}
+	}
+	health := r.manager.Health()
+	benchmarkStatus, benchmarkReason, benchmarkCurrent := "", "", false
+	if results, err := r.audiobooks.ListBenchmarkResults(req.Context()); err == nil && len(results) > 0 {
+		benchmarkStatus = results[0].Status
+		benchmarkCurrent = !results[0].IdentityChanged && results[0].Status == "complete"
+		if results[0].IdentityChanged {
+			benchmarkReason = results[0].IdentityChangeReason
+		} else if results[0].Status != "complete" {
+			benchmarkReason = results[0].Error
+		}
+	}
+	for i := range statuses {
+		statuses[i].Installable = allowedPackages[statuses[i].PackageID] && statuses[i].HasImmutableInstallMetadata()
+		if r.discoveryConfig != nil {
+			packageKnown := discovery.HasPackage(statuses[i].PackageID)
+			loaderAvailable := discovery.HasLoader(statuses[i].Family)
+			statuses[i].PackageKnown = &packageKnown
+			statuses[i].LoaderAvailable = &loaderAvailable
+		}
+		_, statuses[i].Configured = r.cfg.Engines[statuses[i].Engine]
+		if engineHealth, ok := health.Engines[statuses[i].Engine]; ok {
+			statuses[i].Healthy = engineHealth.Ready
+		}
+		if statuses[i].Engine == audiobook.DramaBoxEngineID {
+			statuses[i].BenchmarkCurrent = benchmarkCurrent
+			statuses[i].BenchmarkStatus = benchmarkStatus
+			statuses[i].BenchmarkReason = benchmarkReason
+		}
+		if statuses[i].Present && strings.EqualFold(filepath.Ext(statuses[i].AbsPath), ".gguf") {
+			inspection := &models.GGUFInspection{FileBytes: statuses[i].ActualBytes}
+			if info, err := r.ggufInfo(statuses[i].AbsPath); err != nil {
+				inspection.Error = err.Error()
+			} else {
+				inspection.Version = info.Version
+				inspection.Architecture = info.Architecture
+				inspection.ExpertCount = info.ExpertCount
+				inspection.SizeLabel = info.SizeLabel
+			}
+			statuses[i].GGUF = inspection
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"root":      r.modelsRoot,
-		"models":    statuses,
-		"verifying": verifying,
+		"root":            r.modelsRoot,
+		"models":          statuses,
+		"verifying":       verifying,
+		"runtimeIdentity": discovery.RuntimeIdentity,
+		"discoveryError":  discovery.DiscoveryError,
 	})
+}
+
+func (r *router) modelDiscovery(ctx context.Context) models.DiscoveryResult {
+	if r.discoveryConfig == nil {
+		return models.DiscoveryResult{}
+	}
+	identity := models.DiscoveryRuntimeIdentity(*r.discoveryConfig)
+	r.discoveryMu.Lock()
+	defer r.discoveryMu.Unlock()
+	if r.discoveryLast.RuntimeIdentity == identity && !r.discoveryLast.DiscoveredAt.IsZero() &&
+		(r.discoveryLast.DiscoveryError == "" || time.Since(r.discoveryLast.DiscoveredAt) < 30*time.Second) {
+		return r.discoveryLast
+	}
+	r.discoveryLast = models.Discover(ctx, *r.discoveryConfig, r.catalog, r.discoveryRunner)
+	return r.discoveryLast
+}
+
+// handleModel exposes the two-step, server-authoritative install contract.
+// The route contributes only a tracked model id and an opaque confirmation;
+// no command, source, destination, or package argument comes from the client.
+func (r *router) handleModel(w http.ResponseWriter, req *http.Request) {
+	tail := strings.Trim(strings.TrimPrefix(req.URL.Path, "/v1/models/"), "/")
+	parts := strings.Split(tail, "/")
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "install" && parts[2] == "preview" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		if r.installer == nil {
+			writeJSONError(w, http.StatusConflict, "model installation is not configured")
+			return
+		}
+		preview, err := r.installer.Preview(parts[0])
+		if err != nil {
+			writeJSONError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(preview)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "install" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		if r.installer == nil {
+			writeJSONError(w, http.StatusConflict, "model installation is not configured")
+			return
+		}
+		var body struct {
+			ConfirmationID string `json:"confirmationId"`
+		}
+		req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
+		decoder := json.NewDecoder(req.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil || strings.TrimSpace(body.ConfirmationID) == "" {
+			writeJSONError(w, http.StatusBadRequest, "a confirmationId-only JSON body is required")
+			return
+		}
+		if decoder.Decode(&struct{}{}) != io.EOF {
+			writeJSONError(w, http.StatusBadRequest, "request must contain one JSON object")
+			return
+		}
+		task, err := r.installer.Begin(parts[0], body.ConfirmationID)
+		if err != nil {
+			status := http.StatusConflict
+			if strings.Contains(err.Error(), "unknown model id") {
+				status = http.StatusNotFound
+			}
+			writeJSONError(w, status, err.Error())
+			return
+		}
+		id := fmt.Sprintf("model_install_%d", time.Now().UTC().UnixNano())
+		r.jobs.TrackCancellable(id, "model_install", task.Cancel)
+		go r.runModelInstall(id, task)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": id, "statusUrl": "/v1/jobs/" + id})
+		return
+	}
+	http.NotFound(w, req)
+}
+
+func (r *router) runModelInstall(id string, task *models.InstallTask) {
+	status, err := task.Run(func(update models.InstallProgress) {
+		fraction := 0.02
+		detail := update.Phase
+		switch update.Phase {
+		case "downloading":
+			if update.ExpectedBytes > 0 {
+				fraction = 0.05 + 0.75*float64(update.Downloaded)/float64(update.ExpectedBytes)
+			}
+			detail = fmt.Sprintf("downloading %d/%d bytes", update.Downloaded, update.ExpectedBytes)
+		case "verifying":
+			fraction = 0.82
+		case "promoting":
+			fraction = 0.92
+		case "refreshing_catalog":
+			fraction = 0.97
+		}
+		r.jobs.Update(id, fraction, detail)
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			r.jobs.MarkCancelled(id)
+		} else {
+			r.jobs.Fail(id, err.Error())
+		}
+		return
+	}
+	r.verifyMu.Lock()
+	if r.verifyStates == nil {
+		r.verifyStates = map[string]string{}
+	}
+	r.verifyStates[status.ID] = status.State
+	r.verifyMu.Unlock()
+	r.jobs.Complete(id, map[string]string{"modelId": status.ID, "state": status.State, "ready": strconv.FormatBool(status.State == models.StateVerified)})
 }
 
 // handleModelsVerify starts a deep verification of every model — full sha256
@@ -975,13 +1175,20 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 			title = strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
 		}
 		voiceID := strings.TrimSpace(req.FormValue("voice"))
+		promptSpec, err := decodeDramaBoxPromptSpec(req.FormValue("promptSpec"))
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		bookRequest, err := audiobook.NormalizeRequest(audiobook.Request{
-			Title:        title,
-			VoiceID:      voiceID,
-			EngineID:     req.FormValue("engine"),
-			Direction:    req.FormValue("direction"),
-			OptionsJSON:  req.FormValue("options"),
-			Verification: audiobook.VerificationMode(strings.TrimSpace(req.FormValue("verification"))),
+			Title:                title,
+			VoiceID:              voiceID,
+			EngineID:             req.FormValue("engine"),
+			Direction:            req.FormValue("direction"),
+			PromptSpec:           promptSpec,
+			AcceptPromptWarnings: strings.EqualFold(req.FormValue("acceptPromptWarnings"), "true"),
+			OptionsJSON:          req.FormValue("options"),
+			Verification:         audiobook.VerificationMode(strings.TrimSpace(req.FormValue("verification"))),
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
@@ -1016,12 +1223,31 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+func decodeDramaBoxPromptSpec(raw string) (audiobook.DramaBoxPromptSpec, error) {
+	if strings.TrimSpace(raw) == "" {
+		return audiobook.DramaBoxPromptSpec{}, nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var spec audiobook.DramaBoxPromptSpec
+	if err := decoder.Decode(&spec); err != nil {
+		return audiobook.DramaBoxPromptSpec{}, fmt.Errorf("invalid promptSpec: %w", err)
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return audiobook.DramaBoxPromptSpec{}, fmt.Errorf("invalid promptSpec: expected one JSON object")
+	}
+	return spec, nil
+}
+
 type audiobookPreviewRequest struct {
-	EngineID     string                     `json:"engine"`
-	VoiceID      string                     `json:"voice"`
-	Direction    string                     `json:"direction"`
-	Options      json.RawMessage            `json:"options"`
-	Verification audiobook.VerificationMode `json:"verification"`
+	EngineID             string                       `json:"engine"`
+	VoiceID              string                       `json:"voice"`
+	Direction            string                       `json:"direction"`
+	PromptSpec           audiobook.DramaBoxPromptSpec `json:"promptSpec"`
+	SourceText           string                       `json:"sourceText"`
+	AcceptPromptWarnings bool                         `json:"acceptPromptWarnings"`
+	Options              json.RawMessage              `json:"options"`
+	Verification         audiobook.VerificationMode   `json:"verification"`
 }
 
 // handleAudiobookPreview resolves the complete effective request without
@@ -1043,29 +1269,108 @@ func (r *router) handleAudiobookPreview(w http.ResponseWriter, req *http.Request
 		optionsJSON = string(body.Options)
 	}
 	resolved, err := r.audiobooks.Preview(req.Context(), audiobook.Request{
-		EngineID:     body.EngineID,
-		VoiceID:      strings.TrimSpace(body.VoiceID),
-		Direction:    body.Direction,
-		OptionsJSON:  optionsJSON,
-		Verification: body.Verification,
+		EngineID:             body.EngineID,
+		VoiceID:              strings.TrimSpace(body.VoiceID),
+		Direction:            body.Direction,
+		PromptSpec:           body.PromptSpec,
+		Text:                 body.SourceText,
+		AcceptPromptWarnings: body.AcceptPromptWarnings,
+		OptionsJSON:          optionsJSON,
+		Verification:         body.Verification,
 	})
 	if err != nil {
-		var engineErr *engine.Error
-		if errors.As(err, &engineErr) {
-			writeEngineError(w, err)
-		} else if audiobook.IsRequestError(err) {
-			writeJSONError(w, http.StatusBadRequest, err.Error())
-		} else {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
-		}
+		writeAudiobookPreviewError(w, err)
 		return
 	}
+	writeAudiobookPreview(w, resolved)
+}
+
+// handleAudiobookDocumentPreview extracts the complete uploaded document and
+// applies the production section policy, so prompt lint and exact section
+// previews cannot miss text beyond a browser-side sample.
+func (r *router) handleAudiobookDocumentPreview(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, audiobook.MaxDocumentBytes+1024*1024)
+	file, header, err := req.FormFile("file")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "multipart field file is required")
+		return
+	}
+	defer file.Close()
+	if header == nil || header.Filename == "" {
+		writeJSONError(w, http.StatusBadRequest, "uploaded file must include a filename")
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(file, audiobook.MaxDocumentBytes+1))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("read uploaded file: %v", err))
+		return
+	}
+	promptSpec, err := decodeDramaBoxPromptSpec(req.FormValue("promptSpec"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	resolved, err := r.audiobooks.PreviewDocument(req.Context(), audiobook.DocumentRequest{
+		Filename: header.Filename,
+		Data:     data,
+		Request: audiobook.Request{
+			VoiceID:              strings.TrimSpace(req.FormValue("voice")),
+			EngineID:             req.FormValue("engine"),
+			Direction:            req.FormValue("direction"),
+			PromptSpec:           promptSpec,
+			AcceptPromptWarnings: strings.EqualFold(req.FormValue("acceptPromptWarnings"), "true"),
+			OptionsJSON:          req.FormValue("options"),
+			Verification:         audiobook.VerificationMode(strings.TrimSpace(req.FormValue("verification"))),
+		},
+	})
+	if err != nil {
+		writeAudiobookPreviewError(w, err)
+		return
+	}
+	writeAudiobookPreview(w, resolved)
+}
+
+func writeAudiobookPreviewError(w http.ResponseWriter, err error) {
+	var engineErr *engine.Error
+	if errors.As(err, &engineErr) {
+		writeEngineError(w, err)
+	} else if audiobook.IsRequestError(err) {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+	} else {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+func writeAudiobookPreview(w http.ResponseWriter, resolved audiobook.ResolvedRequest) {
 
 	var previewOptions any = map[string]any{}
 	var mapping any = map[string]any{}
 	if resolved.Request.EngineID == audiobook.DramaBoxEngineID {
 		previewOptions = resolved.Request.Options
 		mapping = engine.DescribeSynthesisMapping(resolved.Engine.Mode)
+	}
+	promptEvaluation := audiobook.PromptEvaluation{Warnings: []audiobook.PromptWarning{}, Normalizations: []audiobook.PromptNormalization{}}
+	promptSections := []audiobook.PromptSectionPreview{}
+	if resolved.Request.EngineID == audiobook.DramaBoxEngineID {
+		var err error
+		promptEvaluation, err = audiobook.EvaluateDramaBoxPrompt(resolved.Request.PromptSpec, resolved.Request.Text)
+		if err != nil {
+			writeAudiobookPreviewError(w, err)
+			return
+		}
+		promptSections, err = audiobook.PreviewDramaBoxPromptSections(resolved.Request.PromptSpec, resolved.Request.Text)
+		if err != nil {
+			writeAudiobookPreviewError(w, err)
+			return
+		}
+		if len(promptSections) != 1 {
+			// The section list is the byte-for-byte production request. Avoid
+			// presenting a whole-document prompt that production never sends.
+			promptEvaluation.GeneratedPrompt = ""
+		}
 	}
 	response := map[string]any{
 		"engine":                   resolved.Engine.ID,
@@ -1078,8 +1383,13 @@ func (r *router) handleAudiobookPreview(w http.ResponseWriter, req *http.Request
 		"voiceFitnessMethod":       resolved.Voice.FitnessMethod,
 		"voiceFitnessWarnings":     resolved.Voice.FitnessWarnings,
 		"direction":                resolved.Request.Direction,
+		"prompt":                   promptEvaluation,
+		"promptSections":           promptSections,
+		"promptPolicyVersion":      audiobook.CurrentPromptPolicyVersion,
+		"speakerPhrases":           audiobook.SpeakerPhrases(),
+		"deliveryPresets":          audiobook.DeliveryPresets(),
 		"options":                  previewOptions,
-		"seedPolicy":               "one server-assigned uint64 seed per section",
+		"seedPolicy":               "one server-assigned positive 31-bit seed per section (DramaBox release-0.5 int-parser compatibility)",
 		"verification":             resolved.Request.Verification,
 		"transport": map[string]any{
 			"mode":    resolved.Engine.Mode,
@@ -3399,12 +3709,46 @@ func (r *router) resolveAudiobookEngine(_ context.Context, engineID string) (aud
 	if mode == "" {
 		mode = "server"
 	}
+	runtimeIdentity := fullSynthesisFingerprint(engineCfg)
+	modelID, fingerprint := r.catalogAudiobookIdentity(engineID, runtimeIdentity)
 	return audiobook.EngineIdentity{
-		ID:          engineID,
-		Mode:        mode,
-		ModelID:     audioServerModelID,
-		Fingerprint: fullSynthesisFingerprint(engineCfg),
+		ID:              engineID,
+		Family:          engineID,
+		Mode:            mode,
+		ModelID:         modelID,
+		RuntimeIdentity: runtimeIdentity,
+		Fingerprint:     fingerprint,
 	}, nil
+}
+
+func (r *router) catalogAudiobookIdentity(engineID, runtimeIdentity string) (string, string) {
+	tracked := make([]models.Model, 0)
+	for _, model := range r.catalog.Models {
+		if model.Engine == engineID {
+			tracked = append(tracked, model)
+		}
+	}
+	if len(tracked) == 0 {
+		return audioServerModelID, runtimeIdentity
+	}
+	sort.Slice(tracked, func(i, j int) bool { return tracked[i].ID < tracked[j].ID })
+	h := sha256.New()
+	_, _ = h.Write([]byte(runtimeIdentity + "\x00"))
+	ids := make([]string, 0, len(tracked))
+	for _, model := range tracked {
+		ids = append(ids, model.ID)
+		encoded, _ := json.Marshal(model)
+		_, _ = h.Write(encoded)
+		_, _ = h.Write([]byte{0})
+		path := model.Path
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(r.modelsRoot, path)
+		}
+		if info, err := os.Stat(path); err == nil {
+			_, _ = h.Write([]byte(fmt.Sprintf("%d:%d\x00", info.Size(), info.ModTime().UnixNano())))
+		}
+	}
+	return strings.Join(ids, ","), hex.EncodeToString(h.Sum(nil))
 }
 
 func (r *router) resolveAudiobookVoice(_ context.Context, voiceID string) (audiobook.VoiceIdentity, error) {

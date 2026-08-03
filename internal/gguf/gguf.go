@@ -17,6 +17,8 @@ import (
 // Info is what the header walk resolves. A dense model reports
 // ExpertCount 0 — the key is simply absent from its header.
 type Info struct {
+	// Version is the GGUF container version (currently 2 or 3).
+	Version uint32
 	// Architecture is general.architecture, e.g. "llama", "qwen35moe".
 	Architecture string
 	// ExpertCount is {arch}.expert_count; 0 means dense.
@@ -77,6 +79,7 @@ func readInfo(r *bufio.Reader) (Info, error) {
 	if version != 2 && version != 3 {
 		return Info{}, fmt.Errorf("unsupported GGUF version %d", version)
 	}
+	info := Info{Version: version}
 	if _, err := readU64(r); err != nil { // tensor count, unused
 		return Info{}, fmt.Errorf("read tensor count: %w", err)
 	}
@@ -88,7 +91,6 @@ func readInfo(r *bufio.Reader) (Info, error) {
 		return Info{}, fmt.Errorf("implausible kv count %d", kvCount)
 	}
 
-	var info Info
 	var expertSeen bool
 	for i := uint64(0); i < kvCount; i++ {
 		key, err := readString(r)

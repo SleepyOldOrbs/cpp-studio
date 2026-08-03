@@ -4203,6 +4203,96 @@
     return "danger";
   }
 
+	function readinessPill(label, ready, unknown) {
+	  var pill = document.createElement("span");
+	  pill.className = "status-pill " + (unknown ? "warn" : (ready ? "ready" : "danger"));
+	  pill.textContent = (ready ? "✓ " : (unknown ? "? " : "× ")) + label;
+	  return pill;
+	}
+
+	function pollModelInstall(jobID, panel) {
+	  window.setTimeout(async function () {
+		try {
+		  var response = await fetch("/v1/jobs/" + encodeURIComponent(jobID));
+		  if (!response.ok) { throw new Error(await readErrorBody(response)); }
+		  var job = await response.json();
+		  var status = panel.querySelector(".model-install-status");
+		  status.textContent = (job.detail || job.status) + " · " + Math.round(Number(job.progress || 0) * 100) + "%";
+		  var progress = panel.querySelector("progress");
+		  progress.value = Number(job.progress || 0);
+		  var cancel = panel.querySelector("button[data-install-cancel]");
+		  if (job.status === "complete" || job.status === "failed" || job.status === "cancelled") {
+			if (cancel) { cancel.disabled = true; }
+			status.textContent = job.status === "complete" ? "Installed and checksum verified." : job.status + (job.error ? ": " + job.error : "");
+			log("Model installation " + job.status + ": " + jobID, job.status === "failed" ? "error" : undefined);
+			refreshModels(true);
+			return;
+		  }
+		  pollModelInstall(jobID, panel);
+		} catch (err) {
+		  panel.querySelector(".model-install-status").textContent = "Installation status unavailable; retrying: " + err.message;
+		  pollModelInstall(jobID, panel);
+		}
+	  }, 800);
+	}
+
+	async function previewModelInstall(model, row) {
+	  var previous = row.querySelector(".model-install-panel");
+	  if (previous) { previous.remove(); }
+	  var panel = document.createElement("div");
+	  panel.className = "model-install-panel";
+	  panel.textContent = "Resolving immutable installation preview…";
+	  row.appendChild(panel);
+	  try {
+		var response = await fetch("/v1/models/" + encodeURIComponent(model.id) + "/install/preview", { method: "POST" });
+		if (!response.ok) { throw new Error(await readErrorBody(response)); }
+		var preview = await response.json();
+		panel.textContent = "";
+		var facts = document.createElement("pre");
+		facts.textContent = "Source: " + preview.source + "\nRevision: " + preview.revision + "\nDestination: " + preview.destination +
+		  "\nLicence: " + preview.licence + "\nExpected: " + formatBytes(preview.expectedBytes) +
+		  "\nSHA-256: " + preview.checksum + "\nFree space: " + formatBytes(preview.freeSpace);
+		panel.appendChild(facts);
+		(preview.warnings || []).concat(preview.vramWarning ? [preview.vramWarning] : []).forEach(function (message) {
+		  var warning = document.createElement("div"); warning.className = "warn-box"; warning.textContent = message; panel.appendChild(warning);
+		});
+		if ((preview.blockers || []).length) {
+		  var blockers = document.createElement("div"); blockers.className = "error-box";
+		  blockers.textContent = "Installation blocked: " + preview.blockers.join("; "); panel.appendChild(blockers); return;
+		}
+		var acceptance = document.createElement("label"); acceptance.className = "source-row";
+		var check = document.createElement("input"); check.type = "checkbox";
+		acceptance.appendChild(check); acceptance.appendChild(document.createTextNode(" I reviewed the immutable source, revision, size, checksum, destination, and licence."));
+		panel.appendChild(acceptance);
+		var actions = document.createElement("div"); actions.className = "action-row";
+		var install = document.createElement("button"); install.type = "button"; install.className = "primary"; install.textContent = "Confirm installation"; install.disabled = true;
+		var cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "secondary"; cancel.textContent = "Cancel"; cancel.disabled = true; cancel.dataset.installCancel = "true";
+		check.addEventListener("change", function () { install.disabled = !check.checked; });
+		actions.appendChild(install); actions.appendChild(cancel); panel.appendChild(actions);
+		var progress = document.createElement("progress"); progress.max = 1; progress.value = 0; panel.appendChild(progress);
+		var status = document.createElement("div"); status.className = "model-install-status"; status.textContent = "Waiting for explicit confirmation."; panel.appendChild(status);
+		install.addEventListener("click", async function () {
+		  install.disabled = true; check.disabled = true; status.textContent = "Starting tracked installation…";
+		  try {
+			var start = await fetch("/v1/models/" + encodeURIComponent(model.id) + "/install", {
+			  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmationId: preview.confirmationId })
+			});
+			if (!start.ok) { status.textContent = (await readErrorBody(start)) + " Preview again for a fresh confirmation."; return; }
+			var created = await start.json(); cancel.disabled = false;
+			cancel.addEventListener("click", async function () {
+			  var cancelled = await fetch("/v1/jobs/" + encodeURIComponent(created.id) + "/cancel", { method: "POST" });
+			  if (!cancelled.ok) { status.textContent = await readErrorBody(cancelled); }
+			});
+			pollModelInstall(created.id, panel);
+		  } catch (err) {
+			status.textContent = "Start response was lost: " + err.message + ". Check Jobs before previewing again; the confirmation may already be consumed.";
+		  }
+		});
+	  } catch (err) {
+		panel.textContent = "Installation preview failed: " + err.message;
+	  }
+	}
+
   function renderModels(payload) {
     var models = (payload && payload.models) || [];
     modelsList.textContent = "";
@@ -4212,7 +4302,9 @@
     }
     var present = models.filter(function (m) { return m.state === "present" || m.state === "verified" || m.state === "unverified"; }).length;
     var totalBytes = models.reduce(function (sum, m) { return sum + (m.bytes || m.actualBytes || 0); }, 0);
-    modelsSummary.textContent = present + " of " + models.length + " models on disk · " + formatBytes(totalBytes) + " total · root: " + (payload.root || "–");
+	modelsSummary.textContent = present + " of " + models.length + " models on disk · " + formatBytes(totalBytes) + " total · root: " + (payload.root || "–") +
+	  (payload.discoveryError ? " · Discovery warning: " + payload.discoveryError : "");
+	var discoveryUnknown = !payload.runtimeIdentity || Boolean(payload.discoveryError);
 
     models.forEach(function (model) {
       var row = document.createElement("div");
@@ -4250,6 +4342,33 @@
       row.appendChild(head);
       row.appendChild(meta);
       row.appendChild(pathLine);
+	  var readiness = document.createElement("div"); readiness.className = "model-readiness";
+	  readiness.appendChild(readinessPill("loader", model.loaderAvailable, discoveryUnknown));
+	  readiness.appendChild(readinessPill("package", model.packageKnown, discoveryUnknown));
+	  readiness.appendChild(readinessPill("present", model.present, false));
+	  readiness.appendChild(readinessPill("verified", model.state === "verified", model.present && (model.state === "present" || model.state === "unverified")));
+	  readiness.appendChild(readinessPill("configured", model.configured, false));
+	  readiness.appendChild(readinessPill("healthy", model.healthy, !model.configured));
+	  if (model.engine === "dramabox") {
+		readiness.appendChild(readinessPill("benchmark", model.benchmarkCurrent, !model.benchmarkStatus));
+	  }
+	  row.appendChild(readiness);
+	  var readinessNotes = [];
+	  if (!discoveryUnknown && !model.loaderAvailable) { readinessNotes.push("Loader unavailable: the configured audio.cpp binary did not report " + model.family + "."); }
+	  if (!discoveryUnknown && model.packageId && !model.packageKnown) { readinessNotes.push("Package unavailable: the configured model manager did not identify " + model.packageId + "."); }
+	  if (model.benchmarkReason) { readinessNotes.push("Benchmark not current: " + model.benchmarkReason); }
+	  if (readinessNotes.length) {
+		var readinessDetail = document.createElement("div"); readinessDetail.className = "model-desc";
+		readinessDetail.textContent = readinessNotes.join(" "); row.appendChild(readinessDetail);
+	  }
+	  if (model.gguf) {
+		var gguf = document.createElement("div"); gguf.className = "model-desc";
+		gguf.textContent = model.gguf.error ? "GGUF inspection: " + model.gguf.error :
+		  "GGUF v" + model.gguf.version + " · architecture " + (model.gguf.architecture || "unknown") +
+		  (model.gguf.sizeLabel ? " · " + model.gguf.sizeLabel : "") + (model.gguf.expertCount ? " · " + model.gguf.expertCount + " experts" : " dense/unspecified experts") +
+		  " · " + formatBytes(model.gguf.fileBytes);
+		row.appendChild(gguf);
+	  }
       if (model.description) {
         var desc = document.createElement("div");
         desc.className = "model-desc";
@@ -4265,6 +4384,15 @@
         source.textContent = model.source;
         row.appendChild(source);
       }
+	  var remedies = document.createElement("div"); remedies.className = "action-row";
+	  if (model.installable && !model.present) {
+		var previewInstall = document.createElement("button"); previewInstall.type = "button"; previewInstall.className = "secondary"; previewInstall.textContent = "Preview installation";
+		previewInstall.addEventListener("click", function () { previewModelInstall(model, row); }); remedies.appendChild(previewInstall);
+	  }
+	  if (model.configured) {
+		var enginesLink = document.createElement("a"); enginesLink.className = "secondary-button"; enginesLink.href = "#engines"; enginesLink.textContent = model.healthy ? "Engine controls" : "Open engine remedy"; remedies.appendChild(enginesLink);
+	  }
+	  if (remedies.childNodes.length) { row.appendChild(remedies); }
       modelsList.appendChild(row);
     });
   }
@@ -4365,6 +4493,10 @@
   var audiobookDramaBoxOption = document.getElementById("audiobookDramaBoxOption");
   var audiobookDirectionField = document.getElementById("audiobookDirectionField");
   var audiobookDirectionInput = document.getElementById("audiobookDirectionInput");
+	var audiobookSpeakerPhrase = document.getElementById("audiobookSpeakerPhrase");
+	var audiobookDeliveryPreset = document.getElementById("audiobookDeliveryPreset");
+	var audiobookPromptWarningAcceptance = document.getElementById("audiobookPromptWarningAcceptance");
+	var audiobookAcceptPromptWarnings = document.getElementById("audiobookAcceptPromptWarnings");
   var audiobookDramaBoxOptions = document.getElementById("audiobookDramaBoxOptions");
   var audiobookInferenceSteps = document.getElementById("audiobookInferenceSteps");
   var audiobookGuidanceScale = document.getElementById("audiobookGuidanceScale");
@@ -4402,6 +4534,21 @@
   var audiobookBenchmarkTimer = null;
   var audiobookBenchmarkBlocked = false;
   var audiobookBenchmarkResults = [];
+	var audiobookResolvedDirection = "";
+	var audiobookPromptWarningsPending = false;
+
+	function audiobookPromptSpec() {
+	  return {
+		speakerPhrase: audiobookSpeakerPhrase.value,
+		deliveryPreset: audiobookDeliveryPreset.value,
+		advancedDirection: audiobookDirectionInput.value.trim()
+	  };
+	}
+
+	function audiobookFileIdentity() {
+	  var file = audiobookFileInput.files && audiobookFileInput.files[0];
+	  return file ? { name: file.name, size: file.size, lastModified: file.lastModified } : null;
+	}
 
   function audiobookOptionsText() {
     if (audiobookEngineSelect.value !== "dramabox") {
@@ -4436,7 +4583,8 @@
     return JSON.stringify({
       engine: audiobookEngineSelect.value,
       voice: audiobookVoiceSelect.value,
-      direction: audiobookEngineSelect.value === "dramabox" ? audiobookDirectionInput.value.trim() : "",
+	  promptSpec: audiobookEngineSelect.value === "dramabox" ? audiobookPromptSpec() : null,
+	  document: audiobookFileIdentity(),
       options: options,
       verification: audiobookEngineSelect.value === "dramabox" ? audiobookVerificationSelect.value : "off"
     });
@@ -4444,6 +4592,7 @@
 
   function invalidateAudiobookPreview() {
     audiobookResolvedKey = "";
+	audiobookResolvedDirection = "";
     audiobookRequestPreview.textContent = "Request changed. Resolve it before narration.";
     showMatchingAudiobookBenchmark();
     syncAudiobookEngineControls();
@@ -4468,7 +4617,12 @@
       "Any voice from your library — cloned or designed.";
     audiobookPreviewButton.disabled = audiobookBusy || !available;
     audiobookBenchmarkButton.disabled = audiobookBusy || Boolean(audiobookBenchmarkJobId) || !available || audiobookEngineSelect.value !== "dramabox";
-    audiobookNarrateButton.disabled = audiobookBusy || Boolean(audiobookBenchmarkJobId) || !available || audiobookBenchmarkBlocked || audiobookResolvedKey !== audiobookRequestKey();
+	if (audiobookEngineSelect.value !== "dramabox") {
+	  audiobookPromptWarningAcceptance.hidden = true;
+	  audiobookPromptWarningsPending = false;
+	}
+	audiobookNarrateButton.disabled = audiobookBusy || Boolean(audiobookBenchmarkJobId) || !available || audiobookBenchmarkBlocked ||
+	  (audiobookPromptWarningsPending && !audiobookAcceptPromptWarnings.checked) || audiobookResolvedKey !== audiobookRequestKey();
   }
 
   // Health is the source of truth for what the operator configured. Keep the
@@ -4506,9 +4660,10 @@
     renderAudiobookVoiceReference();
     invalidateAudiobookPreview();
   });
-  [audiobookDirectionInput, audiobookInferenceSteps, audiobookGuidanceScale, audiobookChunkThreshold, audiobookChunkDuration, audiobookCrossFade, audiobookOptionsJSON, audiobookVerificationSelect].forEach(function (control) {
+	[audiobookSpeakerPhrase, audiobookDeliveryPreset, audiobookDirectionInput, audiobookInferenceSteps, audiobookGuidanceScale, audiobookChunkThreshold, audiobookChunkDuration, audiobookCrossFade, audiobookOptionsJSON, audiobookVerificationSelect].forEach(function (control) {
     control.addEventListener("input", invalidateAudiobookPreview);
   });
+	audiobookAcceptPromptWarnings.addEventListener("change", syncAudiobookEngineControls);
 
   audiobookPreviewButton.addEventListener("click", async function () {
     audiobookErrorBox.hidden = true;
@@ -4516,24 +4671,43 @@
     audiobookRequestPreview.textContent = "Resolving effective request…";
     try {
       var optionsText = audiobookOptionsText();
-      var envelope = JSON.stringify({
+	  var requestBody = {
         engine: audiobookEngineSelect.value,
         voice: audiobookVoiceSelect.value,
-        direction: audiobookEngineSelect.value === "dramabox" ? audiobookDirectionInput.value.trim() : "",
+		promptSpec: audiobookEngineSelect.value === "dramabox" ? audiobookPromptSpec() : {},
+		acceptPromptWarnings: audiobookAcceptPromptWarnings.checked,
         verification: audiobookEngineSelect.value === "dramabox" ? audiobookVerificationSelect.value : "off"
-      });
+	  };
       if (optionsText) {
-        envelope = envelope.slice(0, -1) + ',"options":' + optionsText + "}";
+		requestBody.options = JSON.parse(optionsText);
       }
-      var response = await fetch("/v1/audiobooks/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: envelope
-      });
+	  var file = audiobookFileInput.files && audiobookFileInput.files[0];
+	  var response;
+	  if (file) {
+		var form = new FormData();
+		form.append("file", file, file.name);
+		form.append("engine", requestBody.engine);
+		form.append("voice", requestBody.voice);
+		form.append("promptSpec", JSON.stringify(requestBody.promptSpec));
+		form.append("acceptPromptWarnings", String(requestBody.acceptPromptWarnings));
+		form.append("verification", requestBody.verification);
+		if (optionsText) { form.append("options", optionsText); }
+		response = await fetch("/v1/audiobooks/preview-document", { method: "POST", body: form });
+	  } else {
+		response = await fetch("/v1/audiobooks/preview", {
+		  method: "POST",
+		  headers: { "Content-Type": "application/json" },
+		  body: JSON.stringify(requestBody)
+		});
+	  }
       if (!response.ok) {
         throw new Error(await readErrorBody(response));
       }
       var preview = await response.json();
+	  audiobookResolvedDirection = preview.direction || "";
+	  var promptWarnings = preview.prompt && preview.prompt.warnings || [];
+	  audiobookPromptWarningsPending = Boolean(promptWarnings.length);
+	  audiobookPromptWarningAcceptance.hidden = !promptWarnings.length;
       audiobookResolvedKey = audiobookRequestKey();
       audiobookRequestPreview.textContent = JSON.stringify(preview, null, 2);
     } catch (err) {
@@ -4602,9 +4776,16 @@
     if (!result.voice || result.voice.id !== selectedVoice) {
       return false;
     }
-    if (result.direction !== audiobookDirectionInput.value.trim()) {
+	if (result.direction !== audiobookResolvedDirection) {
       return false;
     }
+	var selectedPrompt = audiobookPromptSpec();
+	var resultPrompt = result.promptSpec || {};
+	if (resultPrompt.speakerPhrase !== selectedPrompt.speakerPhrase ||
+		resultPrompt.deliveryPreset !== selectedPrompt.deliveryPreset ||
+		(resultPrompt.advancedDirection || "") !== (selectedPrompt.advancedDirection || "")) {
+	  return false;
+	}
     try {
       var selectedOptions = JSON.parse(audiobookOptionsText());
       return ["num_inference_steps", "guidance_scale", "audio_chunk_threshold_sec", "audio_chunk_duration_sec", "cross_fade_duration_sec"].every(function (key) {
@@ -4684,7 +4865,8 @@
         body: JSON.stringify({
           backend: "cpu",
           voiceId: audiobookVoiceSelect.value,
-          direction: audiobookDirectionInput.value.trim(),
+		  direction: audiobookResolvedDirection,
+		  promptSpec: audiobookPromptSpec(),
           options: JSON.parse(audiobookOptionsText())
         })
       });
@@ -4708,9 +4890,10 @@
     }
   });
 
-  audiobookFileInput.addEventListener("change", function () {
+	audiobookFileInput.addEventListener("change", function () {
     var file = audiobookFileInput.files && audiobookFileInput.files[0];
     audiobookFileStatus.textContent = file ? file.name + " (" + Math.round(file.size / 1024) + " KB)" : "None";
+	invalidateAudiobookPreview();
   });
 
   function setAudiobookBusy(busy) {
@@ -4859,7 +5042,8 @@
     }
     form.append("engine", audiobookEngineSelect.value);
     if (audiobookEngineSelect.value === "dramabox") {
-      form.append("direction", audiobookDirectionInput.value.trim());
+	  form.append("promptSpec", JSON.stringify(audiobookPromptSpec()));
+	  form.append("acceptPromptWarnings", String(audiobookAcceptPromptWarnings.checked));
       form.append("options", audiobookOptionsText());
       form.append("verification", audiobookVerificationSelect.value);
     }

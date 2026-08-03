@@ -4,21 +4,24 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strconv"
 
 	"cpp-studio/internal/engine"
 )
 
-const CurrentPromptPolicyVersion = 1
+const CurrentPromptPolicyVersion = 2
 
 // EngineIdentity is the resolved native runtime/model configuration selected
 // for one production. Fingerprint changes whenever audio-affecting config does.
 type EngineIdentity struct {
-	ID          string `json:"id"`
-	Mode        string `json:"mode"`
-	ModelID     string `json:"modelId"`
-	Fingerprint string `json:"fingerprint"`
+	ID              string `json:"id"`
+	Family          string `json:"family,omitempty"`
+	Mode            string `json:"mode"`
+	ModelID         string `json:"modelId"`
+	RuntimeIdentity string `json:"runtimeIdentity,omitempty"`
+	Fingerprint     string `json:"fingerprint"`
 }
 
 // VoiceIdentity records the authorized reference selected for production.
@@ -38,14 +41,15 @@ type VoiceIdentity struct {
 // durable sections can belong to the same audiobook production. Section seeds
 // are deliberately excluded and enter each checkpoint fingerprint instead.
 type SynthesisIdentity struct {
-	Fingerprint          string           `json:"fingerprint"`
-	SourceSHA256         string           `json:"sourceSha256"`
-	Engine               EngineIdentity   `json:"engine"`
-	Voice                VoiceIdentity    `json:"voice"`
-	Direction            string           `json:"direction,omitempty"`
-	Options              SynthesisOptions `json:"options"`
-	SectionPolicyVersion int              `json:"sectionPolicyVersion"`
-	PromptPolicyVersion  int              `json:"promptPolicyVersion"`
+	Fingerprint          string             `json:"fingerprint"`
+	SourceSHA256         string             `json:"sourceSha256"`
+	Engine               EngineIdentity     `json:"engine"`
+	Voice                VoiceIdentity      `json:"voice"`
+	Direction            string             `json:"direction,omitempty"`
+	PromptSpec           DramaBoxPromptSpec `json:"promptSpec,omitempty"`
+	Options              SynthesisOptions   `json:"options"`
+	SectionPolicyVersion int                `json:"sectionPolicyVersion"`
+	PromptPolicyVersion  int                `json:"promptPolicyVersion"`
 }
 
 type ResolveEngineFunc func(ctx context.Context, engineID string) (EngineIdentity, error)
@@ -68,6 +72,7 @@ func buildSynthesisIdentity(req Request, resolvedEngine EngineIdentity, resolved
 		Engine:               resolvedEngine,
 		Voice:                resolvedVoice,
 		Direction:            req.Direction,
+		PromptSpec:           req.PromptSpec,
 		Options:              options,
 		SectionPolicyVersion: CurrentSectionPolicyVersion,
 		PromptPolicyVersion:  CurrentPromptPolicyVersion,
@@ -79,13 +84,17 @@ func buildSynthesisIdentity(req Request, resolvedEngine EngineIdentity, resolved
 	}
 	add(identity.SourceSHA256)
 	add(identity.Engine.ID)
+	add(identity.Engine.Family)
 	add(identity.Engine.Mode)
 	add(identity.Engine.ModelID)
+	add(identity.Engine.RuntimeIdentity)
 	add(identity.Engine.Fingerprint)
 	add(identity.Voice.ID)
 	add(identity.Voice.Fingerprint)
 	add(identity.Voice.ReferenceSHA256)
 	add(identity.Direction)
+	promptJSON, _ := json.Marshal(identity.PromptSpec)
+	add(string(promptJSON))
 	add(engine.CompactOptionsJSON(identity.Options))
 	add(strconv.Itoa(identity.SectionPolicyVersion))
 	add(strconv.Itoa(identity.PromptPolicyVersion))

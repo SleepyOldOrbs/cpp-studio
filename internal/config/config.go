@@ -34,8 +34,21 @@ type Config struct {
 // ModelsConfig locates the model manifest and the root that its relative model
 // paths resolve against.
 type ModelsConfig struct {
-	Manifest string `json:"manifest"`
-	Root     string `json:"root"`
+	Manifest  string                `json:"manifest"`
+	Root      string                `json:"root"`
+	Discovery *ModelDiscoveryConfig `json:"discovery,omitempty"`
+}
+
+// ModelDiscoveryConfig is deliberately server-owned. The browser can observe
+// discovery results but can never select an executable, manager package, or
+// command argument.
+type ModelDiscoveryConfig struct {
+	PythonCommand   string   `json:"pythonCommand,omitempty"`
+	ManagerScript   string   `json:"managerScript,omitempty"`
+	AudioCLI        string   `json:"audioCli,omitempty"`
+	WorkingDir      string   `json:"workingDir,omitempty"`
+	AllowedPackages []string `json:"allowedPackages,omitempty"`
+	TimeoutSeconds  int      `json:"timeoutSeconds,omitempty"`
 }
 
 type GatewayConfig struct {
@@ -123,6 +136,19 @@ func Load(path string) (Config, error) {
 	if len(cfg.Engines) == 0 {
 		return Config{}, fmt.Errorf("config must declare at least one engine")
 	}
+	if cfg.Models != nil && cfg.Models.Discovery != nil && (cfg.Models.Discovery.TimeoutSeconds < 0 || cfg.Models.Discovery.TimeoutSeconds > 300) {
+		return Config{}, fmt.Errorf("models discovery timeout must be between 0 and 300 seconds")
+	}
+	if cfg.Models != nil && cfg.Models.Discovery != nil {
+		if len(cfg.Models.Discovery.AllowedPackages) > 64 {
+			return Config{}, fmt.Errorf("models discovery allows at most 64 packages")
+		}
+		for _, packageID := range cfg.Models.Discovery.AllowedPackages {
+			if !validPackageID(packageID) {
+				return Config{}, fmt.Errorf("invalid models discovery package id %q", packageID)
+			}
+		}
+	}
 	for name, engine := range cfg.Engines {
 		if name == "" {
 			return Config{}, fmt.Errorf("engine name cannot be empty")
@@ -208,6 +234,19 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+func validPackageID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for index, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || (index > 0 && (r == '_' || r == '-' || r == '.')) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // expandVars substitutes ${name} tokens across the config's path-like string
 // fields. Resolution order: the built-in ${configDir}, then user vars, then the
 // process environment; an unresolved token is left literal so a misconfigured
@@ -258,6 +297,12 @@ func (c *Config) expandVars(configDir string) {
 	if c.Models != nil {
 		c.Models.Manifest = expand(c.Models.Manifest)
 		c.Models.Root = expand(c.Models.Root)
+		if c.Models.Discovery != nil {
+			c.Models.Discovery.PythonCommand = expand(c.Models.Discovery.PythonCommand)
+			c.Models.Discovery.ManagerScript = expand(c.Models.Discovery.ManagerScript)
+			c.Models.Discovery.AudioCLI = expand(c.Models.Discovery.AudioCLI)
+			c.Models.Discovery.WorkingDir = expand(c.Models.Discovery.WorkingDir)
+		}
 	}
 }
 
@@ -322,8 +367,21 @@ func rejectUnknownKeys(data []byte) error {
 			return fmt.Errorf("models must be an object: %w", err)
 		}
 		for key := range models {
-			if key != "manifest" && key != "root" {
+			if key != "manifest" && key != "root" && key != "discovery" {
 				return fmt.Errorf("unknown models field %q", key)
+			}
+		}
+		if rawDiscovery, ok := models["discovery"]; ok {
+			var discovery map[string]json.RawMessage
+			if err := json.Unmarshal(rawDiscovery, &discovery); err != nil {
+				return fmt.Errorf("models discovery must be an object: %w", err)
+			}
+			for key := range discovery {
+				switch key {
+				case "pythonCommand", "managerScript", "audioCli", "workingDir", "allowedPackages", "timeoutSeconds":
+				default:
+					return fmt.Errorf("unknown models discovery field %q", key)
+				}
 			}
 		}
 	}

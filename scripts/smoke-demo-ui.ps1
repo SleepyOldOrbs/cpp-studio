@@ -201,8 +201,10 @@ try {
   if ($appJs.Content -notlike "*refreshStoryLibrary*") {
     throw "demo app.js is missing its marker"
   }
-  if ($appJs.Content -notlike "*updateAudiobookEngines*" -or $appJs.Content -notlike '*form.append("direction"*') {
-    throw "demo app.js is missing DramaBox health or direction behavior"
+  if ($appJs.Content -notlike "*updateAudiobookEngines*" -or
+      $appJs.Content -notlike '*form.append("promptSpec"*' -or
+      $appJs.Content -notlike '*/v1/audiobooks/preview-document*') {
+    throw "demo app.js is missing DramaBox health or structured prompt behavior"
   }
   $css = Invoke-WebRequest -Uri "$base/demo/styles.css" -UseBasicParsing
   if ($css.Content -notlike "*.story-library-item*") {

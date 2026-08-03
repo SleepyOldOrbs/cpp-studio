@@ -316,7 +316,7 @@ func TestNormalizeRequestEngineAndDirectionPolicy(t *testing.T) {
 
 func TestBuildDramaBoxPromptKeepsWordsInsideOneQuotedPassage(t *testing.T) {
 	got := BuildDramaBoxPrompt("  Warm, “curious” documentary delivery.\nPause naturally.  ", `Ada said "the engine works" in 1843.`)
-	want := `Warm, 'curious' documentary delivery. Pause naturally. "Ada said 'the engine works' in 1843."`
+	want := `A man, Warm, 'curious' documentary delivery. Pause naturally, "Ada said 'the engine works' in 1843."`
 	if got != want {
 		t.Fatalf("unexpected prompt:\nwant %q\n got %q", want, got)
 	}
@@ -356,7 +356,7 @@ func TestDramaBoxNarrationReservesSelectedEngineAndRecordsProvenance(t *testing.
 	if reserved != DramaBoxEngineID || spoken.EngineID != DramaBoxEngineID {
 		t.Fatalf("expected dramabox reservation/synthesis, reserved=%q spoken=%q", reserved, spoken.EngineID)
 	}
-	if want := `Restrained and precise. "The witness wrote 'three' in the ledger."`; spoken.Text != want {
+	if want := `A man, Restrained and precise, "The witness wrote 'three' in the ledger."`; spoken.Text != want {
 		t.Fatalf("unexpected spoken text: want %q, got %q", want, spoken.Text)
 	}
 	if spoken.Options.Seed != 42 || spoken.Options.GuidanceScale != 3.25 || spoken.Options.NumInferenceSteps != 30 {

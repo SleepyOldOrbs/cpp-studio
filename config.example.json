@@ -8,7 +8,15 @@
   },
   "models": {
     "manifest": "${configDir}/models.json",
-    "root": "${root}"
+    "root": "${root}",
+    "discovery": {
+      "pythonCommand": "python",
+      "managerScript": "${root}\\audio.cpp\\tools\\model_manager_v2.py",
+      "audioCli": "${root}\\audio.cpp\\build\\windows-cuda-release\\bin\\audiocpp_cli.exe",
+      "workingDir": "${root}\\audio.cpp",
+      "allowedPackages": ["dramabox_q8_0"],
+      "timeoutSeconds": 10
+    }
   },
   "profiles": {
     "everything": ["llama", "whisper", "audio", "sd"],

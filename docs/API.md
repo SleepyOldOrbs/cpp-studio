@@ -75,7 +75,14 @@ Returns the model manifest with each model's live on-disk state. Requires a
       "absPath": "C:\\studio\\engines\\models\\Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
       "present": true,
       "actualBytes": 2497281120,
-      "state": "present"
+      "state": "present",
+      "cataloged": true,
+      "installable": false,
+      "packageKnown": false,
+      "loaderAvailable": true,
+      "configured": true,
+      "healthy": true,
+      "benchmarkCurrent": false
     }
   ]
 }
@@ -86,6 +93,29 @@ matches the manifest), `missing`, `size-mismatch`, `unverified` (present but
 the manifest declares nothing to check), `verified` (deep verification
 passed), or `corrupt` (deep verification failed). Directory models report
 `actualFiles` alongside `actualBytes`.
+
+Readiness fields stay distinct: catalog authority, installability, manager package,
+runtime loader, local presence/checksum, cpp-studio configuration, live health, and
+benchmark currency never imply one another. `discoveryError` is optional and leaves
+catalog behavior intact. Present GGUF files also carry bounded `gguf` header facts
+(`version`, `architecture`, `expertCount`, `sizeLabel`, `fileBytes`) or an inspection
+error without changing their presence state.
+
+## POST /v1/models/{id}/install/preview and /install
+
+Installation is a two-step allowlisted operation. Preview takes no browser-supplied
+install data and returns `confirmationId`, expiry, immutable source/revision,
+destination, licence, expected bytes, checksum, free space, VRAM/disk warnings, and
+blockers. Blocked previews omit the confirmation id.
+
+Confirm with exactly `{"confirmationId":"..."}` at
+`POST /v1/models/{id}/install`. It returns an existing-style `model_install` job.
+Confirmations are five-minute, single-use, and fingerprint the catalog, models root,
+artifact, and destination. Reuse, expiry, a changed selection, existing destination,
+or concurrent destination install returns `409`. The job reports `preparing`, byte
+counted `downloading`, `verifying`, `promoting`, and `refreshing_catalog`; cancellation
+returns `409` once promotion begins. It never accepts a command, package, path, repo,
+revision, URL, token, proxy, destination, or native argument from HTTP.
 
 ## POST /v1/models/verify
 
@@ -144,9 +174,13 @@ stitched WAV. Runs as an `audiobook` job on the jobs surface.
   (defaults to the file name), optional `voice` (a stored voice id; blank uses
   the configured default for `audio` and text-only generation for DramaBox), optional
   `engine` (`audio` by default or configured `dramabox`), and optional
-  `direction` (up to 500 characters, DramaBox only). Blank DramaBox direction
-  gets a restrained documentary default. Its direction is placed outside one
-  quoted source passage; embedded double-quote punctuation is changed to
+  legacy `direction` (up to 500 characters, DramaBox only), or the structured
+  `promptSpec` JSON with allowlisted `speakerPhrase`, `deliveryPreset`, and optional
+  `advancedDirection`. The initial phrases are `A man`, `A woman`, `A young woman`,
+  `An elderly man`, and `A child`; no neutral phrase is claimed as validated.
+  Advanced warnings require `acceptPromptWarnings=true`. Double quotes in advanced
+  direction are rejected. The generated direction is placed outside one
+  quoted source passage; embedded source double-quote punctuation is changed to
   apostrophes so it cannot close that passage, while the source words remain
   unchanged. The default `audio` narrator keeps paragraph/sentence chunks of
   approximately 300 characters. DramaBox instead plans larger app-level sections at
@@ -170,14 +204,27 @@ stitched WAV. Runs as an `audiobook` job on the jobs surface.
   Unknown engines and invalid direction return `400`; a recognized engine
   missing from this gateway returns `503`; only an active narration or busy
   selected engine returns `409`.
-- `POST /v1/audiobooks/preview` — JSON intent (`engine`, `voice`, `direction`,
-  and optional `options`) resolved without creating a job, reserving an
-  engine, or invoking it. Returns selected engine/model/voice identities, the
+- `POST /v1/audiobooks/preview` — JSON intent (`engine`, `voice`, `promptSpec`,
+  optional inline `sourceText`, warning acceptance, and optional `options`) resolved without creating a job, reserving an
+  engine, or invoking it. `POST /v1/audiobooks/preview-document` accepts the
+  same intent as multipart fields plus the complete `file`; it uses the same
+  bounded TXT/Markdown/EPUB extraction as production, and is the browser route
+  for full-document lint and exact section preview. Both return selected engine/model/voice identities, the
   complete effective option set, the per-section server seed policy, and the
-  semantic server/subprocess mapping. Engine and voice fingerprints identify
+  semantic server/subprocess mapping. The `prompt` response contains the structured
+  spec, full-source lint warnings, and every source/direction punctuation or
+  whitespace normalization. Its `generatedPrompt` is present only for a single
+  production section. `promptSections` applies the production range policy without
+  allocating seeds and shows every exact native request. Engine and voice fingerprints identify
   the exact resolved runtime configuration and stored reference content; the
   Manager freezes those identities before planning or reservation. The browser
   requires a current preview before enabling Narrate.
+- `POST /v1/audiobooks/benchmark` — starts the tracked real-runtime evidence job.
+  Its bounded JSON accepts `backend`, optional `voiceId`, compatibility `direction`,
+  structured `promptSpec`, and typed `options`; the exact prompt profile participates
+  in benchmark identity. List or read persisted results at
+  `GET /v1/audiobooks/benchmark/results` and
+  `GET /v1/audiobooks/benchmark/results/{id}`.
 - `GET /v1/jobs/{id}` — narration progress (`"narrating chunk 12/42"` for the
   default engine or `"narrating section 12/42 with dramabox"`), and
   `POST /v1/jobs/{id}/cancel` stops it.

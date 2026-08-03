@@ -51,6 +51,9 @@ func TestBenchmarkJobPersistsFingerprintMetricsAndStaleness(t *testing.T) {
 	if result.Status != "complete" || result.ProfileFingerprint == "" || result.WarmRTF <= 0 || result.ProjectedChapterSeconds <= 0 || result.IdentityChanged {
 		t.Fatalf("benchmark result omitted evidence: %+v", result)
 	}
+	if result.PromptSpec.SpeakerPhrase != DefaultSpeakerPhrase || result.PromptSpec.DeliveryPreset != DefaultDeliveryPreset {
+		t.Fatalf("benchmark omitted the exact structured prompt profile: %+v", result.PromptSpec)
+	}
 	byID := map[string]BenchmarkCaseResult{}
 	for _, item := range result.Cases {
 		byID[item.ID] = item
@@ -80,6 +83,41 @@ func TestBenchmarkJobPersistsFingerprintMetricsAndStaleness(t *testing.T) {
 	listed, err := changed.ListBenchmarkResults(context.Background())
 	if err != nil || len(listed) != 1 || listed[0].ID != id || !listed[0].IdentityChanged {
 		t.Fatalf("persisted benchmark discovery failed: listed=%+v err=%v", listed, err)
+	}
+}
+
+func TestBenchmarkProfileFingerprintIncludesStructuredPrompt(t *testing.T) {
+	engineIdentity := EngineIdentity{ID: DramaBoxEngineID, Fingerprint: "engine"}
+	voiceIdentity := VoiceIdentity{ID: "default", Fingerprint: "default"}
+	options := SynthesisOptions{NumInferenceSteps: 30, GuidanceScale: 2.5}
+	man := DramaBoxPromptSpec{SpeakerPhrase: "A man", DeliveryPreset: DefaultDeliveryPreset}
+	woman := man
+	woman.SpeakerPhrase = "A woman"
+	first := benchmarkProfileFingerprint(engineIdentity, voiceIdentity, options, "delivery", man, "cpu", "fixture")
+	second := benchmarkProfileFingerprint(engineIdentity, voiceIdentity, options, "delivery", woman, "cpu", "fixture")
+	if first == second {
+		t.Fatal("speaker phrase did not change benchmark profile identity")
+	}
+}
+
+func TestBenchmarkUsesRequestedStructuredPrompt(t *testing.T) {
+	registry := jobs.NewRegistry()
+	manager := NewManager(ManagerOptions{
+		RootDir: t.TempDir(), Jobs: registry,
+		Synthesize: func(context.Context, SynthesisRequest) ([]byte, error) { return wav.SyntheticTone(1000), nil },
+	})
+	want := DramaBoxPromptSpec{SpeakerPhrase: "A woman", DeliveryPreset: "clear-explainer"}
+	id, err := manager.StartBenchmark(context.Background(), BenchmarkRequest{Backend: "cpu", PromptSpec: want})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForAudiobookJob(t, registry, id)
+	result, err := manager.BenchmarkResult(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PromptSpec != want {
+		t.Fatalf("benchmark prompt drifted: got %+v want %+v", result.PromptSpec, want)
 	}
 }
 

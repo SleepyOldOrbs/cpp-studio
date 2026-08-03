@@ -513,12 +513,34 @@
             </select>
             <small class="hint">Fast local stays the default. Available choices follow the engines in this cpp-studio configuration.</small>
           </label>
-          <label class="field" id="audiobookDirectionField" hidden>
-            <span>Performance direction</span>
-            <textarea id="audiobookDirectionInput" rows="3" maxlength="500">Warm, measured documentary narration with clear diction, restrained emotion, and thoughtful pauses.</textarea>
-            <small class="hint">Direct the delivery, not the facts. DramaBox keeps your source words inside one quoted passage.</small>
-            <span class="warn-box" id="audiobookDramaBoxWarning">Experimental English model: an 18.9 GB download with heavy local compute and an upstream licence. There is no per-character or API fee, but CPU speed and 16 GB GPU fit are not proven.</span>
-          </label>
+          <div class="field" id="audiobookDirectionField" hidden>
+            <span>Factual performance prompt</span>
+            <label class="compact-field">
+              <span>Speaker phrase</span>
+              <select class="text-input" id="audiobookSpeakerPhrase">
+                <option selected>A man</option><option>A woman</option><option>A young woman</option><option>An elderly man</option><option>A child</option>
+              </select>
+            </label>
+            <label class="compact-field">
+              <span>Delivery preset</span>
+              <select class="text-input" id="audiobookDeliveryPreset">
+                <option value="factual-documentary" selected>Factual documentary</option>
+                <option value="clear-explainer">Clear explainer</option>
+                <option value="calm-reading">Calm reading</option>
+              </select>
+            </label>
+            <details>
+              <summary>Advanced direction escape hatch</summary>
+              <textarea id="audiobookDirectionInput" rows="3" maxlength="500" placeholder="Leave empty to use the selected factual preset"></textarea>
+              <small class="hint">Role nouns, stacked descriptions, and paralinguistic cues produce warnings. Double quotes are rejected.</small>
+            </details>
+            <label class="source-row" id="audiobookPromptWarningAcceptance" hidden>
+              <input id="audiobookAcceptPromptWarnings" type="checkbox">
+              <span>I reviewed and accept the prompt warnings shown in the exact preview.</span>
+            </label>
+            <small class="hint">Source words remain immutable. The resolved preview shows every exact DramaBox section prompt and punctuation normalization.</small>
+            <span class="warn-box" id="audiobookDramaBoxWarning">Experimental English model: an 18.9 GB download with heavy local compute and an upstream licence. There is no per-character or API fee; measured CPU use is overnight-class, and 16 GB CUDA fit is unverified.</span>
+          </div>
           <fieldset class="field" id="audiobookDramaBoxOptions" hidden>
             <legend>DramaBox generation</legend>
             <label class="compact-field">

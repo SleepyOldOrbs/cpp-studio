@@ -133,6 +133,12 @@ try {
     Start-Sleep -Seconds ([Math]::Max(1, $PollSeconds))
     $job = Invoke-RestMethod -Method Get -Uri "$($gateway.AbsoluteUri.TrimEnd('/'))/v1/jobs/$($created.id)"
     if ($job.status -in @("failed", "cancelled")) {
+      try {
+        $failedResult = Invoke-RestMethod -Method Get -Uri "$($gateway.AbsoluteUri.TrimEnd('/'))/v1/audiobooks/benchmark/results/$($created.id)"
+        $failedResult | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $outPath "benchmark.json") -Encoding utf8
+      }
+      catch {
+      }
       throw "DramaBox benchmark job $($job.status): $($job.error)"
     }
     if ([DateTime]::UtcNow -ge $deadline) {

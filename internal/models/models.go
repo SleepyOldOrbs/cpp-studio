@@ -34,6 +34,9 @@ type Model struct {
 	Source      string `json:"source,omitempty"`
 	License     string `json:"license,omitempty"`
 	Description string `json:"description,omitempty"`
+	PackageID   string `json:"packageId,omitempty"`
+	Revision    string `json:"revision,omitempty"`
+	DownloadURL string `json:"downloadUrl,omitempty"`
 }
 
 // Manifest is the whole registry.
@@ -54,11 +57,30 @@ const (
 // Status is a model plus its resolved on-disk reality.
 type Status struct {
 	Model
-	AbsPath     string `json:"absPath"`
-	Present     bool   `json:"present"`
-	ActualBytes int64  `json:"actualBytes"`
-	ActualFiles int    `json:"actualFiles,omitempty"`
-	State       string `json:"state"`
+	AbsPath          string          `json:"absPath"`
+	Present          bool            `json:"present"`
+	ActualBytes      int64           `json:"actualBytes"`
+	ActualFiles      int             `json:"actualFiles,omitempty"`
+	State            string          `json:"state"`
+	Cataloged        bool            `json:"cataloged"`
+	Installable      bool            `json:"installable"`
+	PackageKnown     *bool           `json:"packageKnown,omitempty"`
+	LoaderAvailable  *bool           `json:"loaderAvailable,omitempty"`
+	Configured       bool            `json:"configured"`
+	Healthy          bool            `json:"healthy"`
+	BenchmarkCurrent bool            `json:"benchmarkCurrent"`
+	BenchmarkStatus  string          `json:"benchmarkStatus,omitempty"`
+	BenchmarkReason  string          `json:"benchmarkReason,omitempty"`
+	GGUF             *GGUFInspection `json:"gguf,omitempty"`
+}
+
+type GGUFInspection struct {
+	Version      uint32 `json:"version,omitempty"`
+	Architecture string `json:"architecture,omitempty"`
+	ExpertCount  uint32 `json:"expertCount,omitempty"`
+	SizeLabel    string `json:"sizeLabel,omitempty"`
+	FileBytes    int64  `json:"fileBytes"`
+	Error        string `json:"error,omitempty"`
 }
 
 // Load reads and validates a manifest file.
@@ -110,7 +132,7 @@ func stat(mod Model, root string) Status {
 	if !filepath.IsAbs(abs) {
 		abs = filepath.Join(root, mod.Path)
 	}
-	s := Status{Model: mod, AbsPath: abs}
+	s := Status{Model: mod, AbsPath: abs, Cataloged: true}
 	info, err := os.Stat(abs)
 	if err != nil {
 		s.State = StateMissing

@@ -26,6 +26,7 @@ import (
 	"cpp-studio/internal/config"
 	"cpp-studio/internal/engine"
 	"cpp-studio/internal/lifecycle"
+	"cpp-studio/internal/models"
 	"cpp-studio/internal/story"
 	"cpp-studio/internal/wav"
 )
@@ -4212,6 +4213,125 @@ func TestModelsCatalog(t *testing.T) {
 	}
 }
 
+type gatewayDiscoveryRunner struct{ calls int }
+
+func (r *gatewayDiscoveryRunner) Run(_ context.Context, _ string, args ...string) ([]byte, error) {
+	r.calls++
+	joined := strings.Join(args, " ")
+	switch {
+	case strings.HasSuffix(joined, "list --json"):
+		return []byte(`[{"id":"dramabox_q8_0","family":"dramabox"}]`), nil
+	case strings.Contains(joined, "info dramabox_q8_0 --json"):
+		return []byte(`{"id":"dramabox_q8_0"}`), nil
+	case joined == "--list-loaders --json":
+		return []byte(`{"loaders":{"dramabox":{"tasks":{"tts":["offline"]}}}}`), nil
+	default:
+		return nil, fmt.Errorf("unexpected discovery command: %s", joined)
+	}
+}
+
+func TestModelsCatalogMergesDistinctCachedReadinessStates(t *testing.T) {
+	root := t.TempDir()
+	manifestPath := filepath.Join(root, "models.json")
+	manifest := `{"models":[{"id":"dramabox","engine":"dramabox","family":"dramabox","path":"missing.gguf","bytes":5,"sha256":"` + strings.Repeat("0", 64) + `","license":"test","packageId":"dramabox_q8_0","revision":"fixed","downloadUrl":"https://example.invalid/model.gguf"}]}`
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(map[string]config.EngineConfig{"dramabox": {Command: "audiocpp_server"}})
+	cfg.Models = &config.ModelsConfig{Manifest: manifestPath, Root: root, Discovery: &config.ModelDiscoveryConfig{
+		PythonCommand: "python", ManagerScript: "manager.py", AudioCLI: "audiocpp_cli", AllowedPackages: []string{"dramabox_q8_0"},
+	}}
+	router := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	runner := &gatewayDiscoveryRunner{}
+	router.discoveryRunner = runner
+	for attempt := 0; attempt < 2; attempt++ {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models/catalog", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("catalog: %d %s", rec.Code, rec.Body.String())
+		}
+		var response struct {
+			DiscoveryError string `json:"discoveryError"`
+			Models         []struct {
+				Installable, PackageKnown, LoaderAvailable, Present, Configured, Healthy bool
+			} `json:"models"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		if response.DiscoveryError != "" || len(response.Models) != 1 {
+			t.Fatalf("unexpected catalog: %+v", response)
+		}
+		model := response.Models[0]
+		if !model.Installable || !model.PackageKnown || !model.LoaderAvailable || !model.Configured || model.Present || model.Healthy {
+			t.Fatalf("readiness states were conflated: %+v", model)
+		}
+	}
+	if runner.calls != 3 {
+		t.Fatalf("discovery was not cached: %d calls", runner.calls)
+	}
+}
+
+func TestModelInstallHTTPRequiresOpaqueFreshConfirmation(t *testing.T) {
+	payload := []byte("small verified model")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(payload) }))
+	defer server.Close()
+	sum := sha256.Sum256(payload)
+	root := t.TempDir()
+	model := models.Model{
+		ID: "dramabox", Engine: "dramabox", Family: "dramabox", Path: "models/dramabox.gguf", Bytes: int64(len(payload)),
+		SHA256: hex.EncodeToString(sum[:]), License: "test", PackageID: "dramabox_q8_0", Revision: "fixed", DownloadURL: server.URL + "/model.gguf",
+	}
+	cfg := testConfig(map[string]config.EngineConfig{"dramabox": {Command: "audiocpp_server"}})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	router.installer = models.NewInstaller(models.Manifest{Models: []models.Model{model}}, root, []string{model.PackageID})
+	router.installer.Client = server.Client()
+	router.installer.Free = func(string) (uint64, error) { return 1 << 40, nil }
+
+	previewRec := httptest.NewRecorder()
+	router.ServeHTTP(previewRec, httptest.NewRequest(http.MethodPost, "/v1/models/dramabox/install/preview", nil))
+	if previewRec.Code != http.StatusOK {
+		t.Fatalf("preview: %d %s", previewRec.Code, previewRec.Body.String())
+	}
+	var preview models.InstallPreview
+	if err := json.NewDecoder(previewRec.Body).Decode(&preview); err != nil || preview.ConfirmationID == "" {
+		t.Fatalf("preview decode: %+v %v", preview, err)
+	}
+	injected := httptest.NewRecorder()
+	router.ServeHTTP(injected, httptest.NewRequest(http.MethodPost, "/v1/models/dramabox/install", strings.NewReader(`{"confirmationId":"`+preview.ConfirmationID+`","source":"https://evil.invalid"}`)))
+	if injected.Code != http.StatusBadRequest {
+		t.Fatalf("browser-controlled install input accepted: %d", injected.Code)
+	}
+
+	installRec := httptest.NewRecorder()
+	router.ServeHTTP(installRec, httptest.NewRequest(http.MethodPost, "/v1/models/dramabox/install", strings.NewReader(`{"confirmationId":"`+preview.ConfirmationID+`"}`)))
+	if installRec.Code != http.StatusAccepted {
+		t.Fatalf("install: %d %s", installRec.Code, installRec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(installRec.Body).Decode(&created)
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		job, ok := router.jobs.Get(created.ID)
+		if ok && job.Status == "complete" {
+			break
+		}
+		if ok && job.Status == "failed" {
+			t.Fatalf("install failed: %+v", job)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, model.Path)); err != nil || !bytes.Equal(data, payload) {
+		t.Fatalf("installed artifact: %v", err)
+	}
+	replay := httptest.NewRecorder()
+	router.ServeHTTP(replay, httptest.NewRequest(http.MethodPost, "/v1/models/dramabox/install", strings.NewReader(`{"confirmationId":"`+preview.ConfirmationID+`"}`)))
+	if replay.Code != http.StatusConflict {
+		t.Fatalf("confirmation replay accepted: %d", replay.Code)
+	}
+}
+
 func TestEngineControlRoutes(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{
 		"llama": {Command: "llama-server", Mode: "server", HealthURL: "http://127.0.0.1:1/health"},
@@ -4625,7 +4745,8 @@ func TestAudiobookPreviewReturnsCompleteEffectiveOptionsWithoutStartingWork(t *t
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/audiobooks/preview", strings.NewReader(`{
 		"engine":"dramabox",
-		"direction":"Measured.",
+		"promptSpec":{"speakerPhrase":"A woman","deliveryPreset":"clear-explainer"},
+		"sourceText":"Ada wrote \"three\" in the ledger.",
 		"options":{"guidance_scale":3.25}
 	}`))
 	router.ServeHTTP(rec, req)
@@ -4633,14 +4754,16 @@ func TestAudiobookPreviewReturnsCompleteEffectiveOptionsWithoutStartingWork(t *t
 		t.Fatalf("preview: got %d: %s", rec.Code, rec.Body.String())
 	}
 	var preview struct {
-		Engine            string                     `json:"engine"`
-		EngineFingerprint string                     `json:"engineFingerprint"`
-		Model             string                     `json:"model"`
-		Voice             string                     `json:"voice"`
-		VoiceFingerprint  string                     `json:"voiceFingerprint"`
-		Options           audiobook.SynthesisOptions `json:"options"`
-		SeedPolicy        string                     `json:"seedPolicy"`
-		Transport         map[string]json.RawMessage `json:"transport"`
+		Engine              string                     `json:"engine"`
+		EngineFingerprint   string                     `json:"engineFingerprint"`
+		Model               string                     `json:"model"`
+		Voice               string                     `json:"voice"`
+		VoiceFingerprint    string                     `json:"voiceFingerprint"`
+		Options             audiobook.SynthesisOptions `json:"options"`
+		SeedPolicy          string                     `json:"seedPolicy"`
+		Transport           map[string]json.RawMessage `json:"transport"`
+		Prompt              audiobook.PromptEvaluation `json:"prompt"`
+		PromptPolicyVersion int                        `json:"promptPolicyVersion"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&preview); err != nil {
 		t.Fatalf("decode preview: %v", err)
@@ -4657,6 +4780,12 @@ func TestAudiobookPreviewReturnsCompleteEffectiveOptionsWithoutStartingWork(t *t
 	if preview.SeedPolicy == "" || len(preview.Transport["mapping"]) == 0 {
 		t.Fatalf("preview omitted seed/transport semantics: %+v", preview)
 	}
+	if preview.PromptPolicyVersion != audiobook.CurrentPromptPolicyVersion || preview.Prompt.GeneratedPrompt != `A woman speaks clearly at a steady pace, with precise diction and restrained emphasis, "Ada wrote 'three' in the ledger."` {
+		t.Fatalf("preview is not the exact structured engine prompt: %+v", preview.Prompt)
+	}
+	if len(preview.Prompt.Normalizations) != 1 || preview.Prompt.Normalizations[0].Field != "sourceText" {
+		t.Fatalf("preview hid source punctuation normalization: %+v", preview.Prompt.Normalizations)
+	}
 	if entries, err := os.ReadDir("out/audiobooks"); err == nil && len(entries) != 0 {
 		t.Fatalf("preview created audiobook state: %+v", entries)
 	}
@@ -4666,6 +4795,89 @@ func TestAudiobookPreviewReturnsCompleteEffectiveOptionsWithoutStartingWork(t *t
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"options":{}`) || !strings.Contains(rec.Body.String(), `"mapping":{}`) {
 		t.Fatalf("fast narrator preview must keep an empty option/mapping set: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAudiobookEngineIdentityIncludesTrackedModelIdentity(t *testing.T) {
+	router := &router{
+		cfg: config.Config{Engines: map[string]config.EngineConfig{
+			"dramabox": {Command: "fixture-engine", Mode: "server"},
+		}},
+		catalog: models.Manifest{Models: []models.Model{{
+			ID: "dramabox-q8-0", Engine: "dramabox", Path: "model.gguf", Bytes: 5, SHA256: strings.Repeat("a", 64),
+		}}},
+		modelsRoot: t.TempDir(),
+	}
+	first, err := router.resolveAudiobookEngine(context.Background(), "dramabox")
+	if err != nil || first.ModelID != "dramabox-q8-0" || first.RuntimeIdentity == "" || first.Fingerprint == first.RuntimeIdentity {
+		t.Fatalf("tracked model identity missing: %+v, %v", first, err)
+	}
+	router.catalog.Models[0].SHA256 = strings.Repeat("b", 64)
+	second, err := router.resolveAudiobookEngine(context.Background(), "dramabox")
+	if err != nil || second.Fingerprint == first.Fingerprint || second.RuntimeIdentity != first.RuntimeIdentity {
+		t.Fatalf("catalog model change did not update only synthesis identity: first=%+v second=%+v err=%v", first, second, err)
+	}
+}
+
+func TestAudiobookDocumentPreviewUsesCompleteProductionSourceAndSections(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{"dramabox": helperEngine("speech-tone")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	source := strings.Repeat("documented fact ", 190) + "\n\n" + strings.Repeat("later evidence ", 190) + "Hahaha is quoted in the source."
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "complete.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte(source))
+	_ = writer.WriteField("engine", "dramabox")
+	_ = writer.WriteField("promptSpec", `{"speakerPhrase":"A woman","deliveryPreset":"clear-explainer"}`)
+	_ = writer.WriteField("verification", "off")
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audiobooks/preview-document", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("document preview: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var preview struct {
+		Prompt         audiobook.PromptEvaluation       `json:"prompt"`
+		PromptSections []audiobook.PromptSectionPreview `json:"promptSections"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&preview); err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.PromptSections) < 2 || preview.Prompt.GeneratedPrompt != "" {
+		t.Fatalf("preview did not expose only production section prompts: %+v", preview)
+	}
+	if !strings.Contains(preview.PromptSections[len(preview.PromptSections)-1].GeneratedPrompt, "Hahaha") {
+		t.Fatal("document preview omitted source text beyond the first section")
+	}
+	if len(preview.Prompt.Warnings) != 1 || preview.Prompt.Warnings[0].Code != "paralinguistic-cue" {
+		t.Fatalf("complete-document lint warning missing: %+v", preview.Prompt.Warnings)
+	}
+	if entries, err := os.ReadDir("out/audiobooks"); err == nil && len(entries) != 0 {
+		t.Fatalf("document preview created durable state: %+v", entries)
+	}
+
+	body.Reset()
+	writer = multipart.NewWriter(&body)
+	part, _ = writer.CreateFormFile("file", "too-many-sections.txt")
+	// 188 words is one above the current 75-second target, so each paragraph
+	// becomes a separate production section.
+	_, _ = part.Write([]byte(strings.Repeat(strings.Repeat("fact ", 188)+"\n\n", audiobook.MaxChunks+1)))
+	_ = writer.WriteField("engine", "dramabox")
+	_ = writer.Close()
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/audiobooks/preview-document", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "more than 600") {
+		t.Fatalf("preview hid production section-limit failure: %d %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -4917,7 +5129,7 @@ func TestAudiobookBenchmarkAPITracksAndServesPersistedResult(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{"dramabox": helperEngine("speech-tone")})
 	router := NewRouter(cfg, lifecycle.NewManager(cfg))
 	created := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/audiobooks/benchmark", strings.NewReader(`{"backend":"cpu"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/audiobooks/benchmark", strings.NewReader(`{"backend":"cpu","promptSpec":{"speakerPhrase":"A woman","deliveryPreset":"clear-explainer"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(created, req)
 	if created.Code != http.StatusAccepted {
@@ -4936,7 +5148,7 @@ func TestAudiobookBenchmarkAPITracksAndServesPersistedResult(t *testing.T) {
 	}
 	result := httptest.NewRecorder()
 	router.ServeHTTP(result, httptest.NewRequest(http.MethodGet, response.ResultURL, nil))
-	if result.Code != http.StatusOK || !strings.Contains(result.Body.String(), `"schemaVersion":"dramabox-benchmark.v1"`) || !strings.Contains(result.Body.String(), `"profileFingerprint":"`) || !strings.Contains(result.Body.String(), `"cpu.long_form"`) {
+	if result.Code != http.StatusOK || !strings.Contains(result.Body.String(), `"schemaVersion":"dramabox-benchmark.v1"`) || !strings.Contains(result.Body.String(), `"profileFingerprint":"`) || !strings.Contains(result.Body.String(), `"cpu.long_form"`) || !strings.Contains(result.Body.String(), `"speakerPhrase":"A woman"`) || !strings.Contains(result.Body.String(), `"deliveryPreset":"clear-explainer"`) {
 		t.Fatalf("benchmark result: %d %s", result.Code, result.Body.String())
 	}
 	listed := httptest.NewRecorder()

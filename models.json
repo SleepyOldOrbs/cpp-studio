@@ -105,7 +105,11 @@
       "family": "dramabox",
       "path": "audio.cpp/models/DramaBox-GGUF/dramabox-q8_0.gguf",
       "bytes": 18942803808,
-      "source": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main/DramaBox-GGUF",
+      "sha256": "75e7e80fc748defb188cb902c34c62bc12539a7bba477215dccf59a7218a451e",
+      "packageId": "dramabox_q8_0",
+      "revision": "96367c9cb9d7484206d629ba92a8745af03499c6",
+      "downloadUrl": "https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/96367c9cb9d7484206d629ba92a8745af03499c6/DramaBox-GGUF/dramabox-q8_0.gguf",
+      "source": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/96367c9cb9d7484206d629ba92a8745af03499c6/DramaBox-GGUF",
       "license": "LTX-2 Community License",
       "description": "Optional experimental English expressive TTS and voice cloning for factual audiobooks; no hosted API fee, but substantial local storage and compute."
     },

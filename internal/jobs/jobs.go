@@ -47,7 +47,7 @@ const maxFinishedJobs = 100
 
 type tracked struct {
 	job    Job
-	cancel func()
+	cancel func() error
 }
 
 // Registry is a concurrency-safe, in-memory job table. Artifacts persist in
@@ -70,6 +70,19 @@ func NewRegistry() *Registry {
 // invoked by Cancel to ask the pipeline to stop; the pipeline confirms by
 // calling MarkCancelled once it has actually wound down.
 func (r *Registry) Track(id, kind string, cancel func()) {
+	var cancellable func() error
+	if cancel != nil {
+		cancellable = func() error {
+			cancel()
+			return nil
+		}
+	}
+	r.TrackCancellable(id, kind, cancellable)
+}
+
+// TrackCancellable registers a job whose producer can refuse cancellation
+// once it reaches an atomic commit/promotion phase.
+func (r *Registry) TrackCancellable(id, kind string, cancel func() error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.now()
@@ -147,7 +160,10 @@ func (r *Registry) Cancel(id string) (Job, error) {
 	r.mu.Unlock()
 
 	if cancel != nil {
-		cancel()
+		if err := cancel(); err != nil {
+			job, _ := r.Get(id)
+			return job, err
+		}
 	}
 	job, _ := r.Get(id)
 	return job, nil

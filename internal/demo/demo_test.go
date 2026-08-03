@@ -173,6 +173,9 @@ func TestHandlerServesIndex(t *testing.T) {
 		"audiobookOptionsJSON",
 		"audiobookPreviewButton",
 		"audiobookRequestPreview",
+		"audiobookSpeakerPhrase",
+		"audiobookDeliveryPreset",
+		"audiobookAcceptPromptWarnings",
 		"audiobookVerificationSelect",
 		"audiobookVerificationStatus",
 		"audiobookVerificationLink",
@@ -190,8 +193,8 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, `id="audiobookAudioOption" value="audio" selected disabled`) || !strings.Contains(body, `id="audiobookNarrateButton" type="submit" disabled`) {
 		t.Fatalf("audiobook controls must wait for health-backed engine availability")
 	}
-	if !strings.Contains(body, fmt.Sprintf(`maxlength="%d"`, audiobook.MaxDirectionRunes)) || !strings.Contains(body, audiobook.DefaultDramaBoxDirection) {
-		t.Fatalf("audiobook direction UI drifted from the Go contract")
+	if !strings.Contains(body, fmt.Sprintf(`maxlength="%d"`, audiobook.MaxDirectionRunes)) || !strings.Contains(body, audiobook.DefaultSpeakerPhrase) || !strings.Contains(body, audiobook.DefaultDeliveryPreset) {
+		t.Fatalf("audiobook structured prompt UI drifted from the Go contract")
 	}
 	if !strings.Contains(body, "extractCanvas") {
 		t.Fatalf("expected extractor waveform marker, got %q", body)
@@ -290,16 +293,34 @@ func TestHandlerServesAssets(t *testing.T) {
 			needle:      "updateAudiobookEngines",
 		},
 		{
-			name:        "javascript audiobook direction submit",
+			name:        "javascript audiobook prompt submit",
 			path:        "/app.js",
 			contentType: "javascript",
-			needle:      `form.append("direction"`,
+			needle:      `form.append("promptSpec"`,
 		},
 		{
-			name:        "javascript audiobook request preview",
+			name:        "javascript audiobook benchmark prompt identity",
 			path:        "/app.js",
 			contentType: "javascript",
-			needle:      "/v1/audiobooks/preview",
+			needle:      `promptSpec: audiobookPromptSpec()`,
+		},
+		{
+			name:        "javascript complete audiobook document preview",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "/v1/audiobooks/preview-document",
+		},
+		{
+			name:        "javascript model install confirmation",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "previewModelInstall",
+		},
+		{
+			name:        "css model readiness",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".model-readiness",
 		},
 		{
 			name:        "javascript audiobook voice reference fitness",

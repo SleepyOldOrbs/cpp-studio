@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"strings"
 	"unicode"
@@ -17,7 +18,7 @@ import (
 const (
 	// CurrentSectionPolicyVersion changes whenever the stable DramaBox source
 	// partitioning rules change.
-	CurrentSectionPolicyVersion = 1
+	CurrentSectionPolicyVersion = 2
 
 	dramaBoxWordsPerMinute = 150
 	dramaBoxTargetSeconds  = 75
@@ -80,7 +81,14 @@ func readSectionSeed(entropy io.Reader) (Seed, error) {
 	if _, err := io.ReadFull(entropy, seedBytes); err != nil {
 		return 0, err
 	}
-	return Seed(binary.BigEndian.Uint64(seedBytes)), nil
+	// DramaBox release-0.5 parses its seed with parse_int_option. Keep
+	// cryptographic entropy inside the positive signed 32-bit domain that the
+	// native runtime actually accepts.
+	seed := Seed(binary.BigEndian.Uint64(seedBytes) & math.MaxInt32)
+	if seed == 0 {
+		seed = 1
+	}
+	return seed, nil
 }
 
 type rangePacker struct {

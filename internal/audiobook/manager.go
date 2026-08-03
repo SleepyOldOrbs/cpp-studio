@@ -82,8 +82,8 @@ type ManagerOptions struct {
 	ResolveEngine      ResolveEngineFunc
 	ResolveVoice       ResolveVoiceFunc
 	Verify             VerifyFunc
-	// SeedSource supplies full-range DramaBox section seeds. Nil uses
-	// crypto/rand.Reader; tests may inject deterministic or failing readers.
+	// SeedSource supplies entropy for positive 31-bit DramaBox section seeds.
+	// Nil uses crypto/rand.Reader; tests may inject deterministic/failing readers.
 	SeedSource io.Reader
 	Jobs       *jobs.Registry
 	Now        func() time.Time
@@ -92,11 +92,13 @@ type ManagerOptions struct {
 // Request carries narration intent. NormalizeRequest and Submit validate and
 // normalize its engine and direction before any job starts.
 type Request struct {
-	Title     string
-	Text      string
-	VoiceID   string
-	EngineID  string
-	Direction string
+	Title                string
+	Text                 string
+	VoiceID              string
+	EngineID             string
+	Direction            string
+	PromptSpec           DramaBoxPromptSpec
+	AcceptPromptWarnings bool
 	// OptionsJSON is the curated/advanced option object supplied by HTTP.
 	// It never accepts a seed; NormalizeRequest resolves it into Options.
 	OptionsJSON  string
@@ -115,6 +117,7 @@ type DocumentRequest struct {
 // ordering remains behind this interface.
 type Service interface {
 	Preview(context.Context, Request) (ResolvedRequest, error)
+	PreviewDocument(context.Context, DocumentRequest) (ResolvedRequest, error)
 	Create(context.Context, DocumentRequest) (string, int, error)
 	Resume(context.Context, string) (int, error)
 	Restart(context.Context, string) (string, int, error)
@@ -251,6 +254,17 @@ func (m *Manager) Preview(ctx context.Context, req Request) (ResolvedRequest, er
 	return m.resolveRequest(ctx, normalized)
 }
 
+// PreviewDocument extracts the same canonical source used by Create, then
+// resolves the request without creating durable state or reserving an engine.
+func (m *Manager) PreviewDocument(ctx context.Context, document DocumentRequest) (ResolvedRequest, error) {
+	text, err := Extract(document.Filename, document.Data)
+	if err != nil {
+		return ResolvedRequest{}, requestErrorf("%v", err)
+	}
+	document.Request.Text = text
+	return m.Preview(ctx, document.Request)
+}
+
 func (m *Manager) resolveRequest(ctx context.Context, req Request) (ResolvedRequest, error) {
 	resolvedEngine, err := m.resolveEngine(ctx, req.EngineID)
 	if err != nil {
@@ -295,15 +309,36 @@ func NormalizeRequest(req Request) (Request, error) {
 	if req.EngineID != DefaultEngineID && req.EngineID != DramaBoxEngineID {
 		return Request{}, requestErrorf("audiobook engine must be audio or dramabox, got %q", req.EngineID)
 	}
+	hadStructuredPrompt := req.PromptSpec != (DramaBoxPromptSpec{})
 	req.Direction = strings.TrimSpace(req.Direction)
-	if utf8.RuneCountInString(req.Direction) > MaxDirectionRunes {
+	if !hadStructuredPrompt && utf8.RuneCountInString(req.Direction) > MaxDirectionRunes {
 		return Request{}, requestErrorf("audiobook direction must be at most %d characters", MaxDirectionRunes)
 	}
 	if req.EngineID == DefaultEngineID && req.Direction != "" {
 		return Request{}, requestErrorf("audiobook direction is only supported with dramabox")
 	}
-	if req.EngineID == DramaBoxEngineID && req.Direction == "" {
-		req.Direction = DefaultDramaBoxDirection
+	if req.EngineID == DefaultEngineID && req.PromptSpec != (DramaBoxPromptSpec{}) {
+		return Request{}, requestErrorf("audiobook prompt controls are only supported with dramabox")
+	}
+	if req.EngineID == DramaBoxEngineID {
+		// Direction is the v1 advanced escape hatch. Preserve old callers while
+		// all new clients send PromptSpec explicitly.
+		if req.PromptSpec == (DramaBoxPromptSpec{}) && req.Direction != "" {
+			req.PromptSpec = DramaBoxPromptSpec{SpeakerPhrase: DefaultSpeakerPhrase, AdvancedDirection: req.Direction}
+			req.AcceptPromptWarnings = true
+		}
+		evaluation, err := EvaluateDramaBoxPrompt(req.PromptSpec, req.Text)
+		if err != nil {
+			return Request{}, err
+		}
+		req.PromptSpec = evaluation.Spec
+		if req.Direction == "" {
+			if evaluation.Spec.DeliveryPreset == DefaultDeliveryPreset {
+				req.Direction = DefaultDramaBoxDirection
+			} else {
+				req.Direction = evaluation.DeliveryText
+			}
+		}
 	}
 	if req.Options.Seed != 0 {
 		return Request{}, requestErrorf("audiobook section seeds are assigned by the server")
@@ -338,9 +373,8 @@ func NormalizeRequest(req Request) (Request, error) {
 // neither source nor direction can close that passage early; all source
 // words remain unchanged.
 func BuildDramaBoxPrompt(direction, chunk string) string {
-	direction = strings.Join(strings.Fields(normalizePromptQuotes(direction)), " ")
-	chunk = normalizePromptQuotes(chunk)
-	return direction + ` "` + chunk + `"`
+	prompt, _ := BuildStructuredDramaBoxPrompt(DramaBoxPromptSpec{SpeakerPhrase: DefaultSpeakerPhrase, AdvancedDirection: normalizePromptQuotes(direction)}, chunk)
+	return prompt
 }
 
 func normalizePromptQuotes(value string) string {
@@ -392,6 +426,16 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 	if err != nil {
 		return "", 0, err
 	}
+	var promptEvaluation PromptEvaluation
+	if req.EngineID == DramaBoxEngineID {
+		promptEvaluation, err = EvaluateDramaBoxPrompt(req.PromptSpec, req.Text)
+		if err != nil {
+			return "", 0, err
+		}
+		if len(promptEvaluation.Warnings) > 0 && !req.AcceptPromptWarnings {
+			return "", 0, requestErrorf("DramaBox prompt has lint warnings; preview and explicitly accept them before narration")
+		}
+	}
 	if req.EngineID == DramaBoxEngineID && req.Verification == VerificationModeRequired && m.verify == nil {
 		return "", 0, fmt.Errorf("%w: required mode needs a configured Whisper engine", ErrVerificationUnavailable)
 	}
@@ -410,6 +454,7 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 		return "", 0, err
 	}
 	identity := buildSynthesisIdentity(req, resolved.Engine, resolved.Voice)
+	benchmarkProfileIdentity := m.matchingBenchmarkProfile(req, resolved)
 
 	var units []narrationUnit
 	var initial *Manifest
@@ -428,7 +473,10 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 		manifest := Manifest{
 			SchemaVersion: CurrentManifestSchemaVersion, ID: id, Title: title,
 			VoiceID: req.VoiceID, EngineID: req.EngineID, Direction: req.Direction,
-			Chunks: len(sections), CreatedAt: createdAt,
+			PromptSpec: req.PromptSpec, PromptWarnings: promptEvaluation.Warnings,
+			AIGenerated: true, Watermark: "unknown",
+			BenchmarkProfileIdentity: benchmarkProfileIdentity,
+			Chunks:                   len(sections), CreatedAt: createdAt,
 			ArtifactURL: "/v1/audiobooks/" + id + "/artifact/" + ArtifactName,
 			Status:      ProductionStatusSynthesizing, SourceFile: sourceFileName,
 			SourceSHA256: identity.SourceSHA256, SynthesisFingerprint: identity.Fingerprint,
@@ -551,7 +599,8 @@ func (m *Manager) Resume(ctx context.Context, id string) (int, error) {
 	}
 	req, err := NormalizeRequest(Request{
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
-		EngineID: manifest.EngineID, Direction: manifest.Direction, Options: *manifest.ResolvedOptions,
+		EngineID: manifest.EngineID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec,
+		AcceptPromptWarnings: true, Options: *manifest.ResolvedOptions,
 		Verification: manifestVerificationMode(manifest),
 	})
 	if err != nil {
@@ -627,7 +676,8 @@ func (m *Manager) Restart(ctx context.Context, id string) (string, int, error) {
 	}
 	return m.Submit(ctx, Request{
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
-		EngineID: manifest.EngineID, Direction: manifest.Direction, Options: *manifest.ResolvedOptions,
+		EngineID: manifest.EngineID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec,
+		AcceptPromptWarnings: true, Options: *manifest.ResolvedOptions,
 		Verification: manifestVerificationMode(manifest),
 	})
 }
@@ -654,7 +704,8 @@ func (m *Manager) CanResume(ctx context.Context, id string) error {
 	}
 	req, err := NormalizeRequest(Request{
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
-		EngineID: manifest.EngineID, Direction: manifest.Direction, Options: *manifest.ResolvedOptions,
+		EngineID: manifest.EngineID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec,
+		AcceptPromptWarnings: true, Options: *manifest.ResolvedOptions,
 		Verification: manifestVerificationMode(manifest),
 	})
 	if err != nil {
@@ -727,7 +778,8 @@ func (m *Manager) RetrySection(ctx context.Context, id, sectionID string, mode R
 	}
 	req, err := NormalizeRequest(Request{
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
-		EngineID: manifest.EngineID, Direction: manifest.Direction, Options: *manifest.ResolvedOptions,
+		EngineID: manifest.EngineID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec,
+		AcceptPromptWarnings: true, Options: *manifest.ResolvedOptions,
 		Verification: manifestVerificationMode(manifest),
 	})
 	if err != nil {
@@ -779,7 +831,7 @@ func (m *Manager) runSectionRetry(ctx context.Context, jobID string, manifest Ma
 	options := req.Options
 	options.Seed = requestedSeed
 	result, err := m.invokeSynthesis(ctx, SynthesisRequest{
-		Text: BuildDramaBoxPrompt(req.Direction, sectionText), VoiceID: req.VoiceID,
+		Text: buildRequestPrompt(req, sectionText), VoiceID: req.VoiceID,
 		EngineID: req.EngineID, Options: options, Voice: voice.Reference,
 	})
 	if err != nil {
@@ -1115,7 +1167,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		}
 		text := unit.text
 		if req.EngineID == DramaBoxEngineID {
-			text = BuildDramaBoxPrompt(req.Direction, unit.text)
+			text = buildRequestPrompt(req, unit.text)
 		}
 		options := req.Options
 		options.Seed = unit.seed
@@ -1229,6 +1281,9 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		VoiceID:              req.VoiceID,
 		EngineID:             req.EngineID,
 		Direction:            req.Direction,
+		PromptSpec:           req.PromptSpec,
+		AIGenerated:          true,
+		Watermark:            "unknown",
 		Chunks:               len(units),
 		CreatedAt:            m.now(),
 		SynthesisFingerprint: identity.Fingerprint,
@@ -1261,6 +1316,36 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 	if m.registry != nil {
 		m.registry.Complete(id, map[string]string{"artifactUrl": manifest.ArtifactURL, "title": manifest.Title, "engine": manifest.EngineID})
 	}
+}
+
+func buildRequestPrompt(req Request, source string) string {
+	prompt, err := BuildStructuredDramaBoxPrompt(req.PromptSpec, source)
+	if err == nil {
+		return prompt
+	}
+	// Normalized requests cannot reach this fallback; retaining it keeps old
+	// durable manifests with only Direction resumable.
+	return BuildDramaBoxPrompt(req.Direction, source)
+}
+
+func (m *Manager) matchingBenchmarkProfile(req Request, resolved ResolvedRequest) string {
+	if req.EngineID != DramaBoxEngineID {
+		return ""
+	}
+	results, err := m.ListBenchmarkResults(context.Background())
+	if err != nil {
+		return ""
+	}
+	for _, result := range results {
+		if result.Status == "complete" && !result.IdentityChanged &&
+			result.Engine.Fingerprint == resolved.Engine.Fingerprint &&
+			result.Voice.Fingerprint == resolved.Voice.Fingerprint &&
+			result.Options == req.Options && result.Direction == req.Direction &&
+			result.PromptSpec == req.PromptSpec {
+			return result.ProfileFingerprint
+		}
+	}
+	return ""
 }
 
 func ensureInitialRender(manifest *Manifest) {

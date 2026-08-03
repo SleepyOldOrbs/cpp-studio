@@ -48,8 +48,10 @@ makes the model and prompt surfaces easier to discover and use correctly.
   chunks, and a 50 ms equal-power crossfade:
   <https://github.com/0xShug0/audio.cpp/blob/release-0.5/docs/tts.md#dramabox>
 - The release-0.5 server accepts `seed` at the top level of
-  `POST /v1/audio/speech`; full `uint64` seeds should be encoded as JSON strings. It
-  also accepts an `options` object for model-specific request values:
+  `POST /v1/audio/speech`, but its option parser narrows that value to a signed native
+  `int`. cpp-studio therefore generates cryptographically random positive 31-bit
+  seeds and still encodes them as decimal JSON strings. The server also accepts an
+  `options` object for model-specific request values:
   <https://github.com/0xShug0/audio.cpp/blob/release-0.5/app/server/README.md#post-v1audiospeech>
 - Upstream DramaBox reports quality drift beyond roughly 45 seconds, automatically
   targets approximately 37-second internal chunks, repeats the speaker prefix, and
@@ -133,7 +135,7 @@ The earlier recommendation listed fixed seeds under P1. The implementation must 
 that feature:
 
 - **P0 internal seed plumbing:** every DramaBox section receives and persists a stable
-  `uint64` seed so resume and fingerprint behavior are coherent.
+  positive 31-bit seed so resume and fingerprint behavior are coherent.
 - **P1 retry controls:** the user can reproduce the same attempt or deliberately create
   a variation with a new seed.
 
@@ -197,6 +199,12 @@ Qualification evidence (2026-08-03):
   translation units because NVCC received a malformed MSVC optimization argument.
   CUDA qualification and human listening remain separate follow-up gates; neither
   invalidates the completed CPU runtime-contract qualification.
+- The canonical resident benchmark measured 15.05-second 48 kHz stereo PCM outputs
+  at cold/warm RTF 37.24/27.11 and projected 30.13 hours per 10,000 words. The fresh
+  `dramabox.mem_saver=true` profile measured 32.05/25.21 and projected 28.01 hours.
+  Both required native long-form cases failed with release-0.5
+  `regex_error(error_stack)` insufficient memory on the 61.6 GiB machine. Paragraph
+  synthesis is therefore qualified as overnight-class; complete CPU books are not.
 
 #### P0.1 — engine-specific section planning
 
@@ -238,7 +246,7 @@ type SynthesisRequest struct {
 }
 
 type SynthesisOptions struct {
-    Seed                   uint64
+    Seed                   uint64 // constrained to 1..math.MaxInt32 for release-0.5
     NumInferenceSteps      int
     GuidanceScale          float64
     AudioChunkThresholdSec float64
@@ -264,7 +272,7 @@ and ranges, rejects duplicates/unknowns, and is normalized back into
 command, path, URL, token, or arbitrary audio.cpp argument.
 
 At job creation, deterministically plan the complete section table, generate one
-cryptographically random `uint64` seed per app-level section, and atomically persist
+cryptographically random positive 31-bit seed per app-level section, and atomically persist
 the canonical source plus complete initial manifest before the first engine
 invocation. Resume reuses the stored plan and seeds. Server mode sends the seed as a
 decimal JSON string; subprocess mode uses `--seed`. Invalid or unsupported option
@@ -350,7 +358,7 @@ Manifest additions:
       "startByte": 0,
       "endByte": 1234,
       "textSha256": "...",
-      "seed": "1844674407370955161",
+      "seed": "1804289383",
       "checkpointFingerprint": "...",
       "status": "pending|synthesized|verified|flagged",
       "audioFile": "sections/section-0001.wav",
@@ -359,7 +367,7 @@ Manifest additions:
       "attempts": [
         {
           "id": "attempt-0001",
-          "seed": "1844674407370955161",
+          "seed": "1804289383",
           "checkpointFingerprint": "...",
           "audioFile": "sections/section-0001.wav",
           "audioSha256": "...",
@@ -1050,7 +1058,7 @@ publish a flagged audiobook with an unmistakable warning and retained evidence.
 | Final book exhausts RAM | Critical | Streaming assembler and 4 GiB guard | P0 |
 | Generated speech changes facts | High | ASR report, anchor warnings, raw evidence | P0 |
 | ASR errors are misrepresented as TTS errors | High | Label report as heuristic; retain transcript/source; no silent rewrite | P0 |
-| Stable seed exceeds JSON integer precision | High | Send decimal JSON string and test max `uint64` | P0 |
+| Seed exceeds release-0.5's signed native `int` range | High | Generate positive 31-bit entropy, send a decimal JSON string, and test the boundary | P0 |
 | DramaBox and Whisper compete for GPU memory | High | Serial phases, CPU-first DramaBox, benchmark/profile evidence before coexistence | P0/P1 |
 | Poor reference produces unstable clone | Medium | Engine-specific duration/PCM/VAD fitness | P1 |
 | Benchmark fixture succeeds but real model does not | High | Separate fixture/code and live-runtime gates | P1 |
@@ -1148,7 +1156,7 @@ P0 request validation
   +-- audio engine keeps legacy chunk/gap behavior ........ unit + gateway regression
   +-- dramabox section estimator/boundaries ............... table/property tests
   +-- option range and JSON/CLI mapping .................... engine + upstream fixture tests
-  +-- uint64 seed encoded as JSON string ................... engine contract test
+  +-- positive 31-bit seed encoded as JSON string .......... engine contract test
   +-- gateway passes upload intent through one Manager seam  gateway seam test
 
 P0 durable lifecycle
@@ -1254,9 +1262,10 @@ Names may adjust during implementation, but responsibilities must remain separat
 - [x] P0-12: Update docs and examples.
 - [x] P0-13: Run full fixture verification, including Manager interface and crash-ordering tests.
 - [x] P0-14: Run real release-0.5 acceptance if the model is locally available.
-  Checked 2026-08-03: the exact DramaBox GGUF is absent and the sibling audio.cpp
-  checkout is `release-0.4.2` (`27d87ba`), so real acceptance was not runnable.
-  P0 remains fixture-verified and explicitly runtime-unverified.
+  Completed 2026-08-03 against the local `audio.cpp-release-0.5` checkout and the
+  exact 18,942,803,808-byte DramaBox Q8_0 GGUF. The local SHA-256 matches tracked
+  immutable metadata. CPU synthesis produced valid WAV output; technical runtime
+  acceptance does not replace human listening acceptance.
 
 ### P1 task order
 
@@ -1268,24 +1277,36 @@ Names may adjust during implementation, but responsibilities must remain separat
 - [x] P1-06: Build and self-test the DramaBox benchmark harness.
 - [x] P1-07: Add benchmark API/job and fingerprinted result persistence.
 - [x] P1-08: Add timing/projection, repair, reference, and attempt-audition UI.
-- [ ] P1-09: Run real CPU and optional CUDA/mem-saver measurements.
+- [x] P1-09: Run real CPU and optional CUDA/mem-saver measurements.
+  Completed 2026-08-03 with resident and fresh memory-saver CPU profiles. Both
+  recorded valid paragraph WAV/RTF evidence and the same required long-form memory
+  failure. CUDA was explicitly recorded unavailable because the inspected release
+  checkout has no completed CUDA executable; subjective listening remains separate.
 
 ### P2 task order
 
-- [ ] P2-01: Add bounded model-manager/loader discovery with server-side package allowlisting.
-- [ ] P2-02: Extend tracked install metadata and merge optional readiness fields into the catalog API.
-- [ ] P2-03: Implement short-lived, single-use installation preview confirmations and blocker policy.
-- [ ] P2-04: Implement destination-locked staged download, size/checksum verification, no-overwrite atomic promotion, cleanup, and catalog refresh.
-- [ ] P2-05: Register installation as an existing-style job with phase/byte progress and safe cancellation.
-- [ ] P2-06: Add preview/confirmation, progress/cancellation, warning, and rescue states to the Models tab.
-- [ ] P2-07: Expose bounded GGUF inspection and link readiness remedies to existing lifecycle/profile/variant controls.
-- [ ] P2-08: Add structured factual prompt types and policy versioning.
-- [ ] P2-09: Add prompt linter, exact preview, and advanced escape hatch.
-- [ ] P2-10: Extend manifest/sidecar provenance without watermark assumptions.
-- [ ] P2-11: Update setup, API, model, installation, lifecycle, and prompt documentation.
-- [ ] P2-12: Run command-injection, traversal, disk, partial-download, licence, concurrency, and confirmation-replay security tests.
+- [x] P2-01: Add bounded model-manager/loader discovery with server-side package allowlisting.
+- [x] P2-02: Extend tracked install metadata and merge optional readiness fields into the catalog API.
+- [x] P2-03: Implement short-lived, single-use installation preview confirmations and blocker policy.
+- [x] P2-04: Implement destination-locked staged download, size/checksum verification, no-overwrite atomic promotion, cleanup, and catalog refresh.
+- [x] P2-05: Register installation as an existing-style job with phase/byte progress and safe cancellation.
+- [x] P2-06: Add preview/confirmation, progress/cancellation, warning, and rescue states to the Models tab.
+- [x] P2-07: Expose bounded GGUF inspection and link readiness remedies to existing lifecycle/profile/variant controls.
+- [x] P2-08: Add structured factual prompt types and policy versioning.
+- [x] P2-09: Add prompt linter, exact preview, and advanced escape hatch.
+- [x] P2-10: Extend manifest/sidecar provenance without watermark assumptions.
+- [x] P2-11: Update setup, API, model, installation, lifecycle, and prompt documentation.
+- [x] P2-12: Run command-injection, traversal, disk, partial-download, licence, concurrency, and confirmation-replay security tests.
 - [ ] P2-13: Run browser acceptance for install preview/confirm, progress/cancel, GGUF inspection, lifecycle links, and error remedies.
-- [ ] P2-14: Run compatibility and full verification suites.
+  Attempted 2026-08-03 after live API/static acceptance, but this agent session has
+  no connected browser. Keep this human-visible interaction gate open rather than
+  representing server or DOM tests as browser acceptance.
+- [x] P2-14: Run compatibility and full verification suites.
+  Completed 2026-08-03: `scripts/verify.ps1` passed every Go package, both checked
+  configurations, the benchmark harness self-tests, and the full fixture smoke flow.
+  `go vet ./...`, JavaScript syntax, JSON parsing, diff whitespace, and the Linux
+  cross-build of the OS-specific installer package also passed. The Go race build
+  remains unavailable on this machine because no C compiler is installed.
 
 ## Verification commands
 

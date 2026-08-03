@@ -32,11 +32,12 @@ The International Space Station travels in low Earth orbit at roughly 28,000 kil
 `
 
 type BenchmarkRequest struct {
-	Backend     string          `json:"backend"`
-	IncludeCUDA bool            `json:"includeCuda,omitempty"`
-	VoiceID     string          `json:"voiceId,omitempty"`
-	Direction   string          `json:"direction,omitempty"`
-	Options     json.RawMessage `json:"options,omitempty"`
+	Backend     string             `json:"backend"`
+	IncludeCUDA bool               `json:"includeCuda,omitempty"`
+	VoiceID     string             `json:"voiceId,omitempty"`
+	Direction   string             `json:"direction,omitempty"`
+	PromptSpec  DramaBoxPromptSpec `json:"promptSpec,omitempty"`
+	Options     json.RawMessage    `json:"options,omitempty"`
 }
 
 type BenchmarkCaseResult struct {
@@ -76,6 +77,7 @@ type BenchmarkResult struct {
 	Engine                  EngineIdentity        `json:"engine"`
 	Voice                   VoiceIdentity         `json:"voice"`
 	Direction               string                `json:"direction"`
+	PromptSpec              DramaBoxPromptSpec    `json:"promptSpec"`
 	Options                 SynthesisOptions      `json:"options"`
 	Cases                   []BenchmarkCaseResult `json:"cases"`
 	ColdRTF                 float64               `json:"coldRtf,omitempty"`
@@ -102,15 +104,17 @@ func normalizeBenchmarkRequest(request BenchmarkRequest) (BenchmarkRequest, erro
 	return request, nil
 }
 
-func benchmarkProfileFingerprint(engine EngineIdentity, voice VoiceIdentity, options SynthesisOptions, direction, backend, fixtureHash string) string {
+func benchmarkProfileFingerprint(engine EngineIdentity, voice VoiceIdentity, options SynthesisOptions, direction string, promptSpec DramaBoxPromptSpec, backend, fixtureHash string) string {
 	data, _ := json.Marshal(struct {
-		Engine      EngineIdentity
-		Voice       VoiceIdentity
-		Options     SynthesisOptions
-		Direction   string
-		Backend     string
-		FixtureHash string
-	}{engine, voice, options, direction, backend, fixtureHash})
+		Engine              EngineIdentity
+		Voice               VoiceIdentity
+		Options             SynthesisOptions
+		Direction           string
+		PromptSpec          DramaBoxPromptSpec
+		Backend             string
+		FixtureHash         string
+		PromptPolicyVersion int
+	}{engine, voice, options, direction, promptSpec, backend, fixtureHash, CurrentPromptPolicyVersion})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
@@ -122,7 +126,8 @@ func (m *Manager) StartBenchmark(ctx context.Context, request BenchmarkRequest) 
 	}
 	resolved, err := m.Preview(ctx, Request{
 		EngineID: DramaBoxEngineID, VoiceID: request.VoiceID,
-		Direction: request.Direction, OptionsJSON: string(request.Options), Verification: VerificationModeAuto,
+		Direction: request.Direction, PromptSpec: request.PromptSpec,
+		OptionsJSON: string(request.Options), Verification: VerificationModeAuto,
 	})
 	if err != nil {
 		return "", err
@@ -153,10 +158,11 @@ func (m *Manager) StartBenchmark(ctx context.Context, request BenchmarkRequest) 
 	result := BenchmarkResult{
 		SchemaVersion: BenchmarkSchemaVersion, ID: id, Status: "running", CreatedAt: m.now(),
 		Backend: request.Backend, FixtureSHA256: hex.EncodeToString(fixtureHash[:]), FixtureWords: len(strings.Fields(BenchmarkFixture)),
-		Engine: resolved.Engine, Voice: resolved.Voice, Direction: resolved.Request.Direction, Options: resolved.Request.Options,
+		Engine: resolved.Engine, Voice: resolved.Voice, Direction: resolved.Request.Direction,
+		PromptSpec: resolved.Request.PromptSpec, Options: resolved.Request.Options,
 		Disclaimer: "Technical timing and fidelity evidence does not certify subjective voice quality. Local generation consumes compute and storage.",
 	}
-	result.ProfileFingerprint = benchmarkProfileFingerprint(result.Engine, result.Voice, result.Options, result.Direction, result.Backend, result.FixtureSHA256)
+	result.ProfileFingerprint = benchmarkProfileFingerprint(result.Engine, result.Voice, result.Options, result.Direction, result.PromptSpec, result.Backend, result.FixtureSHA256)
 	if err := m.saveBenchmarkResult(result); err != nil {
 		if release != nil {
 			release()
@@ -203,7 +209,7 @@ func (m *Manager) runBenchmark(ctx context.Context, result BenchmarkResult, rele
 	if m.registry != nil {
 		m.registry.Update(result.ID, 0.1, "cold factual paragraph")
 	}
-	cold, _, err := m.measureBenchmarkCase(ctx, result.ID, "cpu.cold_text", paragraph, result.Direction, options, voice)
+	cold, _, err := m.measureBenchmarkCase(ctx, result.ID, "cpu.cold_text", paragraph, result.PromptSpec, options, voice)
 	result.Cases = append(result.Cases, cold)
 	if err != nil {
 		fail(err)
@@ -217,7 +223,7 @@ func (m *Manager) runBenchmark(ctx context.Context, result BenchmarkResult, rele
 	if m.registry != nil {
 		m.registry.Update(result.ID, 0.3, "warm factual paragraph")
 	}
-	warm, warmAudio, err := m.measureBenchmarkCase(ctx, result.ID, "cpu.warm_text", paragraph, result.Direction, options, voice)
+	warm, warmAudio, err := m.measureBenchmarkCase(ctx, result.ID, "cpu.warm_text", paragraph, result.PromptSpec, options, voice)
 	result.Cases = append(result.Cases, warm)
 	if err != nil {
 		fail(err)
@@ -234,7 +240,7 @@ func (m *Manager) runBenchmark(ctx context.Context, result BenchmarkResult, rele
 		m.registry.Update(result.ID, 0.55, "native long-form fixture")
 	}
 	longSource := strings.Repeat(BenchmarkFixture+"\n", 3)
-	longCase, err := m.measureLongBenchmarkCase(ctx, result.ID, longSource, result.Direction, options, voice)
+	longCase, err := m.measureLongBenchmarkCase(ctx, result.ID, longSource, result.PromptSpec, options, voice)
 	result.Cases = append(result.Cases, longCase)
 	if err != nil {
 		fail(err)
@@ -288,8 +294,12 @@ func (m *Manager) runBenchmark(ctx context.Context, result BenchmarkResult, rele
 	}
 }
 
-func (m *Manager) measureBenchmarkCase(ctx context.Context, benchmarkID, caseID, text, direction string, options SynthesisOptions, voice *engine.Voice) (BenchmarkCaseResult, []byte, error) {
-	request := SynthesisRequest{Text: BuildDramaBoxPrompt(direction, text), EngineID: DramaBoxEngineID, Options: options, Voice: voice}
+func (m *Manager) measureBenchmarkCase(ctx context.Context, benchmarkID, caseID, text string, promptSpec DramaBoxPromptSpec, options SynthesisOptions, voice *engine.Voice) (BenchmarkCaseResult, []byte, error) {
+	prompt, err := BuildStructuredDramaBoxPrompt(promptSpec, text)
+	if err != nil {
+		return BenchmarkCaseResult{ID: caseID, Status: "failed", Error: err.Error()}, nil, err
+	}
+	request := SynthesisRequest{Text: prompt, EngineID: DramaBoxEngineID, Options: options, Voice: voice}
 	result, err := m.invokeSynthesis(ctx, request)
 	caseResult := BenchmarkCaseResult{ID: caseID, Status: "failed", RequestedSeed: options.Seed, SeedStatus: "requested"}
 	if err != nil {
@@ -330,7 +340,7 @@ func (m *Manager) measureBenchmarkCase(ctx context.Context, benchmarkID, caseID,
 	return caseResult, result.Audio, nil
 }
 
-func (m *Manager) measureLongBenchmarkCase(ctx context.Context, benchmarkID, source, direction string, options SynthesisOptions, voice *engine.Voice) (BenchmarkCaseResult, error) {
+func (m *Manager) measureLongBenchmarkCase(ctx context.Context, benchmarkID, source string, promptSpec DramaBoxPromptSpec, options SynthesisOptions, voice *engine.Voice) (BenchmarkCaseResult, error) {
 	sections, err := PlanDramaBoxSections(source)
 	caseResult := BenchmarkCaseResult{ID: "cpu.long_form", Status: "failed", RequestedSeed: options.Seed}
 	if err != nil {
@@ -342,7 +352,7 @@ func (m *Manager) measureLongBenchmarkCase(ctx context.Context, benchmarkID, sou
 	for _, section := range sections {
 		sectionOptions := options
 		sectionOptions.Seed = section.Seed
-		measured, audio, synthErr := m.measureBenchmarkCase(ctx, benchmarkID, "long-"+section.ID, source[section.StartByte:section.EndByte], direction, sectionOptions, voice)
+		measured, audio, synthErr := m.measureBenchmarkCase(ctx, benchmarkID, "long-"+section.ID, source[section.StartByte:section.EndByte], promptSpec, sectionOptions, voice)
 		if synthErr != nil {
 			caseResult.Error = measured.Error
 			return caseResult, synthErr
@@ -427,16 +437,16 @@ func (m *Manager) BenchmarkResult(ctx context.Context, id string) (BenchmarkResu
 	if err := json.Unmarshal(data, &result); err != nil || result.ID != id || result.SchemaVersion != BenchmarkSchemaVersion {
 		return BenchmarkResult{}, fmt.Errorf("benchmark result is corrupt")
 	}
-	resolved, resolveErr := m.Preview(ctx, Request{EngineID: DramaBoxEngineID, VoiceID: result.Voice.ID, Direction: result.Direction, Options: result.Options, Verification: VerificationModeAuto})
+	resolved, resolveErr := m.Preview(ctx, Request{EngineID: DramaBoxEngineID, VoiceID: result.Voice.ID, Direction: result.Direction, PromptSpec: result.PromptSpec, Options: result.Options, Verification: VerificationModeAuto})
 	if resolveErr != nil {
 		result.IdentityChanged = true
 		result.IdentityChangeReason = resolveErr.Error()
 		return result, nil
 	}
-	current := benchmarkProfileFingerprint(resolved.Engine, resolved.Voice, resolved.Request.Options, resolved.Request.Direction, result.Backend, result.FixtureSHA256)
+	current := benchmarkProfileFingerprint(resolved.Engine, resolved.Voice, resolved.Request.Options, resolved.Request.Direction, resolved.Request.PromptSpec, result.Backend, result.FixtureSHA256)
 	result.IdentityChanged = current != result.ProfileFingerprint
 	if result.IdentityChanged {
-		result.IdentityChangeReason = "engine, model, voice, option, backend, or fixture identity changed"
+		result.IdentityChangeReason = "engine, model, voice, prompt, option, backend, or fixture identity changed"
 	}
 	return result, nil
 }

@@ -103,7 +103,10 @@ profiles trade resident models against your card's budget.
 - Native engine binaries and model weights are **not** bundled: you bring
   llama.cpp, whisper.cpp, audio.cpp, and stable-diffusion.cpp builds plus
   models (~15 GB for the full reference setup). `models.json` declares every
-  model with its source; the Models tab shows what is present or missing.
+  model with its source; the Models tab keeps catalog, loader/package discovery,
+  presence, checksum, configuration, health, and benchmark readiness distinct. The
+  pinned DramaBox artifact can be installed only after an explicit immutable preview
+  and short-lived confirmation; cpp-studio never silently downloads a model.
 
 ## Quick start
 
@@ -164,15 +167,19 @@ OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
 DramaBox is an experimental English model from audio.cpp `release-0.5`. It
 can act a factual passage from a short performance direction, with an
 optional stored voice reference. To add it, review the upstream LTX-2
-Community License and model card, download
-`DramaBox-GGUF/dramabox-q8_0.gguf` from
-[`audio-cpp/audio.cpp-gguf`](https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main/DramaBox-GGUF),
-then copy `config.dramabox-local.example.json` and edit its one `root` value.
+Community License and model card, then use the Models tab's explicit preview and
+short-lived confirmation for the pinned `dramabox-q8-0` artifact (or download that
+exact revision manually from
+[`audio-cpp/audio.cpp-gguf`](https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/96367c9cb9d7484206d629ba92a8745af03499c6/DramaBox-GGUF)). Copy
+`config.dramabox-local.example.json` and edit its one `root` value.
 The paired `dramabox-server.example.json` deliberately starts on CPU and
 lazy-loads the model: the 18,942,803,808-byte file is larger than the
-reference RTX 5080's 16,303 MiB VRAM. CPU latency and CUDA fit are unverified;
-keep the fast local narrator for normal use until a real chapter benchmark
-proves otherwise. Local generation avoids a hosted usage bill, but storage,
+reference RTX 5080's 16,303 MiB VRAM. Measured Ryzen 7 9800X3D paragraph synthesis
+is overnight-class (warm RTF 27.11 resident and 25.21 with memory saving). The
+required native long-form case exhausted the 61.6 GiB qualification machine in both
+profiles, so this CPU is not qualified for complete books. CUDA fit remains unverified
+because the release checkout has no completed CUDA executable. Keep the fast local
+narrator for normal use. Local generation avoids a hosted usage bill, but storage,
 compute, electricity, and licence obligations still exist.
 
 DramaBox books are durable from the moment an ID is returned: canonical source,

@@ -49,7 +49,11 @@ runnable by someone who isn't the author.
   so tracked `config.example.json` actually works. `config.real.json` stays the
   local override. A stranger edits one root path, not fifteen.
 - **Models tab + API.** `GET /v1/models/catalog` returns the manifest with live
-  status; a Models tab lists each model, its size/state, and (later) re-download.
+  status; a Models tab lists each model and keeps loader/package discovery,
+  presence, checksum, configuration, health, and benchmark currency distinct.
+  The first acquisition slice is now intentionally narrow: only the immutable,
+  allowlisted DramaBox Q8 artifact has explicit preview/confirmation and a tracked,
+  staged, checksum-gated install job. General model fetching remains out of scope.
 - **Acceptance:** `verify.ps1` green; a fresh checkout + example config +
   documented model fetch runs the fixture and real gateways; the console renders
   as tabs; the Models tab shows real present/missing status.
@@ -218,14 +222,17 @@ gap, not three buttons:
   published stays what you published.
 - Retake and re-render are Jobs, with the manifest replaced atomically.
 
-**Deferred, redesigned — model fetching.** The idea was "stream `source`,
+**Narrow slice shipped; general fetching remains deferred.** The idea was "stream `source`,
 check the `sha256` the manifest already has". Both premises are false:
 every `source` in `models.json` is a landing page, not a downloadable
 object, and the four directory models carry no checksum at all. A fetcher
 needs artifact-level descriptors first (resolved URL, revision, per-file
 digest, archive member). And weights alone do not unblock a stranger — they
 still need engine binaries. The honest version is a versioned reference
-pack, not a download button.
+pack, not a generic download button. The DramaBox hardening work now proves that
+boundary for one complete artifact: pinned revision/URL/bytes/SHA/licence,
+server allowlisting, single-use confirmation, no-overwrite promotion, and no
+automatic engine action. It does not authorize the incomplete catalog entries.
 
 **Deferred, narrowed — OpenAI compatibility.** Worth doing as a *tested*
 conformance profile, not a claim. Note the premise correction: there is no
@@ -323,6 +330,12 @@ mattered was that none of them should come first:
   identity-strict, Restart forks, and Discard is explicit. Story keeps its separate
   take-room lifecycle; shared persistence concepts do not merge the domain models.
   See [`PLAN-DRAMABOX-HARDENING.md`](PLAN-DRAMABOX-HARDENING.md).
+- **DramaBox guided setup and factual prompt correctness — code complete
+  2026-08-03; interactive browser acceptance pending.** Bounded audio.cpp discovery,
+  immutable confirmed installation, GGUF/readiness evidence, structured prompt lint,
+  exact full-document section preview, and export provenance now use existing gateway,
+  jobs, and lifecycle seams. Fixture/API/security suites pass; the remaining human UI
+  gate is kept explicit when no browser is connected.
 
 ### M10 — Episodes  ·  *the wall between here and the destination*
 

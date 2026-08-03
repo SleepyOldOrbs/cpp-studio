@@ -28,7 +28,7 @@ func TestPlanDramaBoxSectionsPacksParagraphsAndAssignsMetadata(t *testing.T) {
 
 	firstEnd := len(first) + 2 + len(second)
 	wantRanges := [][2]int64{{0, int64(firstEnd)}, {int64(firstEnd + 2), int64(len(source))}}
-	wantSeeds := []Seed{0x0102030405060708, ^Seed(0)}
+	wantSeeds := []Seed{0x05060708, 0x7fffffff}
 	for i, section := range sections {
 		wantID := fmt.Sprintf("section-%04d", i+1)
 		if section.ID != wantID {

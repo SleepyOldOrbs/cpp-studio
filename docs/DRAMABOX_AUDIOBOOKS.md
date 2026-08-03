@@ -2,13 +2,24 @@
 
 DramaBox is an optional, experimental English narrator from audio.cpp
 `release-0.5`. It does not replace the fast `audio` narrator. The official Q8 model
-is 18,942,803,808 bytes, so the supplied server example uses CPU and lazy loading;
-real CPU speed and reference RTX 5080 CUDA fit remain unverified until measured.
+is 18,942,803,808 bytes, so the supplied server example uses CPU and lazy loading.
+The local file was verified against tracked SHA-256
+`75e7e80fc748defb188cb902c34c62bc12539a7bba477215dccf59a7218a451e`.
+On a Ryzen 7 9800X3D, the canonical resident run measured cold RTF 37.24 and warm
+RTF 27.11; `dramabox.mem_saver=true` measured 32.05 and 25.21. Both are overnight
+class, and both required native long-form cases failed with
+`regex_error(error_stack)` insufficient memory on 61.6 GiB RAM. cpp-studio assigns
+cryptographically random positive 31-bit seeds for release-0.5's signed native `int`
+parser, but this CPU machine is not qualified for complete books. CUDA remains
+unverified because the inspected release checkout has no completed CUDA executable.
 
 ## Configure
 
 1. Review the upstream model card and LTX-2 Community License.
-2. Put `DramaBox-GGUF/dramabox-q8_0.gguf` under `audio.cpp/models`.
+2. Put `DramaBox-GGUF/dramabox-q8_0.gguf` under `audio.cpp/models`, or use the
+   Models tab's explicit Preview installation and licence confirmation. The tracked
+   artifact is pinned to revision `96367c9cb9d7484206d629ba92a8745af03499c6`;
+   installation never follows a moving branch or overwrites a destination.
 3. Copy `config.dramabox-local.example.json`, set its `root`, and keep
    `dramabox-server.example.json` beside it.
 4. Optionally merge your working `whisper` engine configuration for factual
@@ -25,6 +36,16 @@ the exact engine/model/voice identities, pinned defaults, transport mapping, and
 verification mode without creating work. The advanced JSON editor accepts only the
 same typed allowlist as the curated controls and never accepts a seed, path, command,
 URL, token, or arbitrary audio.cpp argument.
+
+The prompt surface separates immutable source text from delivery. Choose one of the
+five upstream-backed generic speaker phrases and a factual delivery preset. An
+advanced direction is an explicit escape hatch: role nouns, stacked descriptions,
+and paralinguistic cues generate warnings that must be accepted; double quotes are
+rejected. With a selected document, preview uploads it to the bounded
+`/v1/audiobooks/preview-document` route, uses the same extraction and range policy as
+production, and returns every exact section request plus all whitespace or quote
+normalizations. Source words are never changed silently, and warnings beyond an
+initial browser-visible excerpt cannot appear for the first time after submission.
 
 `POST /v1/audiobooks` returns only after the canonical source, full identity, all
 section ranges, options, and cryptographically random section seeds are atomically
@@ -62,6 +83,11 @@ The manifest records requested and reported actual seeds, hashes, options, synth
 and verification timings, duration, verification evidence, parent lineage, selection,
 and the exact attempt map used by every render revision. A reported seed mismatch
 fails the attempt; unavailable actual-seed reporting remains labelled `requested`.
+New manifests also record `aiGenerated: true`, engine/family/runtime/model identity,
+prompt and section policy versions, structured prompt spec/warnings, authorized voice
+reference provenance, benchmark profile identity when current, verification evidence,
+and `watermark: "unknown"`. The native contract does not justify claiming that the
+upstream Python watermark is present or absent.
 
 Stored voice references retain one-time PCM analysis in their voice manifest. The
 Audiobook picker shows and can play the exact stored WAV, its id and SHA-256,
@@ -105,7 +131,20 @@ Fixture verification proves orchestration without the 18.9 GB model:
 ```
 
 This does not prove real-model quality, peak VRAM, or real-time factor. Keep those
-claims runtime-unverified until P0-14 real acceptance succeeds.
+claims separate from the measured CPU evidence above. Technical validation does not
+certify subjective voice quality.
+
+The 2026-08-03 real evidence used audio.cpp `release-0.5` at
+`3178daf4028fa8f48ef63299aa1524ee2d3a4bb7`, CPU server SHA-256
+`806560fb69fba6bc50da4a4d802fe8c3a06866941d4b2fc0a21c5cb1983aa423`, and the
+18,942,803,808-byte verified Q8 model. The resident profile produced 15.05-second
+48 kHz stereo PCM paragraph WAVs at cold/warm RTF 37.24/27.11 and projected 30.13
+hours per 10,000 words. An observed memory snapshot reached about 22.7 GiB working
+set and 67.5 GiB private bytes before its long-form failure. The fresh memory-saver
+profile produced the same shape at RTF 32.05/25.21 and projected 28.01 hours; it
+unloaded to about 3.6 GiB working set and 12.7 GiB private bytes between requests,
+but its long-form case failed with the same native insufficient-memory error.
+These are runtime measurements, not subjective listening acceptance.
 
 Plan or run the dedicated evidence harness with:
 
@@ -124,14 +163,16 @@ The harness calls `POST /v1/audiobooks/benchmark`, follows the returned normal j
 and reads `GET /v1/audiobooks/benchmark/results/{id}`. The result directory retains
 checkpointed JSON and case WAVs under `out/audiobook-benchmarks`; the collection is
 available from `GET /v1/audiobooks/benchmark/results` after a restart. Each result
-fingerprints the exact engine/model, authorized voice and reference hash, effective
-options, requested backend, and canonical fixture. A current mismatch is returned as
+fingerprints the exact engine/model, authorized voice and reference hash, structured
+prompt profile and policy, effective options, requested backend, and canonical fixture. A current mismatch is returned as
 `identityChanged`, so old performance is never silently projected onto new assets.
 CPU/GPU memory fields remain absent when the platform cannot measure them, and the
-fresh-server mem-saver cases remain `profile-required` until run in those profiles.
+fresh-server mem-saver cases remain `profile-required` inside any single result: run
+the whole harness against a separately started profile, as in the measured evidence
+above, rather than pretending a live server changed its own session mode.
 
 The Audiobook desk loads the newest matching benchmark for the selected voice,
-direction, and effective options. It shows cold/warm RTF, a measured 10,000-word
+structured prompt, compatibility direction, and effective options. It shows cold/warm RTF, a measured 10,000-word
 projection, available VRAM evidence, fidelity state, date, and staleness. Overnight is
 an informed choice rather than a block; a matching result that failed to load or
 produce valid audio blocks Narrate until configuration changes and a new run succeeds.

@@ -1624,6 +1624,41 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.model-readiness {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.model-readiness .status-pill {
+  font-size: 0.72rem;
+}
+
+.model-install-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+}
+
+.model-install-panel pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.76rem;
+}
+
+.model-install-panel progress {
+  width: 100%;
+}
+
+.model-install-status {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .status-pill.warn {
   color: var(--warn);
   background: var(--warn-soft);
