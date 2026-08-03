@@ -128,11 +128,11 @@ func TestNarrationPipeline(t *testing.T) {
 	manager := NewManager(ManagerOptions{
 		RootDir: t.TempDir(),
 		Jobs:    registry,
-		Synthesize: func(_ context.Context, text, voiceID, engineID string) ([]byte, error) {
-			synthesized = append(synthesized, text)
-			engines = append(engines, engineID)
-			if voiceID != "narrator" {
-				return nil, fmt.Errorf("unexpected voice %q", voiceID)
+		Synthesize: func(_ context.Context, request SynthesisRequest) ([]byte, error) {
+			synthesized = append(synthesized, request.Text)
+			engines = append(engines, request.EngineID)
+			if request.VoiceID != "narrator" {
+				return nil, fmt.Errorf("unexpected voice %q", request.VoiceID)
 			}
 			return wav.SyntheticTone(1600), nil
 		},
@@ -201,7 +201,7 @@ func TestNarrationCancellation(t *testing.T) {
 		ReserveEngine: func(_ context.Context, name string) (func(), bool) {
 			return func() { released <- name }, true
 		},
-		Synthesize: func(ctx context.Context, _, _, _ string) ([]byte, error) {
+		Synthesize: func(ctx context.Context, _ SynthesisRequest) ([]byte, error) {
 			if attempts.Add(1) == 1 {
 				entered <- struct{}{}
 				<-ctx.Done()
@@ -246,7 +246,7 @@ func TestSubmitRejectsBusyAndEmpty(t *testing.T) {
 		ReserveEngine: func(context.Context, string) (func(), bool) {
 			return func() { released <- struct{}{} }, true
 		},
-		Synthesize: func(ctx context.Context, _, _, _ string) ([]byte, error) {
+		Synthesize: func(ctx context.Context, _ SynthesisRequest) ([]byte, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
@@ -326,37 +326,41 @@ func TestDramaBoxNarrationReservesSelectedEngineAndRecordsProvenance(t *testing.
 	registry := jobs.NewRegistry()
 	rootDir := t.TempDir()
 	var reserved string
-	var spokenText, spokenEngine string
+	var spoken SynthesisRequest
 	manager := NewManager(ManagerOptions{
-		RootDir: rootDir,
-		Jobs:    registry,
+		RootDir:    rootDir,
+		Jobs:       registry,
+		SeedSource: bytes.NewReader([]byte{0, 0, 0, 0, 0, 0, 0, 42}),
 		ReserveEngine: func(_ context.Context, name string) (func(), bool) {
 			reserved = name
 			return func() {}, true
 		},
-		Synthesize: func(_ context.Context, text, _ string, engineID string) ([]byte, error) {
-			spokenText = text
-			spokenEngine = engineID
+		Synthesize: func(_ context.Context, request SynthesisRequest) ([]byte, error) {
+			spoken = request
 			return wav.SyntheticTone(1600), nil
 		},
 	})
 
 	id, _, err := manager.Submit(context.Background(), Request{
-		Title:     "Facts",
-		Text:      `The witness wrote "three" in the ledger.`,
-		EngineID:  DramaBoxEngineID,
-		Direction: "Restrained and precise.",
+		Title:       "Facts",
+		Text:        `The witness wrote "three" in the ledger.`,
+		EngineID:    DramaBoxEngineID,
+		Direction:   "Restrained and precise.",
+		OptionsJSON: `{"guidance_scale":3.25}`,
 	})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	waitForAudiobookJob(t, registry, id)
 
-	if reserved != DramaBoxEngineID || spokenEngine != DramaBoxEngineID {
-		t.Fatalf("expected dramabox reservation/synthesis, reserved=%q spoken=%q", reserved, spokenEngine)
+	if reserved != DramaBoxEngineID || spoken.EngineID != DramaBoxEngineID {
+		t.Fatalf("expected dramabox reservation/synthesis, reserved=%q spoken=%q", reserved, spoken.EngineID)
 	}
-	if want := `Restrained and precise. "The witness wrote 'three' in the ledger."`; spokenText != want {
-		t.Fatalf("unexpected spoken text: want %q, got %q", want, spokenText)
+	if want := `Restrained and precise. "The witness wrote 'three' in the ledger."`; spoken.Text != want {
+		t.Fatalf("unexpected spoken text: want %q, got %q", want, spoken.Text)
+	}
+	if spoken.Options.Seed != 42 || spoken.Options.GuidanceScale != 3.25 || spoken.Options.NumInferenceSteps != 30 {
+		t.Fatalf("typed request did not include the stable seed and complete options: %+v", spoken.Options)
 	}
 	books, err := manager.List()
 	if err != nil || len(books) != 1 {
@@ -364,6 +368,9 @@ func TestDramaBoxNarrationReservesSelectedEngineAndRecordsProvenance(t *testing.
 	}
 	if books[0].EngineID != DramaBoxEngineID || books[0].Direction != "Restrained and precise." {
 		t.Fatalf("missing provenance: %+v", books[0])
+	}
+	if books[0].ResolvedOptions == nil || books[0].ResolvedOptions.Seed != 0 || books[0].ResolvedOptions.GuidanceScale != 3.25 || books[0].ResolvedOptions.AudioChunkDurationSec != 37 {
+		t.Fatalf("manifest did not persist complete seed-independent options: %+v", books[0].ResolvedOptions)
 	}
 	entries, err := os.ReadDir(rootDir)
 	if err != nil {
@@ -389,7 +396,7 @@ func TestDramaBoxNarrationUsesLongSectionsWithoutChangingFastChunks(t *testing.T
 		manager := NewManager(ManagerOptions{
 			RootDir: t.TempDir(),
 			Jobs:    registry,
-			Synthesize: func(context.Context, string, string, string) ([]byte, error) {
+			Synthesize: func(context.Context, SynthesisRequest) ([]byte, error) {
 				calls.Add(1)
 				return wav.SyntheticTone(160), nil
 			},
@@ -422,7 +429,7 @@ func TestDramaBoxSeedFailurePrecedesReservationAndJobCreation(t *testing.T) {
 			reserved = true
 			return func() {}, true
 		},
-		Synthesize: func(context.Context, string, string, string) ([]byte, error) {
+		Synthesize: func(context.Context, SynthesisRequest) ([]byte, error) {
 			return wav.SyntheticTone(160), nil
 		},
 	})
@@ -451,7 +458,7 @@ func TestDefaultNarrationPreservesLegacyProgressDetail(t *testing.T) {
 	manager := NewManager(ManagerOptions{
 		RootDir: t.TempDir(),
 		Jobs:    registry,
-		Synthesize: func(_ context.Context, _, _, _ string) ([]byte, error) {
+		Synthesize: func(_ context.Context, _ SynthesisRequest) ([]byte, error) {
 			entered <- struct{}{}
 			<-unblock
 			return wav.SyntheticTone(160), nil
@@ -480,7 +487,7 @@ func TestDramaBoxFailureReleasesReservationAndRecovers(t *testing.T) {
 		ReserveEngine: func(_ context.Context, name string) (func(), bool) {
 			return func() { released <- name }, true
 		},
-		Synthesize: func(_ context.Context, _, _, _ string) ([]byte, error) {
+		Synthesize: func(_ context.Context, _ SynthesisRequest) ([]byte, error) {
 			if attempts.Add(1) == 1 {
 				return nil, fmt.Errorf("fixture synthesis failure")
 			}

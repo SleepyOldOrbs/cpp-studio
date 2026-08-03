@@ -154,6 +154,29 @@ func TestSpeechWritesValidWAV(t *testing.T) {
 	assertFixtureWAV(t, data)
 }
 
+func TestSpeechAcceptsTypedDramaBoxOptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dramabox.wav")
+	args := []string{
+		"speech", "--text", "A documented fact.",
+		"--seed", "18446744073709551615",
+		"--num-inference-steps", "30",
+		"--guidance-scale", "2.5",
+		"--request-option", "audio_chunk_threshold_sec=45",
+		"--request-option", "audio_chunk_duration_sec=37",
+		"--request-option", "cross_fade_duration_sec=0.05",
+		"--out", path,
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatalf("run typed DramaBox speech: %v (stderr %q)", err, stderr.String())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read wav: %v", err)
+	}
+	assertFixtureWAV(t, data)
+}
+
 func TestImportWritesAudioAndPrintsTitle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "import.tmp")
 

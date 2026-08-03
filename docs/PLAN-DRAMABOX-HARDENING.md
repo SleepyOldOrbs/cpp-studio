@@ -1243,7 +1243,7 @@ Names may adjust during implementation, but responsibilities must remain separat
 - [x] P0-01: Pin and qualify the release-0.5 runtime contract without replacing 0.4.2.
 - [x] P0-02: Introduce versioned audiobook manifest, section, verification, and attempt types.
 - [x] P0-03: Add DramaBox duration-based section planning and stable seed assignment; preserve fast chunking.
-- [ ] P0-04: Add curated controls, resolved-request preview, complete effective-option persistence, and engine-owned typed server/subprocess mapping.
+- [x] P0-04: Add curated controls, resolved-request preview, complete effective-option persistence, and engine-owned typed server/subprocess mapping.
 - [ ] P0-05: Add injected engine/voice resolution and freeze the audiobook synthesis identity.
 - [ ] P0-06: Add the durable audiobook store and atomic source/plan/seed creation.
 - [ ] P0-07: Deepen the Manager around create/cancel/fail/resume/restart/discard store transitions.

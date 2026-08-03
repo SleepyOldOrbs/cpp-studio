@@ -145,6 +145,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/library", r.handleLibrary)
 	mux.HandleFunc("/v1/library/", r.handleLibraryItem)
 	mux.HandleFunc("/v1/audiobooks", r.handleAudiobooks)
+	mux.HandleFunc("/v1/audiobooks/preview", r.handleAudiobookPreview)
 	mux.HandleFunc("/v1/audiobooks/", r.handleAudiobook)
 	mux.HandleFunc("/v1/chat/completions", r.handleChatCompletions)
 	mux.HandleFunc("/v1/images/generations", r.handleImageGenerations)
@@ -946,11 +947,12 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		bookRequest, err := audiobook.NormalizeRequest(audiobook.Request{
-			Title:     title,
-			Text:      text,
-			VoiceID:   voiceID,
-			EngineID:  req.FormValue("engine"),
-			Direction: req.FormValue("direction"),
+			Title:       title,
+			Text:        text,
+			VoiceID:     voiceID,
+			EngineID:    req.FormValue("engine"),
+			Direction:   req.FormValue("direction"),
+			OptionsJSON: req.FormValue("options"),
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
@@ -981,6 +983,76 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Allow", "GET, POST")
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+type audiobookPreviewRequest struct {
+	EngineID  string          `json:"engine"`
+	VoiceID   string          `json:"voice"`
+	Direction string          `json:"direction"`
+	Options   json.RawMessage `json:"options"`
+}
+
+// handleAudiobookPreview resolves the complete effective request without
+// planning seeds, creating durable state, reserving an engine, or invoking it.
+func (r *router) handleAudiobookPreview(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
+	var body audiobookPreviewRequest
+	decoder := json.NewDecoder(req.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid audiobook preview request: "+err.Error())
+		return
+	}
+	optionsJSON := ""
+	if len(body.Options) > 0 {
+		optionsJSON = string(body.Options)
+	}
+	resolved, err := audiobook.NormalizeRequest(audiobook.Request{
+		EngineID:    body.EngineID,
+		VoiceID:     strings.TrimSpace(body.VoiceID),
+		Direction:   body.Direction,
+		OptionsJSON: optionsJSON,
+	})
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	engineCfg, ok := r.engine(resolved.EngineID)
+	if !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("audiobook engine %q is not configured; add it to config or choose another narrator", resolved.EngineID))
+		return
+	}
+	voiceID := resolved.VoiceID
+	if voiceID == "" {
+		voiceID = "default"
+	} else if _, ok, err := r.voices.Load(voiceID); err != nil || !ok {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown voice %q", voiceID))
+		return
+	}
+
+	var previewOptions any = map[string]any{}
+	var mapping any = map[string]any{}
+	if resolved.EngineID == audiobook.DramaBoxEngineID {
+		previewOptions = resolved.Options
+		mapping = engine.DescribeSynthesisMapping(engineCfg.Mode)
+	}
+	response := map[string]any{
+		"engine":     resolved.EngineID,
+		"model":      audioServerModelID,
+		"voice":      voiceID,
+		"direction":  resolved.Direction,
+		"options":    previewOptions,
+		"seedPolicy": "one server-assigned uint64 seed per section",
+		"transport": map[string]any{
+			"mode":    engineCfg.Mode,
+			"mapping": mapping,
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleAudiobook serves GET /v1/audiobooks/{id}/artifact/book.wav.
@@ -1100,12 +1172,17 @@ func (r *router) speak(ctx context.Context, text string, clonedVoice *engine.Voi
 // normal audio server retains its required default voice reference, while
 // DramaBox supports both text-only requests and explicit stored clones.
 func (r *router) speakWithEngine(ctx context.Context, engineName string, text string, clonedVoice *engine.Voice, reserved bool) ([]byte, error) {
+	return r.speakSynthesis(ctx, engine.SynthesisRequest{Text: text, EngineID: engineName}, clonedVoice, reserved)
+}
+
+func (r *router) speakSynthesis(ctx context.Context, request engine.SynthesisRequest, clonedVoice *engine.Voice, reserved bool) ([]byte, error) {
+	engineName := request.EngineID
 	engineCfg, ok := r.engine(engineName)
 	if !ok {
 		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("engine %q is not configured", engineName)}
 	}
 	if engineCfg.Mode != "server" {
-		spec := engine.SpeechVoiceSpecFor(engineName, text, clonedVoice)
+		spec := engine.SpeechVoiceSpecForRequest(request, clonedVoice)
 		var res engine.Result
 		var err error
 		if reserved {
@@ -1131,20 +1208,17 @@ func (r *router) speakWithEngine(ctx context.Context, engineName string, text st
 		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("engine %q healthUrl must end in /health to infer /v1/audio/speech", engineName)}
 	}
 	refPath := engineCfg.DefaultVoiceRef
-	refText := engineCfg.DefaultVoiceText
 	if clonedVoice != nil {
 		refPath = clonedVoice.RefWAVPath
-		refText = clonedVoice.RefText
 	}
 	if refPath == "" && !engine.SpeechEngineAllowsTextOnly(engineName) {
 		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("server-mode engine %q needs defaultVoiceRef configured", engineName)}
 	}
-	payload, err := json.Marshal(audioServerSpeechRequest{
-		Model:         audioServerModelID,
-		Input:         text,
-		VoiceRef:      slashPath(refPath),
-		ReferenceText: refText,
-	})
+	var defaultVoice *engine.Voice
+	if engineCfg.DefaultVoiceRef != "" || engineCfg.DefaultVoiceText != "" {
+		defaultVoice = &engine.Voice{RefWAVPath: engineCfg.DefaultVoiceRef, RefText: engineCfg.DefaultVoiceText}
+	}
+	payload, err := engine.MarshalSpeechServerRequest(audioServerModelID, request, clonedVoice, defaultVoice)
 	if err != nil {
 		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode speech request: %v", err)}
 	}
@@ -1180,10 +1254,14 @@ func (r *router) speakWithEngine(ctx context.Context, engineName string, text st
 }
 
 type audioServerSpeechRequest struct {
-	Model         string `json:"model"`
-	Input         string `json:"input"`
-	VoiceRef      string `json:"voice_ref,omitempty"`
-	ReferenceText string `json:"reference_text,omitempty"`
+	Model             string         `json:"model"`
+	Input             string         `json:"input"`
+	VoiceRef          string         `json:"voice_ref,omitempty"`
+	ReferenceText     string         `json:"reference_text,omitempty"`
+	Seed              engine.Seed    `json:"seed,omitempty"`
+	NumInferenceSteps int            `json:"num_inference_steps,omitempty"`
+	GuidanceScale     float64        `json:"guidance_scale,omitempty"`
+	Options           map[string]any `json:"options,omitempty"`
 }
 
 const (
@@ -3037,12 +3115,12 @@ func (r *router) synthesizeSpeech(ctx context.Context, text string, voiceID stri
 
 // synthesizeAudiobook routes each prepared chunk through the engine selected
 // on the book request. The manager already holds that engine's reservation.
-func (r *router) synthesizeAudiobook(ctx context.Context, text string, voiceID string, engineID string) ([]byte, error) {
-	clonedVoice, err := r.resolveVoice(voiceID)
+func (r *router) synthesizeAudiobook(ctx context.Context, request audiobook.SynthesisRequest) ([]byte, error) {
+	clonedVoice, err := r.resolveVoice(request.VoiceID)
 	if err != nil {
 		return nil, err
 	}
-	return r.speakWithEngine(ctx, engineID, text, clonedVoice, true)
+	return r.speakSynthesis(ctx, request, clonedVoice, true)
 }
 
 // synthesisFingerprint names the audio synthesis configuration for take

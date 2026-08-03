@@ -1,10 +1,9 @@
 package audiobook
 
 import (
-	"encoding/json"
-	"fmt"
-	"strconv"
 	"time"
+
+	"cpp-studio/internal/engine"
 )
 
 // CurrentManifestSchemaVersion is written by new durable Audiobook productions.
@@ -51,42 +50,25 @@ const (
 	VerificationStatusSkipped     VerificationStatus = "skipped"
 )
 
-// Seed is persisted as a decimal JSON string so the full uint64 range survives
-// JavaScript and other JSON consumers that cannot represent it exactly as a number.
-type Seed uint64
+// Seed is shared with the engine transport and retains decimal-string JSON.
+type Seed = engine.Seed
 
-func (s Seed) MarshalJSON() ([]byte, error) {
-	return json.Marshal(strconv.FormatUint(uint64(s), 10))
-}
-
-func (s *Seed) UnmarshalJSON(data []byte) error {
-	var encoded string
-	if err := json.Unmarshal(data, &encoded); err != nil {
-		return fmt.Errorf("decode seed string: %w", err)
-	}
-	value, err := strconv.ParseUint(encoded, 10, 64)
-	if err != nil {
-		return fmt.Errorf("decode seed value: %w", err)
-	}
-	if strconv.FormatUint(value, 10) != encoded {
-		return fmt.Errorf("decode seed value: %q is not canonical decimal", encoded)
-	}
-	*s = Seed(value)
-	return nil
-}
+type SynthesisOptions = engine.SynthesisOptions
+type SynthesisRequest = engine.SynthesisRequest
 
 // Attempt describes one immutable synthesis output for a Section.
 type Attempt struct {
-	ID                    string    `json:"id"`
-	ParentAttemptID       string    `json:"parentAttemptId,omitempty"`
-	Seed                  Seed      `json:"seed"`
-	CheckpointFingerprint string    `json:"checkpointFingerprint"`
-	AudioFile             string    `json:"audioFile"`
-	AudioSHA256           string    `json:"audioSha256"`
-	TranscriptFile        string    `json:"transcriptFile,omitempty"`
-	VerificationFile      string    `json:"verificationFile,omitempty"`
-	Selected              bool      `json:"selected"`
-	CreatedAt             time.Time `json:"createdAt"`
+	ID                    string            `json:"id"`
+	ParentAttemptID       string            `json:"parentAttemptId,omitempty"`
+	Seed                  Seed              `json:"seed"`
+	CheckpointFingerprint string            `json:"checkpointFingerprint"`
+	AudioFile             string            `json:"audioFile"`
+	AudioSHA256           string            `json:"audioSha256"`
+	TranscriptFile        string            `json:"transcriptFile,omitempty"`
+	VerificationFile      string            `json:"verificationFile,omitempty"`
+	Selected              bool              `json:"selected"`
+	CreatedAt             time.Time         `json:"createdAt"`
+	Options               *SynthesisOptions `json:"options,omitempty"`
 }
 
 // Section binds a stable canonical-source byte range to its durable outputs.
@@ -135,4 +117,5 @@ type Manifest struct {
 	PromptPolicyVersion  int                  `json:"promptPolicyVersion,omitempty"`
 	Sections             []Section            `json:"sections,omitempty"`
 	Verification         *VerificationSummary `json:"verification,omitempty"`
+	ResolvedOptions      *SynthesisOptions    `json:"resolvedOptions,omitempty"`
 }

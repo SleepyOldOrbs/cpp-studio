@@ -4523,7 +4523,11 @@ func TestAudiobookDramaBoxResidentServerSupportsTextOnlyAndClone(t *testing.T) {
 	})
 	router := NewRouter(cfg, lifecycle.NewManager(cfg))
 
-	rec := postAudiobook(t, router, map[string]string{"engine": "dramabox", "direction": "Measured."})
+	rec := postAudiobook(t, router, map[string]string{
+		"engine":    "dramabox",
+		"direction": "Measured.",
+		"options":   `{"num_inference_steps":12,"guidance_scale":3.5}`,
+	})
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("text-only submit: got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -4538,6 +4542,12 @@ func TestAudiobookDramaBoxResidentServerSupportsTextOnlyAndClone(t *testing.T) {
 	}
 	if strings.Contains(textOnly.raw, "voice_ref") || strings.Contains(textOnly.raw, "reference_text") {
 		t.Fatalf("text-only DramaBox must omit reference fields, got %s", textOnly.raw)
+	}
+	if !strings.Contains(textOnly.raw, `"seed":"`) || textOnly.body.NumInferenceSteps != 12 || textOnly.body.GuidanceScale != 3.5 {
+		t.Fatalf("typed top-level options were not forwarded: %s", textOnly.raw)
+	}
+	if textOnly.body.Options["audio_chunk_threshold_sec"] != float64(45) || textOnly.body.Options["audio_chunk_duration_sec"] != float64(37) || textOnly.body.Options["cross_fade_duration_sec"] != 0.05 {
+		t.Fatalf("complete nested defaults were not forwarded: %s", textOnly.raw)
 	}
 
 	var voiceBody bytes.Buffer
@@ -4566,6 +4576,81 @@ func TestAudiobookDramaBoxResidentServerSupportsTextOnlyAndClone(t *testing.T) {
 	cloned := <-requests
 	if !strings.HasSuffix(cloned.body.VoiceRef, "/ref.wav") || cloned.body.ReferenceText != "reference words" {
 		t.Fatalf("DramaBox clone reference was not forwarded: %+v", cloned.body)
+	}
+}
+
+func TestAudiobookPreviewReturnsCompleteEffectiveOptionsWithoutStartingWork(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio":    helperEngine("speech-tone"),
+		"dramabox": helperEngine("speech-tone"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audiobooks/preview", strings.NewReader(`{
+		"engine":"dramabox",
+		"direction":"Measured.",
+		"options":{"guidance_scale":3.25}
+	}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var preview struct {
+		Engine     string                     `json:"engine"`
+		Model      string                     `json:"model"`
+		Voice      string                     `json:"voice"`
+		Options    audiobook.SynthesisOptions `json:"options"`
+		SeedPolicy string                     `json:"seedPolicy"`
+		Transport  map[string]json.RawMessage `json:"transport"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&preview); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if preview.Engine != "dramabox" || preview.Model != audioServerModelID || preview.Voice != "default" {
+		t.Fatalf("preview identities wrong: %+v", preview)
+	}
+	if preview.Options.GuidanceScale != 3.25 || preview.Options.NumInferenceSteps != 30 || preview.Options.AudioChunkThresholdSec != 45 || preview.Options.Seed != 0 {
+		t.Fatalf("preview options are not complete and seed-independent: %+v", preview.Options)
+	}
+	if preview.SeedPolicy == "" || len(preview.Transport["mapping"]) == 0 {
+		t.Fatalf("preview omitted seed/transport semantics: %+v", preview)
+	}
+	if entries, err := os.ReadDir("out/audiobooks"); err == nil && len(entries) != 0 {
+		t.Fatalf("preview created audiobook state: %+v", entries)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/audiobooks/preview", strings.NewReader(`{"engine":"audio"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"options":{}`) || !strings.Contains(rec.Body.String(), `"mapping":{}`) {
+		t.Fatalf("fast narrator preview must keep an empty option/mapping set: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAudiobookOptionsRejectUnknownDuplicateSeedAndLegacyUse(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio":    helperEngine("speech-tone"),
+		"dramabox": helperEngine("speech-tone"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	for _, test := range []struct {
+		name   string
+		fields map[string]string
+	}{
+		{name: "unknown", fields: map[string]string{"engine": "dramabox", "options": `{"path":"C:/model"}`}},
+		{name: "duplicate", fields: map[string]string{"engine": "dramabox", "options": `{"guidance_scale":2,"guidance_scale":3}`}},
+		{name: "seed", fields: map[string]string{"engine": "dramabox", "options": `{"seed":"42"}`}},
+		{name: "legacy", fields: map[string]string{"engine": "audio", "options": `{}`}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rec := postAudiobook(t, router, test.fields)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

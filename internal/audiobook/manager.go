@@ -50,9 +50,9 @@ const artifactPad = 300 * time.Millisecond
 // ReserveEngineFunc reserves the audio engine for the whole narration run.
 type ReserveEngineFunc func(ctx context.Context, name string) (func(), bool)
 
-// SynthesizeFunc speaks one chunk through engineID; voiceID "" means that
+// SynthesizeFunc speaks one typed section request. VoiceID "" means the
 // engine's default or, for DramaBox, its supported text-only mode.
-type SynthesizeFunc func(ctx context.Context, text string, voiceID string, engineID string) ([]byte, error)
+type SynthesizeFunc func(ctx context.Context, request SynthesisRequest) ([]byte, error)
 
 type ManagerOptions struct {
 	RootDir       string
@@ -73,10 +73,15 @@ type Request struct {
 	VoiceID   string
 	EngineID  string
 	Direction string
+	// OptionsJSON is the curated/advanced option object supplied by HTTP.
+	// It never accepts a seed; NormalizeRequest resolves it into Options.
+	OptionsJSON string
+	Options     SynthesisOptions
 }
 
 type narrationUnit struct {
 	text string
+	seed Seed
 }
 
 type Manager struct {
@@ -155,6 +160,22 @@ func NormalizeRequest(req Request) (Request, error) {
 	if req.EngineID == DramaBoxEngineID && req.Direction == "" {
 		req.Direction = DefaultDramaBoxDirection
 	}
+	if req.Options.Seed != 0 {
+		return Request{}, requestErrorf("audiobook section seeds are assigned by the server")
+	}
+	if strings.TrimSpace(req.OptionsJSON) != "" && req.Options != (SynthesisOptions{}) {
+		return Request{}, requestErrorf("provide synthesis options as either typed values or JSON, not both")
+	}
+	var err error
+	if strings.TrimSpace(req.OptionsJSON) != "" || req.Options == (SynthesisOptions{}) {
+		req.Options, err = engine.ResolveSynthesisOptions(req.EngineID, req.OptionsJSON)
+	} else {
+		err = engine.ValidateSynthesisOptions(req.EngineID, req.Options)
+	}
+	if err != nil {
+		return Request{}, requestErrorf("invalid synthesis options: %v", err)
+	}
+	req.OptionsJSON = ""
 	return req, nil
 }
 
@@ -202,7 +223,7 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 		}
 		units = make([]narrationUnit, len(sections))
 		for i, section := range sections {
-			units[i] = narrationUnit{text: req.Text[section.StartByte:section.EndByte]}
+			units[i] = narrationUnit{text: req.Text[section.StartByte:section.EndByte], seed: section.Seed}
 		}
 	} else {
 		chunks := Chunk(req.Text, DefaultChunkChars)
@@ -283,7 +304,14 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, units 
 		if req.EngineID == DramaBoxEngineID {
 			text = BuildDramaBoxPrompt(req.Direction, unit.text)
 		}
-		clip, err := m.synthesize(ctx, text, req.VoiceID, req.EngineID)
+		options := req.Options
+		options.Seed = unit.seed
+		clip, err := m.synthesize(ctx, SynthesisRequest{
+			Text:     text,
+			VoiceID:  req.VoiceID,
+			EngineID: req.EngineID,
+			Options:  options,
+		})
 		if err != nil {
 			if ctx.Err() != nil {
 				m.markCancelled(id)
@@ -328,6 +356,10 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, units 
 		Direction: req.Direction,
 		Chunks:    len(units),
 		CreatedAt: m.now(),
+	}
+	if req.EngineID == DramaBoxEngineID {
+		options := req.Options
+		manifest.ResolvedOptions = &options
 	}
 	if duration, err := wav.Duration(stitched); err == nil {
 		manifest.DurationSeconds = int(duration.Round(time.Second) / time.Second)

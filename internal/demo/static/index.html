@@ -511,6 +511,49 @@
             <small class="hint">Direct the delivery, not the facts. DramaBox keeps your source words inside one quoted passage.</small>
             <span class="warn-box" id="audiobookDramaBoxWarning">Experimental English model: an 18.9 GB download with heavy local compute and an upstream licence. There is no per-character or API fee, but CPU speed and 16 GB GPU fit are not proven.</span>
           </label>
+          <fieldset class="field" id="audiobookDramaBoxOptions" hidden>
+            <legend>DramaBox generation</legend>
+            <label class="compact-field">
+              <span>Inference steps</span>
+              <input class="text-input" id="audiobookInferenceSteps" type="number" min="1" max="100" step="1" value="30">
+              <small class="hint">More diffusion steps take longer; 30 is the pinned release value.</small>
+            </label>
+            <label class="compact-field">
+              <span>Text guidance</span>
+              <input class="text-input" id="audiobookGuidanceScale" type="number" min="0" max="8" step="0.1" value="2.5">
+              <small class="hint">Higher values favour the written text but can sound less natural.</small>
+            </label>
+            <label class="compact-field">
+              <span>Long-form threshold (seconds)</span>
+              <input class="text-input" id="audiobookChunkThreshold" type="number" min="1" max="300" step="1" value="45">
+              <small class="hint">Estimated speech longer than this uses audio.cpp's native chunker.</small>
+            </label>
+            <label class="compact-field">
+              <span>Native chunk target (seconds)</span>
+              <input class="text-input" id="audiobookChunkDuration" type="number" min="1" max="300" step="1" value="37">
+              <small class="hint">Target duration for each native long-form chunk.</small>
+            </label>
+            <label class="compact-field">
+              <span>Native crossfade (seconds)</span>
+              <input class="text-input" id="audiobookCrossFade" type="number" min="0" max="2" step="0.01" value="0.05">
+              <small class="hint">Equal-power overlap between native chunks; 0.05 is 50 ms.</small>
+            </label>
+            <details>
+              <summary>Advanced/operator JSON</summary>
+              <label class="field">
+                <span>Allowlisted option object</span>
+                <textarea id="audiobookOptionsJSON" rows="5" spellcheck="false" placeholder='{"guidance_scale":2.5}'></textarea>
+                <small class="hint">When present, this replaces the curated values above. Unknown, duplicate, out-of-range, seed, path, command, URL, and arbitrary argument fields are rejected by the server.</small>
+              </label>
+            </details>
+          </fieldset>
+          <div class="field">
+            <div class="action-row">
+              <button class="secondary" id="audiobookPreviewButton" type="button">Resolve request</button>
+              <span class="hint">Required before Narrate; no job or engine invocation occurs.</span>
+            </div>
+            <pre id="audiobookRequestPreview" aria-live="polite">Request not resolved.</pre>
+          </div>
           <div class="action-row">
             <button class="primary" id="audiobookNarrateButton" type="submit" disabled>Narrate</button>
             <button class="secondary" id="audiobookCancelButton" type="button" disabled>Cancel</button>

@@ -152,12 +152,25 @@ stitched WAV. Runs as an `audiobook` job on the jobs surface.
   approximately 300 characters. DramaBox instead plans larger app-level sections at
   150 words per minute, targeting approximately 75 seconds and hard-capping the
   estimate at 110 seconds so audio.cpp can perform its native long-form splitting.
+  DramaBox also accepts an optional `options` JSON object with only
+  `num_inference_steps` (1–100), `guidance_scale` (0–8),
+  `audio_chunk_threshold_sec` (1–300), `audio_chunk_duration_sec` (1–300),
+  and `cross_fade_duration_sec` (0–2 and no more than half the chunk target).
+  Missing values resolve to 30, 2.5, 45, 37, and 0.05 respectively. Unknown
+  or duplicate fields are rejected; clients cannot submit a seed, path,
+  command, URL, or arbitrary native-engine argument.
   Both paths retain the 600-unit cap; the compatibility `chunks` response field is the
   selected path's unit count. Returns
   `202 {"id":"book_...","chunks":42,"statusUrl":"/v1/jobs/book_..."}`.
   Unknown engines and invalid direction return `400`; a recognized engine
   missing from this gateway returns `503`; only an active narration or busy
   selected engine returns `409`.
+- `POST /v1/audiobooks/preview` — JSON intent (`engine`, `voice`, `direction`,
+  and optional `options`) resolved without creating a job, reserving an
+  engine, or invoking it. Returns selected engine/model/voice identities, the
+  complete effective option set, the per-section server seed policy, and the
+  semantic server/subprocess mapping. The browser requires a current preview
+  before enabling Narrate.
 - `GET /v1/jobs/{id}` — narration progress (`"narrating chunk 12/42"` for the
   default engine or `"narrating chunk 12/42 with dramabox"`), and
   `POST /v1/jobs/{id}/cancel` stops it.

@@ -164,6 +164,20 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "audiobookDirectionField") || !strings.Contains(body, "audiobookDirectionInput") {
 		t.Fatalf("expected conditional DramaBox direction markers, got %q", body)
 	}
+	for _, marker := range []string{
+		"audiobookInferenceSteps",
+		"audiobookGuidanceScale",
+		"audiobookChunkThreshold",
+		"audiobookChunkDuration",
+		"audiobookCrossFade",
+		"audiobookOptionsJSON",
+		"audiobookPreviewButton",
+		"audiobookRequestPreview",
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("expected resolved DramaBox request marker %q", marker)
+		}
+	}
 	if !strings.Contains(body, "18.9 GB") || !strings.Contains(body, "no per-character or API fee") {
 		t.Fatalf("expected honest DramaBox cost/hardware warning, got %q", body)
 	}
@@ -277,6 +291,18 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/app.js",
 			contentType: "javascript",
 			needle:      `form.append("direction"`,
+		},
+		{
+			name:        "javascript audiobook request preview",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "/v1/audiobooks/preview",
+		},
+		{
+			name:        "javascript audiobook typed options submit",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      `form.append("options"`,
 		},
 		{
 			name:        "javascript extractor",

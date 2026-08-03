@@ -17,6 +17,15 @@ import (
 
 const fixtureModel = "cpp-studio-fixture"
 
+type repeatedFlag []string
+
+func (values *repeatedFlag) String() string { return strings.Join(*values, ",") }
+
+func (values *repeatedFlag) Set(value string) error {
+	*values = append(*values, value)
+	return nil
+}
+
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -444,6 +453,11 @@ func runSpeech(args []string, stdout, stderr io.Writer) error {
 	requireContains := flags.String("require-contains", "", "fixture/test helper assertion for speech input")
 	voiceRef := flags.String("voice-ref", "", "fixture/test helper cloned voice reference WAV")
 	referenceText := flags.String("reference-text", "", "fixture/test helper cloned voice transcript")
+	seed := flags.String("seed", "", "fixture/test helper synthesis seed")
+	steps := flags.Int("num-inference-steps", 0, "fixture/test helper diffusion steps")
+	guidance := flags.Float64("guidance-scale", 0, "fixture/test helper guidance scale")
+	var requestOptions repeatedFlag
+	flags.Var(&requestOptions, "request-option", "fixture/test helper model request option")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -459,6 +473,31 @@ func runSpeech(args []string, stdout, stderr io.Writer) error {
 		}
 		if strings.TrimSpace(*referenceText) == "" {
 			return errors.New("speech --voice-ref requires --reference-text")
+		}
+	}
+	if *seed != "" {
+		if value, err := strconv.ParseUint(*seed, 10, 64); err != nil || strconv.FormatUint(value, 10) != *seed {
+			return errors.New("speech --seed must be a canonical uint64")
+		}
+		if *steps < 1 {
+			return errors.New("speech --num-inference-steps must be positive when a seed is set")
+		}
+		if *guidance < 0 {
+			return errors.New("speech --guidance-scale must be non-negative")
+		}
+		allowed := map[string]bool{
+			"audio_chunk_threshold_sec": true,
+			"audio_chunk_duration_sec":  true,
+			"cross_fade_duration_sec":   true,
+		}
+		for _, option := range requestOptions {
+			parts := strings.SplitN(option, "=", 2)
+			if len(parts) != 2 || !allowed[parts[0]] {
+				return fmt.Errorf("speech --request-option is not allowlisted: %q", option)
+			}
+			if _, err := strconv.ParseFloat(parts[1], 64); err != nil {
+				return fmt.Errorf("speech --request-option has invalid number: %q", option)
+			}
 		}
 	}
 	if *outPath == "" {

@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -145,6 +147,102 @@ func TestSpeechVoiceSpecForTargetsNamedEngine(t *testing.T) {
 	legacy := SpeechVoiceSpec("hello", nil)
 	if legacy.Engine != "audio" {
 		t.Fatalf("legacy wrapper changed engine: %q", legacy.Engine)
+	}
+}
+
+func TestResolveDramaBoxSynthesisOptionsFillsDefaultsAndAllowsCuratedOverrides(t *testing.T) {
+	got, err := ResolveSynthesisOptions(DramaBoxSpeechEngineID, `{"guidance_scale":3.25,"cross_fade_duration_sec":0}`)
+	if err != nil {
+		t.Fatalf("resolve options: %v", err)
+	}
+	want := DefaultDramaBoxOptions()
+	want.GuidanceScale = 3.25
+	want.CrossFadeDurationSec = 0
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("resolved options = %+v, want %+v", got, want)
+	}
+
+	legacy, err := ResolveSynthesisOptions(DefaultSpeechEngineID, "")
+	if err != nil || legacy != (SynthesisOptions{}) {
+		t.Fatalf("legacy options changed: %+v, %v", legacy, err)
+	}
+}
+
+func TestResolveDramaBoxSynthesisOptionsRejectsUnsafeOrAmbiguousJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "unknown", raw: `{"command":"calc.exe"}`, want: "unknown synthesis option"},
+		{name: "seed", raw: `{"seed":"42"}`, want: "unknown synthesis option"},
+		{name: "duplicate", raw: `{"guidance_scale":2,"guidance_scale":3}`, want: "duplicate synthesis option"},
+		{name: "array", raw: `[]`, want: "JSON object"},
+		{name: "steps too high", raw: `{"num_inference_steps":101}`, want: "between 1 and 100"},
+		{name: "crossfade too long", raw: `{"audio_chunk_duration_sec":1,"cross_fade_duration_sec":1}`, want: "half audio_chunk_duration_sec"},
+		{name: "trailing value", raw: `{} {}`, want: "unexpected JSON value"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ResolveSynthesisOptions(DramaBoxSpeechEngineID, test.raw)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ResolveSynthesisOptions(%s) error = %v, want %q", test.raw, err, test.want)
+			}
+		})
+	}
+	if _, err := ResolveSynthesisOptions(DefaultSpeechEngineID, `{}`); err == nil || !strings.Contains(err.Error(), "only supported with dramabox") {
+		t.Fatalf("legacy narrator accepted options: %v", err)
+	}
+}
+
+func TestDramaBoxTypedRequestMapsToSubprocessAndServerContracts(t *testing.T) {
+	options := DefaultDramaBoxOptions()
+	options.Seed = Seed(^uint64(0))
+	request := SynthesisRequest{Text: "A fact.", EngineID: DramaBoxSpeechEngineID, Options: options}
+
+	spec := SpeechVoiceSpecForRequest(request, nil)
+	args := spec.BuildArgs("", "out.wav")
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"--seed 18446744073709551615",
+		"--num-inference-steps 30",
+		"--guidance-scale 2.5",
+		"--request-option audio_chunk_threshold_sec=45",
+		"--request-option audio_chunk_duration_sec=37",
+		"--request-option cross_fade_duration_sec=0.05",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("subprocess args missing %q: %v", want, args)
+		}
+	}
+
+	payload, err := MarshalSpeechServerRequest("tts-1", request, nil, nil)
+	if err != nil {
+		t.Fatalf("marshal server request: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatalf("decode server request: %v", err)
+	}
+	if body["seed"] != "18446744073709551615" || body["num_inference_steps"] != float64(30) || body["guidance_scale"] != 2.5 {
+		t.Fatalf("top-level server mapping wrong: %s", payload)
+	}
+	nested, ok := body["options"].(map[string]any)
+	if !ok || nested["audio_chunk_threshold_sec"] != float64(45) || nested["audio_chunk_duration_sec"] != float64(37) || nested["cross_fade_duration_sec"] != 0.05 {
+		t.Fatalf("nested server mapping wrong: %s", payload)
+	}
+}
+
+func TestDramaBoxServerMappingPreservesExplicitZeroGuidance(t *testing.T) {
+	options := DefaultDramaBoxOptions()
+	options.GuidanceScale = 0
+	request := SynthesisRequest{Text: "A fact.", EngineID: DramaBoxSpeechEngineID, Options: options}
+	payload, err := MarshalSpeechServerRequest("tts", request, nil, nil)
+	if err != nil {
+		t.Fatalf("marshal server request: %v", err)
+	}
+	if !strings.Contains(string(payload), `"guidance_scale":0`) {
+		t.Fatalf("explicit zero guidance was omitted: %s", payload)
 	}
 }
 
