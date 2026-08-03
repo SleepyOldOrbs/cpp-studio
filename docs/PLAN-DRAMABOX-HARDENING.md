@@ -4,6 +4,7 @@ Status: IN PROGRESS — P0 implementation began 2026-08-03
 
 - Date: 2026-08-02
 - Architecture reconciled: 2026-08-03
+- audio.cpp WebUI reuse decision: 2026-08-03
 - Branch at planning time: `main`
 - Baseline commit: `fe2c1fe` (`feat: add DramaBox factual audiobook narration`)
 - Implemented predecessor: [`PLAN-DRAMABOX.md`](PLAN-DRAMABOX.md)
@@ -79,9 +80,52 @@ makes the model and prompt surfaces easier to discover and use correctly.
 | Synthesis identity | Story hashes engine command/config/file identity | Resolve and freeze an audiobook-specific identity inside the Manager before durable work begins |
 | Transcription | Resident Whisper and subprocess transcription already exist | Inject a verifier function; do not add a second ASR stack |
 | Voice storage | Validates basic WAV shape and byte cap; stores provenance | Extend analysis metadata without invalidating existing voices |
-| Model catalog | Static `models.json`, live presence/checksum state, Models tab | Extend with optional audio.cpp discovery; keep static manifest authoritative |
+| Model catalog | Static `models.json`, live presence/checksum state, Models tab | Keep the tracked catalog authoritative; extend with bounded discovery, GGUF inspection, and confirmed allowlisted installation |
 | Benchmarking | Deterministic local Story/audio benchmark harness and RTF reporting | Add a DramaBox-specific harness using the same evidence conventions |
 | Audiobook UI | Engine, voice, direction, progress, cancel, playback, shelf | Add interrupted work, verification, benchmark, and prompt preview progressively |
+
+## audio.cpp WebUI reuse decision (2026-08-03)
+
+cpp-studio should adopt the upstream WebUI's useful behaviour patterns, not its page
+structure or ownership model.
+
+Adopt:
+
+- curated controls per model family, with DramaBox ranges/defaults owned by typed
+  cpp-studio request schemas;
+- a resolved-request preview that distinguishes user choices from the effective
+  options sent to audio.cpp;
+- the actual seed used, request/load timings, output duration, and RTF wherever the
+  runtime can report them honestly;
+- lightweight GGUF inspection, model readiness, existing engine lifecycle controls,
+  and confirmed model installation;
+- reference-voice conveniences such as select, preview, clear, fitness metadata, and
+  the exact authorized reference identity used by the request;
+- errors that name the failed field or readiness stage and provide an in-product
+  remedy; and
+- raw JSON as a collapsed advanced/operator escape hatch, parsed and normalized
+  through the same allowlisted schema rather than forwarded to an engine.
+
+Reject:
+
+- the repeated Gradio toolbox layout; the Audiobook desk and Models/Engines surfaces
+  remain task-oriented cpp-studio interfaces;
+- ephemeral UI-side audiobook splitting or stitching; durable section planning,
+  checkpointing, verification, and assembly remain server-owned;
+- changed-only option persistence; every production records the complete resolved
+  effective option set so resume and provenance do not depend on UI defaults; and
+- direct browser-to-audio.cpp model loading, process control, model-manager commands,
+  filesystem paths, or downloads. All operations continue through cpp-studio's
+  gateway, job registry, engine reservation, model catalog, and Lifecycle Manager.
+
+Phase ownership:
+
+- **P0:** typed DramaBox controls, resolved-request preview, and persisted resolved
+  effective options.
+- **P1:** actual seed visibility, request/load timing and benchmark evidence, plus
+  reference-voice conveniences.
+- **P2:** readiness and GGUF inspection, links to existing lifecycle controls, and
+  explicit confirmed installation of allowlisted catalog artifacts.
 
 ## Priority dependency correction
 
@@ -110,9 +154,10 @@ P0 delivers the minimum trustworthy DramaBox audiobook workflow.
 2. Confirm `audiocpp_cli --list-loaders --json` includes `dramabox`.
 3. Confirm a loopback `audiocpp_server` starts from the checked-in server template and
    DramaBox model example, reports healthy, and accepts a text-only speech request.
-4. Keep the 18.9 GB model download manual. The setup flow must show source, expected
-   size, licence, free disk space requirement, and the fact that local electricity and
-   compute are not free.
+4. Keep the 18.9 GB model download manual during P0. P2 may add the confirmed,
+   allowlisted installation flow defined below; no phase permits a silent download.
+   Setup must show source, expected size, licence, free disk space result, and the fact
+   that local electricity and compute are not free.
 5. Record the exact audio.cpp tag/commit, binary identity, model size/checksum when
    available, backend, device, and session options in benchmark/provenance output.
 6. Do not mark real-runtime qualification complete from fixtures. If weights are not
@@ -202,10 +247,21 @@ type SynthesisOptions struct {
 }
 ```
 
-P0 uses pinned DramaBox defaults: 30 steps, guidance 2.5, threshold 45 seconds,
-internal target 37 seconds, and internal crossfade 0.05 seconds. It omits explicit
-duration and negative prompt. The fast narrator receives an empty option set and keeps
-its current behavior.
+P0 exposes a compact, curated DramaBox control set backed by this type: inference
+steps, guidance, long-form threshold, internal chunk target, and crossfade. The first
+release uses pinned defaults of 30 steps, guidance 2.5, threshold 45 seconds, internal
+target 37 seconds, and crossfade 0.05 seconds. It omits explicit duration and negative
+prompt. The fast narrator receives an empty option set and keeps its current behavior.
+Each field has a documented range and plain-language effect; the browser never builds
+engine flags.
+
+Before submission, a resolved-request preview shows the normalized typed values,
+defaults that were filled in, selected engine/model/voice identities, and the semantic
+server JSON or subprocess option mapping. A collapsed raw-JSON editor remains an
+advanced/operator escape hatch, but it accepts only the same allowlisted option names
+and ranges, rejects duplicates/unknowns, and is normalized back into
+`SynthesisOptions`. It cannot override server-assigned section seeds or introduce a
+command, path, URL, token, or arbitrary audio.cpp argument.
 
 At job creation, deterministically plan the complete section table, generate one
 cryptographically random `uint64` seed per app-level section, and atomically persist
@@ -213,6 +269,11 @@ the canonical source plus complete initial manifest before the first engine
 invocation. Resume reuses the stored plan and seeds. Server mode sends the seed as a
 decimal JSON string; subprocess mode uses `--seed`. Invalid or unsupported option
 shapes fail before durable production creation.
+
+The complete resolved effective options, including defaults, are persisted in the
+initial manifest and synthesis identity before the first invocation. cpp-studio does
+not persist only the values changed in the browser, because a later default change
+must not alter Resume or provenance.
 
 The engine invocation module maps typed options to:
 
@@ -425,6 +486,8 @@ and add `sections` when using the new policy.
 Extend the routes:
 
 ```text
+POST /v1/audiobooks/preview
+     -> resolved typed request without starting a job
 GET  /v1/audiobooks
      -> {"audiobooks": [...], "interrupted": [...]}
 GET  /v1/audiobooks/{id}
@@ -437,6 +500,8 @@ GET  /v1/audiobooks/{id}/artifact/book.wav
 
 The Audiobook desk adds:
 
+- curated DramaBox controls and a resolved effective-request preview; raw JSON stays
+  collapsed under an Advanced/operator disclosure and passes the same typed validator;
 - a verification selector with plain-language defaults;
 - section-based progress (`section 3/18`, plus native engine detail when available);
 - interrupted-book cards with Resume, Restart, and Discard; identity-mismatched work
@@ -457,6 +522,8 @@ P0 exit criteria:
   section WAVs re-synthesize safely under an unchanged identity.
 - Final assembly remains bounded in memory and refuses RIFF overflow.
 - Verification passes, flags, and degrades honestly when unavailable.
+- The preview and stored manifest contain the same complete resolved effective options,
+  including defaults; changed-only UI state is never the production record.
 - Existing finished manifests still load.
 - Full fixture verification passes.
 - Stage status remains runtime-unverified until the real release-0.5 model run passes.
@@ -486,6 +553,12 @@ Only generated section ids are accepted. The request cannot supply file paths, r
 flags, arbitrary model ids, or arbitrary seeds. Each new attempt records its parent,
 seed, option set, output hash, transcript, and selection state. Selecting a repaired
 attempt creates a new final render revision rather than overwriting the original WAV.
+
+Each attempt distinguishes `requestedSeed` from `actualSeed`. When audio.cpp reports
+the seed actually used, persist and display it; a mismatch is an engine-contract error
+and the output is not eligible for automatic Resume reuse. When the transport cannot
+report an actual seed, label the stored value `requested seed` rather than claiming it
+was independently confirmed. Seed values remain decimal strings at JSON boundaries.
 
 Advanced guidance is exposed as tested presets, not free numeric fields:
 
@@ -517,6 +590,12 @@ Policy:
   selected.
 - Optional VAD absence falls back to PCM heuristics and is disclosed.
 
+The browser lets the user select or clear an authorized stored reference, listen to it,
+see duration/format/fitness and provenance before submission, and reuse the same
+reference without re-uploading it. It shows the exact reference id and content hash in
+the resolved-request preview. Convenience never weakens the existing consent gate,
+silently trims/replaces a source, or treats a voice selection as permission to clone.
+
 Do not adopt RE-USE denoising by default. Its Windows dependency posture and
 non-commercial licence are incompatible with a simple general-purpose local setup.
 
@@ -543,7 +622,8 @@ Record:
 - audio.cpp tag/commit and binary identity;
 - model path identity, expected/actual bytes, checksum when available;
 - backend, device, threads, session and request options, seed;
-- cold load, synthesis wall time, audio duration, RTF;
+- cold load, queue/reservation wait, synthesis wall time, verification time, assembly
+  time, total wall time, audio duration, and RTF;
 - peak and post-request resident VRAM;
 - CPU and process memory where available;
 - WAV format and output size;
@@ -577,7 +657,10 @@ matching benchmark failed to load or produced invalid audio, unless the user cha
 the configuration and reruns the benchmark.
 
 Flagged sections expose Reproduce and Variation actions, attempt auditioning, exact
-seed/options, and an explicit Select action. No attempt silently replaces another.
+requested/actual seed status, resolved options, per-attempt timings, and an explicit
+Select action. No attempt silently replaces another. Live production shows current
+phase elapsed time and completed-section timing without estimating precision the
+runtime does not provide.
 
 P1 exit criteria:
 
@@ -587,35 +670,45 @@ P1 exit criteria:
 - DramaBox voice eligibility is engine-specific and does not break other TTS lanes.
 - Benchmark fixtures test plan-only/error paths without requiring the real model.
 - A real run, when assets exist, records all metrics and projects chapter time.
+- Requested versus actual seed status and measured timing phases are visible and
+  retained with every attempt and benchmark.
+- Reference selection, preview, clearing, fitness, and provenance are available without
+  bypassing voice authorization.
 - The UI never calls local generation “free” without its compute/storage warning.
 
-### P2 — discovery, guided setup, and prompt correctness
+### P2 — discovery, confirmed setup, and prompt correctness
 
-P2 improves discovery after reliable production and measurement exist.
+P2 improves discovery and setup after reliable production and measurement exist. Its
+download boundary is **no silent download**, not “no automatic download”: cpp-studio
+may install an allowlisted catalog artifact only after a fresh preview and explicit
+confirmation, and the resulting work remains a normal tracked job.
 
-#### P2.1 — read-only audio.cpp capability discovery
+#### P2.1 — bounded audio.cpp capability discovery
 
-Keep tracked `models.json` as cpp-studio's provenance and checksum source. Add a
-read-only discovery adapter that executes only configured, fixed commands:
+Keep tracked `models.json` as cpp-studio's provenance, licence, expected-size, revision,
+destination, and checksum authority. Add a discovery adapter that executes only
+configured, fixed commands:
 
 ```text
 python tools/model_manager_v2.py list --json
-python tools/model_manager_v2.py info <known-package> --json
+python tools/model_manager_v2.py info <server-allowlisted-package> --json
 audiocpp_cli --list-loaders --json
 ```
 
-Do not accept a command path, package id, or arbitrary arguments from HTTP input.
-Package detail lookups must select ids returned by the manager catalog.
+The set of package ids eligible for the `info` command is defined server-side and must
+also map to tracked catalog entries. Do not accept a command path, package id, or
+arbitrary arguments from HTTP input. Discovery output can report availability but
+cannot override catalog provenance or authorize installation.
 
 Merge these states without conflating them:
 
 | State | Meaning |
 |---|---|
 | Cataloged | Declared by cpp-studio `models.json` |
-| Installable | Listed by audio.cpp's model manager |
+| Installable | Catalog entry is server-allowlisted and has complete immutable install metadata |
 | Loader available | Current audio.cpp binary reports the family |
 | Present | Expected local path exists and matches fast checks |
-| Verified | Deep checksum verification passed |
+| Verified | Expected size and tracked checksum verification passed |
 | Configured | A cpp-studio engine points at the model/runtime |
 | Healthy | The configured engine currently reports healthy |
 
@@ -623,33 +716,103 @@ Discovery is optional and cached with the runtime identity. Missing Python, miss
 manager script, old audio.cpp, malformed JSON, or a timed-out command leaves the
 existing catalog functional and adds an actionable `discoveryError`.
 
-Extend `GET /v1/models/catalog` with optional discovery fields rather than replacing
-it. Old clients ignore the additions.
+Extend `GET /v1/models/catalog` with optional discovery and installation-readiness
+fields rather than replacing it. Old clients ignore the additions.
 
-Automatic downloading is not part of P2. The UI may show a copyable official install
-command after source, licence, download size, destination, and disk-space information.
-The user still runs or explicitly approves the install outside this plan.
+#### P2.2 — confirmed model installation
 
-#### P2.2 — model readiness UI
+The first supported in-product package is the currently ungated tracked
+`dramabox-q8-0` artifact. The contract remains reusable only for later packages that
+are explicitly added to the server allowlist and have the same complete catalog
+metadata. Installation is a two-step operation:
+
+```text
+POST /v1/models/{id}/install/preview
+     -> confirmationId, expiresAt, modelId, source, revision, destination,
+        licence, expectedBytes, checksum, freeSpace, vramWarning, blockers
+
+POST /v1/models/{id}/install
+{"confirmationId":"model-install-confirmation-id"}
+     -> existing-style tracked job
+```
+
+The preview resolves all values from the tracked catalog and server configuration,
+then stores an immutable, short-lived confirmation record server-side. It includes a
+fingerprint of the selected catalog entry, models root, artifact identity, and
+destination. The install endpoint accepts only the opaque confirmation id: the route
+model id and current selection must still match, the confirmation must be unexpired
+and unused, and consuming it is atomic. Reuse, expiry, a catalog/configuration change,
+or a changed selected model blocks installation and requires a fresh preview.
+
+Neither endpoint accepts a browser-supplied command, package, path, repository,
+revision, token, proxy, destination, source URL, or arbitrary argument. Hugging Face
+authentication comes only from the cpp-studio server environment or its authenticated
+local cache; credentials are never accepted from, returned to, or logged for the
+browser.
+
+Safe installation behavior:
+
+- Missing licence, unknown/non-positive download size, missing tracked checksum,
+  insufficient free space, an existing destination, or any other preview blocker
+  disables confirmation.
+- Low projected remaining disk is a prominent warning. Estimated VRAM incompatibility
+  is also a warning because CPU/memory-saving operation may still be valid; it does
+  not block downloading.
+- Download into a unique staging directory beneath the configured models root. Resolve
+  and verify both staging and final paths remain beneath that root; never stage into a
+  browser-selected or system temporary directory.
+- Mark staging with installer-owned metadata. On startup or the next catalog refresh,
+  remove only validated orphan staging created by this installer; never infer cleanup
+  targets from names alone.
+- Hold a destination-scoped install lock. A concurrent install for the same artifact
+  or destination returns a conflict and cannot race promotion.
+- Stream to staging with byte-count progress. On cancellation or failure, remove only
+  that validated staging directory and preserve every existing model.
+- Verify expected size and tracked checksum in staging, then atomically promote the
+  file or complete package directory. v1 never overwrites or merges an existing
+  destination.
+- After promotion, refresh the catalog and require the normal size/checksum checks to
+  pass before reporting the model `ready`. A refresh/verification failure leaves the
+  artifact present but not ready and provides an actionable repair; it never silently
+  starts or reloads an engine.
+
+The returned job uses `GET /v1/jobs/{id}` and
+`POST /v1/jobs/{id}/cancel`. Its detail reports `preparing`, `downloading`,
+`verifying`, `promoting`, and `refreshing_catalog`, with bytes downloaded and expected
+bytes where applicable. Cancellation becomes unavailable once atomic promotion begins.
+
+#### P2.3 — readiness, GGUF inspection, and lifecycle integration
 
 The Models tab presents readiness as a sequence:
 
 ```text
-Loader available -> package known -> file present -> checksum verified
--> engine configured -> engine healthy -> benchmark current
+Loader available -> package known -> installation confirmed/file present
+-> checksum verified -> engine configured -> engine healthy -> benchmark current
 ```
 
 Each failed step shows problem, cause, and remedy. Examples:
 
 - `Loader unavailable`: “This binary is audio.cpp 0.4.2; DramaBox requires 0.5.”
-- `Model missing`: show expected path, bytes, official source, licence, and copy command.
+- `Model missing`: show expected destination, bytes, immutable source/revision,
+  licence, disk result, warnings, and Preview installation.
 - `Configured but unhealthy`: link engine log tail and configuration section.
 - `Benchmark stale`: identify which engine/model fingerprint changed.
+
+For a present GGUF, reuse the bounded `internal/gguf` reader to show supported header
+facts such as GGUF version, architecture, expert count, file size, and size label.
+Inspection failure degrades to size/readiness information with the exact reason; it
+does not make an otherwise verified artifact disappear or attempt a full tensor scan.
+
+Model cards link to cpp-studio's existing engine/profile/variant controls. Start,
+Stop, Reload, or variant selection continues through the current gateway routes and
+Lifecycle Manager, honoring busy-engine and reservation rules. The browser never
+talks directly to audio.cpp, and successful installation does not imply configuration,
+health, benchmark acceptance, or an automatic lifecycle action.
 
 Do not merge “present” and “works.” A correct 18.9 GB file behind an old binary is not
 ready, and a healthy fixture is not a real-model proof.
 
-#### P2.3 — structured factual prompt builder and linter
+#### P2.4 — structured factual prompt builder and linter
 
 Replace the single free-form default with a structured factual prompt model while
 retaining an advanced escape hatch:
@@ -688,7 +851,7 @@ The UI shows the exact generated prompt before submission and distinguishes:
 Book-level direction remains the default. Per-section direction is out of scope until
 there is a concrete factual use case and an editing workflow that can audit it.
 
-#### P2.4 — provenance export
+#### P2.5 — provenance export
 
 Extend the final manifest and optional JSON sidecar with:
 
@@ -706,17 +869,26 @@ P2 exit criteria:
 - Catalog behavior is unchanged when discovery is unavailable.
 - Loader/package/presence/config/health/benchmark states remain distinct.
 - Discovery commands are fixed, bounded, and fixture-tested against malformed output.
+- No download occurs without a fresh, explicit preview confirmation tied to immutable
+  server-side catalog data; stale, changed, reused, or concurrent confirmations fail.
+- Installation is cancellable while safe, reports phase/byte progress, never
+  overwrites, cleans partial staging on failure, and verifies size/checksum before
+  readiness.
+- GGUF facts and engine lifecycle remedies use existing bounded inspection, gateway,
+  reservation, and Lifecycle Manager seams.
 - Prompt preview matches the exact server/CLI request byte-for-byte after documented
   normalization.
 - Lint warnings never alter source content automatically.
-- No automatic model download or unreviewed licence acceptance is introduced.
+- No silent model download, unreviewed licence, or browser-controlled install input is
+  introduced.
 
 ## Architecture
 
 ```text
-Browser Audiobook desk
+Browser Audiobook desk + Models/Engines
   |
-  | POST book / resume / restart / discard / retry / benchmark
+  | audiobook preview/lifecycle/retry/benchmark
+  | install preview/confirm + existing engine lifecycle actions
   v
 Gateway HTTP validation
   |
@@ -737,9 +909,16 @@ Gateway HTTP validation
   |
   +--> Benchmark runner ----------------> process/GPU metrics
   |
-  +--> Model catalog --------------------> models.json
-            |
-            +--> optional discovery ----> model_manager_v2 + --list-loaders
+  +--> Model catalog --------------------> models.json (install authority)
+  |         |
+  |         +--> bounded discovery -----> model_manager_v2 + --list-loaders
+  |         +--> GGUF inspection -------> internal/gguf
+  |         +--> confirmation store
+  |                    |
+  |                    +--> install job -> models-root staging
+  |                                      -> size/checksum -> atomic promote
+  |
+  +--> Lifecycle Manager ---------------> existing start/stop/reload/profile routes
 ```
 
 Ownership boundaries:
@@ -752,7 +931,13 @@ Ownership boundaries:
 - `internal/engine` owns typed option validation and mapping to audio.cpp resident JSON
   and subprocess CLI transports.
 - `internal/wav` owns PCM validation and bounded file assembly.
-- `internal/models` owns catalog/discovery state, never synthesis.
+- `internal/models` owns catalog/discovery state, install-preview confirmations,
+  destination-safe staged installation, GGUF inspection, and catalog refresh; it never
+  owns synthesis or directly mutates engine lifecycle.
+- `jobs.Registry` projects live installation phase and byte progress and routes safe
+  cancellation; durable model truth remains the filesystem plus tracked catalog.
+- `internal/lifecycle` remains the sole owner of engine start/stop/reload/profile and
+  variant operations after installation.
 - `scripts` owns hardware measurement; production handlers do not scrape `nvidia-smi`
   during normal narration.
 
@@ -815,6 +1000,10 @@ publish a flagged audiobook with an unmistakable warning and retained evidence.
   nor treated as finished books.
 - The jobs route remains a live-process projection. Audiobook status and interrupted
   discovery always come from the audiobook store, including after process restart.
+- Install-preview confirmations are short-lived, in-memory authorization records, not
+  durable jobs or API credentials. A gateway restart invalidates them safely.
+- Model install jobs use the existing jobs envelope and cancellation route; new phase
+  and byte fields are additive.
 - No migration rewrites old manifests in place.
 
 ## Error & Rescue Registry
@@ -843,6 +1032,12 @@ publish a flagged audiobook with an unmistakable warning and retained evidence.
 | Voice reference too short for DramaBox | Invalid engine-specific choice | Voice remains stored | Use text-only or provide 10+ seconds of clean speech |
 | Benchmark fails/aborts | Measurement failure | Partial result marked invalid | Fix configuration and rerun; never reuse partial metrics |
 | Discovery command missing/malformed | Optional discovery failure | Cached/static catalog retained | Show exact command/error; normal catalog continues |
+| Install preview has incomplete catalog metadata | Installation blocked | No confirmation/job | Add licence, immutable revision, size, checksum, and allowlisted destination to the tracked catalog |
+| Install confirmation expired/reused/changed | Confirmation conflict | No new download | Refresh readiness, preview again, and explicitly reconfirm |
+| Destination already exists | Installation conflict | Existing model untouched | Verify/use the existing artifact or choose an operator-managed cleanup path |
+| Download cancelled or fails | Interrupted installation | Validated staging removed; existing models untouched | Check authentication/network/disk and create a fresh preview |
+| Download size/checksum mismatch | Artifact verification failure | Invalid staging removed; destination untouched | Refresh trusted catalog metadata or retry from the immutable source |
+| Catalog refresh fails after promotion | Readiness failure | New artifact present but not ready | Re-run verification/refresh; do not start the engine yet |
 | Prompt lint warning | User-correctable warning | No job yet | Edit structured direction or explicitly accept advanced prompt |
 
 ## Failure Modes Registry
@@ -860,7 +1055,14 @@ publish a flagged audiobook with an unmistakable warning and retained evidence.
 | Poor reference produces unstable clone | Medium | Engine-specific duration/PCM/VAD fitness | P1 |
 | Benchmark fixture succeeds but real model does not | High | Separate fixture/code and live-runtime gates | P1 |
 | User mistakes local for costless | Medium | Runtime projection plus storage/electricity warning | P1 |
-| Discovery output is treated as trusted install authority | High | Static manifest remains provenance authority; no auto-install | P2 |
+| Discovery output is treated as trusted install authority | High | Tracked catalog plus server allowlist remain the only install authority | P2 |
+| Browser input reaches a model-manager command | Critical | Install accepts only opaque confirmation id; fixed argv and allowlisted package tests | P2 |
+| Catalog/destination path escapes the models root | Critical | Canonical containment checks for staging and final paths; hostile traversal tests | P2 |
+| Download exhausts disk | Critical | Known size and free-space blocker; low-remaining warning; streamed writes and disk-full cleanup | P2 |
+| Cancelled/failed download becomes visible as a model | Critical | Unique in-root staging, checksum/size gate, atomic promotion, cleanup tests | P2 |
+| Missing or ambiguous licence is treated as accepted | High | Missing licence blocks preview confirmation; exact catalog licence is shown before confirmation | P2 |
+| Concurrent installs corrupt or overwrite an artifact | Critical | Destination lock, no-overwrite promotion, concurrency tests | P2 |
+| Stale or reused confirmation installs changed content | Critical | Short TTL, single-use consume, immutable selection fingerprint, adversarial replay tests | P2 |
 | Prompt direction is spoken aloud | High | Structured prompt, role-noun lint, exact preview | P2 |
 | Prompt policy change makes resume incompatible | High | Prompt policy version rejects Resume and directs Restart | P2 |
 | Watermark is claimed without native evidence | Medium | Explicit unknown/present/absent provenance field | P2 |
@@ -878,7 +1080,16 @@ publish a flagged audiobook with an unmistakable warning and retained evidence.
   passthrough is added.
 - Discovery executes configured binaries with fixed argument arrays and bounded time,
   output size, and JSON depth.
-- Model installation and licence acceptance remain manual.
+- Model installation requires an unexpired, single-use confirmation derived wholly
+  from server-side allowlisted catalog data. No install endpoint accepts commands,
+  packages, paths, repositories, revisions, tokens, proxies, URLs, or arguments.
+- Staging and promotion stay beneath the configured models root, never overwrite, and
+  are guarded by canonical path containment plus a destination lock.
+- Licence, immutable source/revision, expected size, checksum, disk result, VRAM
+  warning, and blockers are displayed before confirmation. Missing/ambiguous licence
+  or unknown size/checksum blocks installation; VRAM incompatibility warns only.
+- Hugging Face credentials come only from the server environment or authenticated
+  local cache and are never exposed to the browser or job logs.
 - Existing voice-reference consent and provenance requirements remain unchanged.
 - RE-USE is excluded by default because of platform and licence constraints.
 - Native DramaBox output is not labelled Perth-watermarked without a successful
@@ -913,6 +1124,18 @@ Required states:
 | Not verified | Whisper unavailable or verification off | Play, configure verifier |
 | Complete | Verified/flagged status plus duration | Play, Save |
 | Fatal setup error | Problem + cause + remedy | Open Models/Engines guidance |
+
+Required Models states:
+
+| State | Primary text | Available actions |
+|---|---|---|
+| Install metadata blocked | Cannot install safely + exact blocker | View catalog guidance |
+| Preview ready | Source, revision, licence, size, disk and VRAM result | Confirm installation, Cancel |
+| Downloading | Phase + downloaded/expected bytes | Cancel while safe |
+| Verifying/promoting | Verification or atomic installation in progress | Cancel only before promotion |
+| Installed, not configured | Artifact verified; engine not configured | Open configuration/lifecycle guidance |
+| Configured, stopped/unhealthy | Exact lifecycle state and remedy | Existing Start/Reload/log actions |
+| Ready | Verified, configured, healthy | Inspect GGUF, Benchmark, Select |
 
 Keyboard access, visible focus, labelled progress, non-colour-only status, and live
 region announcements apply to every new control. Large warnings use the existing
@@ -974,6 +1197,18 @@ P2 discovery and prompt
   +-- missing tool/malformed JSON/timeouts degrade .......... negative tests
   +-- static catalog remains authoritative ................. gateway regression
   +-- fixed command arguments only ......................... security tests
+  +-- preview resolves immutable allowlisted metadata ....... models/gateway tests
+  +-- command/package/path/repo/revision/token/proxy rejected  adversarial HTTP tests
+  +-- traversal and symlink escape stay under models root ... hostile filesystem tests
+  +-- stale/reused/changed confirmation rejected ............ clock/replay tests
+  +-- concurrent same-destination install conflicts ......... race/concurrency tests
+  +-- unknown size/licence/checksum and low disk policy ..... preflight table tests
+  +-- disk full/cancel/network failure removes staging ...... chaos/filesystem tests
+  +-- restart removes only marked orphan install staging .... recovery/security tests
+  +-- size/checksum then no-overwrite atomic promotion ...... artifact tests
+  +-- progress exposes phase and byte counts; cancel works .. jobs + browser tests
+  +-- bounded GGUF facts degrade without blocking catalog ... gguf/models tests
+  +-- lifecycle links call existing gateway routes only ..... browser/gateway tests
   +-- prompt lint rules and exact preview ................... table + browser tests
   +-- policy version rejects Resume and preserves WIP ....... resume/restart regression
 
@@ -997,7 +1232,7 @@ Names may adjust during implementation, but responsibilities must remain separat
 | Typed audio.cpp transport | `internal/engine/specs.go`, `internal/engine/engine.go` |
 | Voice fitness | `internal/wav/analysis.go`, `internal/voice/store.go` |
 | Benchmark | `scripts/benchmark-dramabox-audiobook.ps1`, paired harness test, `testdata/benchmark/` |
-| Discovery | `internal/models/discovery.go`, `internal/gateway/gateway.go` |
+| Discovery, inspection, and confirmed install | `internal/models/discovery.go`, `internal/models/install.go`, `internal/gguf/`, `internal/gateway/gateway.go` |
 | Browser | `internal/demo/static/index.html`, `app.js`, `styles.css`, `internal/demo/demo_test.go` |
 | Docs/config | `README.md`, `docs/API.md`, `docs/CONFIG.md`, `docs/ROADMAP.md`, example JSON |
 
@@ -1008,7 +1243,7 @@ Names may adjust during implementation, but responsibilities must remain separat
 - [x] P0-01: Pin and qualify the release-0.5 runtime contract without replacing 0.4.2.
 - [x] P0-02: Introduce versioned audiobook manifest, section, verification, and attempt types.
 - [ ] P0-03: Add DramaBox duration-based section planning and stable seed assignment; preserve fast chunking.
-- [ ] P0-04: Replace the positional synthesis callback with typed request/options and engine-owned server/subprocess mapping.
+- [ ] P0-04: Add curated controls, resolved-request preview, complete effective-option persistence, and engine-owned typed server/subprocess mapping.
 - [ ] P0-05: Add injected engine/voice resolution and freeze the audiobook synthesis identity.
 - [ ] P0-06: Add the durable audiobook store and atomic source/plan/seed creation.
 - [ ] P0-07: Deepen the Manager around create/cancel/fail/resume/restart/discard store transitions.
@@ -1022,26 +1257,32 @@ Names may adjust during implementation, but responsibilities must remain separat
 
 ### P1 task order
 
-- [ ] P1-01: Add immutable section attempts and same-seed reproduction.
-- [ ] P1-02: Add new-seed variation, attempt selection, and render revisions.
-- [ ] P1-03: Implement PCM reference analysis and persisted fitness metadata.
+- [ ] P1-01: Add immutable section attempts, requested/actual seed reporting, and same-seed reproduction.
+- [ ] P1-02: Add new-seed variation, attempt selection, per-attempt timings, and render revisions.
+- [ ] P1-03: Implement PCM reference analysis, persisted fitness metadata, and select/preview/clear reference UX.
 - [ ] P1-04: Add optional VAD integration and honest fallback.
 - [ ] P1-05: Enforce DramaBox-only 10-second usable-speech eligibility.
 - [ ] P1-06: Build and self-test the DramaBox benchmark harness.
 - [ ] P1-07: Add benchmark API/job and fingerprinted result persistence.
-- [ ] P1-08: Add projection, repair, and attempt-audition UI.
+- [ ] P1-08: Add timing/projection, repair, reference, and attempt-audition UI.
 - [ ] P1-09: Run real CPU and optional CUDA/mem-saver measurements.
 
 ### P2 task order
 
-- [ ] P2-01: Add bounded read-only model-manager and loader discovery.
-- [ ] P2-02: Merge optional readiness fields into the current catalog API.
-- [ ] P2-03: Add readiness sequence and remedies to the Models tab.
-- [ ] P2-04: Add structured factual prompt types and policy versioning.
-- [ ] P2-05: Add prompt linter, exact preview, and advanced escape hatch.
-- [ ] P2-06: Extend manifest/sidecar provenance without watermark assumptions.
-- [ ] P2-07: Update setup, API, model, and prompt documentation.
-- [ ] P2-08: Run compatibility, security, browser, and full verification suites.
+- [ ] P2-01: Add bounded model-manager/loader discovery with server-side package allowlisting.
+- [ ] P2-02: Extend tracked install metadata and merge optional readiness fields into the catalog API.
+- [ ] P2-03: Implement short-lived, single-use installation preview confirmations and blocker policy.
+- [ ] P2-04: Implement destination-locked staged download, size/checksum verification, no-overwrite atomic promotion, cleanup, and catalog refresh.
+- [ ] P2-05: Register installation as an existing-style job with phase/byte progress and safe cancellation.
+- [ ] P2-06: Add preview/confirmation, progress/cancellation, warning, and rescue states to the Models tab.
+- [ ] P2-07: Expose bounded GGUF inspection and link readiness remedies to existing lifecycle/profile/variant controls.
+- [ ] P2-08: Add structured factual prompt types and policy versioning.
+- [ ] P2-09: Add prompt linter, exact preview, and advanced escape hatch.
+- [ ] P2-10: Extend manifest/sidecar provenance without watermark assumptions.
+- [ ] P2-11: Update setup, API, model, installation, lifecycle, and prompt documentation.
+- [ ] P2-12: Run command-injection, traversal, disk, partial-download, licence, concurrency, and confirmation-replay security tests.
+- [ ] P2-13: Run browser acceptance for install preview/confirm, progress/cancel, GGUF inspection, lifecycle links, and error remedies.
+- [ ] P2-14: Run compatibility and full verification suites.
 
 ## Verification commands
 
@@ -1085,7 +1326,9 @@ Stage completion labels:
 
 - Replacing the fast narrator as default.
 - Hosted ElevenLabs, Resemble, OpenAI, or other paid TTS APIs.
-- Automatically downloading the DramaBox model.
+- Silent, background, prefetch, or browser-parameterized model downloads; every
+  in-product install requires a fresh preview and explicit confirmation.
+- Overwriting, upgrading, deleting, or relocating an existing model in v1.
 - Embedding the upstream Python DramaBox runtime beside audio.cpp.
 - RE-USE denoising by default.
 - LoRA training or dataset preparation.
@@ -1103,7 +1346,7 @@ Stage completion labels:
 |---|---|---|---|---|
 | P0 | Resume-safe long-form book with verification status | Lost compute, RAM blow-up, silent text drift | audio.cpp 0.5 for real proof; Whisper optional/required by mode | Fixture suite green plus real run when assets exist |
 | P1 | Reproducible repair, suitable clone warnings, runtime projection | Uncontrolled retries, bad references, unknown time/VRAM | Authorized voice for clone case; metrics tools | Harness self-tests plus measured local profile |
-| P2 | Honest readiness discovery and exact factual prompt preview | Setup ambiguity and spoken directions | model manager/loader discovery optional | Catalog degrades cleanly; prompt preview is exact |
+| P2 | Honest readiness/GGUF inspection, confirmed installation, lifecycle remedies, and exact factual prompt preview | Unsafe acquisition, setup ambiguity, and spoken directions | model manager/loader discovery optional; complete allowlisted catalog metadata for install | Catalog degrades cleanly; install is explicit/tracked/verified; browser and security acceptance pass; prompt preview is exact |
 
 The plan is intentionally front-loaded toward preserving time and source integrity. If
 implementation stops after P0, the app is already materially safer and more useful. P1
