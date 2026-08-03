@@ -182,7 +182,12 @@ stitched WAV. Runs as an `audiobook` job on the jobs surface.
   `{"audiobooks":[{"id":"book_...","title":"...","engine":"dramabox","direction":"Measured documentary delivery.","chunks":42,"durationSeconds":312,"artifactUrl":"/v1/audiobooks/book_.../artifact/book.wav"}]}`.
 - `GET /v1/audiobooks/{id}/artifact/book.wav` — the narration WAV.
 
-Finished audiobooks persist in `out/audiobooks` and survive restarts.
+Finished audiobooks persist in `out/audiobooks` and survive restarts. DramaBox
+creation first publishes an owner-only `.book_....wip` directory containing the
+canonical `source.txt`, resolved synthesis identity, complete section plan, and all
+section seeds. The API returns its production id only after that durable transition;
+the finished directory retains the source and per-section WAV evidence beside
+`book.wav`.
 
 ## Library
 

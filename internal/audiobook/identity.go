@@ -88,3 +88,27 @@ func buildSynthesisIdentity(req Request, resolvedEngine EngineIdentity, resolved
 	identity.Fingerprint = hex.EncodeToString(h.Sum(nil))
 	return identity
 }
+
+func prepareSectionCheckpoints(identity SynthesisIdentity, sections []Section) []Section {
+	prepared := make([]Section, len(sections))
+	copy(prepared, sections)
+	for i := range prepared {
+		prepared[i].AudioFile = "sections/" + prepared[i].ID + ".wav"
+		prepared[i].CheckpointFingerprint = sectionCheckpointFingerprint(identity.Fingerprint, prepared[i])
+	}
+	return prepared
+}
+
+func sectionCheckpointFingerprint(baseFingerprint string, section Section) string {
+	h := sha256.New()
+	add := func(value string) {
+		_, _ = fmt.Fprintf(h, "%d:%s", len(value), value)
+	}
+	add(baseFingerprint)
+	add(section.ID)
+	add(strconv.FormatInt(section.StartByte, 10))
+	add(strconv.FormatInt(section.EndByte, 10))
+	add(section.TextSHA256)
+	add(strconv.FormatUint(uint64(section.Seed), 10))
+	return hex.EncodeToString(h.Sum(nil))
+}

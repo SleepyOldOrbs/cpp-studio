@@ -3,6 +3,8 @@ package audiobook
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,13 +84,15 @@ type Request struct {
 }
 
 type narrationUnit struct {
-	text string
-	seed Seed
+	text    string
+	seed    Seed
+	section *Section
 }
 
 type Manager struct {
 	mu            sync.Mutex
 	rootDir       string
+	store         *Store
 	reserveEngine ReserveEngineFunc
 	synthesize    SynthesizeFunc
 	resolveEngine ResolveEngineFunc
@@ -131,6 +135,7 @@ func NewManager(opts ManagerOptions) *Manager {
 	}
 	return &Manager{
 		rootDir:       rootDir,
+		store:         NewStore(rootDir),
 		reserveEngine: opts.ReserveEngine,
 		synthesize:    opts.Synthesize,
 		resolveEngine: resolveEngine,
@@ -264,14 +269,31 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 	identity := buildSynthesisIdentity(req, resolved.Engine, resolved.Voice)
 
 	var units []narrationUnit
+	var initial *Manifest
+	m.counter++
+	id := fmt.Sprintf("book_%s_%03d", m.now().Format("20060102_150405"), m.counter)
 	if req.EngineID == DramaBoxEngineID {
 		sections, err := planDramaBoxSections(req.Text, m.seedSource)
 		if err != nil {
 			return "", 0, fmt.Errorf("plan DramaBox sections: %w", err)
 		}
+		sections = prepareSectionCheckpoints(identity, sections)
+		createdAt := m.now()
+		options := req.Options
+		manifest := Manifest{
+			SchemaVersion: CurrentManifestSchemaVersion, ID: id, Title: title,
+			VoiceID: req.VoiceID, EngineID: req.EngineID, Direction: req.Direction,
+			Chunks: len(sections), CreatedAt: createdAt,
+			ArtifactURL: "/v1/audiobooks/" + id + "/artifact/" + ArtifactName,
+			Status:      ProductionStatusSynthesizing, SourceFile: sourceFileName,
+			SourceSHA256: identity.SourceSHA256, SynthesisFingerprint: identity.Fingerprint,
+			SectionPolicyVersion: identity.SectionPolicyVersion, PromptPolicyVersion: identity.PromptPolicyVersion,
+			Sections: sections, ResolvedOptions: &options, SynthesisIdentity: &identity,
+		}
+		initial = &manifest
 		units = make([]narrationUnit, len(sections))
-		for i, section := range sections {
-			units[i] = narrationUnit{text: req.Text[section.StartByte:section.EndByte], seed: section.Seed}
+		for i := range sections {
+			units[i] = narrationUnit{text: req.Text[sections[i].StartByte:sections[i].EndByte], seed: sections[i].Seed, section: &manifest.Sections[i]}
 		}
 	} else {
 		chunks := Chunk(req.Text, DefaultChunkChars)
@@ -287,16 +309,31 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 		return "", 0, requestErrorf("document needs %d chunks, max is %d; narrate it in parts", len(units), MaxChunks)
 	}
 
+	var staged *stagedProduction
+	if initial != nil {
+		staged, err = m.store.StageInitial(*initial, req.Text)
+		if err != nil {
+			return "", 0, fmt.Errorf("stage audiobook: %w", err)
+		}
+	}
 	var release func()
 	if m.reserveEngine != nil {
 		var ok bool
 		release, ok = m.reserveEngine(ctx, req.EngineID)
 		if !ok {
+			m.store.AbortInitial(staged)
 			return "", 0, fmt.Errorf("engine %q is busy", req.EngineID)
 		}
 	}
-	m.counter++
-	id := fmt.Sprintf("book_%s_%03d", m.now().Format("20060102_150405"), m.counter)
+	if staged != nil {
+		if err := m.store.PublishInitial(staged); err != nil {
+			if release != nil {
+				release()
+			}
+			m.store.AbortInitial(staged)
+			return "", 0, err
+		}
+	}
 	jobCtx, cancel := context.WithCancel(context.Background())
 	m.activeID = id
 	m.cancels[id] = cancel
@@ -304,11 +341,11 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 		m.registry.Track(id, "audiobook", cancel)
 	}
 
-	go m.run(jobCtx, id, title, req, identity, resolved.Voice, units, release)
+	go m.run(jobCtx, id, title, req, identity, resolved.Voice, units, initial, release)
 	return id, len(units), nil
 }
 
-func (m *Manager) run(ctx context.Context, id, title string, req Request, identity SynthesisIdentity, resolvedVoice VoiceIdentity, units []narrationUnit, release func()) {
+func (m *Manager) run(ctx context.Context, id, title string, req Request, identity SynthesisIdentity, resolvedVoice VoiceIdentity, units []narrationUnit, initial *Manifest, release func()) {
 	defer func() {
 		if release != nil {
 			release()
@@ -327,14 +364,18 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		}
 		return
 	}
-	clipDir, err := os.MkdirTemp(m.rootDir, "."+id+".clips-")
-	if err != nil {
-		if m.registry != nil {
-			m.registry.Fail(id, "create audiobook staging dir: "+err.Error())
+	clipDir := ""
+	if initial == nil {
+		var err error
+		clipDir, err = os.MkdirTemp(m.rootDir, "."+id+".clips-")
+		if err != nil {
+			if m.registry != nil {
+				m.registry.Fail(id, "create audiobook staging dir: "+err.Error())
+			}
+			return
 		}
-		return
+		defer os.RemoveAll(clipDir)
 	}
-	defer os.RemoveAll(clipDir)
 	clipPaths := make([]string, 0, len(units))
 	for i, unit := range units {
 		if ctx.Err() != nil {
@@ -372,11 +413,31 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 			return
 		}
 		clipPath := filepath.Join(clipDir, fmt.Sprintf("chunk-%04d.wav", i+1))
-		if err := os.WriteFile(clipPath, clip, 0o600); err != nil {
+		if unit.section != nil {
+			clipPath, err = m.store.SaveSectionWIP(id, unit.section.ID, clip)
+		} else {
+			err = os.WriteFile(clipPath, clip, 0o600)
+		}
+		if err != nil {
 			if m.registry != nil {
 				m.registry.Fail(id, fmt.Sprintf("stage chunk %d/%d with %s: %v", i+1, len(units), req.EngineID, err))
 			}
 			return
+		}
+		if unit.section != nil {
+			audioSum := sha256.Sum256(clip)
+			unit.section.Status = SectionStatusSynthesized
+			unit.section.AudioSHA256 = hex.EncodeToString(audioSum[:])
+			if duration, durationErr := wav.Duration(clip); durationErr == nil {
+				unit.section.DurationMS = duration.Milliseconds()
+			}
+			attemptOptions := options
+			unit.section.Attempts = []Attempt{{
+				ID: "attempt-0001", Seed: unit.seed,
+				CheckpointFingerprint: unit.section.CheckpointFingerprint,
+				AudioFile:             unit.section.AudioFile, AudioSHA256: unit.section.AudioSHA256,
+				Selected: true, CreatedAt: m.now(), Options: &attemptOptions,
+			}}
 		}
 		clipPaths = append(clipPaths, clipPath)
 	}
@@ -411,7 +472,10 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		PromptPolicyVersion:  identity.PromptPolicyVersion,
 		SynthesisIdentity:    &identity,
 	}
-	if req.EngineID == DramaBoxEngineID {
+	if initial != nil {
+		manifest = *initial
+		manifest.Status = ProductionStatusComplete
+	} else if req.EngineID == DramaBoxEngineID {
 		options := req.Options
 		manifest.ResolvedOptions = &options
 	}
@@ -427,7 +491,12 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		m.markCancelled(id)
 		return
 	}
-	if err := m.save(manifest, stitched); err != nil {
+	if initial != nil {
+		err = m.store.FinalizeWIP(manifest, stitched)
+	} else {
+		err = m.save(manifest, stitched)
+	}
+	if err != nil {
 		if m.registry != nil {
 			m.registry.Fail(id, "save audiobook: "+err.Error())
 		}
