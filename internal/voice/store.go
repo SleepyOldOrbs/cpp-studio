@@ -2,6 +2,7 @@ package voice
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -37,6 +38,30 @@ type Clone struct {
 	// outlives every clip it was cut from, so the one place this can be
 	// answered later is here.
 	Source *CloneSource `json:"source,omitempty"`
+	// Analysis is computed once from the immutable reference and persisted.
+	// Older manifests omit it and are upgraded lazily on first load.
+	Analysis *ReferenceAnalysis `json:"analysis,omitempty"`
+}
+
+// ReferenceAnalysis records PCM facts and an honestly labelled heuristic
+// speech estimate. It never claims the optional VAD ran.
+type ReferenceAnalysis struct {
+	ContentSHA256          string    `json:"content_sha256"`
+	DurationSeconds        float64   `json:"duration_seconds"`
+	UsableSpeechSeconds    float64   `json:"usable_speech_seconds"`
+	SampleRate             uint32    `json:"sample_rate"`
+	Channels               uint16    `json:"channels"`
+	BitsPerSample          uint16    `json:"bits_per_sample"`
+	PeakAmplitude          float64   `json:"peak_amplitude"`
+	ClippedSampleRatio     float64   `json:"clipped_sample_ratio"`
+	RMS                    float64   `json:"rms"`
+	LeadingLowEnergyRatio  float64   `json:"leading_low_energy_ratio"`
+	TrailingLowEnergyRatio float64   `json:"trailing_low_energy_ratio"`
+	TotalLowEnergyRatio    float64   `json:"total_low_energy_ratio"`
+	Method                 string    `json:"method"`
+	Fitness                string    `json:"fitness"`
+	Warnings               []string  `json:"warnings,omitempty"`
+	AnalyzedAt             time.Time `json:"analyzed_at"`
 }
 
 // CloneSource is the provenance of a cloned voice. The Extractor already
@@ -110,6 +135,7 @@ func (s *Store) SaveWithSource(name string, transcript string, refWAV []byte, pr
 		CreatedAt:  time.Now().UTC(),
 		Protected:  protected,
 		Source:     source,
+		Analysis:   analyzeReference(refWAV),
 	}
 
 	tmpDir := filepath.Join(s.rootDir, "."+clone.ID+".tmp")
@@ -150,7 +176,68 @@ func (s *Store) Load(id string) (Clone, bool, error) {
 	if err := json.Unmarshal(data, &clone); err != nil {
 		return Clone{}, false, fmt.Errorf("decode voice manifest: %w", err)
 	}
+	if clone.Analysis == nil {
+		refWAV, readErr := os.ReadFile(filepath.Join(s.rootDir, id, referenceWAVName))
+		if readErr != nil {
+			return Clone{}, false, fmt.Errorf("analyze voice reference: %w", readErr)
+		}
+		clone.Analysis = analyzeReference(refWAV)
+		updated, marshalErr := json.MarshalIndent(clone, "", "  ")
+		if marshalErr != nil {
+			return Clone{}, false, fmt.Errorf("encode analyzed voice manifest: %w", marshalErr)
+		}
+		if writeErr := os.WriteFile(filepath.Join(s.rootDir, id, "manifest.json"), append(updated, '\n'), 0o644); writeErr != nil {
+			return Clone{}, false, fmt.Errorf("persist voice analysis: %w", writeErr)
+		}
+	}
 	return clone, true, nil
+}
+
+func analyzeReference(refWAV []byte) *ReferenceAnalysis {
+	hash := sha256.Sum256(refWAV)
+	result := &ReferenceAnalysis{
+		ContentSHA256: hex.EncodeToString(hash[:]), Method: "pcm-heuristic-v1",
+		Fitness: "good", AnalyzedAt: time.Now().UTC(),
+	}
+	format, _, decodeErr := wav.Decode(refWAV)
+	if decodeErr == nil {
+		result.SampleRate = format.SampleRate
+		result.Channels = format.Channels
+		result.BitsPerSample = format.BitsPerSample
+	}
+	if duration, durationErr := wav.Duration(refWAV); durationErr == nil {
+		result.DurationSeconds = duration.Seconds()
+	}
+	analysis, err := wav.AnalyzePCM16(refWAV)
+	if err != nil {
+		result.Fitness = "unsupported"
+		result.Warnings = []string{err.Error()}
+		return result
+	}
+	result.DurationSeconds = analysis.Duration.Seconds()
+	result.UsableSpeechSeconds = analysis.UsableSpeechDuration.Seconds()
+	result.SampleRate = analysis.Format.SampleRate
+	result.Channels = analysis.Format.Channels
+	result.BitsPerSample = analysis.Format.BitsPerSample
+	result.PeakAmplitude = analysis.PeakAmplitude
+	result.ClippedSampleRatio = analysis.ClippedSampleRatio
+	result.RMS = analysis.RMS
+	result.LeadingLowEnergyRatio = analysis.LeadingLowEnergyRatio
+	result.TrailingLowEnergyRatio = analysis.TrailingLowEnergyRatio
+	result.TotalLowEnergyRatio = analysis.TotalLowEnergyRatio
+	if result.ClippedSampleRatio > 0.01 {
+		result.Warnings = append(result.Warnings, "more than 1% of samples are clipped")
+	}
+	if result.TotalLowEnergyRatio > 0.4 {
+		result.Warnings = append(result.Warnings, "more than 40% of the reference is low energy")
+	}
+	if result.RMS < 0.02 {
+		result.Warnings = append(result.Warnings, "reference level is very low")
+	}
+	if len(result.Warnings) > 0 {
+		result.Fitness = "warning"
+	}
+	return result
 }
 
 func (s *Store) List() ([]Clone, error) {

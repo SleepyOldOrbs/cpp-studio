@@ -302,6 +302,12 @@ func TestHandlerServesAssets(t *testing.T) {
 			needle:      "/v1/audiobooks/preview",
 		},
 		{
+			name:        "javascript audiobook voice reference fitness",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "renderAudiobookVoiceReference",
+		},
+		{
 			name:        "javascript audiobook typed options submit",
 			path:        "/app.js",
 			contentType: "javascript",

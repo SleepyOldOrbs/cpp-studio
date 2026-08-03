@@ -1,11 +1,14 @@
 package voice
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"cpp-studio/internal/wav"
 )
 
 func validWAVBytes() []byte {
@@ -162,5 +165,41 @@ func TestStoreRejectsBadIDs(t *testing.T) {
 		if err := store.Delete(id); err == nil {
 			t.Fatalf("Delete(%q): expected error", id)
 		}
+	}
+}
+
+func TestStorePersistsPCMReferenceAnalysisAndLazilyUpgradesOldManifest(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "voices")
+	store := NewStore(root)
+	clone, err := store.Save("Measured", "reference words", wav.SyntheticTone(wav.ToneSampleRate), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clone.Analysis == nil || clone.Analysis.DurationSeconds != 1 || clone.Analysis.SampleRate != wav.ToneSampleRate || clone.Analysis.BitsPerSample != 16 || clone.Analysis.ContentSHA256 == "" {
+		t.Fatalf("analysis missing from new clone: %+v", clone.Analysis)
+	}
+
+	manifestPath := filepath.Join(root, clone.ID, "manifest.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacy, "analysis")
+	data, _ = json.MarshalIndent(legacy, "", "  ")
+	if err := os.WriteFile(manifestPath, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, ok, err := store.Load(clone.ID)
+	if err != nil || !ok || loaded.Analysis == nil || loaded.Analysis.Method != "pcm-heuristic-v1" {
+		t.Fatalf("legacy voice was not lazily analyzed: ok=%v err=%v clone=%+v", ok, err, loaded)
+	}
+	persisted, err := os.ReadFile(manifestPath)
+	if err != nil || !strings.Contains(string(persisted), `"analysis"`) {
+		t.Fatalf("lazy analysis was not persisted: err=%v manifest=%s", err, persisted)
 	}
 }

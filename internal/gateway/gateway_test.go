@@ -3168,6 +3168,9 @@ func TestVoiceCloneLifecycleAndClonedVoiceLoop(t *testing.T) {
 	if created.AudioURL != "/v1/voices/"+created.ID+"/audio" {
 		t.Fatalf("unexpected audio url %q", created.AudioURL)
 	}
+	if created.Analysis == nil || created.Analysis.ContentSHA256 == "" || created.Analysis.Fitness != "unsupported" {
+		t.Fatalf("voice response omitted persisted reference fitness: %+v", created.Analysis)
+	}
 
 	// List includes the new voice.
 	rec = httptest.NewRecorder()

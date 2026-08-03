@@ -63,6 +63,13 @@ and verification timings, duration, verification evidence, parent lineage, selec
 and the exact attempt map used by every render revision. A reported seed mismatch
 fails the attempt; unavailable actual-seed reporting remains labelled `requested`.
 
+Stored voice references retain one-time PCM analysis in their voice manifest. The
+Audiobook picker shows and can play the exact stored WAV, its id and SHA-256,
+provenance, duration, sample rate, channels, bit depth, signal fitness, and warnings;
+Clear reference returns to text-only/default narration. Older voice manifests are
+analyzed lazily without changing the reference. The usable-speech value is explicitly
+the `pcm-heuristic-v1` low-energy estimate unless optional VAD evidence says otherwise.
+
 ## Verification states
 
 - `auto`: use configured Whisper; finish as `unavailable` if it is absent or fails.

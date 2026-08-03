@@ -4354,6 +4354,11 @@
   var audiobookTitleInput = document.getElementById("audiobookTitleInput");
   var audiobookVoiceSelect = document.getElementById("audiobookVoiceSelect");
   var audiobookVoiceHint = document.getElementById("audiobookVoiceHint");
+  var audiobookVoiceReference = document.getElementById("audiobookVoiceReference");
+  var audiobookVoiceFitness = document.getElementById("audiobookVoiceFitness");
+  var audiobookVoiceProvenance = document.getElementById("audiobookVoiceProvenance");
+  var audiobookVoicePreview = document.getElementById("audiobookVoicePreview");
+  var audiobookVoiceClear = document.getElementById("audiobookVoiceClear");
   var audiobookEngineSelect = document.getElementById("audiobookEngineSelect");
   var audiobookAudioOption = document.getElementById("audiobookAudioOption");
   var audiobookDramaBoxOption = document.getElementById("audiobookDramaBoxOption");
@@ -4473,7 +4478,15 @@
   }
 
   audiobookEngineSelect.addEventListener("change", invalidateAudiobookPreview);
-  audiobookVoiceSelect.addEventListener("change", invalidateAudiobookPreview);
+  audiobookVoiceSelect.addEventListener("change", function () {
+    renderAudiobookVoiceReference();
+    invalidateAudiobookPreview();
+  });
+  audiobookVoiceClear.addEventListener("click", function () {
+    audiobookVoiceSelect.value = "";
+    renderAudiobookVoiceReference();
+    invalidateAudiobookPreview();
+  });
   [audiobookDirectionInput, audiobookInferenceSteps, audiobookGuidanceScale, audiobookChunkThreshold, audiobookChunkDuration, audiobookCrossFade, audiobookOptionsJSON, audiobookVerificationSelect].forEach(function (control) {
     control.addEventListener("input", invalidateAudiobookPreview);
   });
@@ -4521,7 +4534,9 @@
     fallback.value = "";
     audiobookVoiceSelect.appendChild(fallback);
     (voices || []).forEach(function (clone) {
-      var option = createElement("option", "", clone.name || clone.id);
+      var analysis = clone.analysis || {};
+      var duration = analysis.duration_seconds ? " · " + analysis.duration_seconds.toFixed(1) + "s" : "";
+      var option = createElement("option", "", (clone.name || clone.id) + duration);
       option.value = clone.id;
       audiobookVoiceSelect.appendChild(option);
     });
@@ -4529,7 +4544,28 @@
     if (audiobookVoiceSelect.value !== previous) {
       audiobookVoiceSelect.value = "";
     }
+    renderAudiobookVoiceReference();
     syncAudiobookEngineControls();
+  }
+
+  function renderAudiobookVoiceReference() {
+    var clone = (libraryVoices || []).find(function (item) { return item.id === audiobookVoiceSelect.value; });
+    audiobookVoiceReference.hidden = !clone;
+    if (!clone) {
+      audiobookVoicePreview.removeAttribute("src");
+      audiobookVoiceFitness.textContent = "Reference details";
+      audiobookVoiceProvenance.textContent = "";
+      return;
+    }
+    var analysis = clone.analysis || {};
+    var format = analysis.sample_rate ? analysis.sample_rate + " Hz · " + analysis.channels + " ch · " + analysis.bits_per_sample + "-bit" : "analysis unavailable";
+    var fitness = analysis.fitness || "not analyzed";
+    audiobookVoiceFitness.textContent = (clone.name || clone.id) + " · " + Number(analysis.duration_seconds || 0).toFixed(1) + "s · " + format + " · " + fitness;
+    var source = clone.source || {};
+    var provenance = source.name ? "Source: " + source.name + (source.speaker ? " · " + source.speaker : "") : "Source provenance was not supplied";
+    var warnings = (analysis.warnings || []).join("; ");
+    audiobookVoiceProvenance.textContent = clone.id + (analysis.content_sha256 ? " · SHA-256 " + analysis.content_sha256 : "") + " · " + provenance + (warnings ? " · " + warnings : "");
+    audiobookVoicePreview.src = clone.audio_url;
   }
 
   audiobookFileInput.addEventListener("change", function () {

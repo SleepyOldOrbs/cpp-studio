@@ -496,6 +496,14 @@
               <option value="" selected>Studio default</option>
             </select>
             <small class="hint" id="audiobookVoiceHint">Any voice from your library &mdash; cloned or designed.</small>
+            <div class="source-row" id="audiobookVoiceReference" hidden>
+              <div>
+                <strong id="audiobookVoiceFitness">Reference details</strong>
+                <small class="hint" id="audiobookVoiceProvenance"></small>
+              </div>
+              <audio id="audiobookVoicePreview" controls preload="metadata"></audio>
+              <button class="secondary-button" id="audiobookVoiceClear" type="button">Clear reference</button>
+            </div>
           </label>
           <label class="field compact-field">
             <span>Narration engine</span>

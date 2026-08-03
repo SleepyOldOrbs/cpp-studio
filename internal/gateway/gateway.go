@@ -2792,6 +2792,7 @@ func voiceSummary(clone voice.Clone) voiceCloneSummary {
 		CreatedAt:  clone.CreatedAt,
 		Protected:  clone.Protected,
 		Source:     clone.Source,
+		Analysis:   clone.Analysis,
 		AudioURL:   "/v1/voices/" + clone.ID + "/audio",
 	}
 }
@@ -3782,13 +3783,14 @@ type visionImageURL struct {
 }
 
 type voiceCloneSummary struct {
-	ID         string             `json:"id"`
-	Name       string             `json:"name"`
-	Transcript string             `json:"transcript"`
-	CreatedAt  time.Time          `json:"created_at"`
-	Protected  bool               `json:"protected,omitempty"`
-	Source     *voice.CloneSource `json:"source,omitempty"`
-	AudioURL   string             `json:"audio_url"`
+	ID         string                   `json:"id"`
+	Name       string                   `json:"name"`
+	Transcript string                   `json:"transcript"`
+	CreatedAt  time.Time                `json:"created_at"`
+	Protected  bool                     `json:"protected,omitempty"`
+	Source     *voice.CloneSource       `json:"source,omitempty"`
+	Analysis   *voice.ReferenceAnalysis `json:"analysis,omitempty"`
+	AudioURL   string                   `json:"audio_url"`
 }
 
 type voiceListResponse struct {
