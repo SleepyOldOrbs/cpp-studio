@@ -119,3 +119,13 @@ fresh mem-saver modes, CPU, explicitly requested CUDA, cancel/restart recovery, 
 ASR fidelity. Real runs use the tracked benchmark API/job and retain the full metric
 schema; they accept loopback gateways only. Labels are descriptive (`interactive`,
 `batch-usable`, `overnight`, or `failed`) and never certify subjective quality.
+
+The harness calls `POST /v1/audiobooks/benchmark`, follows the returned normal job,
+and reads `GET /v1/audiobooks/benchmark/results/{id}`. The result directory retains
+checkpointed JSON and case WAVs under `out/audiobook-benchmarks`; the collection is
+available from `GET /v1/audiobooks/benchmark/results` after a restart. Each result
+fingerprints the exact engine/model, authorized voice and reference hash, effective
+options, requested backend, and canonical fixture. A current mismatch is returned as
+`identityChanged`, so old performance is never silently projected onto new assets.
+CPU/GPU memory fields remain absent when the platform cannot measure them, and the
+fresh-server mem-saver cases remain `profile-required` until run in those profiles.

@@ -167,6 +167,9 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/library/", r.handleLibraryItem)
 	mux.HandleFunc("/v1/audiobooks", r.handleAudiobooks)
 	mux.HandleFunc("/v1/audiobooks/preview", r.handleAudiobookPreview)
+	mux.HandleFunc("/v1/audiobooks/benchmark", r.handleAudiobookBenchmark)
+	mux.HandleFunc("/v1/audiobooks/benchmark/results", r.handleAudiobookBenchmarkResults)
+	mux.HandleFunc("/v1/audiobooks/benchmark/results/", r.handleAudiobookBenchmarkResult)
 	mux.HandleFunc("/v1/audiobooks/", r.handleAudiobook)
 	mux.HandleFunc("/v1/chat/completions", r.handleChatCompletions)
 	mux.HandleFunc("/v1/images/generations", r.handleImageGenerations)
@@ -1085,6 +1088,62 @@ func (r *router) handleAudiobookPreview(w http.ResponseWriter, req *http.Request
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+func (r *router) handleAudiobookBenchmark(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
+	var body audiobook.BenchmarkRequest
+	decoder := json.NewDecoder(req.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid DramaBox benchmark request: "+err.Error())
+		return
+	}
+	id, err := r.audiobooks.StartBenchmark(req.Context(), body)
+	if err != nil {
+		writeAudiobookError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"id": id, "statusUrl": "/v1/jobs/" + id,
+		"resultUrl": "/v1/audiobooks/benchmark/results/" + id,
+	})
+}
+
+func (r *router) handleAudiobookBenchmarkResult(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodGet) {
+		return
+	}
+	id := strings.Trim(strings.TrimPrefix(req.URL.Path, "/v1/audiobooks/benchmark/results/"), "/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, req)
+		return
+	}
+	result, err := r.audiobooks.BenchmarkResult(req.Context(), id)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+func (r *router) handleAudiobookBenchmarkResults(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodGet) {
+		return
+	}
+	results, err := r.audiobooks.ListBenchmarkResults(req.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"results": results})
 }
 
 func writeAudiobookError(w http.ResponseWriter, err error) {

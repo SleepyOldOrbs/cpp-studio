@@ -75,6 +75,7 @@ type SynthesizeDetailedFunc func(ctx context.Context, request SynthesisRequest) 
 
 type ManagerOptions struct {
 	RootDir            string
+	BenchmarkRootDir   string
 	ReserveEngine      ReserveEngineFunc
 	Synthesize         SynthesizeFunc
 	SynthesizeDetailed SynthesizeDetailedFunc
@@ -126,6 +127,9 @@ type Service interface {
 	VerificationPath(string) (string, error)
 	RetrySection(context.Context, string, string, RetryMode) (string, error)
 	SelectAttempt(context.Context, string, string, string) (string, error)
+	StartBenchmark(context.Context, BenchmarkRequest) (string, error)
+	BenchmarkResult(context.Context, string) (BenchmarkResult, error)
+	ListBenchmarkResults(context.Context) ([]BenchmarkResult, error)
 }
 
 type RetryMode string
@@ -147,6 +151,7 @@ type narrationUnit struct {
 type Manager struct {
 	mu                 sync.Mutex
 	rootDir            string
+	benchmarkRootDir   string
 	store              *Store
 	reserveEngine      ReserveEngineFunc
 	synthesize         SynthesizeFunc
@@ -159,6 +164,7 @@ type Manager struct {
 	now                func() time.Time
 	counter            int
 	retryCounter       int
+	benchmarkCounter   int
 	activeID           string
 	creating           bool
 	cancels            map[string]context.CancelFunc
@@ -172,6 +178,10 @@ func NewManager(opts ManagerOptions) *Manager {
 	rootDir := opts.RootDir
 	if rootDir == "" {
 		rootDir = DefaultRootDir
+	}
+	benchmarkRootDir := opts.BenchmarkRootDir
+	if benchmarkRootDir == "" {
+		benchmarkRootDir = filepath.Join(filepath.Dir(rootDir), "audiobook-benchmarks")
 	}
 	seedSource := opts.SeedSource
 	if seedSource == nil {
@@ -201,6 +211,7 @@ func NewManager(opts ManagerOptions) *Manager {
 	}
 	manager := &Manager{
 		rootDir:            rootDir,
+		benchmarkRootDir:   benchmarkRootDir,
 		store:              NewStore(rootDir),
 		reserveEngine:      opts.ReserveEngine,
 		synthesize:         opts.Synthesize,

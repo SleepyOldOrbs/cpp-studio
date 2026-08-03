@@ -1266,7 +1266,7 @@ Names may adjust during implementation, but responsibilities must remain separat
 - [x] P1-04: Add optional VAD integration and honest fallback.
 - [x] P1-05: Enforce DramaBox-only 10-second usable-speech eligibility.
 - [x] P1-06: Build and self-test the DramaBox benchmark harness.
-- [ ] P1-07: Add benchmark API/job and fingerprinted result persistence.
+- [x] P1-07: Add benchmark API/job and fingerprinted result persistence.
 - [ ] P1-08: Add timing/projection, repair, reference, and attempt-audition UI.
 - [ ] P1-09: Run real CPU and optional CUDA/mem-saver measurements.
 

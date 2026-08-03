@@ -21,9 +21,14 @@ function Resolve-BenchmarkPath {
   return [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $Path))
 }
 
-function Get-Sha256Hex {
-  param([string]$Path)
-  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+function Get-TextSha256Hex {
+  param([string]$Text)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($Text)
+    return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+  }
+  finally { $sha.Dispose() }
 }
 
 function New-DramaBoxCases {
@@ -60,7 +65,7 @@ catch {
 if (-not $configObject.engines.dramabox) {
   throw "DramaBox benchmark config must declare engines.dramabox"
 }
-$fixtureText = Get-Content -LiteralPath $fixturePath -Raw
+$fixtureText = (Get-Content -LiteralPath $fixturePath -Raw).Replace("`r`n", "`n").TrimEnd() + "`n"
 if (($fixtureText -split "\s+" | Where-Object { $_ }).Count -lt 50) {
   throw "DramaBox benchmark fixture must contain at least 50 words"
 }
@@ -94,7 +99,7 @@ try {
     backend = $Backend
     configPath = $configPath
     fixturePath = $fixturePath
-    fixtureSha256 = Get-Sha256Hex $fixturePath
+    fixtureSha256 = Get-TextSha256Hex $fixtureText
     fixtureWords = ($fixtureText -split "\s+" | Where-Object { $_ }).Count
     voiceId = $VoiceId
     cases = $cases
@@ -118,9 +123,6 @@ try {
     backend = $Backend
     includeCuda = $IncludeCuda.IsPresent
     voiceId = $VoiceId
-    fixture = $fixtureText
-    fixtureSha256 = $plan.fixtureSha256
-    cases = @($cases | Where-Object enabled | ForEach-Object id)
   } | ConvertTo-Json -Depth 8
   $created = Invoke-RestMethod -Method Post -Uri "$($gateway.AbsoluteUri.TrimEnd('/'))/v1/audiobooks/benchmark" -ContentType "application/json" -Body $request
   if (-not $created.id) {
@@ -138,6 +140,9 @@ try {
     }
   } while ($job.status -ne "complete")
   $result = Invoke-RestMethod -Method Get -Uri "$($gateway.AbsoluteUri.TrimEnd('/'))/v1/audiobooks/benchmark/results/$($created.id)"
+  if ($result.fixtureSha256 -ne $plan.fixtureSha256) {
+    throw "Server benchmark fixture does not match the checked-in fixture; refresh before comparing results"
+  }
   $result | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $outPath "benchmark.json") -Encoding utf8
   $result | ConvertTo-Json -Depth 20
 }

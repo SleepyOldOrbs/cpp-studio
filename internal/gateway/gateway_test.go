@@ -4906,6 +4906,48 @@ func TestAudiobookDurableLifecycleRoutes(t *testing.T) {
 	}
 }
 
+func TestAudiobookBenchmarkAPITracksAndServesPersistedResult(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{"dramabox": helperEngine("speech-tone")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	created := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audiobooks/benchmark", strings.NewReader(`{"backend":"cpu"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(created, req)
+	if created.Code != http.StatusAccepted {
+		t.Fatalf("benchmark create: %d %s", created.Code, created.Body.String())
+	}
+	var response struct {
+		ID        string `json:"id"`
+		ResultURL string `json:"resultUrl"`
+	}
+	_ = json.NewDecoder(created.Body).Decode(&response)
+	if response.ID == "" || response.ResultURL == "" {
+		t.Fatalf("benchmark response omitted links: %+v", response)
+	}
+	if job := waitGatewayAudiobookJob(t, router, response.ID); job.Status != "complete" {
+		t.Fatalf("benchmark job: %+v", job)
+	}
+	result := httptest.NewRecorder()
+	router.ServeHTTP(result, httptest.NewRequest(http.MethodGet, response.ResultURL, nil))
+	if result.Code != http.StatusOK || !strings.Contains(result.Body.String(), `"schemaVersion":"dramabox-benchmark.v1"`) || !strings.Contains(result.Body.String(), `"profileFingerprint":"`) || !strings.Contains(result.Body.String(), `"cpu.long_form"`) {
+		t.Fatalf("benchmark result: %d %s", result.Code, result.Body.String())
+	}
+	listed := httptest.NewRecorder()
+	router.ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/benchmark/results", nil))
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), response.ID) {
+		t.Fatalf("benchmark results list: %d %s", listed.Code, listed.Body.String())
+	}
+
+	bad := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/audiobooks/benchmark", strings.NewReader(`{"backend":"cuda"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(bad, req)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("implicit CUDA benchmark: %d %s", bad.Code, bad.Body.String())
+	}
+}
+
 func TestAudiobookRequiredVerificationUnavailableIs503(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cfg := testConfig(map[string]config.EngineConfig{"dramabox": helperEngine("speech-tone")})
