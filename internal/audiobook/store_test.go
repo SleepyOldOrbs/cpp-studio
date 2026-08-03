@@ -104,7 +104,10 @@ func TestManagerBusyDoesNotPublishDramaBoxProduction(t *testing.T) {
 			return nil, nil
 		},
 	})
-	if id, _, err := manager.Submit(context.Background(), Request{Text: "Never publish me.", EngineID: DramaBoxEngineID}); err == nil || id != "" {
+	var service Service = manager
+	if id, _, err := service.Create(context.Background(), DocumentRequest{
+		Filename: "busy.txt", Data: []byte("Never publish me."), Request: Request{EngineID: DramaBoxEngineID},
+	}); err == nil || id != "" {
 		t.Fatalf("busy submit returned id=%q err=%v", id, err)
 	}
 	entries, err := os.ReadDir(root)
@@ -191,7 +194,11 @@ func TestManagerPublishesCompleteWIPBeforeDramaBoxSynthesis(t *testing.T) {
 			}
 		},
 	})
-	id, sections, err := manager.Submit(context.Background(), Request{Title: "Durable", Text: "A durable section.", EngineID: DramaBoxEngineID})
+	var service Service = manager
+	id, sections, err := service.Create(context.Background(), DocumentRequest{
+		Filename: "durable.txt", Data: []byte("A durable section."),
+		Request: Request{Title: "Durable", EngineID: DramaBoxEngineID},
+	})
 	if err != nil || id == "" || sections != 1 {
 		t.Fatalf("submit: id=%q sections=%d err=%v", id, sections, err)
 	}

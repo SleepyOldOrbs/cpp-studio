@@ -94,6 +94,31 @@ type Request struct {
 	Verification VerificationMode
 }
 
+type DocumentRequest struct {
+	Filename string
+	Data     []byte
+	Request  Request
+}
+
+// Service is the HTTP-independent production seam used by Gateway and
+// lifecycle tests. All extraction, identity, planning, storage, and engine
+// ordering remains behind this interface.
+type Service interface {
+	Preview(context.Context, Request) (ResolvedRequest, error)
+	Create(context.Context, DocumentRequest) (string, int, error)
+	Resume(context.Context, string) (int, error)
+	Restart(context.Context, string) (string, int, error)
+	Cancel(string) error
+	Discard(string) error
+	CanResume(context.Context, string) error
+	Status(string) (Manifest, bool, error)
+	List() ([]Manifest, error)
+	ArtifactPath(string, string) (string, error)
+	VerificationPath(string) (string, error)
+}
+
+var _ Service = (*Manager)(nil)
+
 type narrationUnit struct {
 	text    string
 	seed    Seed
@@ -273,6 +298,10 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 	return m.submit(ctx, req, false)
 }
 
+func (m *Manager) Create(ctx context.Context, document DocumentRequest) (string, int, error) {
+	return m.SubmitDocument(ctx, document.Filename, document.Data, document.Request)
+}
+
 // SubmitDocument keeps upload extraction inside the Manager's single-create
 // transition so concurrent callers cannot plan competing productions.
 func (m *Manager) SubmitDocument(ctx context.Context, filename string, data []byte, req Request) (string, int, error) {
@@ -400,11 +429,33 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 	m.activeID = id
 	m.cancels[id] = cancel
 	if m.registry != nil {
-		m.registry.Track(id, "audiobook", cancel)
+		m.registry.Track(id, "audiobook", func() { _ = m.Cancel(id) })
 	}
 
 	go m.run(jobCtx, id, title, req, identity, resolved.Voice, units, initial, release)
 	return id, len(units), nil
+}
+
+// Cancel asks the currently active production to stop. The run loop owns the
+// durable interrupted transition and confirms terminal state to jobs.Registry.
+func (m *Manager) Cancel(id string) error {
+	m.mu.Lock()
+	if m.activeID != id {
+		m.mu.Unlock()
+		if _, ok, err := m.Status(id); err != nil {
+			return err
+		} else if ok {
+			return fmt.Errorf("audiobook production is not active")
+		}
+		return ErrProductionNotFound
+	}
+	cancel := m.cancels[id]
+	m.mu.Unlock()
+	if cancel == nil {
+		return fmt.Errorf("audiobook production cannot be cancelled")
+	}
+	cancel()
+	return nil
 }
 
 func (m *Manager) nextID() (string, error) {
@@ -500,7 +551,7 @@ func (m *Manager) Resume(ctx context.Context, id string) (int, error) {
 	m.activeID = id
 	m.cancels[id] = cancel
 	if m.registry != nil {
-		m.registry.Track(id, "audiobook", cancel)
+		m.registry.Track(id, "audiobook", func() { _ = m.Cancel(id) })
 	}
 	go m.run(jobCtx, id, manifest.Title, req, identity, resolved.Voice, units, &manifest, release)
 	return len(units), nil

@@ -49,7 +49,7 @@ type router struct {
 	modelsRoot string
 	jobs       *jobs.Registry
 	library    *library.Store
-	audiobooks *audiobook.Manager
+	audiobooks audiobook.Service
 
 	// encodersMu guards the one-time probe of what the operator's ffmpeg can
 	// encode. The binary does not change under a running gateway.
@@ -974,7 +974,9 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		id, chunks, err := r.audiobooks.SubmitDocument(req.Context(), header.Filename, data, bookRequest)
+		id, chunks, err := r.audiobooks.Create(req.Context(), audiobook.DocumentRequest{
+			Filename: header.Filename, Data: data, Request: bookRequest,
+		})
 		if err != nil {
 			var engineErr *engine.Error
 			if errors.As(err, &engineErr) {
