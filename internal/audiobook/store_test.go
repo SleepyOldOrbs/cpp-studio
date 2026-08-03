@@ -338,6 +338,9 @@ func TestResumeRejectsIdentityChangeAndRestartPreservesOriginal(t *testing.T) {
 			return wav.SyntheticTone(800), nil
 		},
 	})
+	if err := changed.CanResume(context.Background(), id); !errors.Is(err, ErrSynthesisIdentityChanged) {
+		t.Fatalf("read-only resume check hid identity conflict: %v", err)
+	}
 	if _, err := changed.Resume(context.Background(), id); !errors.Is(err, ErrSynthesisIdentityChanged) {
 		t.Fatalf("resume accepted changed identity: %v", err)
 	}

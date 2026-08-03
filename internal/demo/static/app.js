@@ -4365,6 +4365,7 @@
   var audiobookChunkThreshold = document.getElementById("audiobookChunkThreshold");
   var audiobookChunkDuration = document.getElementById("audiobookChunkDuration");
   var audiobookCrossFade = document.getElementById("audiobookCrossFade");
+  var audiobookVerificationSelect = document.getElementById("audiobookVerificationSelect");
   var audiobookOptionsJSON = document.getElementById("audiobookOptionsJSON");
   var audiobookPreviewButton = document.getElementById("audiobookPreviewButton");
   var audiobookRequestPreview = document.getElementById("audiobookRequestPreview");
@@ -4373,6 +4374,8 @@
   var audiobookErrorBox = document.getElementById("audiobookErrorBox");
   var audiobookStatus = document.getElementById("audiobookStatus");
   var audiobookProgress = document.getElementById("audiobookProgress");
+  var audiobookVerificationStatus = document.getElementById("audiobookVerificationStatus");
+  var audiobookVerificationLink = document.getElementById("audiobookVerificationLink");
   var audiobookAudio = document.getElementById("audiobookAudio");
   var audiobookSaveButton = document.getElementById("audiobookSaveButton");
   var audiobookRefreshButton = document.getElementById("audiobookRefreshButton");
@@ -4381,6 +4384,7 @@
   var bookPollTimer = null;
   var audiobookBusy = false;
   var audiobookResolvedKey = "";
+  var activeBookUsesSections = false;
 
   function audiobookOptionsText() {
     if (audiobookEngineSelect.value !== "dramabox") {
@@ -4416,7 +4420,8 @@
       engine: audiobookEngineSelect.value,
       voice: audiobookVoiceSelect.value,
       direction: audiobookEngineSelect.value === "dramabox" ? audiobookDirectionInput.value.trim() : "",
-      options: options
+      options: options,
+      verification: audiobookEngineSelect.value === "dramabox" ? audiobookVerificationSelect.value : "off"
     });
   }
 
@@ -4469,7 +4474,7 @@
 
   audiobookEngineSelect.addEventListener("change", invalidateAudiobookPreview);
   audiobookVoiceSelect.addEventListener("change", invalidateAudiobookPreview);
-  [audiobookDirectionInput, audiobookInferenceSteps, audiobookGuidanceScale, audiobookChunkThreshold, audiobookChunkDuration, audiobookCrossFade, audiobookOptionsJSON].forEach(function (control) {
+  [audiobookDirectionInput, audiobookInferenceSteps, audiobookGuidanceScale, audiobookChunkThreshold, audiobookChunkDuration, audiobookCrossFade, audiobookOptionsJSON, audiobookVerificationSelect].forEach(function (control) {
     control.addEventListener("input", invalidateAudiobookPreview);
   });
 
@@ -4482,7 +4487,8 @@
       var envelope = JSON.stringify({
         engine: audiobookEngineSelect.value,
         voice: audiobookVoiceSelect.value,
-        direction: audiobookEngineSelect.value === "dramabox" ? audiobookDirectionInput.value.trim() : ""
+        direction: audiobookEngineSelect.value === "dramabox" ? audiobookDirectionInput.value.trim() : "",
+        verification: audiobookEngineSelect.value === "dramabox" ? audiobookVerificationSelect.value : "off"
       });
       if (optionsText) {
         envelope = envelope.slice(0, -1) + ',"options":' + optionsText + "}";
@@ -4537,6 +4543,33 @@
     audiobookCancelButton.disabled = !busy;
   }
 
+  function showAudiobookVerification(book) {
+    var verification = book && book.verification;
+    var status = verification && verification.status;
+    var labels = {
+      pending: book && book.status === "verifying" ? "Verifying" : "Pending",
+      passed: "Verified",
+      flagged: "Differences found",
+      unavailable: "Not verified",
+      skipped: "Not verified (off)"
+    };
+    audiobookVerificationStatus.textContent = labels[status] || "Not run";
+    audiobookVerificationLink.hidden = !(book && book.id && verification && verification.reportFile);
+    if (!audiobookVerificationLink.hidden) {
+      audiobookVerificationLink.href = "/v1/audiobooks/" + encodeURIComponent(book.id) + "/verification";
+    }
+  }
+
+  async function loadAudiobookManifest(id) {
+    var response = await fetch("/v1/audiobooks/" + encodeURIComponent(id), { method: "GET" });
+    if (!response.ok) {
+      return null;
+    }
+    var book = await response.json();
+    showAudiobookVerification(book);
+    return book;
+  }
+
   function pollAudiobook(id) {
     window.clearTimeout(bookPollTimer);
     bookPollTimer = window.setTimeout(async function () {
@@ -4547,7 +4580,11 @@
         }
         var job = await response.json();
         audiobookProgress.value = job.progress || 0;
-        audiobookStatus.textContent = job.detail || job.status;
+        var detail = job.detail || job.status;
+        audiobookStatus.textContent = activeBookUsesSections ? detail.replace("chunk", "section") : detail;
+        if (detail.indexOf("verifying section") === 0) {
+          audiobookVerificationStatus.textContent = "Verifying";
+        }
         if (job.status === "complete") {
           audiobookStatus.textContent = "Complete";
           audiobookProgress.value = 1;
@@ -4560,6 +4597,7 @@
             audiobookSaveButton.dataset.title = job.result.title || "audiobook";
           }
           log("Audiobook complete: " + ((job.result && job.result.title) || id));
+          loadAudiobookManifest(id).catch(function () {});
           refreshAudiobooks(true);
           return;
         }
@@ -4567,6 +4605,7 @@
           audiobookStatus.textContent = job.status + (job.error ? ": " + job.error : "");
           setAudiobookBusy(false);
           activeBookId = "";
+          refreshAudiobooks(true);
           if (job.status === "failed") {
             log("Audiobook failed: " + job.error, "error");
           }
@@ -4607,6 +4646,7 @@
     if (audiobookEngineSelect.value === "dramabox") {
       form.append("direction", audiobookDirectionInput.value.trim());
       form.append("options", audiobookOptionsText());
+      form.append("verification", audiobookVerificationSelect.value);
     }
     setAudiobookBusy(true);
     audiobookStatus.textContent = "Uploading…";
@@ -4618,8 +4658,13 @@
       }
       var created = await response.json();
       activeBookId = created.id;
-      audiobookStatus.textContent = "Narrating " + created.chunks + " chunks…";
-      log("Audiobook started: " + created.id + " (" + created.chunks + " chunks)");
+      activeBookUsesSections = typeof created.sections === "number";
+      var unitCount = activeBookUsesSections ? created.sections : created.chunks;
+      var unitLabel = activeBookUsesSections ? " sections" : " chunks";
+      audiobookStatus.textContent = "Narrating " + unitCount + unitLabel + "…";
+      audiobookVerificationStatus.textContent = activeBookUsesSections ? "Pending" : "Not run";
+      audiobookVerificationLink.hidden = true;
+      log("Audiobook started: " + created.id + " (" + unitCount + unitLabel + ")");
       pollAudiobook(created.id);
     } catch (err) {
       audiobookErrorBox.textContent = err.message;
@@ -4647,6 +4692,100 @@
     }
   });
 
+  async function runAudiobookLifecycle(id, action) {
+    audiobookErrorBox.hidden = true;
+    try {
+      var response = await fetch("/v1/audiobooks/" + encodeURIComponent(id) + "/" + action, { method: "POST" });
+      if (!response.ok) {
+        throw new Error(await readErrorBody(response));
+      }
+      var result = await response.json();
+      if (action === "discard") {
+        log("Discarded interrupted audiobook: " + id);
+        refreshAudiobooks(true);
+        return;
+      }
+      activeBookId = result.id;
+      activeBookUsesSections = typeof result.sections === "number";
+      setAudiobookBusy(true);
+      audiobookStatus.textContent = action === "resume" ? "Resuming sections…" : "Restarting as " + result.id + "…";
+      log((action === "resume" ? "Resuming " : "Restarting ") + id + (result.id !== id ? " as " + result.id : ""));
+      pollAudiobook(result.id);
+      refreshAudiobooks(true);
+    } catch (err) {
+      audiobookErrorBox.textContent = err.message;
+      audiobookErrorBox.hidden = false;
+      log("Audiobook " + action + " failed: " + err.message, "error");
+      refreshAudiobooks(true);
+    }
+  }
+
+  function appendVerificationDetail(item, book) {
+    var verification = book.verification || {};
+    var labels = { passed: "Verified", flagged: "Differences found", unavailable: "Not verified", skipped: "Not verified (off)", pending: "Verification pending" };
+    if (labels[verification.status]) {
+      item.appendChild(createElement("div", "story-library-detail", labels[verification.status]));
+    }
+    if (verification.reportFile) {
+      var evidence = createElement("a", "story-source-link", "View fidelity evidence");
+      evidence.href = "/v1/audiobooks/" + encodeURIComponent(book.id) + "/verification";
+      evidence.target = "_blank";
+      evidence.rel = "noopener";
+      evidence.addEventListener("click", function (event) { event.stopPropagation(); });
+      item.appendChild(evidence);
+    }
+  }
+
+  function renderAudiobookCard(book, interrupted) {
+    var item = createElement("div", "story-library-item" + (interrupted ? " is-interrupted" : ""));
+    item.appendChild(createElement("div", "story-library-title", book.title || book.id));
+    var engineLabel = book.engine === "dramabox" ? "DramaBox" : "Fast local";
+    var unitLabel = book.engine === "dramabox" ? " sections" : " chunks";
+    var meta = new Date(book.createdAt).toLocaleString() + " · " + engineLabel + " · " + book.chunks + unitLabel;
+    if (!interrupted) {
+      meta += " · " + Math.floor(book.durationSeconds / 60) + "m" + (book.durationSeconds % 60) + "s";
+    }
+    item.appendChild(createElement("div", "story-library-meta", meta));
+    appendVerificationDetail(item, book);
+    if (interrupted) {
+      item.appendChild(createElement("div", "story-library-detail", "Interrupted · completed sections are retained"));
+      if (book.resumeConflict) {
+        item.appendChild(createElement("div", "story-library-detail", book.resumeConflict));
+      }
+      var actions = createElement("div", "story-library-actions");
+      var resume = createElement("button", "secondary compact-button", "Resume");
+      resume.type = "button";
+      resume.disabled = book.resumeAvailable === false;
+      resume.title = book.resumeConflict || "Continue with the stored identity and seeds";
+      resume.addEventListener("click", function () { runAudiobookLifecycle(book.id, "resume"); });
+      var restart = createElement("button", "secondary compact-button", "Restart");
+      restart.type = "button";
+      restart.title = "Create a separate production under the current engine and voice";
+      restart.addEventListener("click", function () { runAudiobookLifecycle(book.id, "restart"); });
+      var discard = createElement("button", "plain compact-button", "Discard");
+      discard.type = "button";
+      discard.addEventListener("click", function () {
+        if (window.confirm("Discard this interrupted audiobook and all retained sections?")) {
+          runAudiobookLifecycle(book.id, "discard");
+        }
+      });
+      actions.appendChild(resume);
+      actions.appendChild(restart);
+      actions.appendChild(discard);
+      item.appendChild(actions);
+      return item;
+    }
+    item.addEventListener("click", function () {
+      audiobookAudio.src = book.artifactUrl;
+      audiobookSaveButton.disabled = false;
+      audiobookSaveButton.dataset.url = book.artifactUrl;
+      audiobookSaveButton.dataset.title = book.title;
+      audiobookStatus.textContent = "Loaded: " + book.title;
+      showAudiobookVerification(book);
+    });
+    return item;
+  }
+
   async function refreshAudiobooks(silent) {
     try {
       var response = await fetch("/v1/audiobooks", { method: "GET" });
@@ -4655,28 +4794,14 @@
       }
       var payload = await response.json();
       var books = payload.audiobooks || [];
+      var interrupted = payload.interrupted || [];
       audiobookShelf.textContent = "";
-      if (!books.length) {
+      if (!books.length && !interrupted.length) {
         audiobookShelf.textContent = "No audiobooks yet.";
         return;
       }
-      books.forEach(function (book) {
-        var item = createElement("div", "story-library-item");
-        var title = createElement("div", "story-library-title", book.title);
-        var engineLabel = book.engine === "dramabox" ? "DramaBox" : "Fast local";
-        var meta = createElement("div", "story-library-meta",
-          new Date(book.createdAt).toLocaleString() + " · " + engineLabel + " · " + book.chunks + " chunks · " + Math.floor(book.durationSeconds / 60) + "m" + (book.durationSeconds % 60) + "s");
-        item.appendChild(title);
-        item.appendChild(meta);
-        item.addEventListener("click", function () {
-          audiobookAudio.src = book.artifactUrl;
-          audiobookSaveButton.disabled = false;
-          audiobookSaveButton.dataset.url = book.artifactUrl;
-          audiobookSaveButton.dataset.title = book.title;
-          audiobookStatus.textContent = "Loaded: " + book.title;
-        });
-        audiobookShelf.appendChild(item);
-      });
+      interrupted.forEach(function (book) { audiobookShelf.appendChild(renderAudiobookCard(book, true)); });
+      books.forEach(function (book) { audiobookShelf.appendChild(renderAudiobookCard(book, false)); });
       if (!silent) {
         log("Audiobook shelf refreshed");
       }

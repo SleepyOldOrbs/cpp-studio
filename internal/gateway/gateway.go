@@ -920,10 +920,20 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		finished := make([]audiobook.Manifest, 0, len(books))
-		interrupted := make([]audiobook.Manifest, 0)
+		type interruptedAudiobook struct {
+			audiobook.Manifest
+			ResumeAvailable bool   `json:"resumeAvailable"`
+			ResumeConflict  string `json:"resumeConflict,omitempty"`
+		}
+		interrupted := make([]interruptedAudiobook, 0)
 		for _, book := range books {
 			if book.Status == audiobook.ProductionStatusInterrupted {
-				interrupted = append(interrupted, book)
+				item := interruptedAudiobook{Manifest: book, ResumeAvailable: true}
+				if err := r.audiobooks.CanResume(req.Context(), book.ID); err != nil {
+					item.ResumeAvailable = false
+					item.ResumeConflict = err.Error()
+				}
+				interrupted = append(interrupted, item)
 			} else {
 				finished = append(finished, book)
 			}

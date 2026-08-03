@@ -1250,7 +1250,7 @@ Names may adjust during implementation, but responsibilities must remain separat
 - [x] P0-08: Add streaming WAV crossfade assembly and RIFF boundary guard.
 - [x] P0-09: Add injected fidelity verification and report storage.
 - [x] P0-10: Extend API routes and error mapping.
-- [ ] P0-11: Add interrupted/identity-conflict/verification UI states.
+- [x] P0-11: Add interrupted/identity-conflict/verification UI states.
 - [ ] P0-12: Update docs and examples.
 - [ ] P0-13: Run full fixture verification, including Manager interface and crash-ordering tests.
 - [ ] P0-14: Run real release-0.5 acceptance if the model is locally available.

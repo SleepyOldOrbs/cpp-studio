@@ -514,6 +514,15 @@
           <fieldset class="field" id="audiobookDramaBoxOptions" hidden>
             <legend>DramaBox generation</legend>
             <label class="compact-field">
+              <span>Factual verification</span>
+              <select class="text-input" id="audiobookVerificationSelect">
+                <option value="auto" selected>Automatic when Whisper is available</option>
+                <option value="required">Required — interrupt if unavailable</option>
+                <option value="off">Off — record as not checked</option>
+              </select>
+              <small class="hint">Compares a Whisper transcript with each exact source section. This is useful evidence, not a substitute for listening.</small>
+            </label>
+            <label class="compact-field">
               <span>Inference steps</span>
               <input class="text-input" id="audiobookInferenceSteps" type="number" min="1" max="100" step="1" value="30">
               <small class="hint">More diffusion steps take longer; 30 is the pinned release value.</small>
@@ -567,6 +576,11 @@
             <span id="audiobookStatus">Idle</span>
           </div>
           <progress id="audiobookProgress" max="1" value="0"></progress>
+          <div class="source-row">
+            <span class="source-label">Factual verification</span>
+            <span id="audiobookVerificationStatus">Not run</span>
+            <a class="story-source-link" id="audiobookVerificationLink" href="#" target="_blank" rel="noopener" hidden>View evidence</a>
+          </div>
           <div class="audio-panel">
             <div class="panel-label-row">
               <span>Narration playback</span>
@@ -575,7 +589,7 @@
             <audio id="audiobookAudio" controls></audio>
           </div>
           <div class="story-library-header">
-            <span class="source-label">Finished audiobooks</span>
+            <span class="source-label">Audiobooks and recoverable work</span>
             <button class="secondary compact-button" id="audiobookRefreshButton" type="button">Refresh</button>
           </div>
           <div class="story-library" id="audiobookShelf"></div>

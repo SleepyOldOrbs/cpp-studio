@@ -533,6 +533,40 @@ func manifestVerificationMode(manifest Manifest) VerificationMode {
 	return manifest.Verification.Mode
 }
 
+// CanResume performs the identity and dependency checks without reserving an
+// engine or mutating durable state. It powers honest disabled UI actions.
+func (m *Manager) CanResume(ctx context.Context, id string) error {
+	manifest, source, err := m.store.LoadDurableWIP(id)
+	if err != nil {
+		return err
+	}
+	if manifest.Status != ProductionStatusInterrupted {
+		return ErrProductionNotInterrupted
+	}
+	if manifest.EngineID != DramaBoxEngineID || manifest.ResolvedOptions == nil {
+		return fmt.Errorf("only durable DramaBox productions can resume")
+	}
+	req, err := NormalizeRequest(Request{
+		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
+		EngineID: manifest.EngineID, Direction: manifest.Direction, Options: *manifest.ResolvedOptions,
+		Verification: manifestVerificationMode(manifest),
+	})
+	if err != nil {
+		return err
+	}
+	if req.Verification == VerificationModeRequired && m.verify == nil {
+		return fmt.Errorf("%w: required mode needs a configured Whisper engine", ErrVerificationUnavailable)
+	}
+	resolved, err := m.resolveRequest(ctx, req)
+	if err != nil {
+		return err
+	}
+	if buildSynthesisIdentity(req, resolved.Engine, resolved.Voice).Fingerprint != manifest.SynthesisFingerprint {
+		return fmt.Errorf("%w: Restart creates a new production under the current engine and voice", ErrSynthesisIdentityChanged)
+	}
+	return nil
+}
+
 // Discard explicitly removes an inactive interrupted WIP and its evidence.
 func (m *Manager) Discard(id string) error {
 	m.mu.Lock()

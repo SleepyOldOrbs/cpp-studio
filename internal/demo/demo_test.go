@@ -173,6 +173,9 @@ func TestHandlerServesIndex(t *testing.T) {
 		"audiobookOptionsJSON",
 		"audiobookPreviewButton",
 		"audiobookRequestPreview",
+		"audiobookVerificationSelect",
+		"audiobookVerificationStatus",
+		"audiobookVerificationLink",
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("expected resolved DramaBox request marker %q", marker)
@@ -303,6 +306,18 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/app.js",
 			contentType: "javascript",
 			needle:      `form.append("options"`,
+		},
+		{
+			name:        "javascript audiobook verification submit",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      `form.append("verification"`,
+		},
+		{
+			name:        "javascript audiobook lifecycle",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "runAudiobookLifecycle",
 		},
 		{
 			name:        "javascript extractor",
