@@ -116,13 +116,22 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 		storyOptions.Measure = r.measureLoudness
 	}
 	r.stories = story.NewManager(storyOptions)
-	r.audiobooks = audiobook.NewManager(audiobook.ManagerOptions{
+	audiobookOptions := audiobook.ManagerOptions{
 		ReserveEngine: r.reserveEngine,
 		Synthesize:    r.synthesizeAudiobook,
 		ResolveEngine: r.resolveAudiobookEngine,
 		ResolveVoice:  r.resolveAudiobookVoice,
 		Jobs:          r.jobs,
-	})
+	}
+	if whisperConfig, ok := cfg.Engines["whisper"]; ok {
+		verifierIdentity := fullSynthesisFingerprint(whisperConfig)
+		audiobookOptions.Verify = func(ctx context.Context, source string, wavBytes []byte) (audiobook.Verification, error) {
+			_ = source
+			transcript, err := r.transcribe(ctx, wavBytes)
+			return audiobook.Verification{Transcript: transcript, VerifierIdentity: verifierIdentity}, err
+		}
+	}
+	r.audiobooks = audiobook.NewManager(audiobookOptions)
 
 	// The model manifest is optional: a config without a models block (CI,
 	// fixture setups) simply serves an empty catalog rather than failing.
@@ -943,12 +952,13 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 		}
 		voiceID := strings.TrimSpace(req.FormValue("voice"))
 		bookRequest, err := audiobook.NormalizeRequest(audiobook.Request{
-			Title:       title,
-			Text:        text,
-			VoiceID:     voiceID,
-			EngineID:    req.FormValue("engine"),
-			Direction:   req.FormValue("direction"),
-			OptionsJSON: req.FormValue("options"),
+			Title:        title,
+			Text:         text,
+			VoiceID:      voiceID,
+			EngineID:     req.FormValue("engine"),
+			Direction:    req.FormValue("direction"),
+			OptionsJSON:  req.FormValue("options"),
+			Verification: audiobook.VerificationMode(strings.TrimSpace(req.FormValue("verification"))),
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
@@ -982,10 +992,11 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 }
 
 type audiobookPreviewRequest struct {
-	EngineID  string          `json:"engine"`
-	VoiceID   string          `json:"voice"`
-	Direction string          `json:"direction"`
-	Options   json.RawMessage `json:"options"`
+	EngineID     string                     `json:"engine"`
+	VoiceID      string                     `json:"voice"`
+	Direction    string                     `json:"direction"`
+	Options      json.RawMessage            `json:"options"`
+	Verification audiobook.VerificationMode `json:"verification"`
 }
 
 // handleAudiobookPreview resolves the complete effective request without
@@ -1007,10 +1018,11 @@ func (r *router) handleAudiobookPreview(w http.ResponseWriter, req *http.Request
 		optionsJSON = string(body.Options)
 	}
 	resolved, err := r.audiobooks.Preview(req.Context(), audiobook.Request{
-		EngineID:    body.EngineID,
-		VoiceID:     strings.TrimSpace(body.VoiceID),
-		Direction:   body.Direction,
-		OptionsJSON: optionsJSON,
+		EngineID:     body.EngineID,
+		VoiceID:      strings.TrimSpace(body.VoiceID),
+		Direction:    body.Direction,
+		OptionsJSON:  optionsJSON,
+		Verification: body.Verification,
 	})
 	if err != nil {
 		var engineErr *engine.Error
@@ -1039,6 +1051,7 @@ func (r *router) handleAudiobookPreview(w http.ResponseWriter, req *http.Request
 		"direction":         resolved.Request.Direction,
 		"options":           previewOptions,
 		"seedPolicy":        "one server-assigned uint64 seed per section",
+		"verification":      resolved.Request.Verification,
 		"transport": map[string]any{
 			"mode":    resolved.Engine.Mode,
 			"mapping": mapping,

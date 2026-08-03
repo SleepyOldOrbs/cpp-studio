@@ -20,9 +20,10 @@ var (
 )
 
 const (
-	manifestFileName = "manifest.json"
-	sourceFileName   = "source.txt"
-	sectionsDirName  = "sections"
+	manifestFileName     = "manifest.json"
+	sourceFileName       = "source.txt"
+	sectionsDirName      = "sections"
+	verificationFileName = "verification.json"
 )
 
 // Store owns durable audiobook production and publication state.
@@ -173,6 +174,49 @@ func (s *Store) SaveSectionWIP(id, sectionID string, audio []byte) (string, erro
 		return "", fmt.Errorf("write section wav: %w", err)
 	}
 	return path, nil
+}
+
+func (s *Store) SaveVerificationWIP(id, sectionID string, verification Verification, report FidelityReport) (string, string, error) {
+	if err := validateBookID(id); err != nil || !validSectionID(sectionID) {
+		return "", "", fmt.Errorf("invalid audiobook section")
+	}
+	transcriptRel := filepath.ToSlash(filepath.Join(sectionsDirName, sectionID+".transcript.txt"))
+	reportRel := filepath.ToSlash(filepath.Join(sectionsDirName, sectionID+".verification.json"))
+	if err := writeFileAtomic(filepath.Join(s.wipDir(id), filepath.FromSlash(transcriptRel)), []byte(verification.Transcript)); err != nil {
+		return "", "", fmt.Errorf("write section transcript: %w", err)
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	if err := writeFileAtomic(filepath.Join(s.wipDir(id), filepath.FromSlash(reportRel)), append(data, '\n')); err != nil {
+		return "", "", fmt.Errorf("write section verification: %w", err)
+	}
+	return transcriptRel, reportRel, nil
+}
+
+func (s *Store) SaveFidelityAggregateWIP(id string, aggregate FidelityAggregate) error {
+	if err := validateBookID(id); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(aggregate, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(s.wipDir(id), verificationFileName), append(data, '\n'))
+}
+
+func (s *Store) VerificationPath(id string) (string, error) {
+	if err := validateBookID(id); err != nil {
+		return "", ErrProductionNotFound
+	}
+	for _, dir := range []string{filepath.Join(s.rootDir, id), s.wipDir(id)} {
+		path := filepath.Join(dir, verificationFileName)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, nil
+		}
+	}
+	return "", ErrProductionNotFound
 }
 
 func validSectionID(id string) bool {

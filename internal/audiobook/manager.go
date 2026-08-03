@@ -70,6 +70,7 @@ type ManagerOptions struct {
 	Synthesize    SynthesizeFunc
 	ResolveEngine ResolveEngineFunc
 	ResolveVoice  ResolveVoiceFunc
+	Verify        VerifyFunc
 	// SeedSource supplies full-range DramaBox section seeds. Nil uses
 	// crypto/rand.Reader; tests may inject deterministic or failing readers.
 	SeedSource io.Reader
@@ -87,8 +88,9 @@ type Request struct {
 	Direction string
 	// OptionsJSON is the curated/advanced option object supplied by HTTP.
 	// It never accepts a seed; NormalizeRequest resolves it into Options.
-	OptionsJSON string
-	Options     SynthesisOptions
+	OptionsJSON  string
+	Options      SynthesisOptions
+	Verification VerificationMode
 }
 
 type narrationUnit struct {
@@ -106,6 +108,7 @@ type Manager struct {
 	synthesize    SynthesizeFunc
 	resolveEngine ResolveEngineFunc
 	resolveVoice  ResolveVoiceFunc
+	verify        VerifyFunc
 	seedSource    io.Reader
 	registry      *jobs.Registry
 	now           func() time.Time
@@ -149,6 +152,7 @@ func NewManager(opts ManagerOptions) *Manager {
 		synthesize:    opts.Synthesize,
 		resolveEngine: resolveEngine,
 		resolveVoice:  resolveVoice,
+		verify:        opts.Verify,
 		seedSource:    seedSource,
 		registry:      opts.Jobs,
 		now:           now,
@@ -235,6 +239,15 @@ func NormalizeRequest(req Request) (Request, error) {
 		return Request{}, requestErrorf("invalid synthesis options: %v", err)
 	}
 	req.OptionsJSON = ""
+	if req.Verification == "" {
+		req.Verification = VerificationModeAuto
+	}
+	if req.Verification != VerificationModeAuto && req.Verification != VerificationModeRequired && req.Verification != VerificationModeOff {
+		return Request{}, requestErrorf("audiobook verification must be auto, required, or off")
+	}
+	if req.EngineID == DefaultEngineID {
+		req.Verification = VerificationModeOff
+	}
 	return req, nil
 }
 
@@ -262,6 +275,9 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 	req, err = NormalizeRequest(req)
 	if err != nil {
 		return "", 0, err
+	}
+	if req.EngineID == DramaBoxEngineID && req.Verification == VerificationModeRequired && m.verify == nil {
+		return "", 0, requestErrorf("required audiobook verification needs a configured Whisper engine")
 	}
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
@@ -302,6 +318,7 @@ func (m *Manager) Submit(ctx context.Context, req Request) (string, int, error) 
 			SourceSHA256: identity.SourceSHA256, SynthesisFingerprint: identity.Fingerprint,
 			SectionPolicyVersion: identity.SectionPolicyVersion, PromptPolicyVersion: identity.PromptPolicyVersion,
 			Sections: sections, ResolvedOptions: &options, SynthesisIdentity: &identity,
+			Verification: &VerificationSummary{Mode: req.Verification, Status: VerificationStatusPending, ReportFile: verificationFileName},
 		}
 		initial = &manifest
 		units = make([]narrationUnit, len(sections))
@@ -397,9 +414,13 @@ func (m *Manager) Resume(ctx context.Context, id string) (int, error) {
 	req, err := NormalizeRequest(Request{
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
 		EngineID: manifest.EngineID, Direction: manifest.Direction, Options: *manifest.ResolvedOptions,
+		Verification: manifestVerificationMode(manifest),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("stored audiobook request: %w", err)
+	}
+	if req.Verification == VerificationModeRequired && m.verify == nil {
+		return 0, requestErrorf("required audiobook verification needs a configured Whisper engine")
 	}
 	resolved, err := m.resolveRequest(ctx, req)
 	if err != nil {
@@ -469,7 +490,15 @@ func (m *Manager) Restart(ctx context.Context, id string) (string, int, error) {
 	return m.Submit(ctx, Request{
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
 		EngineID: manifest.EngineID, Direction: manifest.Direction, Options: *manifest.ResolvedOptions,
+		Verification: manifestVerificationMode(manifest),
 	})
+}
+
+func manifestVerificationMode(manifest Manifest) VerificationMode {
+	if manifest.Verification == nil || manifest.Verification.Mode == "" {
+		return VerificationModeAuto
+	}
+	return manifest.Verification.Mode
 }
 
 // Discard explicitly removes an inactive interrupted WIP and its evidence.
@@ -585,6 +614,9 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		}
 		clipPaths = append(clipPaths, clipPath)
 	}
+	if initial != nil && !m.verifySections(ctx, id, req, initial, units, clipPaths) {
+		return
+	}
 
 	if m.registry != nil {
 		m.registry.Update(id, 0.97, "stitching")
@@ -667,6 +699,102 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 	if m.registry != nil {
 		m.registry.Complete(id, map[string]string{"artifactUrl": manifest.ArtifactURL, "title": manifest.Title, "engine": manifest.EngineID})
 	}
+}
+
+func (m *Manager) verifySections(ctx context.Context, id string, req Request, manifest *Manifest, units []narrationUnit, clipPaths []string) bool {
+	aggregate := FidelityAggregate{Mode: req.Verification, Status: VerificationStatusPending}
+	finish := func(status VerificationStatus, message string) bool {
+		aggregate.Status = status
+		aggregate.Error = message
+		if err := m.store.SaveFidelityAggregateWIP(id, aggregate); err != nil {
+			m.finishRunError(id, manifest, "save audiobook verification: "+err.Error(), false)
+			return false
+		}
+		manifest.Verification = &VerificationSummary{
+			Mode: aggregate.Mode, Status: aggregate.Status,
+			VerifiedSections: aggregate.VerifiedSections, FlaggedSections: aggregate.FlaggedSections,
+			ReportFile: verificationFileName, Error: aggregate.Error,
+		}
+		if err := m.store.SaveManifestWIP(*manifest); err != nil {
+			m.finishRunError(id, manifest, "checkpoint audiobook verification: "+err.Error(), false)
+			return false
+		}
+		return true
+	}
+	if req.Verification == VerificationModeOff {
+		return finish(VerificationStatusSkipped, "")
+	}
+	if m.verify == nil {
+		return finish(VerificationStatusUnavailable, "Whisper verification is not configured")
+	}
+	manifest.Status = ProductionStatusVerifying
+	if err := m.store.SaveManifestWIP(*manifest); err != nil {
+		m.finishRunError(id, manifest, "checkpoint audiobook verification: "+err.Error(), false)
+		return false
+	}
+	for i := range units {
+		if ctx.Err() != nil {
+			m.finishRunError(id, manifest, "audiobook verification was cancelled", true)
+			return false
+		}
+		if m.registry != nil {
+			m.registry.Update(id, 0.9+0.06*float64(i)/float64(len(units)), fmt.Sprintf("verifying section %d/%d", i+1, len(units)))
+		}
+		audio, err := os.ReadFile(clipPaths[i])
+		if err != nil {
+			m.finishRunError(id, manifest, fmt.Sprintf("read section %d for verification: %v", i+1, err), false)
+			return false
+		}
+		verification, err := m.verify(ctx, units[i].text, audio)
+		if err != nil {
+			if ctx.Err() != nil {
+				m.finishRunError(id, manifest, "audiobook verification was cancelled", true)
+				return false
+			}
+			message := fmt.Sprintf("verify section %d/%d: %v", i+1, len(units), err)
+			if req.Verification == VerificationModeRequired {
+				if !finish(VerificationStatusUnavailable, message) {
+					return false
+				}
+				m.finishRunError(id, manifest, message+"; Resume after repairing Whisper", false)
+				return false
+			}
+			return finish(VerificationStatusUnavailable, message)
+		}
+		if verification.VerifierIdentity == "" {
+			verification.VerifierIdentity = "whisper"
+		}
+		report := evaluateFidelity(*units[i].section, units[i].text, verification, m.now())
+		transcriptFile, reportFile, err := m.store.SaveVerificationWIP(id, units[i].section.ID, verification, report)
+		if err != nil {
+			m.finishRunError(id, manifest, "save section verification: "+err.Error(), false)
+			return false
+		}
+		section := units[i].section
+		section.TranscriptFile = transcriptFile
+		section.VerificationFile = reportFile
+		section.Status = report.Status
+		for attemptIndex := range section.Attempts {
+			if section.Attempts[attemptIndex].Selected {
+				section.Attempts[attemptIndex].TranscriptFile = transcriptFile
+				section.Attempts[attemptIndex].VerificationFile = reportFile
+			}
+		}
+		aggregate.Sections = append(aggregate.Sections, report)
+		aggregate.VerifiedSections++
+		if report.Status == SectionStatusFlagged {
+			aggregate.FlaggedSections++
+		}
+		if err := m.store.SaveManifestWIP(*manifest); err != nil {
+			m.finishRunError(id, manifest, "checkpoint section verification: "+err.Error(), false)
+			return false
+		}
+	}
+	status := VerificationStatusPassed
+	if aggregate.FlaggedSections > 0 {
+		status = VerificationStatusFlagged
+	}
+	return finish(status, "")
 }
 
 func (m *Manager) finishRunError(id string, manifest *Manifest, message string, cancelled bool) {

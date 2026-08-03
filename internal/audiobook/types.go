@@ -84,6 +84,7 @@ type Section struct {
 	AudioFile             string        `json:"audioFile,omitempty"`
 	AudioSHA256           string        `json:"audioSha256,omitempty"`
 	TranscriptFile        string        `json:"transcriptFile,omitempty"`
+	VerificationFile      string        `json:"verificationFile,omitempty"`
 	DurationMS            int64         `json:"durationMs,omitempty"`
 	Attempts              []Attempt     `json:"attempts,omitempty"`
 }
@@ -94,6 +95,8 @@ type VerificationSummary struct {
 	Status           VerificationStatus `json:"status"`
 	VerifiedSections int                `json:"verifiedSections"`
 	FlaggedSections  int                `json:"flaggedSections"`
+	ReportFile       string             `json:"reportFile,omitempty"`
+	Error            string             `json:"error,omitempty"`
 }
 
 // Manifest describes either a legacy finished audiobook or a versioned durable

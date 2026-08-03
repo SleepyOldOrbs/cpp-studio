@@ -159,6 +159,11 @@ stitched WAV. Runs as an `audiobook` job on the jobs surface.
   Missing values resolve to 30, 2.5, 45, 37, and 0.05 respectively. Unknown
   or duplicate fields are rejected; clients cannot submit a seed, path,
   command, URL, or arbitrary native-engine argument.
+  `verification` is optional: `auto` (default) uses configured Whisper,
+  `required` rejects creation unless Whisper is configured and interrupts on an ASR
+  failure, and `off` records that verification was skipped. Verification compares
+  normalized words while retaining raw transcripts and separately warning on missing
+  numeric/date, acronym, and likely proper-name anchors.
   Both paths retain the 600-unit cap; the compatibility `chunks` response field is the
   selected path's unit count. Returns
   `202 {"id":"book_...","chunks":42,"statusUrl":"/v1/jobs/book_..."}`.
