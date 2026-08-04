@@ -8,11 +8,11 @@
   },
   "models": {
     "manifest": "${configDir}/models.json",
-    "root": "${root}",
+    "root": "${root}\\cpp-studio\\models",
     "discovery": {
       "pythonCommand": "python",
       "managerScript": "${root}\\audio.cpp\\tools\\model_manager_v2.py",
-      "audioCli": "${root}\\audio.cpp\\build\\windows-cuda-release\\bin\\audiocpp_cli.exe",
+      "audioCli": "${root}\\cpp-studio\\engines\\audio-engines\\audiocpp_cli.exe",
       "workingDir": "${root}\\audio.cpp",
       "allowedPackages": ["dramabox_q8_0"],
       "timeoutSeconds": 10
@@ -20,11 +20,11 @@
   },
   "engines": {
     "audio": {
-      "command": "${root}\\audio.cpp\\build\\windows-cuda-release\\bin\\audiocpp_cli.exe",
+      "command": "${root}\\cpp-studio\\engines\\audio-engines\\audiocpp_cli.exe",
       "args": [
         "--task", "tts",
         "--family", "qwen3_tts",
-        "--model", "${root}\\audio.cpp\\models\\Qwen3-TTS-12Hz-0.6B-Base",
+        "--model", "${root}\\cpp-studio\\models\\speech\\synthesis\\Qwen3-TTS-12Hz-0.6B-Base",
         "--backend", "cuda",
         "--voice-ref", "${root}\\audio.cpp\\assets\\resources\\b.wav",
         "--reference-text", "Reference voice transcript.",
@@ -36,9 +36,9 @@
       "gpu": true
     },
     "dramabox": {
-      "command": "${root}\\audio.cpp\\build\\windows-cuda-release\\bin\\audiocpp_server.exe",
+      "command": "${root}\\cpp-studio\\engines\\audio-engines\\audiocpp_server.exe",
       "args": ["--config", "${configDir}\\dramabox-server.example.json"],
-      "workingDir": "${root}",
+      "workingDir": "${root}\\cpp-studio",
       "mode": "server",
       "healthUrl": "http://127.0.0.1:8740/health",
       "startupTimeoutSeconds": 60,

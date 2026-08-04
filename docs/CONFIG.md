@@ -13,8 +13,8 @@ tracked config can avoid machine-specific absolute paths:
   "vars": { "root": "C:\\path\\to\\your\\studio" },
   "engines": {
     "llama": {
-      "command": "${root}\\engines\\llama.cpp\\llama-server.exe",
-      "args": ["-m", "${root}\\engines\\models\\chat.gguf"]
+      "command": "${root}\\engines\\llama-engines\\llama-server.exe",
+      "args": ["-m", "${root}\\models\\text\\chat.gguf"]
     }
   }
 }
@@ -35,12 +35,12 @@ The optional `models` block points at the tracked model registry
 {
   "models": {
     "manifest": "${configDir}/models.json",
-    "root": "${root}",
+    "root": "${root}\\models",
     "discovery": {
       "pythonCommand": "python",
-      "managerScript": "${root}/audio.cpp/tools/model_manager_v2.py",
-      "audioCli": "${root}/audio.cpp/build/windows-cuda-release/bin/audiocpp_cli.exe",
-      "workingDir": "${root}/audio.cpp",
+      "managerScript": "${root}/../audio.cpp/tools/model_manager_v2.py",
+      "audioCli": "${root}/engines/audio-engines/audiocpp_cli.exe",
+      "workingDir": "${root}/../audio.cpp",
       "allowedPackages": ["dramabox_q8_0"],
       "timeoutSeconds": 10
     }
@@ -126,8 +126,8 @@ CPU-only — about 1 s per 22 s of audio):
   "diarize": {
     "command": "${root}\\engines\\sherpa-onnx\\sherpa-onnx-v1.13.4-win-x64-shared-MD-Release\\bin\\sherpa-onnx-offline-speaker-diarization.exe",
     "args": [
-      "--segmentation.pyannote-model=${root}\\engines\\sherpa-onnx\\sherpa-onnx-pyannote-segmentation-3-0\\model.onnx",
-      "--embedding.model=${root}\\engines\\sherpa-onnx\\nemo_en_titanet_small.onnx",
+      "--segmentation.pyannote-model=${root}\\models\\speech\\analysis\\diarization\\sherpa-onnx-pyannote-segmentation-3-0\\model.onnx",
+      "--embedding.model=${root}\\models\\speech\\analysis\\speaker-embedding\\nemo_en_titanet_small.onnx",
       "--clustering.cluster-threshold=0.8"
     ],
     "mode": "subprocess",
@@ -265,8 +265,8 @@ the single source of truth.
     "healthUrl": "http://127.0.0.1:8734/health",
     "defaultVariant": "large-v3",
     "variants": {
-      "large-v3":       {"label": "large-v3 — best quality", "args": ["-m", "${root}\\models\\ggml-large-v3.bin", "..."]},
-      "large-v3-turbo": {"label": "large-v3-turbo — faster", "args": ["-m", "${root}\\models\\ggml-large-v3-turbo.bin", "..."]}
+      "large-v3":       {"label": "large-v3 — best quality", "args": ["-m", "${root}\\models\\transcription\\Whisper\\ggml-large-v3.bin", "..."]},
+      "large-v3-turbo": {"label": "large-v3-turbo — faster", "args": ["-m", "${root}\\models\\transcription\\Whisper\\ggml-large-v3-turbo.bin", "..."]}
     }
   }
 }
@@ -369,13 +369,13 @@ from config is the rollback. Engine selection is deliberately limited to
 
 The example requires audio.cpp `release-0.5` and pairs with
 `dramabox-server.example.json`. Put the official
-`DramaBox-GGUF/dramabox-q8_0.gguf` under `audio.cpp/models`, edit the gateway
+`DramaBox-GGUF/dramabox-q8_0.gguf` under `cpp-studio/models/speech/synthesis`, edit the gateway
 example's `root`, and start cpp-studio with that copied config. The server
 registers model id `tts`, lazy-loads it on the first expressive book, and
 keeps it resident afterward. Text-only DramaBox requests omit `voice_ref`;
 selecting a stored voice sends its reference WAV. The existing Qwen `audio`
 server still requires `defaultVoiceRef`. Keep the paired server JSON beside
-the gateway example: audio.cpp resolves its `../audio.cpp/models/...` model
+the gateway example: audio.cpp resolves its `models/speech/synthesis/...` model
 path relative to that JSON file, not the process working directory.
 
 The shipped server example uses `"backend": "cpu"`. This is a conservative
@@ -417,12 +417,12 @@ Audiobook desk or the Resume/Restart/Discard API described in
 
 `POST /v1/voices/design` picks its engine from the request's `model` field: `voxcpm2` (default), `omnivoice`, or `qwen3` (engine name `voicedesign`). All three run `audiocpp_cli` as subprocess engines with `"gpu": true`; configure only the ones whose models you have — the demo page shows a model choice for each configured engine.
 
-- `voicedesign`: `--task vdes --family qwen3_tts --model models/Qwen3-TTS-12Hz-1.7B-VoiceDesign` (most expressive; American-leaning).
-- `omnivoice`: `--task tts --family omnivoice --model models/OmniVoice` (precision accents; strict attribute instruct — the gateway normalizes free prose into its vocabulary via the `llama` engine when configured).
-- `voxcpm2`: `--task tts --family voxcpm2 --model models/VoxCPM2` (realistic free-prose design, 48 kHz). One-time setup: the HF snapshot ships `audiovae.pth`; convert it with audio.cpp's model manager before first use:
+- `voicedesign`: `--task vdes --family qwen3_tts --model models/speech/voice-design/Qwen3-TTS-12Hz-1.7B-VoiceDesign` (most expressive; American-leaning).
+- `omnivoice`: `--task tts --family omnivoice --model models/speech/voice-design/OmniVoice` (precision accents; strict attribute instruct — the gateway normalizes free prose into its vocabulary via the `llama` engine when configured).
+- `voxcpm2`: `--task tts --family voxcpm2 --model models/speech/voice-design/VoxCPM2` (realistic free-prose design, 48 kHz). One-time setup: the HF snapshot ships `audiovae.pth`; convert it with audio.cpp's model manager before first use:
 
 ```powershell
-py -3.11 ..\audio.cpp\tools\model_manager.py install voxcpm2_audiovae --source-file ..\audio.cpp\models\VoxCPM2\audiovae.pth --models-root ..\audio.cpp\models --overwrite
+py -3.11 ..\audio.cpp\tools\model_manager.py install voxcpm2_audiovae --source-file .\models\speech\voice-design\VoxCPM2\audiovae.pth --models-root .\models\speech\voice-design --overwrite
 ```
 
 ## Local Examples
@@ -456,7 +456,7 @@ The verified local `audio.cpp` route uses the sibling checkout:
   "args": [
     "--task", "tts",
     "--family", "qwen3_tts",
-    "--model", "..\\audio.cpp\\models\\Qwen3-TTS-12Hz-0.6B-Base",
+    "--model", ".\\models\\speech\\synthesis\\Qwen3-TTS-12Hz-0.6B-Base",
     "--backend", "cuda",
     "--voice-ref", "..\\audio.cpp\\assets\\resources\\b.wav",
     "--reference-text", "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you.",

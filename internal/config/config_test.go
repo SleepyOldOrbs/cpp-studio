@@ -57,9 +57,9 @@ func TestDramaBoxExamplesKeepExistingAudioAndUseSafeServerPosture(t *testing.T) 
 		t.Fatalf("unexpected DramaBox server model contract: %+v", server.Models)
 	}
 	resolvedModel := filepath.Clean(filepath.Join(filepath.Dir(serverPath), filepath.FromSlash(server.Models[0].Path)))
-	wantModel := filepath.Clean(filepath.Join(repoRoot, "..", "audio.cpp", "models", "DramaBox-GGUF", "dramabox-q8_0.gguf"))
+	wantModel := filepath.Clean(filepath.Join(repoRoot, "models", "speech", "synthesis", "DramaBox-GGUF", "dramabox-q8_0.gguf"))
 	if resolvedModel != wantModel {
-		t.Fatalf("DramaBox server model resolves to %q, want documented sibling layout %q", resolvedModel, wantModel)
+		t.Fatalf("DramaBox server model resolves to %q, want CPP Studio model layout %q", resolvedModel, wantModel)
 	}
 }
 

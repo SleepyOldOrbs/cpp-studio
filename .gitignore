@@ -1,6 +1,8 @@
 bin/
 dist/
 out/
+/engines/
+/models/
 config.real.json
 coverage.out
 *.exe

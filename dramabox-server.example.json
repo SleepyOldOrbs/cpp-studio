@@ -8,7 +8,7 @@
     {
       "id": "tts",
       "family": "dramabox",
-      "path": "../audio.cpp/models/DramaBox-GGUF/dramabox-q8_0.gguf",
+      "path": "models/speech/synthesis/DramaBox-GGUF/dramabox-q8_0.gguf",
       "task": "tts",
       "mode": "offline",
       "session_options": {

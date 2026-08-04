@@ -11,14 +11,14 @@ func TestVarsExpandAcrossFields(t *testing.T) {
 	path := writeConfig(t, `{
       "gateway": {"host":"127.0.0.1","port":8765},
       "vars": {"root":"${configDir}/..", "port":"8733"},
-	  "models": {"manifest":"${configDir}/models.json", "root":"${root}", "discovery":{
+	  "models": {"manifest":"${configDir}/models.json", "root":"${root}/models", "discovery":{
 	    "pythonCommand":"python", "managerScript":"${root}/audio.cpp/tools/model_manager_v2.py",
 	    "audioCli":"${root}/audio.cpp/audiocpp_cli", "workingDir":"${root}/audio.cpp", "allowedPackages":["dramabox_q8_0"], "timeoutSeconds":7
 	  }},
       "engines": {
         "llama": {
-          "command":"${root}/engines/llama.cpp/llama-server.exe",
-          "args":["--port","${port}","-m","${root}/engines/models/x.gguf"],
+          "command":"${root}/engines/llama-engines/llama-server.exe",
+          "args":["--port","${port}","-m","${root}/models/text/x.gguf"],
           "mode":"server",
           "healthUrl":"http://127.0.0.1:${port}/health"
         }
@@ -33,19 +33,19 @@ func TestVarsExpandAcrossFields(t *testing.T) {
 	wantRoot := configDir + "/.."
 
 	e := cfg.Engines["llama"]
-	if want := wantRoot + "/engines/llama.cpp/llama-server.exe"; e.Command != want {
+	if want := wantRoot + "/engines/llama-engines/llama-server.exe"; e.Command != want {
 		t.Errorf("command: got %q want %q", e.Command, want)
 	}
 	if e.Args[1] != "8733" {
 		t.Errorf("port arg not expanded: %q", e.Args[1])
 	}
-	if e.Args[3] != wantRoot+"/engines/models/x.gguf" {
+	if e.Args[3] != wantRoot+"/models/text/x.gguf" {
 		t.Errorf("model arg: got %q", e.Args[3])
 	}
 	if e.HealthURL != "http://127.0.0.1:8733/health" {
 		t.Errorf("healthUrl: got %q", e.HealthURL)
 	}
-	if cfg.Models == nil || cfg.Models.Root != wantRoot {
+	if cfg.Models == nil || cfg.Models.Root != wantRoot+"/models" {
 		t.Errorf("models.root: got %+v", cfg.Models)
 	}
 	if cfg.Models.Manifest != configDir+"/models.json" {

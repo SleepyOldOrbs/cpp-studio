@@ -64,15 +64,15 @@ Returns the model manifest with each model's live on-disk state. Requires a
 
 ```json
 {
-  "root": "C:\\studio",
+  "root": "C:\\studio\\models",
   "models": [
     {
       "id": "qwen3-4b-instruct",
       "engine": "llama",
       "family": "llama-gguf",
-      "path": "engines/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "path": "text/Qwen3-4B-Instruct/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
       "bytes": 2497281120,
-      "absPath": "C:\\studio\\engines\\models\\Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "absPath": "C:\\studio\\models\\text\\Qwen3-4B-Instruct\\Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
       "present": true,
       "actualBytes": 2497281120,
       "state": "present",

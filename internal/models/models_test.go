@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -47,12 +48,30 @@ func TestTrackedManifestDeclaresExactDramaBoxPackage(t *testing.T) {
 		if model.Engine != "dramabox" || model.Family != "dramabox" || model.Bytes != 18942803808 {
 			t.Fatalf("unexpected DramaBox package identity: %+v", model)
 		}
-		if model.Path != "audio.cpp/models/DramaBox-GGUF/dramabox-q8_0.gguf" || model.Source == "" || model.License != "LTX-2 Community License" {
+		if model.Path != "speech/synthesis/DramaBox-GGUF/dramabox-q8_0.gguf" || model.Source == "" || model.License != "LTX-2 Community License" {
 			t.Fatalf("missing DramaBox package provenance: %+v", model)
 		}
 		return
 	}
 	t.Fatal("tracked manifest is missing DramaBox")
+}
+
+func TestTrackedManifestUsesTypedModelLayout(t *testing.T) {
+	manifest, err := Load(filepath.Join("..", "..", "models.json"))
+	if err != nil {
+		t.Fatalf("load tracked model manifest: %v", err)
+	}
+	allowedTypes := map[string]bool{
+		"text": true, "image": true, "speech": true,
+		"transcription": true, "music": true, "sound": true,
+	}
+	for _, model := range manifest.Models {
+		path := filepath.ToSlash(model.Path)
+		parts := strings.Split(path, "/")
+		if filepath.IsAbs(model.Path) || len(parts) < 2 || !allowedTypes[parts[0]] || strings.Contains(path, "../") {
+			t.Errorf("model %q is outside the typed model layout: %q", model.ID, model.Path)
+		}
+	}
 }
 
 func TestStatusesReflectDisk(t *testing.T) {

@@ -10,13 +10,15 @@ RTF 27.11; `dramabox.mem_saver=true` measured 32.05 and 25.21. Both are overnigh
 class, and both required native long-form cases failed with
 `regex_error(error_stack)` insufficient memory on 61.6 GiB RAM. cpp-studio assigns
 cryptographically random positive 31-bit seeds for release-0.5's signed native `int`
-parser, but this CPU machine is not qualified for complete books. CUDA remains
-unverified because the inspected release checkout has no completed CUDA executable.
+parser, but this CPU machine is not qualified for complete books. DramaBox CUDA fit
+remains unverified because the model is larger than the reference GPU's VRAM; the
+release-0.5 CUDA runtime itself has been qualified with the smaller configured Qwen
+TTS model.
 
 ## Configure
 
 1. Review the upstream model card and LTX-2 Community License.
-2. Put `DramaBox-GGUF/dramabox-q8_0.gguf` under `audio.cpp/models`, or use the
+2. Put `DramaBox-GGUF/dramabox-q8_0.gguf` under `cpp-studio/models/speech/synthesis`, or use the
    Models tab's explicit Preview installation and licence confirmation. The tracked
    artifact is pinned to revision `96367c9cb9d7484206d629ba92a8745af03499c6`;
    installation never follows a moving branch or overwrites a destination.
