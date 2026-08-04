@@ -5,6 +5,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"cpp-studio/internal/wav"
 )
 
 func TestSniffAudioContentType(t *testing.T) {
@@ -366,5 +369,72 @@ not a span line
 	}
 	if got := ParseDiarization(nil); len(got) != 0 {
 		t.Fatalf("expected no spans from empty stdout, got %+v", got)
+	}
+}
+
+func TestSortformerDiarizationSpecUsesAudioFlagAndSizedGraph(t *testing.T) {
+	spec := SortformerDiarizationSpec([]byte("wav"), 28*time.Second)
+	if spec.Engine != "diarize" {
+		t.Fatalf("engine = %q, want diarize", spec.Engine)
+	}
+	want := []string{"--session-option", "session_len_sec=30", "--audio", "input.wav"}
+	if got := spec.BuildArgs("input.wav", ""); !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+}
+
+func TestCanUseSortformer(t *testing.T) {
+	compatible := wav.Format{Channels: 1, SampleRate: 16000, BitsPerSample: 16}
+	if !CanUseSortformer(compatible, 120*time.Second, 0) {
+		t.Fatal("expected compatible 120-second automatic request to use Sortformer")
+	}
+	if CanUseSortformer(compatible, 121*time.Second, 0) {
+		t.Fatal("expected long request to use sherpa")
+	}
+	if CanUseSortformer(compatible, time.Second, 5) {
+		t.Fatal("expected explicit speaker count to use sherpa")
+	}
+	incompatible := compatible
+	incompatible.SampleRate = 24000
+	if CanUseSortformer(incompatible, time.Second, 0) {
+		t.Fatal("expected incompatible sample rate to use sherpa")
+	}
+}
+
+func TestSherpaDiarizationSpecPinsSpeakerCount(t *testing.T) {
+	spec := SherpaDiarizationSpec([]byte("wav"), 5)
+	if spec.Engine != "diarize-sherpa" {
+		t.Fatalf("engine = %q, want diarize-sherpa", spec.Engine)
+	}
+	want := []string{"--clustering.num-clusters=5", "input.wav"}
+	if got := spec.BuildArgs("input.wav", ""); !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+}
+
+func TestParseSortformerDiarization(t *testing.T) {
+	stdout := []byte(`family=sortformer_diar
+speaker_turns=[{"start_sample":1280,"end_sample":126720,"speaker_id":"SPEAKER_00","confidence":0.8},{"start_sample":135680,"end_sample":227840,"speaker_id":"SPEAKER_01","confidence":0.9}]
+ggml_cuda_init: found 1 CUDA device
+`)
+	spans, err := ParseSortformerDiarization(stdout)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 spans, got %+v", spans)
+	}
+	if spans[0].Start != 0.08 || spans[0].End != 7.92 || spans[0].Speaker != 0 {
+		t.Fatalf("first span wrong: %+v", spans[0])
+	}
+	if spans[1].Start != 8.48 || spans[1].End != 14.24 || spans[1].Speaker != 1 {
+		t.Fatalf("second span wrong: %+v", spans[1])
+	}
+	if _, err := ParseSortformerDiarization([]byte("no turns here")); err == nil {
+		t.Fatal("expected missing speaker_turns output to fail")
+	}
+	empty, err := ParseSortformerDiarization([]byte("family=sortformer_diar\ntask=diar\nmode=offline\n"))
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("valid zero-turn result = (%+v, %v), want empty success", empty, err)
 	}
 }

@@ -136,8 +136,19 @@
       "description": "Precision English-accent voice design via a strict attribute vocabulary."
     },
     {
-      "id": "pyannote-segmentation-3.0",
+      "id": "sortformer-diar-4spk-v1-q8-0",
       "engine": "diarize",
+      "family": "sortformer_diar",
+      "path": "speech/analysis/diarization/Sortformer-Diar-4spk-v1-GGUF/sortformer-diar-4spk-v1-q8_0.gguf",
+      "bytes": 175662720,
+      "sha256": "4fa6a3e30c4a1c6cc1da455268806edc93432ca1e1b5b6923e942be8e6e479ff",
+      "source": "https://huggingface.co/audio-cpp/audio.cpp-gguf",
+      "license": "CC-BY-NC-4.0",
+      "description": "GPU-first Sortformer diarization for 16 kHz mono recordings up to four speakers and 120 seconds."
+    },
+    {
+      "id": "pyannote-segmentation-3.0",
+      "engine": "diarize-sherpa",
       "family": "pyannote-segmentation",
       "path": "speech/analysis/diarization/sherpa-onnx-pyannote-segmentation-3-0/model.onnx",
       "bytes": 5992913,
@@ -148,7 +159,7 @@
     },
     {
       "id": "titanet-small-en",
-      "engine": "diarize",
+      "engine": "diarize-sherpa",
       "family": "speaker-embedding",
       "path": "speech/analysis/speaker-embedding/nemo_en_titanet_small.onnx",
       "bytes": 40257283,
@@ -159,14 +170,14 @@
     },
     {
       "id": "campp-voxceleb-en",
-      "engine": "diarize",
+      "engine": "diarize-sherpa",
       "family": "speaker-embedding",
       "path": "speech/analysis/speaker-embedding/wespeaker_en_voxceleb_CAM++_LM.onnx",
       "bytes": 29292687,
       "sha256": "e197af7e9d473030cf486b3124149a19bf37014d0e4485e4c70c483b0ec10cb2",
       "source": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models",
       "license": "CC-BY-4.0",
-      "description": "Alternative English speaker-embedding model (swap into the diarize engine args to compare)."
+      "description": "Alternative English speaker-embedding model (swap into the diarize-sherpa engine args to compare)."
     },
     {
       "id": "voxcpm2",

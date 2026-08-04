@@ -71,6 +71,28 @@
       "requestTimeoutSeconds": 180,
       "gpu": true
     },
+    "diarize": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "diar",
+        "--family", "sortformer_diar",
+        "--model", "${root}\\models\\speech\\analysis\\diarization\\Sortformer-Diar-4spk-v1-GGUF\\sortformer-diar-4spk-v1-q8_0.gguf",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 300,
+      "gpu": true
+    },
+    "diarize-sherpa": {
+      "command": "${root}\\engines\\sherpa-onnx\\sherpa-onnx-v1.13.4-win-x64-shared-MD-Release\\bin\\sherpa-onnx-offline-speaker-diarization.exe",
+      "args": [
+        "--segmentation.pyannote-model=${root}\\models\\speech\\analysis\\diarization\\sherpa-onnx-pyannote-segmentation-3-0\\model.onnx",
+        "--embedding.model=${root}\\models\\speech\\analysis\\speaker-embedding\\nemo_en_titanet_small.onnx",
+        "--clustering.cluster-threshold=0.8"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 300
+    },
     "sd": {
       "command": "${root}\\engines\\sd-engines\\sd-server.exe",
       "args": [

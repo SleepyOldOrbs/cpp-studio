@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -65,6 +66,14 @@ func TestDecodeRoundTripsSyntheticTone(t *testing.T) {
 	}
 	if encoded := Encode(format, pcm); string(encoded) != string(SyntheticTone(160)) {
 		t.Fatalf("encode did not round-trip the tone")
+	}
+}
+
+func TestDecodeRejectsNonPCMFormat(t *testing.T) {
+	data := SyntheticTone(ToneSampleRate)
+	data[20] = 3 // IEEE float format tag; the payload is deliberately irrelevant.
+	if _, _, err := Decode(data); err == nil || !strings.Contains(err.Error(), "PCM required") {
+		t.Fatalf("Decode non-PCM error = %v, want PCM-required error", err)
 	}
 }
 

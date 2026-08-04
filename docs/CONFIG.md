@@ -114,16 +114,35 @@ SD checkpoint. The TTS and voice-design engines are coupled to their model
 families' CLI contracts — treat those as fixed unless you are also
 changing the audio.cpp invocation.
 
-## Speaker Diarization: the `diarize` engine
+## Speaker Diarization: Sortformer with sherpa fallback
 
-Optional. Point a subprocess engine named `diarize` at sherpa-onnx's offline
-speaker diarization CLI with a pyannote segmentation model and a speaker
-embedding model (all from the sherpa-onnx GitHub releases; ~65 MB total,
-CPU-only — about 1 s per 22 s of audio):
+Optional. The `diarize` engine is audio.cpp's CUDA Sortformer route. It handles
+16 kHz mono PCM WAVs up to 120 seconds and up to four speakers. The gateway
+sizes Sortformer's fixed graph window from the uploaded WAV and serializes it
+with the other GPU subprocesses. The packaged NVIDIA model is
+`CC-BY-NC-4.0`, so it is for non-commercial use.
+
+The separate `diarize-sherpa` CPU engine remains the whole-recording fallback:
+it is selected when `?speakers=N` requests an exact cluster count, the WAV is
+not 16 kHz mono PCM, or the recording exceeds 120 seconds.
+For recordings that may contain more than four speakers, callers must provide
+the count; Sortformer cannot discover a fifth output channel after it starts.
 
 ```json
 {
   "diarize": {
+    "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+    "args": [
+      "--task", "diar",
+      "--family", "sortformer_diar",
+      "--model", "${root}\\models\\speech\\analysis\\diarization\\Sortformer-Diar-4spk-v1-GGUF\\sortformer-diar-4spk-v1-q8_0.gguf",
+      "--backend", "cuda"
+    ],
+    "mode": "subprocess",
+    "requestTimeoutSeconds": 300,
+    "gpu": true
+  },
+  "diarize-sherpa": {
     "command": "${root}\\engines\\sherpa-onnx\\sherpa-onnx-v1.13.4-win-x64-shared-MD-Release\\bin\\sherpa-onnx-offline-speaker-diarization.exe",
     "args": [
       "--segmentation.pyannote-model=${root}\\models\\speech\\analysis\\diarization\\sherpa-onnx-pyannote-segmentation-3-0\\model.onnx",
@@ -136,11 +155,17 @@ CPU-only — about 1 s per 22 s of audio):
 }
 ```
 
-The gateway appends the input WAV as the positional argument and parses the
-`start -- end speaker_NN` stdout lines. Swap `--embedding.model` to compare
-embedding models (titanet_small beat CAM++ decisively on the reference
-bake-off); use `--clustering.num-clusters=N` instead of the threshold when
-the speaker count is known. Without this engine, `POST /v1/audio/diarization`
+Install the GGUF with audio.cpp's model manager, targeting CPP Studio's typed
+model directory:
+
+```powershell
+python ..\audio.cpp\tools\model_manager_v2.py install --models-root .\models\speech\analysis\diarization sortformer_diar_4spk_v1_q8_0
+```
+
+For sherpa, the gateway appends the input WAV as the positional argument and
+parses `start -- end speaker_NN` stdout lines. Swap `--embedding.model` to
+compare embeddings (titanet_small beat CAM++ decisively on the reference
+bake-off). If neither engine is configured, `POST /v1/audio/diarization`
 returns `503` and the Extractor's "Detect speakers" button is hidden.
 
 ## URL Import: the `ytdlp` engine

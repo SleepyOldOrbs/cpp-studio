@@ -10,8 +10,9 @@ the native inference family —
 [llama.cpp](https://github.com/ggml-org/llama.cpp),
 [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
 [audio.cpp](https://github.com/0xShug0/audio.cpp),
-[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), and
-[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) speaker diarization —
+[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), plus
+audio.cpp Sortformer with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
+as its long-form/exact-speaker-count diarization fallback —
 behind OpenAI-shaped HTTP routes and a browser studio console.
 
 ![The Extractor: a 47-second recording as a waveform, transcribed into 18 timestamped segments, every line tagged by speaker automatically](docs/images/extractor.png)
@@ -153,7 +154,7 @@ OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
 | `POST /v1/voice` | the whole voice loop in one call |
 | `POST /v1/voices` · `/v1/voices/design` | clone / design voices |
 | `POST /v1/audio/transcriptions?format=segments` | timestamped transcript segments |
-| `POST /v1/audio/diarization` | who-spoke-when speaker clusters (sherpa-onnx) |
+| `POST /v1/audio/diarization` | who-spoke-when clusters (CUDA Sortformer, sherpa fallback) |
 | `POST /v1/audio/import` | fetch a URL's audio through your own yt-dlp |
 | `POST /v1/audio/decode` | convert what the browser can't read, via your own ffmpeg |
 | `POST /v1/stories/{id}/export` | encode a render revision to MP3/Opus via your own ffmpeg |

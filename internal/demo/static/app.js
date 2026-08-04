@@ -651,9 +651,9 @@
     renderEngineRack(data.engines);
     updateDesignModels(data.engines);
     updateAudiobookEngines(data.engines);
-    // The Detect speakers button only exists when a diarize engine is
-    // configured; without one the Extractor stays manual-tagging only.
-    var hasDiarize = Boolean(data.engines && data.engines.diarize);
+    // Either CUDA Sortformer or the sherpa fallback can power detection;
+    // without either, the Extractor stays manual-tagging only.
+    var hasDiarize = Boolean(data.engines && (data.engines.diarize || data.engines["diarize-sherpa"]));
     extractDiarizeButton.hidden = !hasDiarize;
     document.getElementById("extractSpeakersInput").hidden = !hasDiarize;
     // Same rule for the URL importer: no yt-dlp binary configured, no row.

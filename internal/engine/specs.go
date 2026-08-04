@@ -197,22 +197,71 @@ func TranscriptionSpec(wavBytes []byte) Spec {
 	}
 }
 
-// DiarizationSpec invokes the "diarize" engine (sherpa-onnx offline speaker
-// diarization): the model flags live in the config args and the input WAV is
-// the single positional argument. Stdout carries one line per speaker span.
-// numSpeakers > 0 pins the cluster count (sherpa gives --clustering.num-clusters
-// precedence over the configured threshold), which tames real-world audio
-// where laughter and character voices shatter threshold clustering.
-func DiarizationSpec(wavBytes []byte, numSpeakers int) Spec {
+// MaxSortformerDiarizationDuration is audio.cpp's architectural graph limit.
+const MaxSortformerDiarizationDuration = 120 * time.Second
+
+// DiarizationProvider identifies the engine contract used for a diarization
+// result, including how its stdout must be parsed.
+type DiarizationProvider string
+
+const (
+	DiarizationProviderSortformer DiarizationProvider = "sortformer"
+	DiarizationProviderSherpa     DiarizationProvider = "sherpa-onnx"
+)
+
+// CanUseSortformer reports whether a request fits the packaged model and its
+// fixed graph. A positive speaker count requests sherpa's exact clustering.
+func CanUseSortformer(format wav.Format, duration time.Duration, numSpeakers int) bool {
+	return numSpeakers == 0 && format.SampleRate == 16000 && format.Channels == 1 &&
+		format.BitsPerSample == 16 && duration <= MaxSortformerDiarizationDuration
+}
+
+// SortformerDiarizationSpec invokes audio.cpp's CUDA Sortformer engine. The
+// fixed graph window is sized to the request: 20 seconds is the model default,
+// then 30-second steps up to the model's 120-second architectural limit.
+func SortformerDiarizationSpec(wavBytes []byte, duration time.Duration) Spec {
+	if wavBytes == nil {
+		wavBytes = []byte{}
+	}
+	seconds := int(math.Ceil(duration.Seconds()))
+	if seconds <= 20 {
+		seconds = 20
+	} else {
+		seconds = ((seconds + 29) / 30) * 30
+	}
+	if seconds > 120 {
+		seconds = 120
+	}
+	return Spec{
+		Engine:        "diarize",
+		Label:         "Sortformer speaker diarization command",
+		Timeout:       DefaultDiarizationTimeout,
+		Input:         wavBytes,
+		InputPattern:  "cpp-studio-diarize-sortformer-*.wav",
+		ValidateInput: wav.ValidateFile,
+		BuildArgs: func(inPath, _ string) []string {
+			return []string{
+				"--session-option", fmt.Sprintf("session_len_sec=%d", seconds),
+				"--audio", inPath,
+			}
+		},
+	}
+}
+
+// SherpaDiarizationSpec invokes the "diarize-sherpa" fallback engine. The
+// model flags live in the config args and the input WAV is the single
+// positional argument. numSpeakers > 0 pins the cluster count (sherpa gives
+// --clustering.num-clusters precedence over the configured threshold).
+func SherpaDiarizationSpec(wavBytes []byte, numSpeakers int) Spec {
 	if wavBytes == nil {
 		wavBytes = []byte{}
 	}
 	return Spec{
-		Engine:        "diarize",
-		Label:         "speaker diarization command",
+		Engine:        "diarize-sherpa",
+		Label:         "sherpa-onnx speaker diarization command",
 		Timeout:       DefaultDiarizationTimeout,
 		Input:         wavBytes,
-		InputPattern:  "cpp-studio-diarize-*.wav",
+		InputPattern:  "cpp-studio-diarize-sherpa-*.wav",
 		ValidateInput: wav.ValidateFile,
 		BuildArgs: func(inPath, _ string) []string {
 			var args []string
@@ -584,6 +633,63 @@ func ParseDiarization(stdout []byte) []DiarizationSpan {
 		spans = append(spans, DiarizationSpan{Start: start, End: end, Speaker: speaker})
 	}
 	return spans
+}
+
+// ParseSortformerDiarization extracts audio.cpp's speaker_turns JSON line and
+// converts its 16 kHz sample offsets to the gateway's seconds-based spans.
+func ParseSortformerDiarization(stdout []byte) ([]DiarizationSpan, error) {
+	const prefix = "speaker_turns="
+	familySeen := false
+	taskSeen := false
+	type turn struct {
+		StartSample int64  `json:"start_sample"`
+		EndSample   int64  `json:"end_sample"`
+		SpeakerID   string `json:"speaker_id"`
+	}
+	for _, line := range strings.Split(string(stdout), "\n") {
+		line = strings.TrimSpace(line)
+		familySeen = familySeen || line == "family=sortformer_diar"
+		taskSeen = taskSeen || line == "task=diar"
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		var turns []turn
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, prefix)), &turns); err != nil {
+			return nil, fmt.Errorf("parse Sortformer speaker turns: %v", err)
+		}
+		spans := make([]DiarizationSpan, 0, len(turns))
+		for _, item := range turns {
+			if item.StartSample < 0 || item.EndSample < item.StartSample || !strings.HasPrefix(item.SpeakerID, "SPEAKER_") {
+				return nil, fmt.Errorf("parse Sortformer speaker turn: invalid span or speaker id")
+			}
+			speaker, err := strconv.Atoi(strings.TrimPrefix(item.SpeakerID, "SPEAKER_"))
+			if err != nil {
+				return nil, fmt.Errorf("parse Sortformer speaker turn %q: %v", item.SpeakerID, err)
+			}
+			spans = append(spans, DiarizationSpan{
+				Start:   float64(item.StartSample) / 16000,
+				End:     float64(item.EndSample) / 16000,
+				Speaker: speaker,
+			})
+		}
+		return spans, nil
+	}
+	if familySeen && taskSeen {
+		return []DiarizationSpan{}, nil
+	}
+	return nil, fmt.Errorf("Sortformer output did not contain speaker_turns")
+}
+
+// ParseDiarization parses stdout according to the selected engine contract.
+func (provider DiarizationProvider) ParseDiarization(stdout []byte) ([]DiarizationSpan, error) {
+	switch provider {
+	case DiarizationProviderSortformer:
+		return ParseSortformerDiarization(stdout)
+	case DiarizationProviderSherpa:
+		return ParseDiarization(stdout), nil
+	default:
+		return nil, fmt.Errorf("unknown diarization provider %q", provider)
+	}
 }
 
 // ImageSpec invokes the "sd" engine: --prompt <prompt> --output <png path>

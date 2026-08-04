@@ -362,12 +362,15 @@ output requires the `whisper` engine in `server` mode (the resident server's
 
 Automatic "who spoke when": runs the uploaded WAV (multipart `file`, 64 MB
 cap — the whole recording in one piece, clustering cannot be chunked) through
-the config-gated `diarize` engine (sherpa-onnx offline speaker diarization)
-and returns anonymous speaker clusters with console-ready labels:
+CUDA Sortformer when the input is a compatible 16 kHz mono PCM recording no
+longer than 120 seconds. The separate sherpa-onnx CPU engine handles longer or
+incompatible WAVs and requests with an exact `?speakers=N` count. The response
+identifies which provider ran and returns anonymous, console-ready clusters:
 
 ```json
 {
   "duration_ms": 1043,
+  "provider": "sortformer",
   "spans": [
     { "start": 0.031, "end": 6.578, "speaker": "A" },
     { "start": 8.401, "end": 14.408, "speaker": "B" },
@@ -376,9 +379,14 @@ and returns anonymous speaker clusters with console-ready labels:
 }
 ```
 
-Without a configured `diarize` engine the route returns `503`; the
-Extractor's "Detect speakers" button appears only when the engine exists and
-fills the transcript's `speaker` tags by maximum overlap.
+Without either `diarize` (Sortformer) or `diarize-sherpa` the route returns
+`503`; the Extractor's "Detect speakers" button appears when diarization is
+available and fills transcript `speaker` tags by maximum overlap. A request
+that specifically requires sherpa also returns `503` when only Sortformer is
+configured; the gateway does not silently chunk or retry a failed GPU run.
+If a recording may contain more than four speakers, supply `?speakers=N` so it
+is routed to sherpa; automatic mode cannot know the true count before running
+the four-speaker model.
 
 ## POST /v1/audio/import
 

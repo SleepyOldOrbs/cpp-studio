@@ -2230,16 +2230,17 @@ func speakerLabel(cluster int) string {
 	return string(rune('A' + cluster))
 }
 
-// handleDiarization runs the uploaded WAV through the config-gated "diarize"
-// engine (sherpa-onnx speaker diarization) and returns anonymous speaker
-// spans with console-ready labels. This is the automation that fills the
-// Extractor's speaker tags.
+// handleDiarization prefers audio.cpp's CUDA Sortformer engine for compatible
+// 16 kHz mono recordings. Sherpa remains the fallback for explicit speaker
+// counts, incompatible WAVs, and recordings beyond Sortformer's fixed graph.
 func (r *router) handleDiarization(w http.ResponseWriter, req *http.Request) {
 	if !requireMethod(w, req, http.MethodPost) {
 		return
 	}
-	if _, ok := r.engine("diarize"); !ok {
-		writeJSONError(w, http.StatusServiceUnavailable, `engine "diarize" is not configured; see docs/CONFIG.md for the sherpa-onnx setup`)
+	_, sortformerConfigured := r.engine("diarize")
+	_, sherpaConfigured := r.engine("diarize-sherpa")
+	if !sortformerConfigured && !sherpaConfigured {
+		writeJSONError(w, http.StatusServiceUnavailable, `neither engine "diarize" (Sortformer) nor "diarize-sherpa" is configured; see docs/CONFIG.md`)
 		return
 	}
 	req.Body = http.MaxBytesReader(w, req.Body, maxDiarizationUploadBytes)
@@ -2257,14 +2258,42 @@ func (r *router) handleDiarization(w http.ResponseWriter, req *http.Request) {
 		}
 		numSpeakers = n
 	}
+	format, _, err := wav.Decode(data)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid WAV: %v", err))
+		return
+	}
+	duration, err := wav.Duration(data)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid WAV: %v", err))
+		return
+	}
+
+	sortformerCompatible := engine.CanUseSortformer(format, duration, numSpeakers)
+	provider := engine.DiarizationProviderSherpa
+	var spec engine.Spec
+	if sortformerCompatible && sortformerConfigured {
+		provider = engine.DiarizationProviderSortformer
+		spec = engine.SortformerDiarizationSpec(data, duration)
+	} else {
+		if !sherpaConfigured {
+			writeJSONError(w, http.StatusServiceUnavailable, `this recording requires engine "diarize-sherpa"; Sortformer accepts 16 kHz mono PCM WAV, at most 120 seconds, without an explicit speaker count`)
+			return
+		}
+		spec = engine.SherpaDiarizationSpec(data, numSpeakers)
+	}
 
 	started := time.Now()
-	result, err := r.engines.Run(req.Context(), engine.DiarizationSpec(data, numSpeakers))
+	result, err := r.engines.Run(req.Context(), spec)
 	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
-	spans := engine.ParseDiarization(result.Stdout)
+	spans, err := provider.ParseDiarization(result.Stdout)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
 	type spanOut struct {
 		Start   float64 `json:"start"`
 		End     float64 `json:"end"`
@@ -2277,6 +2306,7 @@ func (r *router) handleDiarization(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"duration_ms": time.Since(started).Milliseconds(),
+		"provider":    provider,
 		"spans":       out,
 	})
 }

@@ -74,6 +74,9 @@ func Decode(data []byte) (Format, []byte, error) {
 			if size < 16 {
 				return Format{}, nil, fmt.Errorf("invalid WAV: fmt chunk is %d bytes", size)
 			}
+			if audioFormat := binary.LittleEndian.Uint16(data[body : body+2]); audioFormat != 1 {
+				return Format{}, nil, fmt.Errorf("invalid WAV: unsupported audio format %d (PCM required)", audioFormat)
+			}
 			format = Format{
 				Channels:      binary.LittleEndian.Uint16(data[body+2 : body+4]),
 				SampleRate:    binary.LittleEndian.Uint32(data[body+4 : body+8]),

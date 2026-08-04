@@ -2171,11 +2171,31 @@ func TestGatewayHelperProcess(t *testing.T) {
 			runCorruptImageHelper(helperArgs)
 		case "transcribe":
 			runTranscriptionHelper(helperArgs)
-		case "diarize":
+		case "diarize-sortformer":
+			if helperArg(helperArgs, "--audio") == "" || helperArg(helperArgs, "--session-option") != "session_len_sec=30" {
+				fmt.Fprintln(os.Stderr, "missing Sortformer audio or graph-window argument")
+				os.Exit(2)
+			}
+			fmt.Fprintln(os.Stdout, `speaker_turns=[{"start_sample":1280,"end_sample":126720,"speaker_id":"SPEAKER_00","confidence":0.8},{"start_sample":135680,"end_sample":227840,"speaker_id":"SPEAKER_01","confidence":0.9}]`)
+			os.Exit(0)
+		case "diarize-sherpa":
 			// Mimics sherpa-onnx: config lines and noise on stdout around
 			// the speaker spans.
 			fmt.Fprintln(os.Stdout, "OfflineSpeakerDiarizationConfig(...)")
 			fmt.Fprintln(os.Stdout, "Started")
+			fmt.Fprintln(os.Stdout, "0.031 -- 6.578 speaker_00")
+			fmt.Fprintln(os.Stdout, "8.401 -- 14.408 speaker_01")
+			fmt.Fprintln(os.Stdout, "15.877 -- 21.327 speaker_00")
+			os.Exit(0)
+		case "diarize-sherpa-five":
+			found := false
+			for _, arg := range helperArgs {
+				found = found || arg == "--clustering.num-clusters=5"
+			}
+			if !found {
+				fmt.Fprintln(os.Stderr, "missing pinned five-speaker cluster count")
+				os.Exit(2)
+			}
 			fmt.Fprintln(os.Stdout, "0.031 -- 6.578 speaker_00")
 			fmt.Fprintln(os.Stdout, "8.401 -- 14.408 speaker_01")
 			fmt.Fprintln(os.Stdout, "15.877 -- 21.327 speaker_00")
@@ -2969,14 +2989,15 @@ func TestTranscriptionSegmentsNeedServerMode(t *testing.T) {
 
 func TestDiarizationRoute(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{
-		"diarize": helperEngine("diarize"),
+		"diarize":        helperEngine("diarize-sortformer"),
+		"diarize-sherpa": helperEngine("diarize-sherpa"),
 	})
 	router := NewRouter(cfg, lifecycle.NewManager(cfg))
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	part, _ := writer.CreateFormFile("file", "sample.wav")
-	_, _ = part.Write(validWAVBytes())
+	_, _ = part.Write(wav.SyntheticTone(28 * wav.ToneSampleRate))
 	_ = writer.Close()
 
 	rec := httptest.NewRecorder()
@@ -2987,7 +3008,8 @@ func TestDiarizationRoute(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Spans []struct {
+		Provider string `json:"provider"`
+		Spans    []struct {
 			Start   float64 `json:"start"`
 			End     float64 `json:"end"`
 			Speaker string  `json:"speaker"`
@@ -2996,14 +3018,115 @@ func TestDiarizationRoute(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Spans) != 3 {
-		t.Fatalf("expected 3 spans, got %+v", resp.Spans)
+	if resp.Provider != "sortformer" {
+		t.Fatalf("provider = %q, want sortformer", resp.Provider)
 	}
-	if resp.Spans[0].Speaker != "A" || resp.Spans[1].Speaker != "B" || resp.Spans[2].Speaker != "A" {
+	if len(resp.Spans) != 2 {
+		t.Fatalf("expected 2 spans, got %+v", resp.Spans)
+	}
+	if resp.Spans[0].Speaker != "A" || resp.Spans[1].Speaker != "B" {
 		t.Fatalf("cluster labels wrong: %+v", resp.Spans)
 	}
-	if resp.Spans[1].Start != 8.401 || resp.Spans[1].End != 14.408 {
+	if resp.Spans[1].Start != 8.48 || resp.Spans[1].End != 14.24 {
 		t.Fatalf("span timing wrong: %+v", resp.Spans[1])
+	}
+}
+
+func TestDiarizationRouteExplicitSpeakerCountUsesSherpa(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"diarize":        helperEngine("diarize-sortformer"),
+		"diarize-sherpa": helperEngine("diarize-sherpa-five"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "sample.wav")
+	_, _ = part.Write(wav.SyntheticTone(28 * wav.ToneSampleRate))
+	_ = writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/diarization?speakers=5", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Provider string `json:"provider"`
+		Spans    []any  `json:"spans"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Provider != "sherpa-onnx" || len(resp.Spans) != 3 {
+		t.Fatalf("unexpected fallback response: %+v", resp)
+	}
+}
+
+func TestDiarizationRouteLongRecordingUsesSherpa(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"diarize":        helperEngine("diarize-sortformer"),
+		"diarize-sherpa": helperEngine("diarize-sherpa"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "sample.wav")
+	_, _ = part.Write(wav.SyntheticTone(121 * wav.ToneSampleRate))
+	_ = writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/diarization", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Provider string `json:"provider"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Provider != "sherpa-onnx" {
+		t.Fatalf("provider = %q, want sherpa-onnx", resp.Provider)
+	}
+}
+
+func TestDiarizationRouteIncompatibleSampleRateUsesSherpa(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"diarize":        helperEngine("diarize-sortformer"),
+		"diarize-sherpa": helperEngine("diarize-sherpa"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	data := wav.Encode(
+		wav.Format{Channels: 1, SampleRate: 24000, BitsPerSample: 16},
+		make([]byte, 24_000*2),
+	)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "sample.wav")
+	_, _ = part.Write(data)
+	_ = writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/diarization", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Provider string `json:"provider"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Provider != "sherpa-onnx" {
+		t.Fatalf("provider = %q, want sherpa-onnx", resp.Provider)
 	}
 }
 
