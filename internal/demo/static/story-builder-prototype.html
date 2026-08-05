@@ -66,7 +66,8 @@
     .track-head small { font-size: 10px; }
     .track-actions { display: flex; gap: 3px; margin-top: 6px; }
     .track-actions button { padding: 2px 6px; font-size: 10px; }
-    .track-lane { position: relative; background-image: linear-gradient(to right, transparent calc(100% - 1px), rgba(255,255,255,.045) 100%); background-repeat: repeat-x; }
+    .track-lane { position: relative; background-image: linear-gradient(to right, transparent calc(100% - 1px), rgba(255,255,255,.045) 100%); background-repeat: repeat-x; transition: box-shadow .12s, background-color .12s; }
+    .track-lane.is-drop-target { background-color: rgba(240,166,75,.12); box-shadow: inset 0 0 0 2px var(--accent); }
     .clip { position: absolute; top: 12px; height: 53px; min-width: 32px; border-radius: 7px; border: 2px solid rgba(255,255,255,.15); box-shadow: 0 4px 10px rgba(0,0,0,.3); overflow: hidden; user-select: none; touch-action: none; cursor: grab; }
     .clip[data-type="dialogue"] { background: #356cae; }
     .clip[data-type="sfx"] { background: #347e61; }
@@ -74,7 +75,9 @@
     .clip[data-type="silence"] { background: #4b545f; }
     .clip.is-selected { border-color: #fff; box-shadow: 0 0 0 2px var(--accent), 0 7px 18px rgba(0,0,0,.5); z-index: 3; }
     .clip.is-stale::after { content: "STALE"; position: absolute; top: 3px; right: 5px; color: #241b0a; background: var(--stale); border-radius: 4px; padding: 1px 4px; font-size: 8px; font-weight: 800; }
-    .clip-label { padding: 6px 10px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 700; }
+    .clip-label { display: block; width: calc(100% - 20px); height: 22px; margin: 3px 10px 0; padding: 2px 4px; color: #fff; background: rgba(10,20,30,.16); border: 1px solid transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 700; }
+    input.clip-label { cursor: text; }
+    input.clip-label:hover, input.clip-label:focus { background: rgba(10,20,30,.46); border-color: rgba(255,255,255,.72); outline: none; }
     .wave { height: 17px; margin: 4px 10px; opacity: .72; background: repeating-linear-gradient(90deg, rgba(255,255,255,.8) 0 1px, transparent 1px 4px); clip-path: polygon(0 45%,5% 20%,10% 65%,15% 30%,20% 80%,25% 10%,30% 70%,35% 25%,40% 60%,45% 5%,50% 70%,55% 30%,60% 85%,65% 15%,70% 55%,75% 25%,80% 75%,85% 35%,90% 60%,95% 20%,100% 45%,100% 55%,0 55%); }
     .trim-handle { position: absolute; top: 0; bottom: 0; width: 8px; background: rgba(255,255,255,.24); cursor: ew-resize; }
     .trim-handle.left { left: 0; }
@@ -95,13 +98,27 @@
     .cue-table tr.is-selected { background: rgba(240,166,75,.12); }
     .cue-table button { padding: 4px 7px; }
     .variant-b-bottom { display: grid; grid-template-columns: minmax(600px, 1fr) 280px; gap: 10px; }
-    .variant-c { position: relative; padding: 10px 10px 180px; min-height: calc(100vh - 100px); }
+    .variant-c { position: relative; padding: 10px 10px 265px; min-height: calc(100vh - 100px); }
     .variant-c .timeline-panel { min-height: 540px; }
     .variant-c .track-row { min-height: 100px; }
     .variant-c .clip { top: 20px; height: 62px; }
     .floating-inspector { position: absolute; top: 82px; right: 28px; z-index: 10; width: 270px; box-shadow: 0 14px 34px rgba(0,0,0,.6); }
-    .asset-dock { position: fixed; z-index: 12; left: 20px; right: 20px; bottom: 66px; display: flex; gap: 8px; align-items: center; padding: 9px; background: rgba(28,35,44,.97); border: 1px solid #526074; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.6); }
-    .asset-dock .asset-card { min-width: 210px; margin: 0; }
+    .asset-dock { position: fixed; z-index: 12; left: 20px; right: 20px; bottom: 66px; padding: 10px; background: rgba(28,35,44,.98); border: 1px solid #526074; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.6); overflow-x: auto; }
+    .dock-heading { display: flex; justify-content: space-between; gap: 14px; margin-bottom: 8px; }
+    .dock-groups { display: flex; align-items: stretch; gap: 9px; min-width: max-content; }
+    .parent-voice-group { min-width: 330px; padding: 8px; background: #232c37; border: 1px solid #435064; border-radius: 9px; }
+    .parent-voice-head { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
+    .parent-voice-head strong { font-size: 12px; }
+    .parent-voice-head small { font-size: 10px; }
+    .subvoice-row { display: flex; gap: 6px; }
+    .drag-asset { display: grid; grid-template-columns: 28px minmax(110px,1fr) auto; align-items: center; gap: 6px; min-width: 150px; padding: 6px; background: #303a47; border: 1px solid #4a596c; border-radius: 7px; cursor: grab; }
+    .drag-asset:active { cursor: grabbing; }
+    .drag-asset strong, .drag-asset small { display: block; }
+    .drag-asset strong { font-size: 11px; }
+    .drag-asset small { font-size: 9px; }
+    .drag-asset button { padding: 3px 7px; }
+    .audio-asset-group { min-width: 500px; }
+    .audio-asset-group .subvoice-row { flex-wrap: wrap; }
     .prototype-switcher { position: fixed; z-index: 100; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: #f3f5f7; color: #1b2129; border: 1px solid #fff; border-radius: 999px; box-shadow: 0 8px 28px rgba(0,0,0,.55); }
     .prototype-switcher button { width: 34px; height: 30px; padding: 0; color: #fff; background: #202731; }
     .prototype-switcher strong { min-width: 210px; text-align: center; font-size: 12px; }
@@ -161,6 +178,7 @@
       };
       let playTimer = null;
       let toastTimer = null;
+      let draggingAsset = null;
 
       function variantFromURL() {
         const key = (new URLSearchParams(location.search).get("variant") || "A").toUpperCase();
@@ -244,6 +262,31 @@
         </div>`).join("");
       }
 
+      function trackControlsHTML() {
+        return `<span class="button-row"><button data-add-track="dialogue">+ Dialogue track</button><button data-add-track="sfx">+ SFX track</button><button data-add-track="music">+ Music track</button></span>`;
+      }
+
+      function groupedAssetDockHTML() {
+        const parents = [
+          { name: "Avery Stone", voices: [
+            { badge: "M", name: "Mara", detail: "Weathered keeper", binding: "Mara / Weathered keeper" },
+            { badge: "C", name: "Old Captain", detail: "Gruff and guarded", binding: "Old Captain / Gruff and guarded" }
+          ]},
+          { name: "Elliot Vale", voices: [
+            { badge: "J", name: "Jonas", detail: "Young cartographer", binding: "Jonas / Young cartographer" },
+            { badge: "N", name: "Narrator", detail: "Measured storyteller", binding: "Narrator / Measured storyteller" }
+          ]}
+        ];
+        const parentGroups = parents.map(parent => `<section class="parent-voice-group"><div class="parent-voice-head"><strong>Actor Voice · ${escapeHTML(parent.name)}</strong><small>Character Voices</small></div><div class="subvoice-row">${parent.voices.map(voice => `<div class="drag-asset" draggable="true" data-drag-type="dialogue" data-drag-label="Type the spoken line…" data-binding="${escapeAttribute(voice.binding)}"><span class="asset-icon">${voice.badge}</span><span><strong>${escapeHTML(voice.name)}</strong><small>${escapeHTML(voice.detail)}</small></span><button data-add="dialogue" data-add-label="Type the spoken line…" data-binding="${escapeAttribute(voice.binding)}" aria-label="Add ${escapeAttribute(voice.name)}">+</button></div>`).join("")}</div></section>`).join("");
+        const audioAssets = [
+          { type: "sfx", badge: "FX", name: "Door slam", detail: "Library SFX · 1.2 s" },
+          { type: "sfx", badge: "FX", name: "Heavy rain", detail: "Library ambience · 14.8 s" },
+          { type: "music", badge: "♪", name: "Tense underscore", detail: "Generated music · 18 s" },
+          { type: "silence", badge: "…", name: "Silence", detail: "Timed gap" }
+        ];
+        return `<div class="dock-heading"><span><strong>Voice & Character Library</strong> <small>Drag a Character Voice or audio asset onto a compatible track.</small></span><small>Actor Voice → Character Voice</small></div><div class="dock-groups">${parentGroups}<section class="parent-voice-group audio-asset-group"><div class="parent-voice-head"><strong>Audio assets</strong><small>SFX · Music · utility</small></div><div class="subvoice-row">${audioAssets.map(asset => `<div class="drag-asset" draggable="true" data-drag-type="${asset.type}" data-drag-label="${escapeAttribute(asset.name)}"><span class="asset-icon">${asset.badge}</span><span><strong>${escapeHTML(asset.name)}</strong><small>${escapeHTML(asset.detail)}</small></span><button data-add="${asset.type}" data-add-label="${escapeAttribute(asset.name)}" aria-label="Add ${escapeAttribute(asset.name)}">+</button></div>`).join("")}</div></section></div>`;
+      }
+
       function rulerHTML(scale) {
         let html = "";
         for (let second = 0; second <= 30; second += 5) {
@@ -256,15 +299,15 @@
         return state.tracks.map((track, trackIndex) => {
           const clips = track.clips.map(clip => `<div class="clip ${state.selected.includes(clip.id) ? "is-selected" : ""} ${clip.status === "stale" ? "is-stale" : ""}" data-clip="${clip.id}" data-type="${clip.type}" style="left:${clip.startMs * scale}px;width:${clip.durationMs * scale}px" title="Drag to move; drag either edge to trim">
               <span class="trim-handle left" data-trim="left"></span>
-              <div class="clip-label">${escapeHTML(clip.label)}</div>
+              ${clip.type === "dialogue" ? `<input class="clip-label" data-inline-label="${clip.id}" value="${escapeAttribute(clip.label)}" aria-label="Edit spoken line">` : `<div class="clip-label">${escapeHTML(clip.label)}</div>`}
               <div class="wave"></div>
               <span class="trim-handle right" data-trim="right"></span>
             </div>`).join("");
           return `<div class="track-row" data-track="${track.id}">
             <div class="track-head"><strong>${escapeHTML(track.name)}</strong><small>${track.kind.toUpperCase()} · ${escapeHTML(track.binding)}</small>
-              <div class="track-actions"><button data-track-up="${track.id}" ${trackIndex === 0 ? "disabled" : ""}>↑</button><button data-track-down="${track.id}" ${trackIndex === state.tracks.length - 1 ? "disabled" : ""}>↓</button><button data-track-mute="${track.id}">${track.muted ? "Unmute" : "Mute"}</button></div>
+              <div class="track-actions"><button data-track-up="${track.id}" ${trackIndex === 0 ? "disabled" : ""}>↑</button><button data-track-down="${track.id}" ${trackIndex === state.tracks.length - 1 ? "disabled" : ""}>↓</button><button data-track-mute="${track.id}">${track.muted ? "Unmute" : "Mute"}</button><button class="danger" data-track-remove="${track.id}" aria-label="Remove ${escapeAttribute(track.name)} track">×</button></div>
             </div>
-            <div class="track-lane" style="min-width:${state.durationMs * scale}px;background-size:${1000 * scale}px 100%">${clips}</div>
+            <div class="track-lane" data-scale="${scale}" style="min-width:${state.durationMs * scale}px;background-size:${1000 * scale}px 100%">${clips}</div>
           </div>`;
         }).join("");
       }
@@ -309,7 +352,7 @@
         return `${headerHTML("A — library, timeline, and inspector visible together")}
           <main class="variant-a">
             <section class="panel"><div class="panel-head"><h2>Voice & audio library</h2></div><div class="panel-body">${assetCardsHTML()}</div></section>
-            <section class="panel timeline-panel"><div class="panel-head"><h2>Timeline</h2><small>Drag clips · drag edges · Shift-click</small></div>${timelineHTML()}</section>
+            <section class="panel timeline-panel"><div class="panel-head"><h2>Timeline</h2>${trackControlsHTML()}</div>${timelineHTML()}</section>
             <aside class="stack"><section class="panel"><div class="panel-head"><h2>Clip inspector</h2></div>${inspectorHTML()}</section>${stateHTML()}</aside>
           </main>`;
       }
@@ -332,7 +375,7 @@
               <aside class="stack"><section class="panel"><div class="panel-head"><h2>Production assets</h2></div><div class="panel-body">${assetCardsHTML(true)}</div></section>${stateHTML()}</aside>
             </div>
             <div class="variant-b-bottom">
-              <section class="panel"><div class="panel-head"><h2>Timing and mix</h2><small>Dialogue selection is shared with the cue table</small></div>${timelineHTML()}</section>
+              <section class="panel"><div class="panel-head"><h2>Timing and mix</h2>${trackControlsHTML()}</div>${timelineHTML()}</section>
               <section class="panel"><div class="panel-head"><h2>Selected cue</h2></div>${inspectorHTML()}</section>
             </div>
           </main>`;
@@ -341,9 +384,9 @@
       function variantCHTML() {
         return `${headerHTML("C — the timeline dominates; tools appear where the work happens")}
           <main class="variant-c">
-            <section class="panel timeline-panel"><div class="panel-head"><h2>Story canvas</h2><small>All tracks at maximum width</small></div>${timelineHTML()}</section>
+            <section class="panel timeline-panel"><div class="panel-head"><h2>Story canvas</h2>${trackControlsHTML()}</div>${timelineHTML()}</section>
             <aside class="panel floating-inspector"><div class="panel-head"><h2>Selection</h2></div>${inspectorHTML()}<div class="panel-body">${stateHTML()}</div></aside>
-            <div class="asset-dock"><strong>Drop-in assets</strong>${assetCardsHTML(true)}</div>
+            <div class="asset-dock">${groupedAssetDockHTML()}</div>
           </main>`;
       }
 
@@ -355,19 +398,32 @@
 
       function snap(value) { return state.snap ? Math.round(value / 250) * 250 : Math.round(value); }
 
-      function addClip(type) {
+      function addClip(type, options = {}) {
         const id = `new-${type}-${Date.now()}`;
         const labels = { dialogue: "New spoken line", sfx: "Door slam", music: "Tense underscore", silence: "Silence" };
         const durationMs = type === "music" ? 7000 : type === "silence" ? 1500 : 2400;
-        const trackKind = type === "silence" ? "dialogue" : type;
-        const candidates = state.tracks.filter(item => item.kind === trackKind);
-        const placements = candidates.map(track => ({ track, startMs: firstOpenStart(track, state.playheadMs, durationMs) }));
+        const requestedTrack = options.trackId ? state.tracks.find(item => item.id === options.trackId) : null;
+        const trackKind = type === "silence" ? (requestedTrack ? requestedTrack.kind : "dialogue") : type;
+        let candidates = options.trackId ? state.tracks.filter(item => item.id === options.trackId && item.kind === trackKind) : state.tracks.filter(item => item.kind === trackKind);
+        if (type === "dialogue" && options.binding) {
+          const compatible = candidates.filter(track => track.binding === options.binding || track.clips.length === 0 || track.binding === "Drop a Character Voice here");
+          if (options.trackId && !compatible.length) {
+            commit(`Drop blocked: this Dialogue Track belongs to ${candidates[0] ? candidates[0].binding : "another Character Voice"}. Add a Dialogue Track for ${options.binding}.`);
+            return;
+          }
+          candidates = compatible;
+        }
+        if (!candidates.length) candidates = [addTrack(trackKind, false, options.binding)];
+        const proposedStart = options.startMs == null ? state.playheadMs : options.startMs;
+        const placements = candidates.map(track => ({ track, startMs: firstOpenStart(track, proposedStart, durationMs) }));
         placements.sort((left, right) => left.startMs - right.startMs);
-        const placement = placements[0] || { track: state.tracks[0], startMs: state.playheadMs };
+        const placement = placements[0];
+        if (type === "dialogue" && options.binding && (placement.track.clips.length === 0 || placement.track.binding === "Drop a Character Voice here")) placement.track.binding = options.binding;
         const start = Math.max(0, Math.min(state.durationMs - durationMs, placement.startMs));
-        placement.track.clips.push({ id, type, label: labels[type], startMs: start, durationMs, status: type === "dialogue" ? "stale" : "ready" });
+        const label = options.label || labels[type];
+        placement.track.clips.push({ id, type, label, startMs: start, durationMs, status: type === "dialogue" ? "stale" : "ready" });
         state.selected = [id];
-        commit(`${labels[type]} added at ${formatTime(start)}.`);
+        commit(`${label} added to ${placement.track.name} at ${formatTime(start)}.`);
       }
 
       function firstOpenStart(track, proposedStart, durationMs) {
@@ -378,6 +434,25 @@
           if (overlaps) candidate = snap(clip.startMs + clip.durationMs + 250);
         });
         return candidate;
+      }
+
+      function addTrack(kind, announce = true, binding = "") {
+        const count = state.tracks.filter(track => track.kind === kind).length + 1;
+        const names = { dialogue: `Dialogue ${count}`, sfx: `SFX ${count}`, music: `Music ${count}` };
+        const bindings = { dialogue: binding || "Drop a Character Voice here", sfx: "Reusable SFX", music: "Music and ambience" };
+        const track = { id: `track-${kind}-${Date.now()}`, kind, name: names[kind], binding: bindings[kind], muted: false, clips: [] };
+        state.tracks.push(track);
+        if (announce) commit(`${track.name} added.`);
+        return track;
+      }
+
+      function removeTrack(id) {
+        const track = state.tracks.find(item => item.id === id);
+        if (!track) return;
+        const removedClipIds = track.clips.map(clip => clip.id);
+        state.tracks = state.tracks.filter(item => item.id !== id);
+        state.selected = state.selected.filter(clipId => !removedClipIds.includes(clipId));
+        commit(`${track.name} removed with ${track.clips.length} clip${track.clips.length === 1 ? "" : "s"}.`);
       }
 
       function deleteSelected() {
@@ -400,6 +475,7 @@
       function wirePointerEditing() {
         document.querySelectorAll(".clip").forEach(element => {
           element.addEventListener("pointerdown", event => {
+            if (event.target.matches("input")) return;
             const entry = allClips().find(item => item.clip.id === element.dataset.clip);
             if (!entry) return;
             const trimSide = event.target.dataset.trim || "move";
@@ -443,8 +519,45 @@
         });
       }
 
+      function wireDragAndDrop() {
+        document.querySelectorAll("[draggable=true][data-drag-type]").forEach(asset => asset.addEventListener("dragstart", event => {
+          draggingAsset = { type: asset.dataset.dragType, label: asset.dataset.dragLabel, binding: asset.dataset.binding || "" };
+          event.dataTransfer.effectAllowed = "copy";
+          event.dataTransfer.setData("application/json", JSON.stringify(draggingAsset));
+        }));
+        document.querySelectorAll("[draggable=true][data-drag-type]").forEach(asset => asset.addEventListener("dragend", () => {
+          draggingAsset = null;
+          document.querySelectorAll(".track-lane").forEach(lane => lane.classList.remove("is-drop-target"));
+        }));
+        document.querySelectorAll(".track-lane").forEach(lane => {
+          const clear = () => lane.classList.remove("is-drop-target");
+          lane.addEventListener("dragover", event => {
+            const asset = draggingAsset;
+            if (!asset) return;
+            const track = state.tracks.find(item => item.id === lane.closest("[data-track]").dataset.track);
+            const compatible = asset.type === "silence" || asset.type === track.kind;
+            if (!compatible) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+            lane.classList.add("is-drop-target");
+          });
+          lane.addEventListener("dragleave", clear);
+          lane.addEventListener("drop", event => {
+            event.preventDefault();
+            clear();
+            let asset = draggingAsset;
+            if (!asset) { try { asset = JSON.parse(event.dataTransfer.getData("application/json")); } catch (_) { return; } }
+            const trackId = lane.closest("[data-track]").dataset.track;
+            const scale = Number(lane.dataset.scale);
+            const startMs = snap((event.clientX - lane.getBoundingClientRect().left) / scale);
+            addClip(asset.type, { trackId, startMs, label: asset.label, binding: asset.binding });
+          });
+        });
+      }
+
       function wireActions() {
-        document.querySelectorAll("[data-add]").forEach(button => button.addEventListener("click", () => addClip(button.dataset.add)));
+        document.querySelectorAll("[data-add]").forEach(button => button.addEventListener("click", () => addClip(button.dataset.add, { label: button.dataset.addLabel, binding: button.dataset.binding || "" })));
+        document.querySelectorAll("[data-add-track]").forEach(button => button.addEventListener("click", () => addTrack(button.dataset.addTrack)));
         document.querySelectorAll("[data-select]").forEach(button => button.addEventListener("click", event => {
           state.selected = event.shiftKey && state.selected.includes(button.dataset.select) ? state.selected.filter(id => id !== button.dataset.select) : event.shiftKey ? [...state.selected, button.dataset.select] : [button.dataset.select];
           commit("Cue selection changed.");
@@ -454,6 +567,7 @@
         document.querySelectorAll("[data-track-mute]").forEach(button => button.addEventListener("click", () => {
           const track = state.tracks.find(item => item.id === button.dataset.trackMute); track.muted = !track.muted; commit(`${track.name} ${track.muted ? "muted" : "unmuted"}.`);
         }));
+        document.querySelectorAll("[data-track-remove]").forEach(button => button.addEventListener("click", () => removeTrack(button.dataset.trackRemove)));
         document.querySelectorAll("[data-action]").forEach(control => control.addEventListener(control.matches("input[type=range]") ? "input" : "click", () => {
           const action = control.dataset.action;
           if (action === "play") togglePlay();
@@ -468,7 +582,19 @@
         document.querySelectorAll("[data-field=label]").forEach(input => input.addEventListener("change", () => {
           const entry = primarySelection(); if (!entry) return; entry.clip.label = input.value; if (entry.clip.type === "dialogue") entry.clip.status = "stale"; commit("Clip text changed; dialogue audio is now stale.");
         }));
+        document.querySelectorAll("[data-inline-label]").forEach(input => {
+          input.addEventListener("pointerdown", event => event.stopPropagation());
+          input.addEventListener("change", () => {
+            const entry = allClips().find(item => item.clip.id === input.dataset.inlineLabel);
+            if (!entry) return;
+            entry.clip.label = input.value;
+            entry.clip.status = "stale";
+            state.selected = [entry.clip.id];
+            commit("Spoken line edited on the clip; its generated audio is now stale.");
+          });
+        });
         wirePointerEditing();
+        wireDragAndDrop();
       }
 
       function togglePlay() {
