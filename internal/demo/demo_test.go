@@ -230,17 +230,22 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 				"storyBuilderSaveStatus",
 				"storyBuilderSaveButton",
 				"storyBuilderDeleteButton",
+				"storyBuilderAddDialogue",
+				"storyBuilderAddSFX",
+				"storyBuilderAddMusic",
+				"storyBuilderUndo",
+				"storyBuilderTracks",
 			},
 		},
 		{
 			path:        "/story-builder.js",
 			contentType: "javascript",
-			markers:     []string{"/v1/story-builder-projects", "scheduleAutosave", "saveProject"},
+			markers:     []string{"/v1/story-builder-projects", "scheduleAutosave", "saveProject", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS"},
 		},
 		{
 			path:        "/story-builder.css",
 			contentType: "text/css",
-			markers:     []string{".project-list", ".save-status"},
+			markers:     []string{".project-list", ".save-status", ".story-canvas", ".track-row", ".silence-clip", ".silence-block"},
 		},
 	}
 

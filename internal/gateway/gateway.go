@@ -3467,8 +3467,9 @@ type storyBuilderProjectCreateRequest struct {
 }
 
 type storyBuilderProjectUpdateRequest struct {
-	Name     string `json:"name"`
-	Revision int    `json:"revision"`
+	Name     string                `json:"name"`
+	Revision int                   `json:"revision"`
+	Tracks   *[]storybuilder.Track `json:"tracks"`
 }
 
 func (r *router) handleStoryBuilderProjects(w http.ResponseWriter, req *http.Request) {
@@ -3530,7 +3531,11 @@ func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Requ
 			writeJSONError(w, http.StatusBadRequest, "revision must be positive")
 			return
 		}
-		project, err := r.storyBuilderProjects.Update(id, body.Revision, body.Name)
+		if body.Tracks == nil {
+			writeJSONError(w, http.StatusBadRequest, "tracks is required")
+			return
+		}
+		project, err := r.storyBuilderProjects.Update(id, storybuilder.ProjectUpdate{Name: body.Name, Revision: body.Revision, Tracks: *body.Tracks})
 		if err != nil {
 			writeStoryBuilderProjectError(w, err)
 			return

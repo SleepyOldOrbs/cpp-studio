@@ -9,6 +9,86 @@ import (
 	"time"
 )
 
+func TestUserCanArrangeTypedTracksAndSilenceClips(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(root)
+	created, err := store.Create("The Lantern at Crow Point")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	tracks := []Track{
+		{ID: "track_mara", Name: "Mara", Type: TrackTypeDialogue, Order: 0},
+		{ID: "track_foley", Name: "Foley", Type: TrackTypeSFX, Order: 1, Muted: true, Clips: []TimelineClip{
+			{ID: "clip_pause", Type: ClipTypeSilence, Label: "Hold for thunder", StartMS: 1250, DurationMS: 800},
+		}},
+		{ID: "track_score", Name: "Score", Type: TrackTypeMusic, Order: 2},
+	}
+	saved, err := store.Update(created.ID, ProjectUpdate{Name: created.Name, Revision: created.Revision, Tracks: tracks})
+	if err != nil {
+		t.Fatalf("arrange tracks: %v", err)
+	}
+	if len(saved.Tracks) != 3 || saved.Tracks[1].ID != "track_foley" || !saved.Tracks[1].Muted ||
+		len(saved.Tracks[1].Clips) != 1 || saved.Tracks[1].Clips[0].DurationMS != 800 {
+		t.Fatalf("saved timeline drifted: %+v", saved.Tracks)
+	}
+
+	reopened, ok, err := NewStore(root).Get(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("reopen project: ok=%v err=%v", ok, err)
+	}
+	if len(reopened.Tracks) != 3 || reopened.Tracks[0].Type != TrackTypeDialogue || reopened.Tracks[2].Type != TrackTypeMusic {
+		t.Fatalf("reopened tracks drifted: %+v", reopened.Tracks)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, created.ID))
+	if err != nil {
+		t.Fatalf("list project files: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != manifestName {
+		t.Fatalf("silence clip wrote media bytes: %+v", entries)
+	}
+}
+
+func TestInvalidTimelineUpdateIsRejectedWithoutCorruptingProject(t *testing.T) {
+	tests := []struct {
+		name   string
+		tracks []Track
+	}{
+		{name: "unknown track type", tracks: []Track{{ID: "track_1", Name: "Odd", Type: "video", Order: 0}}},
+		{name: "duplicate track ids", tracks: []Track{
+			{ID: "same", Name: "One", Type: TrackTypeSFX, Order: 0},
+			{ID: "same", Name: "Two", Type: TrackTypeMusic, Order: 1},
+		}},
+		{name: "negative start", tracks: []Track{{ID: "track_1", Name: "Foley", Type: TrackTypeSFX, Order: 0, Clips: []TimelineClip{
+			{ID: "clip_1", Type: ClipTypeSilence, Label: "Pause", StartMS: -1, DurationMS: 100},
+		}}}},
+		{name: "zero duration", tracks: []Track{{ID: "track_1", Name: "Score", Type: TrackTypeMusic, Order: 0, Clips: []TimelineClip{
+			{ID: "clip_1", Type: ClipTypeSilence, Label: "Pause", StartMS: 0, DurationMS: 0},
+		}}}},
+		{name: "dialogue without character voice", tracks: []Track{{ID: "track_1", Name: "Mara", Type: TrackTypeDialogue, Order: 0, Clips: []TimelineClip{
+			{ID: "clip_1", Type: ClipTypeDialogue, Label: "Hello", StartMS: 0, DurationMS: 100},
+		}}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			store := NewStore(root)
+			created, err := store.Create("Safe project")
+			if err != nil {
+				t.Fatalf("create project: %v", err)
+			}
+			if _, err := store.Update(created.ID, ProjectUpdate{Name: created.Name, Revision: created.Revision, Tracks: tt.tracks}); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("update error = %v, want ErrInvalid", err)
+			}
+			loaded, ok, err := NewStore(root).Get(created.ID)
+			if err != nil || !ok || loaded.Revision != created.Revision || len(loaded.Tracks) != 0 {
+				t.Fatalf("invalid update changed durable project: %+v ok=%v err=%v", loaded, ok, err)
+			}
+		})
+	}
+}
+
 func TestUserCanCreateRenameReloadAndDeleteProject(t *testing.T) {
 	root := t.TempDir()
 	store := NewStore(root)
@@ -32,7 +112,7 @@ func TestUserCanCreateRenameReloadAndDeleteProject(t *testing.T) {
 		t.Fatalf("unexpected project list: %+v", projects)
 	}
 
-	renamed, err := store.Update(created.ID, created.Revision, "Lantern — final edit")
+	renamed, err := store.Update(created.ID, ProjectUpdate{Name: "Lantern — final edit", Revision: created.Revision})
 	if err != nil {
 		t.Fatalf("rename project: %v", err)
 	}
@@ -40,7 +120,7 @@ func TestUserCanCreateRenameReloadAndDeleteProject(t *testing.T) {
 		t.Fatalf("unexpected renamed project: %+v", renamed)
 	}
 
-	if _, err := store.Update(created.ID, created.Revision, "stale browser overwrite"); !errors.Is(err, ErrConflict) {
+	if _, err := store.Update(created.ID, ProjectUpdate{Name: "stale browser overwrite", Revision: created.Revision}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale update error = %v, want ErrConflict", err)
 	}
 
@@ -97,12 +177,12 @@ func TestConcurrentSavesOfOneRevisionAllowOneWinner(t *testing.T) {
 	})
 	results := make(chan error, 2)
 	go func() {
-		_, err := store.Update(created.ID, created.Revision, "first editor")
+		_, err := store.Update(created.ID, ProjectUpdate{Name: "first editor", Revision: created.Revision})
 		results <- err
 	}()
 	<-enteredWrite
 	go func() {
-		_, err := store.Update(created.ID, created.Revision, "second editor")
+		_, err := store.Update(created.ID, ProjectUpdate{Name: "second editor", Revision: created.Revision})
 		results <- err
 	}()
 
@@ -149,7 +229,7 @@ func TestFailedUpdateLeavesLastValidProjectReadable(t *testing.T) {
 			return writeFileAtomic(path, data)
 		},
 	})
-	if _, err := failing.Update(created.ID, created.Revision, "unsafe version"); err == nil {
+	if _, err := failing.Update(created.ID, ProjectUpdate{Name: "unsafe version", Revision: created.Revision}); err == nil {
 		t.Fatal("expected injected update failure")
 	}
 
@@ -161,7 +241,7 @@ func TestFailedUpdateLeavesLastValidProjectReadable(t *testing.T) {
 		t.Fatalf("failed update changed durable project: %+v", loaded)
 	}
 
-	retried, err := failing.Update(created.ID, created.Revision, "retry version")
+	retried, err := failing.Update(created.ID, ProjectUpdate{Name: "retry version", Revision: created.Revision})
 	if err != nil {
 		t.Fatalf("retry update: %v", err)
 	}
@@ -189,7 +269,7 @@ func TestProjectValidationAndTraversalAreRejected(t *testing.T) {
 		if _, ok, err := store.Get(id); err != nil || ok {
 			t.Fatalf("Get(%q) = ok %v, err %v", id, ok, err)
 		}
-		if _, err := store.Update(id, 1, "name"); !errors.Is(err, ErrNotFound) {
+		if _, err := store.Update(id, ProjectUpdate{Name: "name", Revision: 1}); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("Update(%q) error = %v, want ErrNotFound", id, err)
 		}
 		if err := store.Delete(id); !errors.Is(err, ErrNotFound) {

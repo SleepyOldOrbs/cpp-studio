@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">cpp-studio</p>
       <h1>Story Builder</h1>
-      <p class="subtitle">Create and reopen productions before building their timelines.</p>
+      <p class="subtitle">Arrange Dialogue, SFX, and Music on a durable story timeline.</p>
     </div>
     <a class="studio-link" href="/demo/">Return to studio</a>
   </header>
@@ -44,11 +44,22 @@
           <button id="storyBuilderSaveButton" type="button">Save Project</button>
         </div>
       </div>
-      <div class="blank-canvas">
-        <p class="eyebrow">Story canvas</p>
-        <h2>This production is ready for its first track.</h2>
-        <p>Project identity and saving are active. Timeline editing arrives in the next Story Builder slice.</p>
-      </div>
+      <section class="story-canvas" aria-labelledby="storyBuilderCanvasTitle">
+        <div class="canvas-heading">
+          <div>
+            <p class="eyebrow">Story canvas</p>
+            <h2 id="storyBuilderCanvasTitle">Timeline tracks</h2>
+          </div>
+          <div class="track-actions" aria-label="Add track">
+            <button id="storyBuilderAddDialogue" type="button">+ Dialogue track</button>
+            <button id="storyBuilderAddSFX" type="button">+ SFX track</button>
+            <button id="storyBuilderAddMusic" type="button">+ Music track</button>
+            <button id="storyBuilderUndo" class="quiet-button" type="button" disabled>Undo remove</button>
+          </div>
+        </div>
+        <div class="timeline-ruler" aria-hidden="true"><span>0s</span><span>5s</span><span>10s</span><span>15s</span><span>20s</span><span>25s</span><span>30s</span></div>
+        <div id="storyBuilderTracks" class="track-list" aria-live="polite"></div>
+      </section>
       <div class="danger-zone">
         <div>
           <strong>Delete this project</strong>

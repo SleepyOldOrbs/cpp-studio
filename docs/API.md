@@ -176,15 +176,25 @@ Gateway restart.
   `{"name":"Production name"}`. Returns the project with `201`.
 - `GET /v1/story-builder-projects/{id}` — read one complete project manifest.
 - `PUT /v1/story-builder-projects/{id}` — replace the editable whole-project
-  state for this slice with `{"name":"New name","revision":1}`. A successful
-  save increments `revision`; a stale revision returns `409`.
+  state with `{"name":"New name","revision":1,"tracks":[...]}`. A successful
+  save increments `revision`; `tracks` is required so an older rename-only
+  client cannot erase a timeline, and a stale revision returns `409`.
 - `DELETE /v1/story-builder-projects/{id}` — delete only that project and
   return `204`.
 
-Names are trimmed, required, and limited to 120 bytes. Request objects reject
-unknown fields. Invalid input returns `400`, missing projects return `404`, and
-storage failures return `500`. The browser autosaves name edits and exposes a
-Save Project button that forces the same atomic write immediately.
+Each track has a stable `id`, editable `name`, contiguous `order`, `type`
+(`dialogue`, `sfx`, or `music`), `muted` state, and `clips`. Dialogue tracks may
+be empty and unbound; a track containing a `dialogue` clip requires a
+`character_voice_id`. This slice's browser authors `silence` clips with stable
+ids, labels, and integer `start_ms` / `duration_ms` timing. Silence is manifest
+metadata and never creates audio bytes.
+
+Names are trimmed, required, and limited to 120 Unicode characters. Request
+objects reject unknown fields. The whole project is rejected for unknown track
+or clip types, duplicate ids, non-contiguous order, negative start times, or
+nonpositive durations. Invalid input returns `400`, missing projects return
+`404`, and storage failures return `500`. The browser autosaves project, track,
+and silence changes; Save Project forces the same atomic write immediately.
 
 ## Audiobooks
 
