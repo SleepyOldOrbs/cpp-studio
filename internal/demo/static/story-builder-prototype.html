@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Story Builder timeline prototype</title>
+  <style>
+    /* PROTOTYPE: Three Story Builder layouts, switchable via ?variant=, on a throwaway standalone route. */
+    :root {
+      color-scheme: dark;
+      --bg: #171c23;
+      --panel: #232a34;
+      --well: #11161c;
+      --line: #36404d;
+      --ink: #edf1f6;
+      --muted: #9aa5b3;
+      --accent: #f0a64b;
+      --dialogue: #4f8edc;
+      --sfx: #58b98b;
+      --music: #af78d0;
+      --silence: #717b87;
+      --danger: #df6b5d;
+      --ready: #64c985;
+      --stale: #e7b95b;
+      font-family: Bahnschrift, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 960px; min-height: 100vh; background: var(--bg); color: var(--ink); }
+    button, input { font: inherit; }
+    button { color: var(--ink); background: #303947; border: 1px solid #465365; border-radius: 7px; padding: 7px 10px; cursor: pointer; }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); color: #201607; border-color: var(--accent); font-weight: 700; }
+    button.danger { color: #ffc5bd; border-color: #7b453f; }
+    input { width: 100%; color: var(--ink); background: var(--well); border: 1px solid var(--line); border-radius: 5px; padding: 7px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: 20px; margin-bottom: 3px; }
+    h2 { font-size: 15px; letter-spacing: .07em; text-transform: uppercase; }
+    h3 { font-size: 14px; }
+    small, .muted { color: var(--muted); }
+    .prototype-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 16px; background: #402d18; border-bottom: 1px solid #76542d; font-size: 12px; }
+    .prototype-banner strong { color: #ffd39a; letter-spacing: .08em; }
+    .app-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 18px; background: #1d232c; border-bottom: 1px solid var(--line); }
+    .transport { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .transport .time { min-width: 75px; font-family: "Cascadia Mono", Consolas, monospace; color: var(--accent); }
+    .transport label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+    .transport input[type="range"] { width: 110px; padding: 0; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .panel-head h2, .panel-head h3 { margin: 0; }
+    .panel-body { padding: 11px; }
+    .asset-card { display: grid; grid-template-columns: 32px 1fr auto; align-items: center; gap: 8px; padding: 8px; margin-bottom: 7px; background: #29323e; border: 1px solid #3c4858; border-radius: 7px; }
+    .asset-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #18202a; font-size: 13px; }
+    .asset-card strong { display: block; font-size: 13px; }
+    .asset-card small { display: block; font-size: 11px; }
+    .stack { display: grid; gap: 8px; }
+    .button-row { display: flex; gap: 7px; flex-wrap: wrap; }
+    .timeline-shell { position: relative; background: var(--well); overflow: hidden; min-width: 0; }
+    .timeline-scroll { overflow-x: auto; overflow-y: visible; padding-bottom: 10px; }
+    .timeline-canvas { position: relative; min-width: 100%; }
+    .ruler { position: sticky; top: 0; z-index: 5; height: 30px; margin-left: 150px; background: #18202a; border-bottom: 1px solid var(--line); }
+    .tick { position: absolute; bottom: 0; height: 100%; border-left: 1px solid #4b5868; padding: 4px 0 0 5px; color: var(--muted); font: 10px "Cascadia Mono", monospace; }
+    .track-row { display: grid; grid-template-columns: 150px 1fr; min-height: 78px; border-bottom: 1px solid #303a47; }
+    .track-head { position: sticky; left: 0; z-index: 4; padding: 8px; background: #202832; border-right: 1px solid var(--line); }
+    .track-head strong { display: block; font-size: 12px; }
+    .track-head small { font-size: 10px; }
+    .track-actions { display: flex; gap: 3px; margin-top: 6px; }
+    .track-actions button { padding: 2px 6px; font-size: 10px; }
+    .track-lane { position: relative; background-image: linear-gradient(to right, transparent calc(100% - 1px), rgba(255,255,255,.045) 100%); background-repeat: repeat-x; }
+    .clip { position: absolute; top: 12px; height: 53px; min-width: 32px; border-radius: 7px; border: 2px solid rgba(255,255,255,.15); box-shadow: 0 4px 10px rgba(0,0,0,.3); overflow: hidden; user-select: none; touch-action: none; cursor: grab; }
+    .clip[data-type="dialogue"] { background: #356cae; }
+    .clip[data-type="sfx"] { background: #347e61; }
+    .clip[data-type="music"] { background: #784f91; }
+    .clip[data-type="silence"] { background: #4b545f; }
+    .clip.is-selected { border-color: #fff; box-shadow: 0 0 0 2px var(--accent), 0 7px 18px rgba(0,0,0,.5); z-index: 3; }
+    .clip.is-stale::after { content: "STALE"; position: absolute; top: 3px; right: 5px; color: #241b0a; background: var(--stale); border-radius: 4px; padding: 1px 4px; font-size: 8px; font-weight: 800; }
+    .clip-label { padding: 6px 10px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 700; }
+    .wave { height: 17px; margin: 4px 10px; opacity: .72; background: repeating-linear-gradient(90deg, rgba(255,255,255,.8) 0 1px, transparent 1px 4px); clip-path: polygon(0 45%,5% 20%,10% 65%,15% 30%,20% 80%,25% 10%,30% 70%,35% 25%,40% 60%,45% 5%,50% 70%,55% 30%,60% 85%,65% 15%,70% 55%,75% 25%,80% 75%,85% 35%,90% 60%,95% 20%,100% 45%,100% 55%,0 55%); }
+    .trim-handle { position: absolute; top: 0; bottom: 0; width: 8px; background: rgba(255,255,255,.24); cursor: ew-resize; }
+    .trim-handle.left { left: 0; }
+    .trim-handle.right { right: 0; }
+    .playhead { position: absolute; z-index: 6; top: 0; bottom: 0; width: 2px; margin-left: 150px; background: #ff735d; pointer-events: none; }
+    .playhead::before { content: ""; position: absolute; top: 0; left: -5px; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid #ff735d; }
+    .inspector label { display: grid; gap: 4px; margin-bottom: 10px; font-size: 11px; color: var(--muted); }
+    .status-chip { display: inline-block; padding: 3px 7px; border-radius: 999px; font-size: 10px; text-transform: uppercase; font-weight: 800; }
+    .status-chip.ready { background: rgba(100,201,133,.16); color: #8ee6aa; }
+    .status-chip.stale { background: rgba(231,185,91,.16); color: #f1c978; }
+    .state-panel pre { max-height: 190px; margin: 0; overflow: auto; padding: 9px; background: #0e1217; border-radius: 6px; color: #a7c4df; font: 10px/1.4 "Cascadia Mono", Consolas, monospace; }
+    .variant-a { display: grid; grid-template-columns: 245px minmax(560px, 1fr) 260px; gap: 10px; padding: 10px 10px 80px; }
+    .variant-a .timeline-panel { min-width: 0; }
+    .variant-b { padding: 10px 10px 80px; }
+    .variant-b-top { display: grid; grid-template-columns: minmax(430px, 1fr) 280px; gap: 10px; margin-bottom: 10px; }
+    .cue-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .cue-table th, .cue-table td { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; }
+    .cue-table tr.is-selected { background: rgba(240,166,75,.12); }
+    .cue-table button { padding: 4px 7px; }
+    .variant-b-bottom { display: grid; grid-template-columns: minmax(600px, 1fr) 280px; gap: 10px; }
+    .variant-c { position: relative; padding: 10px 10px 180px; min-height: calc(100vh - 100px); }
+    .variant-c .timeline-panel { min-height: 540px; }
+    .variant-c .track-row { min-height: 100px; }
+    .variant-c .clip { top: 20px; height: 62px; }
+    .floating-inspector { position: absolute; top: 82px; right: 28px; z-index: 10; width: 270px; box-shadow: 0 14px 34px rgba(0,0,0,.6); }
+    .asset-dock { position: fixed; z-index: 12; left: 20px; right: 20px; bottom: 66px; display: flex; gap: 8px; align-items: center; padding: 9px; background: rgba(28,35,44,.97); border: 1px solid #526074; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.6); }
+    .asset-dock .asset-card { min-width: 210px; margin: 0; }
+    .prototype-switcher { position: fixed; z-index: 100; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: #f3f5f7; color: #1b2129; border: 1px solid #fff; border-radius: 999px; box-shadow: 0 8px 28px rgba(0,0,0,.55); }
+    .prototype-switcher button { width: 34px; height: 30px; padding: 0; color: #fff; background: #202731; }
+    .prototype-switcher strong { min-width: 210px; text-align: center; font-size: 12px; }
+    .toast { position: fixed; z-index: 120; top: 54px; right: 14px; padding: 9px 12px; background: #162d22; border: 1px solid #438061; border-radius: 7px; opacity: 0; transform: translateY(-8px); transition: .16s; pointer-events: none; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+  </style>
+</head>
+<body>
+  <div class="prototype-banner">
+    <strong>THROWAWAY PROTOTYPE — IN-MEMORY STATE ONLY</strong>
+    <span>Question: which browser layout makes timeline editing understandable?</span>
+  </div>
+  <div id="app"></div>
+  <div class="prototype-switcher" aria-label="Prototype variant switcher">
+    <button id="variantPrevious" aria-label="Previous variant">←</button>
+    <strong id="variantLabel"></strong>
+    <button id="variantNext" aria-label="Next variant">→</button>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const variants = [
+        { key: "A", name: "Classic three-pane DAW" },
+        { key: "B", name: "Script-first production desk" },
+        { key: "C", name: "Timeline canvas with asset dock" }
+      ];
+      const state = {
+        project: "The Lantern at Crow Point",
+        durationMs: 30000,
+        playheadMs: 4200,
+        playing: false,
+        snap: true,
+        zoom: 1,
+        selected: ["line-2"],
+        tracks: [
+          { id: "track-mara", kind: "dialogue", name: "Mara", binding: "Mara / Weathered keeper", muted: false, clips: [
+            { id: "line-1", type: "dialogue", label: "Keep the lamp low until the fog breaks.", startMs: 700, durationMs: 3300, status: "ready" },
+            { id: "line-2", type: "dialogue", label: "Someone is walking the old sea wall.", startMs: 5900, durationMs: 3900, status: "stale" }
+          ]},
+          { id: "track-jonas", kind: "dialogue", name: "Jonas", binding: "Jonas / Young cartographer", muted: false, clips: [
+            { id: "line-3", type: "dialogue", label: "That path vanished twenty years ago.", startMs: 10100, durationMs: 3600, status: "ready" }
+          ]},
+          { id: "track-ambience", kind: "sfx", name: "Weather ambience", binding: "Reusable SFX", muted: false, clips: [
+            { id: "sfx-1", type: "sfx", label: "Heavy rain on glass", startMs: 0, durationMs: 14800, status: "ready" }
+          ]},
+          { id: "track-foley", kind: "sfx", name: "Foley", binding: "Reusable SFX", muted: false, clips: [
+            { id: "sfx-2", type: "sfx", label: "Bootsteps on stone", startMs: 5400, durationMs: 3100, status: "ready" }
+          ]},
+          { id: "track-music", kind: "music", name: "Score", binding: "Music and ambience", muted: false, clips: [
+            { id: "music-1", type: "music", label: "Low strings — suspense bed", startMs: 0, durationMs: 18000, status: "ready" }
+          ]}
+        ],
+        event: "Prototype loaded. Select, Shift-select, drag, or trim a clip."
+      };
+      let playTimer = null;
+      let toastTimer = null;
+
+      function variantFromURL() {
+        const key = (new URLSearchParams(location.search).get("variant") || "A").toUpperCase();
+        return variants.some(item => item.key === key) ? key : "A";
+      }
+
+      function setVariant(key) {
+        const url = new URL(location.href);
+        url.searchParams.set("variant", key);
+        history.replaceState({}, "", url);
+        render();
+      }
+
+      function cycleVariant(direction) {
+        const index = variants.findIndex(item => item.key === variantFromURL());
+        setVariant(variants[(index + direction + variants.length) % variants.length].key);
+      }
+
+      function allClips() {
+        return state.tracks.flatMap(track => track.clips.map(clip => ({ track, clip })));
+      }
+
+      function selectedEntries() {
+        return allClips().filter(entry => state.selected.includes(entry.clip.id));
+      }
+
+      function primarySelection() {
+        return selectedEntries()[0] || null;
+      }
+
+      function formatTime(ms) {
+        const seconds = Math.max(0, ms) / 1000;
+        return `00:${seconds.toFixed(1).padStart(4, "0")}`;
+      }
+
+      function commit(message) {
+        state.event = message;
+        render();
+        showToast(message);
+      }
+
+      function showToast(message) {
+        const toast = document.getElementById("toast");
+        toast.textContent = message;
+        toast.classList.add("show");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toast.classList.remove("show"), 1600);
+      }
+
+      function transportHTML() {
+        return `<div class="transport">
+          <button class="primary" data-action="play">${state.playing ? "Pause" : "Play"}</button>
+          <button data-action="audition">Audition selected</button>
+          <span class="time">${formatTime(state.playheadMs)}</span>
+          <label><input type="checkbox" data-action="snap" ${state.snap ? "checked" : ""}> Snap 250 ms</label>
+          <label>Zoom <input type="range" min="0.6" max="1.8" step="0.2" value="${state.zoom}" data-action="zoom"></label>
+          <button data-action="build-stale">Build stale</button>
+          <button data-action="save">Save project ✓</button>
+        </div>`;
+      }
+
+      function headerHTML(subtitle) {
+        return `<header class="app-header">
+          <div><h1>${state.project}</h1><small>${subtitle}</small></div>
+          ${transportHTML()}
+        </header>`;
+      }
+
+      function assetCardsHTML(compact = false) {
+        const assets = [
+          ["dialogue", "M", "Mara", "Weathered keeper"],
+          ["dialogue", "J", "Jonas", "Young cartographer"],
+          ["sfx", "FX", "Door slam", "Library SFX · 1.2 s"],
+          ["music", "♪", "Tense underscore", "Generated music · 18 s"],
+          ["silence", "…", "Silence", "Insert a timed gap"]
+        ];
+        return assets.map(asset => `<div class="asset-card">
+          <span class="asset-icon">${asset[1]}</span>
+          <span><strong>${asset[2]}</strong><small>${asset[3]}</small></span>
+          <button data-add="${asset[0]}" aria-label="Add ${asset[2]}">${compact ? "+" : "Add"}</button>
+        </div>`).join("");
+      }
+
+      function rulerHTML(scale) {
+        let html = "";
+        for (let second = 0; second <= 30; second += 5) {
+          html += `<span class="tick" style="left:${second * 1000 * scale}px">${second}s</span>`;
+        }
+        return html;
+      }
+
+      function trackRowsHTML(scale) {
+        return state.tracks.map((track, trackIndex) => {
+          const clips = track.clips.map(clip => `<div class="clip ${state.selected.includes(clip.id) ? "is-selected" : ""} ${clip.status === "stale" ? "is-stale" : ""}" data-clip="${clip.id}" data-type="${clip.type}" style="left:${clip.startMs * scale}px;width:${clip.durationMs * scale}px" title="Drag to move; drag either edge to trim">
+              <span class="trim-handle left" data-trim="left"></span>
+              <div class="clip-label">${escapeHTML(clip.label)}</div>
+              <div class="wave"></div>
+              <span class="trim-handle right" data-trim="right"></span>
+            </div>`).join("");
+          return `<div class="track-row" data-track="${track.id}">
+            <div class="track-head"><strong>${escapeHTML(track.name)}</strong><small>${track.kind.toUpperCase()} · ${escapeHTML(track.binding)}</small>
+              <div class="track-actions"><button data-track-up="${track.id}" ${trackIndex === 0 ? "disabled" : ""}>↑</button><button data-track-down="${track.id}" ${trackIndex === state.tracks.length - 1 ? "disabled" : ""}>↓</button><button data-track-mute="${track.id}">${track.muted ? "Unmute" : "Mute"}</button></div>
+            </div>
+            <div class="track-lane" style="min-width:${state.durationMs * scale}px;background-size:${1000 * scale}px 100%">${clips}</div>
+          </div>`;
+        }).join("");
+      }
+
+      function timelineHTML() {
+        const scale = .08 * state.zoom;
+        return `<div class="timeline-shell"><div class="timeline-scroll"><div class="timeline-canvas" style="width:${state.durationMs * scale + 150}px">
+          <div class="ruler">${rulerHTML(scale)}</div>
+          ${trackRowsHTML(scale)}
+          <div class="playhead" style="left:${state.playheadMs * scale}px"></div>
+        </div></div></div>`;
+      }
+
+      function inspectorHTML() {
+        const entry = primarySelection();
+        if (!entry) return `<div class="panel-body inspector"><p class="muted">Select a clip to edit it. Shift-click selects more than one.</p></div>`;
+        const clip = entry.clip;
+        return `<div class="panel-body inspector">
+          <label>Clip text or label<input data-field="label" value="${escapeAttribute(clip.label)}"></label>
+          <label>Track<input value="${escapeAttribute(entry.track.name)}" readonly></label>
+          <label>Starts at<input value="${formatTime(clip.startMs)}" readonly></label>
+          <label>Visible duration<input value="${(clip.durationMs / 1000).toFixed(1)} seconds" readonly></label>
+          <p><span class="status-chip ${clip.status}">${clip.status}</span> ${state.selected.length > 1 ? `<small>${state.selected.length} clips selected</small>` : ""}</p>
+          <div class="button-row"><button data-action="toggle-stale">${clip.status === "stale" ? "Mark ready" : "Mark stale"}</button><button data-action="audition">Audition</button><button class="danger" data-action="delete">Delete</button></div>
+        </div>`;
+      }
+
+      function stateHTML() {
+        const visibleState = {
+          variant: variantFromURL(),
+          event: state.event,
+          playheadMs: Math.round(state.playheadMs),
+          snap: state.snap,
+          zoom: state.zoom,
+          selectedClipIds: state.selected,
+          tracks: state.tracks.map(track => ({ id: track.id, kind: track.kind, characterVoice: track.kind === "dialogue" ? track.binding : undefined, clips: track.clips.map(clip => ({ id: clip.id, type: clip.type, startMs: clip.startMs, durationMs: clip.durationMs, status: clip.status })) }))
+        };
+        return `<div class="panel state-panel"><div class="panel-head"><h3>Visible prototype state</h3></div><div class="panel-body"><pre>${escapeHTML(JSON.stringify(visibleState, null, 2))}</pre></div></div>`;
+      }
+
+      function variantAHTML() {
+        return `${headerHTML("A — library, timeline, and inspector visible together")}
+          <main class="variant-a">
+            <section class="panel"><div class="panel-head"><h2>Voice & audio library</h2></div><div class="panel-body">${assetCardsHTML()}</div></section>
+            <section class="panel timeline-panel"><div class="panel-head"><h2>Timeline</h2><small>Drag clips · drag edges · Shift-click</small></div>${timelineHTML()}</section>
+            <aside class="stack"><section class="panel"><div class="panel-head"><h2>Clip inspector</h2></div>${inspectorHTML()}</section>${stateHTML()}</aside>
+          </main>`;
+      }
+
+      function cueRowsHTML() {
+        return allClips().filter(entry => entry.clip.type === "dialogue").map(entry => `<tr class="${state.selected.includes(entry.clip.id) ? "is-selected" : ""}">
+          <td><button data-select="${entry.clip.id}">${state.selected.includes(entry.clip.id) ? "●" : "○"}</button></td>
+          <td><strong>${escapeHTML(entry.track.name)}</strong><br><small>${escapeHTML(entry.track.binding)}</small></td>
+          <td>${escapeHTML(entry.clip.label)}</td>
+          <td><span class="status-chip ${entry.clip.status}">${entry.clip.status}</span></td>
+          <td>${formatTime(entry.clip.startMs)}</td>
+        </tr>`).join("");
+      }
+
+      function variantBHTML() {
+        return `${headerHTML("B — write and build dialogue first; timing stays directly below")}
+          <main class="variant-b">
+            <div class="variant-b-top">
+              <section class="panel"><div class="panel-head"><h2>Dialogue cues</h2><button data-add="dialogue">New line</button></div><div class="panel-body"><table class="cue-table"><thead><tr><th></th><th>Character</th><th>Line</th><th>Audio</th><th>Start</th></tr></thead><tbody>${cueRowsHTML()}</tbody></table></div></section>
+              <aside class="stack"><section class="panel"><div class="panel-head"><h2>Production assets</h2></div><div class="panel-body">${assetCardsHTML(true)}</div></section>${stateHTML()}</aside>
+            </div>
+            <div class="variant-b-bottom">
+              <section class="panel"><div class="panel-head"><h2>Timing and mix</h2><small>Dialogue selection is shared with the cue table</small></div>${timelineHTML()}</section>
+              <section class="panel"><div class="panel-head"><h2>Selected cue</h2></div>${inspectorHTML()}</section>
+            </div>
+          </main>`;
+      }
+
+      function variantCHTML() {
+        return `${headerHTML("C — the timeline dominates; tools appear where the work happens")}
+          <main class="variant-c">
+            <section class="panel timeline-panel"><div class="panel-head"><h2>Story canvas</h2><small>All tracks at maximum width</small></div>${timelineHTML()}</section>
+            <aside class="panel floating-inspector"><div class="panel-head"><h2>Selection</h2></div>${inspectorHTML()}<div class="panel-body">${stateHTML()}</div></aside>
+            <div class="asset-dock"><strong>Drop-in assets</strong>${assetCardsHTML(true)}</div>
+          </main>`;
+      }
+
+      function escapeHTML(value) {
+        return String(value).replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]);
+      }
+
+      function escapeAttribute(value) { return escapeHTML(value); }
+
+      function snap(value) { return state.snap ? Math.round(value / 250) * 250 : Math.round(value); }
+
+      function addClip(type) {
+        const id = `new-${type}-${Date.now()}`;
+        const labels = { dialogue: "New spoken line", sfx: "Door slam", music: "Tense underscore", silence: "Silence" };
+        const durationMs = type === "music" ? 7000 : type === "silence" ? 1500 : 2400;
+        const trackKind = type === "silence" ? "dialogue" : type;
+        const candidates = state.tracks.filter(item => item.kind === trackKind);
+        const placements = candidates.map(track => ({ track, startMs: firstOpenStart(track, state.playheadMs, durationMs) }));
+        placements.sort((left, right) => left.startMs - right.startMs);
+        const placement = placements[0] || { track: state.tracks[0], startMs: state.playheadMs };
+        const start = Math.max(0, Math.min(state.durationMs - durationMs, placement.startMs));
+        placement.track.clips.push({ id, type, label: labels[type], startMs: start, durationMs, status: type === "dialogue" ? "stale" : "ready" });
+        state.selected = [id];
+        commit(`${labels[type]} added at ${formatTime(start)}.`);
+      }
+
+      function firstOpenStart(track, proposedStart, durationMs) {
+        let candidate = snap(proposedStart);
+        const clips = [...track.clips].sort((left, right) => left.startMs - right.startMs);
+        clips.forEach(clip => {
+          const overlaps = candidate < clip.startMs + clip.durationMs && candidate + durationMs > clip.startMs;
+          if (overlaps) candidate = snap(clip.startMs + clip.durationMs + 250);
+        });
+        return candidate;
+      }
+
+      function deleteSelected() {
+        if (!state.selected.length) return;
+        const removed = state.selected.length;
+        state.tracks.forEach(track => { track.clips = track.clips.filter(clip => !state.selected.includes(clip.id)); });
+        state.selected = [];
+        commit(`${removed} selected clip${removed === 1 ? "" : "s"} removed from the in-memory prototype.`);
+      }
+
+      function moveTrack(id, direction) {
+        const index = state.tracks.findIndex(track => track.id === id);
+        const target = index + direction;
+        if (index < 0 || target < 0 || target >= state.tracks.length) return;
+        const [track] = state.tracks.splice(index, 1);
+        state.tracks.splice(target, 0, track);
+        commit(`${track.name} moved ${direction < 0 ? "up" : "down"}.`);
+      }
+
+      function wirePointerEditing() {
+        document.querySelectorAll(".clip").forEach(element => {
+          element.addEventListener("pointerdown", event => {
+            const entry = allClips().find(item => item.clip.id === element.dataset.clip);
+            if (!entry) return;
+            const trimSide = event.target.dataset.trim || "move";
+            if (!event.shiftKey && !state.selected.includes(entry.clip.id)) state.selected = [entry.clip.id];
+            if (event.shiftKey) state.selected = state.selected.includes(entry.clip.id) ? state.selected.filter(id => id !== entry.clip.id) : [...state.selected, entry.clip.id];
+            const startX = event.clientX;
+            const originalStart = entry.clip.startMs;
+            const originalDuration = entry.clip.durationMs;
+            element.setPointerCapture(event.pointerId);
+            const move = moveEvent => {
+              const scale = .08 * state.zoom;
+              const delta = snap((moveEvent.clientX - startX) / scale);
+              if (trimSide === "move") entry.clip.startMs = Math.max(0, Math.min(state.durationMs - entry.clip.durationMs, snap(originalStart + delta)));
+              if (trimSide === "left") {
+                const proposedStart = Math.max(0, snap(originalStart + delta));
+                const end = originalStart + originalDuration;
+                entry.clip.startMs = Math.min(end - 500, proposedStart);
+                entry.clip.durationMs = end - entry.clip.startMs;
+              }
+              if (trimSide === "right") entry.clip.durationMs = Math.max(500, Math.min(state.durationMs - originalStart, snap(originalDuration + delta)));
+              element.style.left = `${entry.clip.startMs * scale}px`;
+              element.style.width = `${entry.clip.durationMs * scale}px`;
+            };
+            const up = () => {
+              element.removeEventListener("pointermove", move);
+              element.removeEventListener("pointerup", up);
+              element.removeEventListener("pointercancel", up);
+              const collides = entry.track.clips.some(clip => clip.id !== entry.clip.id && entry.clip.startMs < clip.startMs + clip.durationMs && entry.clip.startMs + entry.clip.durationMs > clip.startMs);
+              if (collides) {
+                entry.clip.startMs = originalStart;
+                entry.clip.durationMs = originalDuration;
+                commit(`${entry.clip.label} returned to its previous position because clips cannot overlap within one track.`);
+                return;
+              }
+              commit(`${entry.clip.label} ${trimSide === "move" ? "moved" : "trimmed"}: ${formatTime(entry.clip.startMs)}, ${(entry.clip.durationMs / 1000).toFixed(2)} s.`);
+            };
+            element.addEventListener("pointermove", move);
+            element.addEventListener("pointerup", up);
+            element.addEventListener("pointercancel", up);
+          });
+        });
+      }
+
+      function wireActions() {
+        document.querySelectorAll("[data-add]").forEach(button => button.addEventListener("click", () => addClip(button.dataset.add)));
+        document.querySelectorAll("[data-select]").forEach(button => button.addEventListener("click", event => {
+          state.selected = event.shiftKey && state.selected.includes(button.dataset.select) ? state.selected.filter(id => id !== button.dataset.select) : event.shiftKey ? [...state.selected, button.dataset.select] : [button.dataset.select];
+          commit("Cue selection changed.");
+        }));
+        document.querySelectorAll("[data-track-up]").forEach(button => button.addEventListener("click", () => moveTrack(button.dataset.trackUp, -1)));
+        document.querySelectorAll("[data-track-down]").forEach(button => button.addEventListener("click", () => moveTrack(button.dataset.trackDown, 1)));
+        document.querySelectorAll("[data-track-mute]").forEach(button => button.addEventListener("click", () => {
+          const track = state.tracks.find(item => item.id === button.dataset.trackMute); track.muted = !track.muted; commit(`${track.name} ${track.muted ? "muted" : "unmuted"}.`);
+        }));
+        document.querySelectorAll("[data-action]").forEach(control => control.addEventListener(control.matches("input[type=range]") ? "input" : "click", () => {
+          const action = control.dataset.action;
+          if (action === "play") togglePlay();
+          if (action === "audition") auditionSelected();
+          if (action === "snap") { state.snap = control.checked; commit(`Snap ${state.snap ? "enabled" : "disabled"}.`); }
+          if (action === "zoom") { state.zoom = Number(control.value); commit(`Timeline zoom set to ${state.zoom.toFixed(1)}×.`); }
+          if (action === "toggle-stale") { const entry = primarySelection(); if (entry) { entry.clip.status = entry.clip.status === "stale" ? "ready" : "stale"; commit(`${entry.clip.label} marked ${entry.clip.status}.`); } }
+          if (action === "delete") deleteSelected();
+          if (action === "build-stale") { const stale = allClips().filter(entry => entry.clip.status === "stale"); stale.forEach(entry => entry.clip.status = "ready"); commit(`${stale.length} stale dialogue clip${stale.length === 1 ? "" : "s"} rebuilt in the simulation.`); }
+          if (action === "save") commit("All accepted edits are already autosaved; explicit save status is healthy.");
+        }));
+        document.querySelectorAll("[data-field=label]").forEach(input => input.addEventListener("change", () => {
+          const entry = primarySelection(); if (!entry) return; entry.clip.label = input.value; if (entry.clip.type === "dialogue") entry.clip.status = "stale"; commit("Clip text changed; dialogue audio is now stale.");
+        }));
+        wirePointerEditing();
+      }
+
+      function togglePlay() {
+        state.playing = !state.playing;
+        if (state.playing) {
+          clearInterval(playTimer);
+          playTimer = setInterval(() => {
+            state.playheadMs += 100;
+            if (state.playheadMs >= state.durationMs) { state.playheadMs = 0; state.playing = false; clearInterval(playTimer); }
+            const head = document.querySelector(".playhead");
+            const time = document.querySelector(".transport .time");
+            if (head) head.style.left = `${state.playheadMs * .08 * state.zoom}px`;
+            if (time) time.textContent = formatTime(state.playheadMs);
+          }, 100);
+        } else clearInterval(playTimer);
+        commit(state.playing ? "Playback started." : "Playback paused.");
+      }
+
+      function auditionSelected() {
+        const entry = primarySelection();
+        if (!entry) return commit("Select a clip before auditioning.");
+        state.playheadMs = entry.clip.startMs;
+        state.event = `Auditioning ${entry.clip.label}.`;
+        if (!state.playing) togglePlay(); else commit(state.event);
+      }
+
+      function render() {
+        const key = variantFromURL();
+        const app = document.getElementById("app");
+        app.innerHTML = key === "A" ? variantAHTML() : key === "B" ? variantBHTML() : variantCHTML();
+        document.getElementById("variantLabel").textContent = `${key} — ${variants.find(item => item.key === key).name}`;
+        wireActions();
+      }
+
+      document.getElementById("variantPrevious").addEventListener("click", () => cycleVariant(-1));
+      document.getElementById("variantNext").addEventListener("click", () => cycleVariant(1));
+      addEventListener("keydown", event => {
+        if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+        if (event.target.matches("input, textarea, [contenteditable]")) return;
+        cycleVariant(event.key === "ArrowLeft" ? -1 : 1);
+      });
+      addEventListener("popstate", render);
+      render();
+    })();
+  </script>
+</body>
+</html>
