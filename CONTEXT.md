@@ -106,6 +106,20 @@ one mutable file, which is what makes an edit visible. Because `Status`
 prefers a tracked in-memory job over the store, every take-room mutation must
 republish the manifest that job is serving.
 
+## Story Builder Project (`internal/storybuilder`)
+
+A Story Builder Project is one separately saved production owned by the
+Story Builder tool. Its manifest has a stable id, user-facing name, timestamps,
+and a monotonic revision. Whole-project writes use that revision as an
+optimistic-concurrency boundary: a stale client receives a conflict instead of
+silently replacing newer work. Each project lives in its own directory under
+`out/story-builder-projects`; atomic manifest replacement and project-scoped
+deletion are owned by the project Store.
+
+The separate browser tool at `/demo/story-builder.html` currently owns the
+blank-project lifecycle. Later Story Builder slices extend this same aggregate
+with tracks and clips rather than creating a second persistence system.
+
 ## Audiobook production
 
 An Audiobook production is a long-running narration of one immutable source

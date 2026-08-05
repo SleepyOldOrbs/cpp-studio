@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Story Builder · cpp-studio</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/demo/story-builder.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">cpp-studio</p>
+      <h1>Story Builder</h1>
+      <p class="subtitle">Create and reopen productions before building their timelines.</p>
+    </div>
+    <a class="studio-link" href="/demo/">Return to studio</a>
+  </header>
+
+  <main class="app-shell">
+    <aside class="project-sidebar" aria-label="Story Builder Projects">
+      <form id="storyBuilderNewForm" class="new-project-form">
+        <label for="storyBuilderNewName">New project</label>
+        <div class="new-project-row">
+          <input id="storyBuilderNewName" name="name" maxlength="120" placeholder="Production name" required>
+          <button type="submit">Create</button>
+        </div>
+      </form>
+      <div class="sidebar-heading">
+        <h2>Projects</h2>
+        <button id="storyBuilderRefreshButton" class="quiet-button" type="button">Refresh</button>
+      </div>
+      <div id="storyBuilderProjectList" class="project-list" aria-live="polite"></div>
+    </aside>
+
+    <section id="storyBuilderEditor" class="project-editor" hidden>
+      <div class="editor-toolbar">
+        <div class="project-name-field">
+          <label for="storyBuilderNameInput">Project name</label>
+          <input id="storyBuilderNameInput" maxlength="120">
+        </div>
+        <div class="save-controls">
+          <span id="storyBuilderSaveStatus" class="save-status" role="status">Saved</span>
+          <button id="storyBuilderSaveButton" type="button">Save Project</button>
+        </div>
+      </div>
+      <div class="blank-canvas">
+        <p class="eyebrow">Story canvas</p>
+        <h2>This production is ready for its first track.</h2>
+        <p>Project identity and saving are active. Timeline editing arrives in the next Story Builder slice.</p>
+      </div>
+      <div class="danger-zone">
+        <div>
+          <strong>Delete this project</strong>
+          <p>This removes only this Story Builder Project.</p>
+        </div>
+        <button id="storyBuilderDeleteButton" class="danger-button" type="button">Delete Project</button>
+      </div>
+    </section>
+
+    <section id="storyBuilderEmpty" class="empty-state">
+      <p class="eyebrow">No project open</p>
+      <h2>Create a production or choose one from the project list.</h2>
+    </section>
+  </main>
+
+  <script src="/demo/story-builder.js" defer></script>
+</body>
+</html>

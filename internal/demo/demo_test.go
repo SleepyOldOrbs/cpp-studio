@@ -213,6 +213,59 @@ func TestHandlerServesIndex(t *testing.T) {
 	}
 }
 
+func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
+	tests := []struct {
+		path        string
+		contentType string
+		markers     []string
+	}{
+		{
+			path:        "/story-builder.html",
+			contentType: "text/html",
+			markers: []string{
+				"Story Builder",
+				"storyBuilderNewForm",
+				"storyBuilderProjectList",
+				"storyBuilderNameInput",
+				"storyBuilderSaveStatus",
+				"storyBuilderSaveButton",
+				"storyBuilderDeleteButton",
+			},
+		},
+		{
+			path:        "/story-builder.js",
+			contentType: "javascript",
+			markers:     []string{"/v1/story-builder-projects", "scheduleAutosave", "saveProject"},
+		},
+		{
+			path:        "/story-builder.css",
+			contentType: "text/css",
+			markers:     []string{".project-list", ".save-status"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, test.path, nil)
+
+			Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if contentType := rec.Header().Get("Content-Type"); !strings.Contains(contentType, test.contentType) {
+				t.Fatalf("expected content type containing %q, got %q", test.contentType, contentType)
+			}
+			for _, marker := range test.markers {
+				if !strings.Contains(rec.Body.String(), marker) {
+					t.Fatalf("expected marker %q in %s", marker, test.path)
+				}
+			}
+		})
+	}
+}
+
 func TestHandlerServesAssets(t *testing.T) {
 	tests := []struct {
 		name        string
