@@ -233,6 +233,12 @@ func TestHandlerServesAssets(t *testing.T) {
 			needle:      "refreshVoices",
 		},
 		{
+			name:        "javascript character voices",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "createCharacterVoice",
+		},
+		{
 			name:        "css",
 			path:        "/styles.css",
 			contentType: "text/css",
@@ -243,6 +249,12 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/styles.css",
 			contentType: "text/css",
 			needle:      ".voice-item",
+		},
+		{
+			name:        "css character voices",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".character-voice-list",
 		},
 		{
 			name:        "javascript models catalog",
