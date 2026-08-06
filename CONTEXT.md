@@ -123,9 +123,14 @@ binding. Silence clips are timing-only metadata and do not own media bytes.
 Reusable SFX and Music remain Library-owned until first placement. The project
 Store then validates and copies one immutable WAV into the selected project's
 `media` directory, records source Library provenance on each clip, and reuses
-that copy for later placements. Clips expose a derived media error when their
-project-owned source is missing or unreadable; browser-provided paths are never
-part of the contract.
+that copy for later placements. A dialogue build selects stale and failed clips
+in timeline order, holds the shared `audio` Engine Reservation for the build,
+and stores each successful synthesis as an immutable project-owned WAV under
+`takes`. Each completed take is attached by an atomic manifest replacement
+before the next clip starts, so a later failure does not discard earlier work.
+Generated take identities and source metadata are server-owned. Clips expose a
+derived media error when their project-owned source is missing or unreadable;
+browser-provided paths are never part of the contract.
 Whole-project writes use the revision as an
 optimistic-concurrency boundary: a stale client receives a conflict instead of
 silently replacing newer work. Each project lives in its own directory under
@@ -133,8 +138,10 @@ silently replacing newer work. Each project lives in its own directory under
 deletion are owned by the project Store.
 
 The separate browser tool at `/demo/story-builder.html` owns project and typed
-track arrangement. Later Story Builder slices extend this aggregate's clips and
-voice bindings rather than creating a second persistence system.
+track arrangement and starts/polls asynchronous dialogue builds. Build
+coordination is in memory, while clip status and successful takes are durable in
+the project Store. Later Story Builder slices extend this aggregate rather than
+creating a second persistence system.
 
 ## Timeline Track
 

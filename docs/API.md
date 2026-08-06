@@ -192,6 +192,17 @@ Gateway restart.
   are rejected. Returns the incremented project with `201`.
 - `GET /v1/story-builder-projects/{id}/media/{source-id}` — serve a referenced,
   validated project-owned WAV. Arbitrary files and unreferenced media ids are not exposed.
+- `POST /v1/story-builder-projects/{id}/builds` — asynchronously build all stale
+  and failed dialogue from `{"revision":3}`. Returns `202` with a build object
+  containing `id`, `status_url`, `status`, `active_clip_id`, `completed`,
+  `total`, and `progress`. A stale revision or another active Story Builder
+  dialogue build returns `409`; a busy shared audio engine returns `429`.
+- `GET /v1/story-builder-projects/{id}/builds/{build-id}` — poll the in-memory
+  build state (`queued`, `running`, `complete`, or `failed`). Successful clips
+  are already durable in the project when their completed count advances.
+- `GET /v1/story-builder-projects/{id}/clips/{clip-id}/audio` — audition a ready
+  dialogue clip's referenced, validated project-owned WAV. It does not render a
+  combined production.
 
 Each track has a stable `id`, editable `name`, contiguous `order`, `type`
 (`dialogue`, `sfx`, or `music`), `muted` state, and `clips`. Dialogue tracks may
@@ -209,6 +220,16 @@ Synthesis identity is reconciled when the project is read or saved, so an
 external voice edit is visible on reload. The browser also authors `silence`
 clips with stable ids, labels, and integer `start_ms` / `duration_ms` timing.
 Silence is manifest metadata and never creates audio bytes.
+
+Dialogue builds process stale and failed clips chronologically and skip ready
+clips. They reserve the shared `audio` engine once for the entire build. Every
+successful synthesis is validated and copied to the project's `takes`
+directory, then attached to its clip in an atomic manifest save before the next
+clip starts. On failure the active clip becomes failed, later clips remain
+stale, and earlier ready takes remain usable. The generated source id, source
+duration, and trim bounds are server-owned; a whole-project write cannot forge
+or replace them. Editing spoken text or voice identity detaches the old take and
+makes the clip stale. A missing or unreadable take is returned as `media_error`.
 
 SFX and Music clips are created only through the Library placement action.
 First placement validates and copies the source WAV into the project's `media`

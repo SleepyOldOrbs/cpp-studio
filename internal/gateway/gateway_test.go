@@ -584,7 +584,8 @@ func TestStoryBuilderFreshnessTracksSpeechChangesNotArrangementEdits(t *testing.
 func TestStoryBuilderAudioTrimBoundsThroughGateway(t *testing.T) {
 	cfg := testConfig(nil)
 	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
-	r.storyBuilderProjects = storybuilder.NewStore(t.TempDir())
+	projectRoot := t.TempDir()
+	r.storyBuilderProjects = storybuilder.NewStore(projectRoot)
 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects", strings.NewReader(`{"name":"Trimmed dialogue"}`)))
@@ -594,6 +595,28 @@ func TestStoryBuilderAudioTrimBoundsThroughGateway(t *testing.T) {
 	var created storybuilder.Project
 	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
 		t.Fatalf("decode created project: %v", err)
+	}
+	created.Tracks = []storybuilder.Track{{
+		ID: "mara", Name: "Mara", Type: storybuilder.TrackTypeDialogue, Order: 0, CharacterVoiceID: "voice_mara",
+		Clips: []storybuilder.TimelineClip{{
+			ID: "line_1", Type: storybuilder.ClipTypeDialogue, Label: "Keep the lamp low", Text: "Keep the lamp low",
+			Status: storybuilder.DialogueStatusReady, CharacterVoiceID: "voice_mara", StartMS: 125, DurationMS: 700,
+			SourceID: "take_1", SourceDurationMS: 1200, SourceInMS: 200, SourceOutMS: 900,
+		}},
+	}}
+	seeded, err := json.MarshalIndent(created, "", "  ")
+	if err != nil {
+		t.Fatalf("encode ready take fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, created.ID, "project.json"), append(seeded, '\n'), 0o644); err != nil {
+		t.Fatalf("write ready take fixture: %v", err)
+	}
+	takesDir := filepath.Join(projectRoot, created.ID, "takes")
+	if err := os.MkdirAll(takesDir, 0o755); err != nil {
+		t.Fatalf("create ready take fixture directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(takesDir, "take_1.wav"), wav.SyntheticTone(19200), 0o644); err != nil {
+		t.Fatalf("write ready take fixture audio: %v", err)
 	}
 
 	validUpdate := fmt.Sprintf(`{
@@ -629,6 +652,123 @@ func TestStoryBuilderAudioTrimBoundsThroughGateway(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("out-of-bounds trim status = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestStoryBuilderBuildsDialogueThroughSharedAudioReservationAndAuditionsReadyClip(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"audio": {Command: "audio-helper", Mode: "subprocess"}})
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	root := t.TempDir()
+	r.voices = voice.NewStore(filepath.Join(root, "voices"))
+	r.storyBuilderProjects = storybuilder.NewStoreWithOptions(filepath.Join(root, "projects"), storybuilder.StoreOptions{
+		ResolveCharacterVoice: r.resolveStoryBuilderCharacterVoice,
+	})
+	fake := engine.NewFake()
+	entered := make(chan struct{})
+	continueBuild := make(chan struct{})
+	var spoken []string
+	fake.Handle("audio", func(spec engine.Spec) (engine.Result, error) {
+		args := strings.Join(spec.BuildArgs(spec.InputPath, "take.wav"), " ")
+		spoken = append(spoken, args)
+		if len(spoken) == 1 {
+			close(entered)
+			<-continueBuild
+		}
+		return engine.Result{Output: wav.SyntheticTone(16000)}, nil
+	})
+	r.engines = fake
+	r.storyBuilderDialogueBuilds = r.newStoryBuilderDialogueBuildManager()
+
+	actor, err := r.voices.Save("Mara", "reference words", wav.SyntheticTone(16000), false)
+	if err != nil {
+		t.Fatalf("save Actor Voice: %v", err)
+	}
+	character, err := r.voices.CreateCharacterVoice(actor.ID, "Weathered keeper", "quiet and guarded")
+	if err != nil {
+		t.Fatalf("create Character Voice: %v", err)
+	}
+	project, err := r.storyBuilderProjects.Create("Gateway dialogue build")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	project, err = r.storyBuilderProjects.Update(project.ID, storybuilder.ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: []storybuilder.Track{
+		{ID: "mara", Name: "Mara", Type: storybuilder.TrackTypeDialogue, Order: 0, CharacterVoiceID: character.ID, Clips: []storybuilder.TimelineClip{
+			{ID: "line_late", Type: storybuilder.ClipTypeDialogue, Label: "Late", Text: "Late words.", StartMS: 2000, DurationMS: 1000},
+			{ID: "line_early", Type: storybuilder.ClipTypeDialogue, Label: "Early", Text: "Early words.", StartMS: 0, DurationMS: 1000},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("save dialogue project: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"revision":%d}`, project.Revision)
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects/"+project.ID+"/builds", strings.NewReader(body)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("start build status = %d, want 202: %s", rec.Code, rec.Body.String())
+	}
+	var started storybuilder.DialogueBuild
+	if err := json.NewDecoder(rec.Body).Decode(&started); err != nil {
+		t.Fatalf("decode started build: %v", err)
+	}
+	<-entered
+
+	second := httptest.NewRecorder()
+	r.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects/"+project.ID+"/builds", strings.NewReader(body)))
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second build status = %d, want 409: %s", second.Code, second.Body.String())
+	}
+	direct := httptest.NewRecorder()
+	r.ServeHTTP(direct, httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"input":"do not race"}`)))
+	if direct.Code != http.StatusTooManyRequests {
+		t.Fatalf("direct speech while build owns audio = %d, want 429: %s", direct.Code, direct.Body.String())
+	}
+
+	close(continueBuild)
+	status := waitGatewayStoryBuilderBuild(t, r, project.ID, started.ID, storybuilder.DialogueBuildComplete)
+	if status.Completed != 2 || status.Total != 2 || status.Progress != 1 {
+		t.Fatalf("completed build status = %+v", status)
+	}
+	if len(spoken) != 2 || !strings.Contains(spoken[0], "Early words.") || !strings.Contains(spoken[1], "Late words.") {
+		t.Fatalf("speech invocation order = %v", spoken)
+	}
+	loaded, ok, err := r.storyBuilderProjects.Get(project.ID)
+	if err != nil || !ok {
+		t.Fatalf("reload built project: ok=%v err=%v", ok, err)
+	}
+	for _, clip := range loaded.Tracks[0].Clips {
+		if clip.Status != storybuilder.DialogueStatusReady || clip.SourceID == "" {
+			t.Fatalf("built clip is not durably ready: %+v", clip)
+		}
+	}
+
+	audition := httptest.NewRecorder()
+	r.ServeHTTP(audition, httptest.NewRequest(http.MethodGet,
+		"/v1/story-builder-projects/"+project.ID+"/clips/line_early/audio", nil))
+	if audition.Code != http.StatusOK || audition.Header().Get("Content-Type") != "audio/wav" || wav.ValidateBytes(audition.Body.Bytes()) != nil {
+		t.Fatalf("ready clip audition = %d %q bytes=%d", audition.Code, audition.Header().Get("Content-Type"), audition.Body.Len())
+	}
+}
+
+func waitGatewayStoryBuilderBuild(t *testing.T, router http.Handler, projectID, buildID string, want storybuilder.DialogueBuildStatus) storybuilder.DialogueBuild {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+			"/v1/story-builder-projects/"+projectID+"/builds/"+buildID, nil))
+		if rec.Code == http.StatusOK {
+			var build storybuilder.DialogueBuild
+			if err := json.NewDecoder(rec.Body).Decode(&build); err != nil {
+				t.Fatalf("decode build status: %v", err)
+			}
+			if build.Status == want {
+				return build
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for Story Builder build %q", want)
+	return storybuilder.DialogueBuild{}
 }
 
 func TestStoryBuilderProjectGatewayRejectsInvalidRequests(t *testing.T) {

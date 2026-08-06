@@ -16,6 +16,8 @@
   const nameInput = byID("storyBuilderNameInput");
   const saveStatus = byID("storyBuilderSaveStatus");
   const saveButton = byID("storyBuilderSaveButton");
+  const buildStatus = byID("storyBuilderBuildStatus");
+  const buildButton = byID("storyBuilderBuildButton");
   const deleteButton = byID("storyBuilderDeleteButton");
   const refreshButton = byID("storyBuilderRefreshButton");
   const tracksElement = byID("storyBuilderTracks");
@@ -52,6 +54,7 @@
   let libraryAudio = [];
   let revoicePromise = null;
   let mediaPlacementPromise = null;
+  let dialogueBuildPromise = null;
   let requestedProjectID = new URLSearchParams(window.location.search).get("project") || "";
 
   async function request(path, options = {}) {
@@ -77,7 +80,7 @@
   }
 
   function serverMutationPending() {
-    return Boolean(revoicePromise || mediaPlacementPromise);
+    return Boolean(revoicePromise || mediaPlacementPromise || dialogueBuildPromise);
   }
 
   function characterVoiceDetails(id) {
@@ -216,6 +219,23 @@
     if (clip.type === "silence") return "ready";
     if (clip.type === "dialogue") return "stale";
     return clip.source_id ? "ready" : "failed";
+  }
+
+  function dialogueBuildableCount(project = currentProject()) {
+    if (!project) return 0;
+    return project.tracks.reduce((count, track) => count + track.clips.filter((clip) =>
+      clip.type === "dialogue" && (clipStatus(clip) === "stale" || clipStatus(clip) === "failed")).length, 0);
+  }
+
+  function updateBuildControls() {
+    const count = dialogueBuildableCount();
+    buildButton.disabled = Boolean(dialogueBuildPromise || !count);
+    buildButton.textContent = count ? `Build stale (${count})` : "Build stale";
+  }
+
+  function setBuildStatus(message, state = "") {
+    buildStatus.textContent = message;
+    buildStatus.dataset.state = state;
   }
 
   function timelineError(project) {
@@ -467,6 +487,14 @@
     }
     selectionBody.append(selectionField("Status", clipStatus(clip)));
     if (clip.media_error) selectionBody.append(selectionField("Media error", clip.media_error));
+    if (clip.type === "dialogue" && clipStatus(clip) === "ready" && !clip.media_error) {
+      const audition = document.createElement("button");
+      audition.type = "button";
+      audition.className = "audition-dialogue";
+      audition.textContent = "Audition selected clip";
+      audition.addEventListener("click", () => auditionDialogueClip(clip));
+      selectionBody.append(audition);
+    }
     if (panelPosition) clampPanelPosition();
   }
 
@@ -654,6 +682,7 @@
     tracksElement.replaceChildren();
     const project = currentProject();
     if (!project) {
+      updateBuildControls();
       renderSelection();
       return;
     }
@@ -664,6 +693,7 @@
     renderTimelineRuler(timelineDuration);
     updateTimelineWidth(timelineDuration);
     updateHistoryButtons();
+    updateBuildControls();
     if (!project.tracks.length) {
       const empty = document.createElement("div");
       empty.className = "tracks-empty";
@@ -740,6 +770,82 @@
       tracksElement.append(row);
     });
     refreshSelectionUI();
+  }
+
+  async function refreshBuiltProject(projectID) {
+    const saved = await request(`${apiRoot}/${encodeURIComponent(projectID)}`);
+    if (currentID === projectID) {
+      projects = [saved, ...projects.filter((item) => item.id !== projectID)];
+      normalizeTracks(saved);
+      pruneSelection();
+      renderProjects();
+      renderTracks();
+    }
+    return saved;
+  }
+
+  function wait(milliseconds) {
+    return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+  }
+
+  async function buildStaleDialogue() {
+    if (serverMutationPending()) return;
+    let project = currentProject();
+    if (!project || dialogueBuildableCount(project) === 0) return;
+    if (savePromise || saveStatus.dataset.state !== "saved") {
+      await saveProject();
+      project = currentProject();
+      if (!project || saveStatus.dataset.state !== "saved") {
+        setBuildStatus("Save the project before building dialogue.", "failed");
+        return;
+      }
+    }
+
+    dialogueBuildPromise = (async () => {
+      appShell.inert = true;
+      updateBuildControls();
+      setBuildStatus("Starting dialogue build…", "running");
+      const started = await request(`${apiRoot}/${encodeURIComponent(project.id)}/builds`, {
+        method: "POST",
+        body: JSON.stringify({ revision: project.revision }),
+      });
+      let build = started;
+      while (build.status === "queued" || build.status === "running") {
+        const active = build.active_clip_id ? ` · ${build.active_clip_id}` : "";
+        setBuildStatus(`Building ${build.completed}/${build.total}${active}`, "running");
+        await refreshBuiltProject(project.id);
+        await wait(100);
+        build = await request(build.status_url);
+      }
+      await refreshBuiltProject(project.id);
+      if (build.status === "complete") {
+        undoStack = [];
+        redoStack = [];
+        setBuildStatus(`Dialogue ready · ${build.completed}/${build.total} built`, "ready");
+        return;
+      }
+      setBuildStatus(`Dialogue build failed after ${build.completed}/${build.total}: ${build.error || "unknown error"}`, "failed");
+    })();
+    try {
+      await dialogueBuildPromise;
+    } catch (error) {
+      const detail = error.status === 409 ? "the project changed or another build is active" : error.message;
+      setBuildStatus(`Could not build dialogue: ${detail}`, "failed");
+    } finally {
+      dialogueBuildPromise = null;
+      appShell.inert = false;
+      updateBuildControls();
+    }
+  }
+
+  function auditionDialogueClip(clip) {
+    const project = currentProject();
+    if (!project || clipStatus(clip) !== "ready") return;
+    const audio = new Audio(`${apiRoot}/${encodeURIComponent(project.id)}/clips/${encodeURIComponent(clip.id)}/audio`);
+    setBuildStatus(`Auditioning ${clip.label}…`);
+    audio.addEventListener("ended", () => setBuildStatus(`Auditioned ${clip.label}.`, "ready"), { once: true });
+    audio.addEventListener("error", () => setBuildStatus(`Could not audition ${clip.label}.`, "failed"), { once: true });
+    audio.play().catch((error) => setBuildStatus(`Could not audition ${clip.label}: ${error.message}`, "failed"));
   }
 
   function snappedTime(value) {
@@ -862,6 +968,7 @@
     undoStack = [];
     redoStack = [];
     selectedClipIDs = new Set();
+    if (!dialogueBuildPromise) setBuildStatus("No dialogue build running.");
     if (project) {
       normalizeTracks(project);
       if (!preserveInput) nameInput.value = project.name;
@@ -1420,6 +1527,7 @@
     timelineViewport.scrollLeft = scrollRatio * (timelineViewport.scrollWidth - timelineViewport.clientWidth);
   });
   selectionHandle.addEventListener("pointerdown", beginPanelPointerEdit);
+  buildButton.addEventListener("click", () => buildStaleDialogue());
   saveButton.addEventListener("click", () => saveProject());
   refreshButton.addEventListener("click", () => refreshProjects());
   voiceRefresh.addEventListener("click", () => refreshVoiceLibrary());

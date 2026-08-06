@@ -41,20 +41,21 @@ import (
 )
 
 type router struct {
-	mux                  *http.ServeMux
-	cfg                  config.Config
-	manager              *lifecycle.Manager
-	client               *http.Client
-	engines              engine.Invoker
-	stories              *story.Manager
-	storyBuilderProjects *storybuilder.Store
-	voices               *voice.Store
-	catalog              models.Manifest
-	modelsRoot           string
-	installer            *models.Installer
-	jobs                 *jobs.Registry
-	library              *library.Store
-	audiobooks           audiobook.Service
+	mux                        *http.ServeMux
+	cfg                        config.Config
+	manager                    *lifecycle.Manager
+	client                     *http.Client
+	engines                    engine.Invoker
+	stories                    *story.Manager
+	storyBuilderProjects       *storybuilder.Store
+	storyBuilderDialogueBuilds *storybuilder.DialogueBuildManager
+	voices                     *voice.Store
+	catalog                    models.Manifest
+	modelsRoot                 string
+	installer                  *models.Installer
+	jobs                       *jobs.Registry
+	library                    *library.Store
+	audiobooks                 audiobook.Service
 
 	// encodersMu guards the one-time probe of what the operator's ffmpeg can
 	// encode. The binary does not change under a running gateway.
@@ -118,6 +119,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 		ResolveCharacterVoice: r.resolveStoryBuilderCharacterVoice,
 		ResolveLibraryAudio:   r.resolveStoryBuilderLibraryAudio,
 	})
+	r.storyBuilderDialogueBuilds = r.newStoryBuilderDialogueBuildManager()
 	if whisperCfg, ok := cfg.Engines["whisper"]; ok && whisperVADConfigured(whisperCfg) {
 		r.voices = voice.NewStoreWithOptions("", voice.StoreOptions{AnalyzeVAD: func(wavBytes []byte) (time.Duration, error) {
 			segments, err := r.transcribeSegments(context.Background(), wavBytes)
@@ -4096,6 +4098,10 @@ type storyBuilderLibraryAudioRequest struct {
 	StartMS       int64  `json:"start_ms"`
 }
 
+type storyBuilderDialogueBuildRequest struct {
+	Revision int `json:"revision"`
+}
+
 func (r *router) handleStoryBuilderProjects(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
@@ -4135,6 +4141,18 @@ func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Requ
 	}
 	if len(parts) == 3 && parts[1] == "media" {
 		r.handleStoryBuilderMedia(w, req, parts[0], parts[2])
+		return
+	}
+	if len(parts) == 2 && parts[1] == "builds" {
+		r.handleStoryBuilderDialogueBuilds(w, req, parts[0])
+		return
+	}
+	if len(parts) == 3 && parts[1] == "builds" {
+		r.handleStoryBuilderDialogueBuild(w, req, parts[0], parts[2])
+		return
+	}
+	if len(parts) == 4 && parts[1] == "clips" && parts[3] == "audio" {
+		r.handleStoryBuilderDialogueAudio(w, req, parts[0], parts[2])
 		return
 	}
 	if len(parts) != 1 || parts[0] == "" {
@@ -4229,6 +4247,61 @@ func (r *router) handleStoryBuilderMedia(w http.ResponseWriter, req *http.Reques
 	http.ServeFile(w, req, path)
 }
 
+func (r *router) handleStoryBuilderDialogueBuilds(w http.ResponseWriter, req *http.Request, projectID string) {
+	if req.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body storyBuilderDialogueBuildRequest
+	if err := decodeStoryBuilderProjectRequest(w, req, &body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Revision < 1 {
+		writeJSONError(w, http.StatusBadRequest, "revision must be positive")
+		return
+	}
+	build, err := r.storyBuilderDialogueBuilds.Start(req.Context(), projectID, body.Revision)
+	if err != nil {
+		writeStoryBuilderProjectError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(build)
+}
+
+func (r *router) handleStoryBuilderDialogueBuild(w http.ResponseWriter, req *http.Request, projectID, buildID string) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	build, ok := r.storyBuilderDialogueBuilds.Status(projectID, buildID)
+	if !ok {
+		writeStoryBuilderProjectError(w, storybuilder.ErrDialogueBuildMissing)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(build)
+}
+
+func (r *router) handleStoryBuilderDialogueAudio(w http.ResponseWriter, req *http.Request, projectID, clipID string) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	path, err := r.storyBuilderProjects.DialogueAudioPath(projectID, clipID)
+	if err != nil {
+		writeStoryBuilderProjectError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	http.ServeFile(w, req, path)
+}
+
 func decodeStoryBuilderProjectRequest(w http.ResponseWriter, req *http.Request, body any) error {
 	req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
 	decoder := json.NewDecoder(req.Body)
@@ -4249,13 +4322,27 @@ func writeStoryBuilderProjectError(w http.ResponseWriter, err error) {
 	case errors.Is(err, storybuilder.ErrIncompatibleMedia):
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, storybuilder.ErrNotFound), errors.Is(err, storybuilder.ErrCharacterVoiceNotFound),
-		errors.Is(err, storybuilder.ErrLibraryAudioNotFound), errors.Is(err, storybuilder.ErrProjectMediaNotFound):
+		errors.Is(err, storybuilder.ErrLibraryAudioNotFound), errors.Is(err, storybuilder.ErrProjectMediaNotFound),
+		errors.Is(err, storybuilder.ErrDialogueBuildMissing):
 		writeJSONError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, storybuilder.ErrConflict), errors.Is(err, storybuilder.ErrVoiceConflict):
+	case errors.Is(err, storybuilder.ErrConflict), errors.Is(err, storybuilder.ErrVoiceConflict),
+		errors.Is(err, storybuilder.ErrDialogueBuildBusy), errors.Is(err, storybuilder.ErrNoDialogueToBuild):
 		writeJSONError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, storybuilder.ErrDialogueEngineBusy):
+		writeJSONError(w, http.StatusTooManyRequests, err.Error())
 	default:
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 	}
+}
+
+func (r *router) newStoryBuilderDialogueBuildManager() *storybuilder.DialogueBuildManager {
+	return storybuilder.NewDialogueBuildManager(storybuilder.DialogueBuildManagerOptions{
+		Store:         r.storyBuilderProjects,
+		ReserveEngine: r.reserveEngine,
+		Synthesize: func(ctx context.Context, text, actorVoiceID string) ([]byte, error) {
+			return r.synthesizeSpeech(ctx, text, actorVoiceID)
+		},
+	})
 }
 
 func (r *router) resolveStoryBuilderCharacterVoice(id string) (storybuilder.VoiceIdentity, bool, error) {
