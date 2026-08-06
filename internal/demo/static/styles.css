@@ -1258,7 +1258,7 @@ progress::-moz-progress-bar {
 .voice-library {
   display: grid;
   gap: 8px;
-  max-height: 340px;
+  max-height: 620px;
   overflow-y: auto;
 }
 
@@ -1322,6 +1322,79 @@ progress::-moz-progress-bar {
   font-size: 0.72rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.voice-kind-label {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.character-voice-group {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 9px;
+}
+
+.character-voice-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.character-voice-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0 0 0 12px;
+  border-left: 2px solid var(--line);
+  list-style: none;
+}
+
+.character-voice-item {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--panel);
+}
+
+.character-voice-form,
+.character-voice-preview-form,
+.character-voice-create {
+  display: grid;
+  gap: 8px;
+}
+
+.character-voice-create {
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.character-voice-field {
+  gap: 4px;
+}
+
+.character-voice-direction {
+  resize: vertical;
+}
+
+.character-voice-audio {
+  width: 100%;
+  height: 34px;
+}
+
+.character-voice-empty {
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 .speak-form {
