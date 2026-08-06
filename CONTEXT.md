@@ -130,6 +130,22 @@ The separate browser tool at `/demo/story-builder.html` owns project and typed
 track arrangement. Later Story Builder slices extend this aggregate's clips and
 voice bindings rather than creating a second persistence system.
 
+## Timeline Track
+
+An ordered lane in a Story Builder Project, typed as Dialogue, SFX, or Music.
+A Dialogue Track belongs to one Character Voice.
+
+## Timeline Clip
+
+A timed piece of dialogue, SFX, music, or silence placed on a Timeline Track.
+Clips may overlap across tracks but not within the same track.
+
+## Library
+
+The studio-wide browse, search, and launch surface over durable work. Voices,
+Stories, Audiobooks, Story Builder Projects, reusable audio, and exports remain
+owned by their purpose-built stores rather than being copied into one store.
+
 ## Audiobook production
 
 An Audiobook production is a long-running narration of one immutable source

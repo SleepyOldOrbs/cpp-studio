@@ -151,10 +151,12 @@ OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
 | `POST /v1/chat/completions` | proxy to the resident llama-server |
 | `POST /v1/audio/transcriptions` | whisper transcription (resident or per-run) |
 | `POST /v1/audio/speech` | TTS, default or any stored voice |
+| `POST /v1/audio/conversions` | preserve a performance while changing its speaker identity |
 | `POST /v1/voice` | the whole voice loop in one call |
 | `POST /v1/voices` · `/v1/voices/design` | clone / design voices |
 | `POST /v1/audio/transcriptions?format=segments` | timestamped transcript segments |
 | `POST /v1/audio/diarization` | who-spoke-when clusters (CUDA Sortformer, sherpa fallback) |
+| `POST /v1/audio/music` · `/v1/audio/music/analyze` | ACE-Step music creation, editing, and source analysis |
 | `POST /v1/audio/import` | fetch a URL's audio through your own yt-dlp |
 | `POST /v1/audio/decode` | convert what the browser can't read, via your own ffmpeg |
 | `POST /v1/stories/{id}/export` | encode a render revision to MP3/Opus via your own ffmpeg |
@@ -167,6 +169,19 @@ OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
 | `GET /v1/library` | persistent saved outputs |
 | `POST /v1/engines/{name}/{start,stop,reload}` · `/v1/engines/profiles/{name}` | engine power + VRAM profiles |
 | `GET /health` · `GET /v1/models/catalog` · `GET /v1/gpu` | health, model states, VRAM |
+
+### Optional local music generation
+
+The Music desk uses audio.cpp's ACE-Step 1.5 family for prompt-to-music,
+lyrics, completion, covers, layer/stem operations, repainting, and source
+analysis. The tracked first option is the 6,185,460,032-byte Turbo Q8_0 GGUF at
+a pinned upstream revision and checksum. Install it from Models through the
+same preview and short-lived confirmation used by other optional models; CPP
+Studio never starts a model download from the tool itself. audio.cpp describes
+the Q8 conversion as usable with possible output drift, so audition important
+renders rather than treating quantization as transparent. The configured
+`ace_step.mem_saver=true` releases staged graphs between requests to reduce
+resident VRAM at the cost of possible rebuild time.
 
 ### Optional expressive factual audiobooks
 

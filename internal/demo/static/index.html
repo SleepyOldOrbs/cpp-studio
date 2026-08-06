@@ -19,25 +19,59 @@
         <button class="secondary" id="healthButton" type="button">Refresh health</button>
         <button class="clear-all-button" id="clearAllButton" type="button">Clear all</button>
       </div>
-      <nav class="tab-bar" id="tabBar" aria-label="Studio sections">
-        <a class="tab" href="#talk" data-tab-link="talk">Talk</a>
-        <a class="tab" href="#voices" data-tab-link="voices">Voices</a>
-        <a class="tab" href="#image" data-tab-link="image">Image</a>
-        <a class="tab" href="#story" data-tab-link="story">Story</a>
-        <a class="tab" href="#audiobook" data-tab-link="audiobook">Audiobook</a>
-        <a class="tab" href="#extract" data-tab-link="extract">Extract</a>
-        <a class="tab" href="#library" data-tab-link="library">Library</a>
-        <a class="tab" href="#models" data-tab-link="models">Models</a>
-        <a class="tab" href="#engines" data-tab-link="engines">Engines</a>
+      <nav class="tab-bar" id="tabBar" aria-label="Studio tools">
+        <a class="tab" href="#text-to-speech" data-page-link="text-to-speech">Talk</a>
+        <a class="tab" href="#transcription" data-page-link="transcription">Transcribe</a>
+        <a class="tab" href="#voice-cloning" data-page-link="voice-cloning">Voices</a>
+        <a class="tab" href="#voice-design" data-page-link="voice-design">Design</a>
+        <a class="tab" href="#voice-convert" data-page-link="voice-convert">Convert</a>
+        <a class="tab" href="#music-generation" data-page-link="music-generation">Music</a>
+        <a class="tab" href="#image-generation" data-page-link="image-generation">Image</a>
+        <a class="tab" href="#story" data-page-link="story">Story</a>
+        <a class="tab" href="#audiobook" data-page-link="audiobook">Audiobook</a>
+        <a class="tab" href="#extract" data-page-link="extract">Extract</a>
+        <a class="tab" href="#library" data-page-link="library">Library</a>
+        <a class="tab" href="#models" data-page-link="models">Models</a>
+        <a class="tab" href="#engines" data-page-link="engines">Engines</a>
       </nav>
     </header>
 
-    <section class="module" data-tab="talk" aria-label="Voice loop">
+    <section class="module" data-page="text-to-speech" aria-label="Text to speech">
       <header class="module-head">
-        <h2>Voice loop</h2>
+        <h2>Text to speech</h2>
         <span class="module-route">POST /v1/voice</span>
         <span class="module-note">record &rarr; transcribe &rarr; chat &rarr; speak</span>
       </header>
+      <div class="model-chooser" aria-label="Text to speech models">
+        <div class="model-chooser-heading">
+          <span>Model chooser</span>
+          <small>Only speech and reply models used by this tool</small>
+        </div>
+        <div class="model-chooser-fields">
+          <label class="model-choice">
+            <span>Speech model</span>
+            <select class="text-input" id="ttsSpeechModelSelect" data-speech-models data-model-engines="audio omnivoice voxcpm2 dramabox">
+              <option>Checking compatible models&hellip;</option>
+            </select>
+            <small>Switches the audio.cpp model that speaks the assistant reply.</small>
+          </label>
+          <label class="model-choice" id="chatModelField">
+            <span>Reply model</span>
+            <select class="text-input" id="chatModelSelect" disabled>
+              <option>Checking available models&hellip;</option>
+            </select>
+            <small>Shared with story writing. Switching reloads the llama.cpp server.</small>
+          </label>
+        </div>
+        <div class="warn-box model-chooser-warning" id="chatModelWarn" hidden>
+          <span id="chatModelWarnText"></span>
+          <div class="action-row">
+            <button class="secondary compact-button" id="chatModelMoeButton" type="button" hidden>Load with experts on CPU</button>
+            <button class="secondary compact-button" id="chatModelAnywayButton" type="button">Load anyway</button>
+            <button class="plain compact-button" id="chatModelCancelButton" type="button">Cancel</button>
+          </div>
+        </div>
+      </div>
       <div class="module-body workspace">
         <form class="control-panel" id="voiceForm">
           <label class="field">
@@ -46,7 +80,7 @@
             <small class="hint">Used when no WAV is loaded. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs the loop.</small>
           </label>
 
-          <div class="record-row">
+          <div class="record-row voice-record-row">
             <button class="record-button" id="recordButton" type="button" aria-pressed="false">Push to record</button>
             <button class="live-button" id="liveButton" type="button" aria-pressed="false">Live transcribe</button>
             <button class="live-button hf-button" id="handsFreeButton" type="button" aria-pressed="false">Hands-free</button>
@@ -76,20 +110,6 @@
             </select>
             <small class="hint">Clone a voice below to add options here.</small>
           </label>
-
-          <label class="field compact-field" id="chatModelField" hidden>
-            <span>Chat model</span>
-            <select class="text-input" id="chatModelSelect" hidden></select>
-            <small class="hint">Shared with story scripting. Drop .gguf files in your byom folder to add options; switching restarts llama, and a failed load reverts.</small>
-          </label>
-          <div class="warn-box" id="chatModelWarn" hidden>
-            <span id="chatModelWarnText"></span>
-            <div class="action-row">
-              <button class="secondary compact-button" id="chatModelMoeButton" type="button" hidden>Load with experts on CPU</button>
-              <button class="secondary compact-button" id="chatModelAnywayButton" type="button">Load anyway</button>
-              <button class="plain compact-button" id="chatModelCancelButton" type="button">Cancel</button>
-            </div>
-          </div>
 
           <div class="action-row">
             <button class="primary" id="runButton" type="submit">Run voice loop</button>
@@ -129,12 +149,27 @@
       </div>
     </section>
 
-    <section class="module" data-tab="voices" aria-label="Voice clone">
+    <section class="module" data-page="voice-cloning" aria-label="Voice cloning">
       <header class="module-head">
         <h2>Voice clone</h2>
         <span class="module-route">POST /v1/voices</span>
         <span class="module-note">reference &rarr; transcribe &rarr; clone</span>
       </header>
+      <div class="model-chooser" aria-label="Voice cloning models">
+        <div class="model-chooser-heading">
+          <span>Model chooser</span>
+          <small>Only models that can reuse a recorded voice</small>
+        </div>
+        <div class="model-chooser-fields">
+          <label class="model-choice">
+            <span>Cloning model</span>
+            <select class="text-input" id="cloneModelSelect" data-speech-models data-model-engines="audio omnivoice voxcpm2 dramabox">
+              <option>Checking compatible models&hellip;</option>
+            </select>
+            <small>Only models capable of using the recorded voice reference are listed.</small>
+          </label>
+        </div>
+      </div>
       <div class="module-body workspace">
         <form class="control-panel" id="cloneForm">
           <label class="field">
@@ -201,26 +236,33 @@
       </div>
     </section>
 
-    <section class="module" data-tab="voices" aria-label="Voice designer">
+    <section class="module" data-page="voice-design" aria-label="Voice design">
       <header class="module-head">
         <h2>Voice designer</h2>
         <span class="module-route">POST /v1/voices/design</span>
         <span class="module-note">describe &rarr; generate &rarr; audition &rarr; save</span>
       </header>
+      <div class="model-chooser" aria-label="Voice design models">
+        <div class="model-chooser-heading">
+          <span>Model chooser</span>
+          <small>Only models that design voices from a description</small>
+        </div>
+        <div class="model-chooser-fields">
+          <label class="model-choice">
+            <span>Design model</span>
+            <select class="text-input" id="designModelSelect">
+              <option value="voxcpm2" selected>VoxCPM2 (realistic, 48 kHz)</option>
+            </select>
+            <small id="designModelHint">VoxCPM2: realistic and flexible. OmniVoice: precision accents. Qwen3: characterful and emotive.</small>
+          </label>
+        </div>
+      </div>
       <div class="module-body workspace">
         <form class="control-panel" id="designForm">
           <label class="field">
             <span>Describe a voice</span>
             <textarea id="designDescriptionInput" rows="3" maxlength="500" placeholder="e.g. High pitched, singing voice &mdash; or &mdash; Deep gravelly cowboy&hellip;"></textarea>
             <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> generates. The voice is invented from your words &mdash; no recording needed.</small>
-          </label>
-
-          <label class="field compact-field">
-            <span>Generation model</span>
-            <select class="text-input" id="designModelSelect">
-              <option value="voxcpm2" selected>VoxCPM2 (realistic, 48 kHz)</option>
-            </select>
-            <small class="hint" id="designModelHint">VoxCPM2: realistic, accents, 48 kHz. OmniVoice: precision accents, fastest. Qwen3: most characterful and emotive. Type freely &mdash; your words are adapted to each model's preferred style.</small>
           </label>
 
           <div class="action-row">
@@ -259,11 +301,266 @@
       </div>
     </section>
 
-    <section class="module" data-tab="image" aria-label="Image lab">
+    <section class="module" data-page="voice-convert" aria-label="Voice conversion">
+      <header class="module-head">
+        <h2>Voice conversion</h2>
+        <span class="module-route">POST /v1/audio/conversions</span>
+        <span class="module-note">source performance &rarr; target identity</span>
+      </header>
+      <div class="model-chooser" aria-label="Voice conversion models">
+        <div class="model-chooser-heading">
+          <span>Model chooser</span>
+          <small>Voice conversion models only</small>
+        </div>
+        <div class="model-chooser-fields">
+          <label class="model-choice">
+            <span>Conversion model</span>
+            <select class="text-input" id="conversionModelSelect">
+              <option value="">Checking compatible models&hellip;</option>
+            </select>
+            <small id="conversionModelHint">The converter becomes available when a compatible audio.cpp model is installed.</small>
+          </label>
+          <a class="secondary-link conversion-install-link" id="conversionModelInstallLink" href="#models" hidden>Open Models to install</a>
+        </div>
+      </div>
+      <div class="module-body conversion-workspace">
+        <form id="conversionForm" class="conversion-form">
+          <div class="conversion-input-grid">
+            <section class="conversion-deck" aria-labelledby="conversionSourceTitle">
+              <header class="conversion-deck-head">
+                <span class="conversion-step">1</span>
+                <div>
+                  <h3 id="conversionSourceTitle">Performance</h3>
+                  <p>Keep these words, timing, and expression.</p>
+                </div>
+              </header>
+              <audio id="conversionSourceAudio" controls></audio>
+              <div class="conversion-button-row">
+                <button class="record-button" id="conversionSourceRecordButton" type="button">Hold to record</button>
+                <label class="secondary file-button">Choose audio<input id="conversionSourceInput" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.mp4,.webm"></label>
+                <button class="plain" id="conversionSourceClearButton" type="button" disabled>Clear</button>
+              </div>
+              <div class="vu"><span id="conversionSourceVu"></span></div>
+              <small class="hint" id="conversionSourceStatus">Record or load the performance to convert.</small>
+            </section>
+
+            <div class="conversion-bridge" aria-hidden="true">
+              <span></span>
+              <b>&rarr;</b>
+            </div>
+
+            <section class="conversion-deck" aria-labelledby="conversionTargetTitle">
+              <header class="conversion-deck-head">
+                <span class="conversion-step">2</span>
+                <div>
+                  <h3 id="conversionTargetTitle">Target voice</h3>
+                  <p>Choose the identity the performance becomes.</p>
+                </div>
+              </header>
+              <label class="field conversion-library-choice">
+                <span>Saved voice</span>
+                <select class="text-input" id="conversionTargetVoiceSelect">
+                  <option value="">New recording or upload</option>
+                </select>
+              </label>
+              <audio id="conversionTargetAudio" controls></audio>
+              <div class="conversion-button-row">
+                <button class="record-button" id="conversionTargetRecordButton" type="button">Hold to record</button>
+                <label class="secondary file-button">Choose audio<input id="conversionTargetInput" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.mp4,.webm"></label>
+                <button class="plain" id="conversionTargetClearButton" type="button" disabled>Clear</button>
+              </div>
+              <div class="vu"><span id="conversionTargetVu"></span></div>
+              <small class="hint" id="conversionTargetStatus">Use a clean target sample or select a saved voice.</small>
+            </section>
+          </div>
+
+          <div class="error-box" id="conversionErrorBox" role="alert" hidden></div>
+          <button class="primary conversion-submit" id="conversionSubmitButton" type="submit" disabled>Convert voice</button>
+        </form>
+
+        <section class="conversion-output" aria-labelledby="conversionOutputTitle">
+          <header class="conversion-output-head">
+            <span class="conversion-step">3</span>
+            <div>
+              <h3 id="conversionOutputTitle">Result</h3>
+              <p id="conversionOutputStatus">Your converted performance will appear here.</p>
+            </div>
+          </header>
+          <audio id="conversionOutputAudio" controls></audio>
+          <div class="action-row conversion-output-actions">
+            <button class="secondary" id="conversionSaveWavButton" type="button" disabled>Save WAV</button>
+            <button class="secondary" id="conversionLibraryButton" type="button" disabled>Save to library</button>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section class="module music-tool" data-page="music-generation" aria-label="Music and sound effects">
+      <header class="module-head">
+        <h2>Music &amp; SFX</h2>
+        <span class="module-route">POST /v1/audio/music</span>
+        <span class="module-note">music now &middot; story sound later</span>
+      </header>
+      <div class="model-chooser" aria-label="Music and sound effects models">
+        <div class="model-chooser-heading">
+          <span>Model chooser</span>
+          <small>Music models available now</small>
+        </div>
+        <div class="model-chooser-fields">
+          <label class="model-choice">
+            <span>Music model</span>
+            <select class="text-input" id="musicModelSelect" disabled>
+              <option>Checking available models&hellip;</option>
+            </select>
+            <small id="musicModelHint">Only locally installed audio.cpp music models are selectable.</small>
+          </label>
+          <label class="model-choice">
+            <span>Operation</span>
+            <select class="text-input" id="musicModeSelect">
+              <option value="text2music">Create from a brief</option>
+              <option value="complete">Continue a track</option>
+              <option value="cover">Make a cover</option>
+              <option value="repaint">Replace a section</option>
+              <option value="lego">Add or transform a layer</option>
+              <option value="extract">Extract a stem</option>
+              <option value="cover-nofsq">Cover without FSQ</option>
+            </select>
+            <small id="musicModeHint">No source recording is needed.</small>
+          </label>
+        </div>
+        <a class="secondary-link music-install-link" id="musicModelInstallLink" href="#models" hidden>Open Models to install</a>
+      </div>
+
+      <div class="module-body music-workspace">
+        <form id="musicForm" class="music-form">
+          <div class="music-desk">
+            <section class="music-composer" aria-labelledby="musicComposerTitle">
+              <header class="music-panel-head">
+                <span class="music-step">1</span>
+                <div>
+                  <h3 id="musicComposerTitle">Direction</h3>
+                  <p>Describe the style, instruments, mood, and structure.</p>
+                </div>
+              </header>
+              <label class="field">
+                <span>Music brief</span>
+                <textarea id="musicPromptInput" rows="5" maxlength="4000" placeholder="Uplifting synth-pop with bright arpeggios, driving drums, a strong chorus, and a clean modern mix" required></textarea>
+              </label>
+              <label class="field">
+                <span>Lyrics <em>optional</em></span>
+                <textarea id="musicLyricsInput" rows="7" maxlength="32768" placeholder="[Verse]\nWrite lyrics here, or leave blank for instrumental music."></textarea>
+              </label>
+            </section>
+
+            <section class="music-source" aria-labelledby="musicSourceTitle">
+              <header class="music-panel-head">
+                <span class="music-step">2</span>
+                <div>
+                  <h3 id="musicSourceTitle">Source &amp; shape</h3>
+                  <p id="musicSourceRequirement">Source audio is optional.</p>
+                </div>
+              </header>
+              <audio id="musicSourceAudio" controls></audio>
+              <div class="music-source-buttons">
+                <button class="record-button" id="musicSourceRecordButton" type="button">Hold to record</button>
+                <label class="secondary file-button">Choose audio<input id="musicSourceInput" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.mp4,.webm"></label>
+                <button class="plain" id="musicSourceClearButton" type="button" disabled>Clear</button>
+              </div>
+              <div class="vu"><span id="musicSourceVu"></span></div>
+              <small class="hint" id="musicSourceStatus">Add a reference only when the selected operation uses one.</small>
+              <button class="secondary music-analyze" id="musicAnalyzeButton" type="button" disabled>Analyze source</button>
+              <div class="music-analysis" id="musicAnalysis" hidden>
+                <span>Source notes</span>
+                <p id="musicAnalysisText"></p>
+                <button class="plain" id="musicUseAnalysisButton" type="button">Use caption as brief</button>
+              </div>
+
+              <div class="music-control-grid">
+                <label class="field compact-field">
+                  <span>Duration</span>
+                  <input class="text-input" id="musicDurationInput" type="number" min="5" max="240" step="1" value="30">
+                  <small class="hint">seconds</small>
+                </label>
+                <label class="field compact-field">
+                  <span>Seed</span>
+                  <input class="text-input" id="musicSeedInput" type="number" min="-1" step="1" value="-1">
+                  <small class="hint">-1 = random</small>
+                </label>
+              </div>
+
+              <details class="music-advanced">
+                <summary>Generation detail</summary>
+                <div class="music-control-grid">
+                  <label class="field compact-field">
+                    <span>Steps</span>
+                    <input class="text-input" id="musicStepsInput" type="number" min="1" max="20" step="1" value="8">
+                  </label>
+                  <label class="field compact-field">
+                    <span>Guidance</span>
+                    <input class="text-input" id="musicGuidanceInput" type="number" min="0" max="10" step="0.25" value="1">
+                  </label>
+                  <label class="field compact-field" id="musicTrackField" hidden>
+                    <span>Track or stem</span>
+                    <input class="text-input" id="musicTrackInput" type="text" maxlength="120" placeholder="vocals, guitar, drums&hellip;">
+                  </label>
+                </div>
+                <div class="music-repaint-controls" id="musicRepaintControls" hidden>
+                  <div class="music-control-grid">
+                    <label class="field compact-field"><span>Replace from</span><input class="text-input" id="musicRepaintStartInput" type="number" min="0" step="0.1" value="0"></label>
+                    <label class="field compact-field"><span>Replace to</span><input class="text-input" id="musicRepaintEndInput" type="number" min="0.1" step="0.1" value="10"></label>
+                  </div>
+                  <div class="music-control-grid">
+                    <label class="field compact-field"><span>Blend</span><select class="text-input" id="musicRepaintModeSelect"><option value="balanced">Balanced</option><option value="conservative">Conservative</option><option value="aggressive">Aggressive</option></select></label>
+                    <label class="field compact-field"><span>Strength</span><input class="text-input" id="musicRepaintStrengthInput" type="number" min="0" max="1" step="0.05" value="0.5"></label>
+                  </div>
+                </div>
+              </details>
+            </section>
+          </div>
+          <div class="error-box" id="musicErrorBox" role="alert" hidden></div>
+          <button class="primary music-generate" id="musicGenerateButton" type="submit" disabled>Generate music</button>
+        </form>
+
+        <section class="music-output" aria-labelledby="musicOutputTitle">
+          <header class="music-panel-head">
+            <span class="music-step">3</span>
+            <div><h3 id="musicOutputTitle">Track</h3><p id="musicOutputStatus">Your generated track will appear here.</p></div>
+          </header>
+          <audio id="musicOutputAudio" controls></audio>
+          <div class="action-row music-output-actions">
+            <button class="secondary" id="musicSaveWavButton" type="button" disabled>Save WAV</button>
+            <button class="secondary" id="musicReuseButton" type="button" disabled>Use as source</button>
+            <button class="secondary" id="musicLibraryButton" type="button" disabled>Save to library</button>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section class="module" data-page="image-generation" aria-label="Image generation">
       <header class="module-head">
         <h2>Image lab</h2>
         <span class="module-route">POST /v1/images/generations</span>
       </header>
+      <div class="model-chooser" aria-label="Image generation models">
+        <div class="model-chooser-heading">
+          <span>Model chooser</span>
+          <small>Generation and image-understanding models</small>
+        </div>
+        <div class="model-chooser-fields">
+          <label class="model-choice" id="imageModelField">
+            <span>Generation model</span>
+            <select class="text-input" id="imageModelSelect" title="Switching models reloads the stable-diffusion.cpp server" disabled>
+              <option>Checking available models&hellip;</option>
+            </select>
+            <small>Choose only from models configured for image generation.</small>
+          </label>
+          <label class="model-choice">
+            <span>Vision model</span>
+            <output class="model-fixed-value" id="visionModelSelect" data-model-engines="vision" data-model-families="llama-gguf-vlm" data-model-state="checking">Checking configured models&hellip;</output>
+            <small>The fixed vision model used by Describe image.</small>
+          </label>
+        </div>
+      </div>
       <div class="module-body image-panel">
         <form class="image-form" id="imageForm">
           <label class="field">
@@ -281,12 +578,6 @@
               <button type="button" class="preset" data-size="768x768">768</button>
               <button type="button" class="preset" data-size="1024x1024">1024</button>
             </div>
-          </div>
-
-          <div class="field compact-field" id="imageModelField" hidden>
-            <span class="field-label" id="imageModelLabel">Model</span>
-            <select class="text-input compact-select" id="imageModelSelect" aria-labelledby="imageModelLabel" title="Which diffusion model generates; switching loads the model into VRAM"></select>
-            <small class="hint">Swapping models reloads gigabytes into VRAM — expect a wait each time, narrated bottom-right. A model that fails to load reverts to the previous one.</small>
           </div>
 
           <div class="field compact-field">
@@ -341,12 +632,40 @@
       </div>
     </section>
 
-    <section class="module" data-tab="story" aria-label="Story desk">
+    <section class="module" data-page="story" aria-label="Story desk">
       <header class="module-head">
         <h2>Story desk</h2>
         <span class="module-route">POST /v1/stories</span>
         <span class="module-note" id="storyModeNote">sources &rarr; facts &rarr; script &rarr; audio</span>
       </header>
+      <div class="model-chooser" aria-label="Story models">
+        <div class="model-chooser-heading">
+          <span>Model chooser</span>
+          <small>Writing and performance models used by this tool</small>
+        </div>
+        <div class="model-chooser-fields">
+          <label class="model-choice" id="storyModelField">
+            <span>Writing model</span>
+            <select class="text-input" id="storyModelSelect" disabled>
+              <option>Checking available models&hellip;</option>
+            </select>
+            <small>Shared with spoken replies. Switching reloads the llama.cpp server.</small>
+          </label>
+          <label class="model-choice">
+            <span>Speech model</span>
+            <output class="model-fixed-value" id="storySpeechModelSelect" data-model-engines="audio" data-model-families="qwen3-tts" data-model-state="checking">Checking configured models&hellip;</output>
+            <small>The configured audio.cpp model that performs the finished script.</small>
+          </label>
+        </div>
+        <div class="warn-box model-chooser-warning" id="storyModelWarn" hidden>
+          <span id="storyModelWarnText"></span>
+          <div class="action-row">
+            <button class="secondary compact-button" id="storyModelMoeButton" type="button" hidden>Load with experts on CPU</button>
+            <button class="secondary compact-button" id="storyModelAnywayButton" type="button">Load anyway</button>
+            <button class="plain compact-button" id="storyModelCancelButton" type="button">Cancel</button>
+          </div>
+        </div>
+      </div>
       <div class="module-body story-panel">
         <form class="story-form" id="storyForm">
           <div class="mode-switch" id="storyModeSwitch" role="radiogroup" aria-label="Story mode">
@@ -466,12 +785,28 @@
       </div>
     </section>
 
-    <section class="module" data-tab="audiobook" aria-label="Audiobook desk">
+    <section class="module" data-page="audiobook" aria-label="Audiobook desk">
       <header class="module-head">
         <h2>Audiobook</h2>
         <span class="module-route">POST /v1/audiobooks</span>
         <span class="module-note">document &rarr; chunks &rarr; narration &rarr; one WAV</span>
       </header>
+      <div class="model-chooser" aria-label="Audiobook models">
+        <div class="model-chooser-heading">
+          <span>Model chooser</span>
+          <small>Narration models compatible with long-form production</small>
+        </div>
+        <div class="model-chooser-fields">
+          <label class="model-choice">
+            <span>Narration model</span>
+            <select class="text-input" id="audiobookEngineSelect">
+              <option id="audiobookAudioOption" value="audio" selected disabled>Qwen3-TTS 0.6B Base (checking configuration)</option>
+              <option id="audiobookDramaBoxOption" value="dramabox" disabled>DramaBox Q8_0 (not configured)</option>
+            </select>
+            <small>Only configured models that support audiobook narration are enabled.</small>
+          </label>
+        </div>
+      </div>
       <div class="module-body workspace">
         <form class="control-panel" id="audiobookForm">
           <label class="field">
@@ -504,14 +839,6 @@
               <audio id="audiobookVoicePreview" controls preload="metadata"></audio>
               <button class="secondary-button" id="audiobookVoiceClear" type="button">Clear reference</button>
             </div>
-          </label>
-          <label class="field compact-field">
-            <span>Narration engine</span>
-            <select class="text-input" id="audiobookEngineSelect">
-              <option id="audiobookAudioOption" value="audio" selected disabled>Fast local narrator (checking configuration)</option>
-              <option id="audiobookDramaBoxOption" value="dramabox" disabled>DramaBox expressive (not configured)</option>
-            </select>
-            <small class="hint">Fast local stays the default. Available choices follow the engines in this cpp-studio configuration.</small>
           </label>
           <div class="field" id="audiobookDirectionField" hidden>
             <span>Factual performance prompt</span>
@@ -636,12 +963,27 @@
       </div>
     </section>
 
-    <section class="module" data-tab="extract" aria-label="The Extractor">
+    <section class="module" data-pages="transcription extract" aria-label="Transcription and extraction">
       <header class="module-head">
-        <h2>Extract</h2>
+        <h2 id="extractToolTitle">Transcription &amp; extraction</h2>
         <span class="module-route">POST /v1/audio/transcriptions?format=segments</span>
-        <span class="module-note">load &rarr; transcribe &rarr; mark &rarr; extract &rarr; clone</span>
+        <span class="module-note" id="extractToolNote">load &rarr; transcribe &rarr; mark &rarr; extract &rarr; clone</span>
       </header>
+      <div class="model-chooser" aria-label="Transcription models">
+        <div class="model-chooser-heading">
+          <span>Model chooser</span>
+          <small>Speech-to-text models only</small>
+        </div>
+        <div class="model-chooser-fields">
+          <label class="model-choice">
+            <span>Transcription model</span>
+            <select class="text-input" id="extractModelSelect" title="Switching models reloads the whisper.cpp server" disabled>
+              <option>Checking available models&hellip;</option>
+            </select>
+            <small>Choose between the configured Whisper accuracy and speed profiles.</small>
+          </label>
+        </div>
+      </div>
       <div class="module-body">
         <div class="extract-toolbar">
           <label class="file-button">
@@ -649,7 +991,6 @@
             <span>Load audio / video</span>
           </label>
           <span id="extractFileStatus">Nothing loaded</span>
-          <select class="text-input compact-select" id="extractModelSelect" title="Which whisper model transcribes; switching loads the model into VRAM" hidden></select>
           <button class="secondary compact-button" id="extractTranscribeButton" type="button" disabled>Transcribe</button>
           <input class="text-input compact-number" id="extractSpeakersInput" type="number" min="2" max="26" placeholder="auto" title="Number of speakers, if you know it" hidden>
           <button class="secondary compact-button" id="extractDiarizeButton" type="button" disabled hidden>Detect speakers</button>
@@ -691,27 +1032,38 @@
       </div>
     </section>
 
-    <section class="module" data-tab="library" aria-label="Studio library">
+    <section class="module" data-page="library" aria-label="Studio library">
       <header class="module-head">
         <h2>Library</h2>
-        <span class="module-route">GET /v1/library &middot; GET /v1/jobs</span>
+        <span class="module-route">GET /v1/library + collections</span>
         <button class="secondary compact-button" id="libraryRefreshButton" type="button">Refresh</button>
       </header>
       <div class="module-body">
-        <div class="story-library-header">
-          <span class="source-label">Jobs</span>
+        <details class="library-jobs-group" id="libraryJobsGroup">
+          <summary class="library-jobs-summary">
+            <span>
+              <strong>Current work</strong>
+              <small>Generation, verification, and installation jobs.</small>
+            </span>
+            <span class="library-group-count" id="libraryJobsCount">0 jobs</span>
+          </summary>
+          <div class="jobs-list" id="jobsList">No jobs yet.</div>
+        </details>
+        <div class="library-toolbar">
+          <label class="library-filter" for="libraryFilterInput">
+            <span class="source-label">Filter library</span>
+            <input class="text-input" id="libraryFilterInput" type="search" placeholder="Name, words, source, model, or type">
+          </label>
+          <button class="secondary compact-button" id="libraryFilterClearButton" type="button" hidden>Clear filter</button>
         </div>
-        <div class="jobs-list" id="jobsList">No jobs yet.</div>
-        <div class="story-library-header">
-          <span class="source-label">Saved items</span>
-        </div>
-        <div class="library-list" id="libraryList">Nothing saved yet.</div>
-        <small class="hint">Saved audio and images live in out/library on disk and survive restarts. Stories keep their own shelf on the Story tab.</small>
+        <div class="library-filter-empty" id="libraryFilterEmpty" hidden>No library items match this filter.</div>
+        <div class="library-list" id="libraryList">Loading saved work&hellip;</div>
+        <small class="hint">The Library gathers every durable studio collection in one place. Each item stays in its existing voice, story, audiobook, or output store on disk.</small>
         <p class="error-box" id="libraryErrorBox" hidden></p>
       </div>
     </section>
 
-    <section class="module" data-tab="models" aria-label="Model catalog">
+    <section class="module" data-page="models" aria-label="Model catalog">
       <header class="module-head">
         <h2>Models</h2>
         <span class="module-route">GET /v1/models/catalog</span>
@@ -721,11 +1073,11 @@
       <div class="module-body">
         <div class="models-summary" id="modelsSummary">No catalog loaded yet.</div>
         <div class="models-list" id="modelsList"></div>
-        <small class="hint">The manifest (models.json) declares every model the engines need; this view checks what is actually on disk under the configured root.</small>
+        <small class="hint">Open a task group to inspect its models. The manifest (models.json) declares every model the engines need; this view checks what is actually on disk under the configured root.</small>
       </div>
     </section>
 
-    <section class="module" data-tab="engines" aria-label="Engine rack">
+    <section class="module" data-page="engines" aria-label="Engine rack">
       <header class="module-head">
         <h2>Engine rack</h2>
         <span class="module-route">GET /health</span>
