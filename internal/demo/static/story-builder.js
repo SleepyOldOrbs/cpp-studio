@@ -1023,10 +1023,16 @@
     return "Utility audio";
   }
 
+  function trackTypeForMediaRole(role) {
+    if (role === "sfx") return "sfx";
+    if (role === "music") return "music";
+    return "";
+  }
+
   async function placeLibraryAudio(track, asset, startMS) {
     if (serverMutationPending()) return;
     const project = currentProject();
-    const compatibleType = asset.mediaRole === "sfx" ? "sfx" : (asset.mediaRole === "music" ? "music" : "");
+    const compatibleType = trackTypeForMediaRole(asset.mediaRole);
     if (!compatibleType || track.type !== compatibleType) {
       setVoiceLibraryStatus(`${asset.name} is ${mediaRoleLabel(asset.mediaRole)} and cannot be added to ${track.name}.`, "failed");
       return;
@@ -1074,7 +1080,7 @@
   }
 
   function addLibraryAudioToCompatibleTrack(asset) {
-    const trackType = asset.mediaRole === "sfx" ? "sfx" : (asset.mediaRole === "music" ? "music" : "");
+    const trackType = trackTypeForMediaRole(asset.mediaRole);
     const project = currentProject();
     const track = project?.tracks.find((item) => item.type === trackType);
     if (!track) {

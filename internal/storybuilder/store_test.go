@@ -83,6 +83,19 @@ func TestPlaceLibraryAudioCopiesOnceAndSurvivesLibraryDeletion(t *testing.T) {
 			t.Fatalf("missing project media was silent: %+v", affected)
 		}
 	}
+
+	if err := os.WriteFile(mediaPath, []byte("not a WAV file"), 0o644); err != nil {
+		t.Fatalf("corrupt project media: %v", err)
+	}
+	corrupt, ok, err := NewStore(root).Get(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("reopen unreadable media: ok=%v err=%v", ok, err)
+	}
+	for _, affected := range corrupt.Tracks[0].Clips {
+		if affected.MediaError == "" {
+			t.Fatalf("unreadable project media was silent: %+v", affected)
+		}
+	}
 }
 
 func TestPlaceLibraryAudioRejectsIncompatibleOrUntrustedInputWithoutMutation(t *testing.T) {

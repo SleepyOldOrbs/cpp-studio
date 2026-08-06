@@ -176,8 +176,15 @@ func (s *Store) Get(id string) (Item, bool, error) {
 		return Item{}, false, fmt.Errorf("decode item metadata: %w", err)
 	}
 	if item.Kind == "audio" {
-		if item.MediaRole == "" {
-			item.MediaRole, _ = parseMediaRole(mediaRoleMetadata(item.Meta))
+		storedRole := string(item.MediaRole)
+		if storedRole == "" {
+			storedRole = mediaRoleMetadata(item.Meta)
+		}
+		item.MediaRole, err = parseMediaRole(storedRole)
+		if err != nil {
+			// Older metadata was not constrained to the current role vocabulary.
+			// Keep that audio usable as utility audio; new writes remain strict.
+			item.MediaRole = MediaRoleUtility
 		}
 		if item.DurationMS == 0 {
 			artifact, readErr := os.ReadFile(filepath.Join(s.rootDir, id, item.Filename))

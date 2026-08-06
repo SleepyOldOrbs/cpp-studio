@@ -2,7 +2,9 @@ package library
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -66,7 +68,8 @@ func TestSaveListGetDelete(t *testing.T) {
 }
 
 func TestAudioRoleAndDurationAreCanonical(t *testing.T) {
-	s := NewStore(t.TempDir())
+	root := t.TempDir()
+	s := NewStore(root)
 	item, err := s.Save("audio", "Door slam", wav.SyntheticTone(16000), map[string]string{"media_role": "sfx"})
 	if err != nil {
 		t.Fatalf("save classified audio: %v", err)
@@ -88,6 +91,21 @@ func TestAudioRoleAndDurationAreCanonical(t *testing.T) {
 	}
 	if _, err := s.Save("audio", "Bad role", wav.SyntheticTone(1600), map[string]string{"media_role": "dialogue"}); err == nil {
 		t.Fatal("unsupported audio role was accepted")
+	}
+
+	legacy := utility
+	legacy.MediaRole = ""
+	legacy.Meta = map[string]string{"media_role": "old-custom-role"}
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("encode legacy metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, legacy.ID, "item.json"), encoded, 0o644); err != nil {
+		t.Fatalf("write legacy metadata: %v", err)
+	}
+	loadedLegacy, ok, err := s.Get(legacy.ID)
+	if err != nil || !ok || loadedLegacy.MediaRole != MediaRoleUtility {
+		t.Fatalf("legacy audio role = %q ok=%v err=%v, want utility", loadedLegacy.MediaRole, ok, err)
 	}
 }
 

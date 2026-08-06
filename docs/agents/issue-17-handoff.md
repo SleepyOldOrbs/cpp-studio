@@ -47,6 +47,12 @@ branch `codex/story-builder-library-audio`.
 - The browser dock now loads `/v1/library`, groups reusable audio by role with duration, and provides
   drag-and-drop plus named Add buttons. Placement is an atomic server mutation guarded against concurrent edits.
 - Incompatible drops are visibly rejected before mutation; missing media is visible on the clip and Selection panel.
+- Cohesive feature commit: `7cbad5b feat: place reusable Story Builder audio (#17)`.
+- Code review completed against `origin/main` on both Standards and issue #17 Spec axes.
+- Standards finding addressed: unknown legacy audio roles now degrade safely to utility audio while new writes remain strict.
+- Standards judgement addressed: the repeated browser media-role-to-track mapping now has one small helper.
+- Spec finding addressed: Store coverage now corrupts the project-owned WAV and proves unreadable media is an explicit clip error.
+- Standards and Spec re-reviews report no remaining actionable findings.
 
 ## Verification log
 
@@ -59,9 +65,14 @@ branch `codex/story-builder-library-audio`.
 - `go test ./... -count=1` — pass.
 - `go vet ./...` — pass.
 - `scripts/verify.ps1` — pass, including fixture Gateway/UI/package smoke coverage.
+- Post-review `go test ./internal/library ./internal/storybuilder -count=1` — pass.
+- Post-review `node --check internal/demo/static/story-builder.js` — pass.
+- Post-review `go test ./... -count=1` — pass.
+- Post-review `go vet ./...` — pass.
+- Post-review `scripts/smoke-story-builder-browser.ps1 -GatewayPort 8893 -OutDir .\\out\\story-builder-browser-smoke-17-review` — pass.
+- Post-review `git diff --check` — pass.
 
 ## Exact next step
 
-Commit the cohesive implementation, invoke `code-review` against `origin/main` and issue #17,
-address every actionable Standards and Spec finding, rerun proportional checks, and record the
-final commit and remaining publish/merge step here and on GitHub issue #17.
+Record the review-fix commit on GitHub issue #17, then—after user authorization—push the branch,
+open its PR, wait for CI, and merge it.
