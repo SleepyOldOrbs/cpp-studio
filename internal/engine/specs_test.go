@@ -342,6 +342,39 @@ func TestDramaBoxServerMappingPreservesExplicitZeroGuidance(t *testing.T) {
 	}
 }
 
+func TestOmniVoiceCharacterDirectionMapsToSpeechContracts(t *testing.T) {
+	request := SynthesisRequest{Text: "Keep the lamp lit.", EngineID: "omnivoice", Direction: "elderly, low pitch"}
+	voice := &Voice{RefWAVPath: `C:\voices\mara.wav`, RefText: "reference words"}
+
+	spec := SpeechVoiceSpecForRequest(request, voice)
+	args := spec.BuildArgs("", "out.wav")
+	want := []string{"--text", "Keep the lamp lit.", "--instruct", "elderly, low pitch", "--out", "out.wav"}
+	if len(args) != len(want) {
+		t.Fatalf("expected args %v, got %v", want, args)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("expected args %v, got %v", want, args)
+		}
+	}
+	if spec.OverrideArgs["--voice-ref"] != voice.RefWAVPath || spec.OverrideArgs["--reference-text"] != voice.RefText {
+		t.Fatalf("Actor Voice reference missing from preview spec: %+v", spec.OverrideArgs)
+	}
+
+	payload, err := MarshalSpeechServerRequest("tts", request, voice, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatal(err)
+	}
+	options, ok := body["options"].(map[string]any)
+	if !ok || options["instruct"] != "elderly, low pitch" || body["voice_ref"] != "C:/voices/mara.wav" {
+		t.Fatalf("OmniVoice server request lost direction or Actor Voice: %s", payload)
+	}
+}
+
 func TestVoiceDesignSpecSanitizesArgs(t *testing.T) {
 	spec := VoiceDesignSpec("Deep “gravelly” cowboy", "It’s a sample")
 

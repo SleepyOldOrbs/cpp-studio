@@ -69,6 +69,13 @@ unit behind `POST /v1/voice`. Takes the engine seam and a `ChatFunc` as
 injected dependencies, so the whole loop is testable without native binaries.
 The browser demo only records, uploads, and plays.
 
+The Voice Library uses two related terms. An **Actor Voice** is an existing
+recorded or designed reusable voice with its own reference WAV and transcript.
+A **Character Voice** is a durable child direction beneath one Actor Voice. It
+stores identity and performance direction, but never duplicates the parent's
+reference WAV. Its optional generated preview is replaceable evaluation data,
+not a Library asset or production take.
+
 ## Story (`internal/story`)
 
 The staged story pipeline behind `/v1/stories`, persisted atomically by the
@@ -106,22 +113,22 @@ one mutable file, which is what makes an edit visible. Because `Status`
 prefers a tracked in-memory job over the store, every take-room mutation must
 republish the manifest that job is serving.
 
-## Story Builder Project
+## Story Builder Project (`internal/storybuilder`)
 
-A separately saved, editable production made from ordered Timeline Tracks and
-Timeline Clips. It does not replace the Story pipeline; a retained Story may be
-opened into a Story Builder Project without changing the original.
+A Story Builder Project is one separately saved production owned by the
+Story Builder tool. Its manifest has a stable id, user-facing name, typed
+Dialogue/SFX/Music tracks, timeline clips, timestamps, and a monotonic revision.
+Tracks own stable identity, order, mute state, and optional Character Voice
+binding. Silence clips are timing-only metadata and do not own media bytes.
+Whole-project writes use the revision as an
+optimistic-concurrency boundary: a stale client receives a conflict instead of
+silently replacing newer work. Each project lives in its own directory under
+`out/story-builder-projects`; atomic manifest replacement and project-scoped
+deletion are owned by the project Store.
 
-## Actor Voice
-
-A reusable performer identity created from a recorded or designed voice. An
-Actor Voice is not a character and may parent multiple Character Voices.
-
-## Character Voice
-
-A named character performance derived from one Actor Voice, including the
-direction that distinguishes that character's delivery. Dialogue Tracks select
-a Character Voice rather than using an Actor Voice directly.
+The separate browser tool at `/demo/story-builder.html` owns project and typed
+track arrangement. Later Story Builder slices extend this aggregate's clips and
+voice bindings rather than creating a second persistence system.
 
 ## Timeline Track
 

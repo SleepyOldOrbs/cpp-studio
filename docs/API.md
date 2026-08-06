@@ -164,6 +164,38 @@ Statuses: `queued`, `running`, `complete`, `failed`, `cancelled`. The
 registry is in-memory coordination state (finished jobs are capped at 100 and
 forgotten on restart); artifacts always persist in their pipeline's store.
 
+## Story Builder Projects
+
+The separate Story Builder tool is served at `/demo/story-builder.html`.
+Project manifests persist under `out/story-builder-projects` and survive a
+Gateway restart.
+
+- `GET /v1/story-builder-projects` — list projects newest-updated first as
+  `{"projects":[...]}`.
+- `POST /v1/story-builder-projects` — create a blank project from
+  `{"name":"Production name"}`. Returns the project with `201`.
+- `GET /v1/story-builder-projects/{id}` — read one complete project manifest.
+- `PUT /v1/story-builder-projects/{id}` — replace the editable whole-project
+  state with `{"name":"New name","revision":1,"tracks":[...]}`. A successful
+  save increments `revision`; `tracks` is required so an older rename-only
+  client cannot erase a timeline, and a stale revision returns `409`.
+- `DELETE /v1/story-builder-projects/{id}` — delete only that project and
+  return `204`.
+
+Each track has a stable `id`, editable `name`, contiguous `order`, `type`
+(`dialogue`, `sfx`, or `music`), `muted` state, and `clips`. Dialogue tracks may
+be empty and unbound; a track containing a `dialogue` clip requires a
+`character_voice_id`. This slice's browser authors `silence` clips with stable
+ids, labels, and integer `start_ms` / `duration_ms` timing. Silence is manifest
+metadata and never creates audio bytes.
+
+Names are trimmed, required, and limited to 120 Unicode characters. Request
+objects reject unknown fields. The whole project is rejected for unknown track
+or clip types, duplicate ids, non-contiguous order, negative start times, or
+nonpositive durations. Invalid input returns `400`, missing projects return
+`404`, and storage failures return `500`. The browser autosaves project, track,
+and silence changes; Save Project forces the same atomic write immediately.
+
 ## Audiobooks
 
 Single-narrator document narration: upload a document, pick a voice, get one
@@ -540,6 +572,58 @@ Accepts a required multipart `source` WAV and optional `seed`. ACE-Step infers
 a caption, lyrics, BPM, key, and time signature where available and returns its
 JSON object. `seed=-1` resolves to 1234 so analysis is repeatable. The Studio
 can apply the returned caption to the editable music brief.
+
+## Actor Voices and Character Voices
+
+An Actor Voice is the existing reusable recorded or designed voice returned by
+`GET /v1/voices`. A Character Voice is a small durable child record that adds a
+name and performance direction beneath one Actor Voice without copying its
+reference WAV. The list response groups children under their parent:
+
+```json
+{
+  "voices": [{
+    "kind": "actor_voice",
+    "id": "actor-id",
+    "name": "Actor name",
+    "character_voices": [{
+      "id": "character-id",
+      "actor_voice_id": "actor-id",
+      "name": "Mara",
+      "direction": "older British woman, weathered and guarded",
+      "created_at": "...",
+      "updated_at": "..."
+    }]
+  }]
+}
+```
+
+Character Voice routes accept JSON bodies up to 64 KiB:
+
+- `GET /v1/voices/{actorVoiceId}/characters` lists that Actor Voice's children.
+- `POST /v1/voices/{actorVoiceId}/characters` creates one from
+  `{"name":"Mara","direction":"low and guarded"}` and returns `201`.
+- `GET /v1/character-voices/{id}` reads one.
+- `PUT /v1/character-voices/{id}` replaces its name and direction using the
+  same JSON shape while retaining its id, parent id, and creation time.
+- `DELETE /v1/character-voices/{id}` deletes the child and any evaluation
+  preview, returning `204`.
+- `POST /v1/character-voices/{id}/preview` accepts
+  `{"sample_text":"Keep the lamp lit."}` and returns the Character Voice with
+  `preview` metadata and `preview_audio_url`.
+- `GET /v1/character-voices/{id}/preview/audio` returns that WAV preview.
+
+Names are required and limited to 80 characters; directions are required and
+limited to 500; preview text is required and limited to 1000. Unknown Actor or
+Character Voice ids return `404`. Preview generation reserves the configured
+`omnivoice` engine through the normal speech seam and combines the Actor
+Voice's reference and transcript with the Character Voice direction. A busy
+engine returns `429`, an unavailable engine returns `503`, and neither failure
+creates preview metadata. A successful preview replaces the prior evaluation
+WAV. Editing direction clears the old preview; if any edit lands while a slow
+preview is generating, publication returns `409` rather than attaching stale
+audio to the changed Character Voice. Deleting an Actor Voice with children is
+blocked with `409` until the children are removed.
 
 ## POST /v1/voice
 

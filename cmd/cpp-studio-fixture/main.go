@@ -70,7 +70,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  cpp-studio-fixture server --host 127.0.0.1 --port 8799")
 	fmt.Fprintln(w, "  cpp-studio-fixture whisper -f <wav>")
 	fmt.Fprintln(w, "  cpp-studio-fixture speech --text <text> --out <path> [--voice-ref <wav> --reference-text <text>]")
-	fmt.Fprintln(w, "  cpp-studio-fixture design --instruct <description> --text <text> --out <path>")
+	fmt.Fprintln(w, "  cpp-studio-fixture design --instruct <description> --text <text> --out <path> [--voice-ref <wav> --reference-text <text>]")
 	fmt.Fprintln(w, "  cpp-studio-fixture image --prompt <prompt> --output <path> [--width <px> --height <px>]")
 	fmt.Fprintln(w, "  cpp-studio-fixture import --no-simulate --print <template> -o <path> <url>")
 	fmt.Fprintln(w, "  cpp-studio-fixture ffmpeg -encoders")
@@ -517,6 +517,8 @@ func runDesign(args []string, stdout, stderr io.Writer) error {
 	instruct := flags.String("instruct", "", "fixture/test helper voice design instruction")
 	text := flags.String("text", "", "fixture/test helper text to synthesize")
 	outPath := flags.String("out", "", "fixture/test helper WAV output path")
+	voiceRef := flags.String("voice-ref", "", "fixture/test helper Actor Voice reference WAV")
+	referenceText := flags.String("reference-text", "", "fixture/test helper Actor Voice transcript")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -525,6 +527,14 @@ func runDesign(args []string, stdout, stderr io.Writer) error {
 	}
 	if strings.TrimSpace(*text) == "" {
 		return errors.New("design --text must be non-empty")
+	}
+	if *voiceRef != "" {
+		if err := validateWAVFile(*voiceRef); err != nil {
+			return fmt.Errorf("design --voice-ref: %w", err)
+		}
+		if strings.TrimSpace(*referenceText) == "" {
+			return errors.New("design --voice-ref requires --reference-text")
+		}
 	}
 	if *outPath == "" {
 		return errors.New("design --out <path> is required")

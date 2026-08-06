@@ -61,10 +61,11 @@ type SynthesisOptions struct {
 // SynthesisRequest replaces the positional audiobook speech callback. Options
 // are empty for the legacy audio narrator and fully resolved for DramaBox.
 type SynthesisRequest struct {
-	Text     string           `json:"text,omitempty"`
-	VoiceID  string           `json:"voice_id,omitempty"`
-	EngineID string           `json:"engine_id"`
-	Options  SynthesisOptions `json:"options,omitempty"`
+	Text      string           `json:"text,omitempty"`
+	VoiceID   string           `json:"voice_id,omitempty"`
+	EngineID  string           `json:"engine_id"`
+	Direction string           `json:"direction,omitempty"`
+	Options   SynthesisOptions `json:"options,omitempty"`
 	// Voice is the reference resolved and frozen by the owning product before
 	// native work starts. It is runtime-only and never serialized.
 	Voice *Voice `json:"-"`
@@ -205,6 +206,16 @@ func finiteBetween(value, minimum, maximum float64) bool {
 // SpeechVoiceSpecForRequest owns the subprocess mapping for typed synthesis.
 func SpeechVoiceSpecForRequest(request SynthesisRequest, voice *Voice) Spec {
 	spec := SpeechVoiceSpecFor(request.EngineID, request.Text, voice)
+	if request.EngineID == "omnivoice" && strings.TrimSpace(request.Direction) != "" {
+		spec.BuildArgs = func(_, outPath string) []string {
+			return []string{
+				"--text", sanitizeSpeechText(request.Text),
+				"--instruct", sanitizeSpeechText(request.Direction),
+				"--out", outPath,
+			}
+		}
+		return spec
+	}
 	if request.EngineID != DramaBoxSpeechEngineID {
 		return spec
 	}
@@ -255,6 +266,8 @@ func MarshalSpeechServerRequest(model string, request SynthesisRequest, voice *V
 			"audio_chunk_duration_sec":  request.Options.AudioChunkDurationSec,
 			"cross_fade_duration_sec":   request.Options.CrossFadeDurationSec,
 		}
+	} else if request.EngineID == "omnivoice" && strings.TrimSpace(request.Direction) != "" {
+		payload.Options = map[string]any{"instruct": request.Direction}
 	}
 	return json.Marshal(payload)
 }

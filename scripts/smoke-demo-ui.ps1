@@ -10,7 +10,8 @@ param(
 # transcription, the voice loop with conversation history, voice cloning,
 # a DramaBox-routed factual audiobook with persisted provenance,
 # (create / list / play / speak-with / delete), image generation, and a
-# fixed-voice story with a stitched WAV artifact.
+# fixed-voice story with a stitched WAV artifact, and the separate Story
+# Builder Project typed-track contract.
 
 $ErrorActionPreference = "Stop"
 $env:Path = $env:Path + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
@@ -211,6 +212,44 @@ try {
     throw "demo styles.css is missing its marker"
   }
 
+  # Separate Story Builder assets and typed-track whole-project API.
+  $storyBuilderHTML = Invoke-WebRequest -Uri "$base/demo/story-builder.html" -UseBasicParsing
+  if ($storyBuilderHTML.Content -notlike "*storyBuilderAddDialogue*" -or $storyBuilderHTML.Content -notlike "*storyBuilderUndo*") {
+    throw "Story Builder is missing typed-track controls"
+  }
+  $storyBuilder = Invoke-RestMethod -Uri "$base/v1/story-builder-projects" -Method Post -ContentType "application/json" -Body '{"name":"Smoke timeline"}'
+  $storyBuilderUpdate = [ordered]@{
+    name = "Smoke timeline"
+    revision = $storyBuilder.revision
+    tracks = @(
+      [ordered]@{ id = "dialogue_smoke"; name = "Narrator"; type = "dialogue"; order = 0; muted = $false; clips = @() },
+      [ordered]@{ id = "sfx_smoke"; name = "Foley"; type = "sfx"; order = 1; muted = $true; clips = @(
+        [ordered]@{ id = "silence_smoke"; type = "silence"; label = "Hold"; start_ms = 500; duration_ms = 750 }
+      ) },
+      [ordered]@{ id = "music_smoke"; name = "Score"; type = "music"; order = 2; muted = $false; clips = @() }
+    )
+  }
+  $storyBuilderSaved = Invoke-RestMethod -Uri "$base/v1/story-builder-projects/$($storyBuilder.id)" -Method Put -ContentType "application/json" -Body ($storyBuilderUpdate | ConvertTo-Json -Depth 8)
+  if ($storyBuilderSaved.tracks.Count -ne 3 -or $storyBuilderSaved.tracks[1].clips[0].duration_ms -ne 750) {
+    throw "Story Builder typed timeline did not round-trip"
+  }
+  $invalidTimeline = $storyBuilderUpdate
+  $invalidTimeline.revision = $storyBuilderSaved.revision
+  $invalidTimeline.tracks[1].clips[0].start_ms = -1
+  try {
+    Invoke-RestMethod -Uri "$base/v1/story-builder-projects/$($storyBuilder.id)" -Method Put -ContentType "application/json" -Body ($invalidTimeline | ConvertTo-Json -Depth 8) | Out-Null
+    throw "expected invalid Story Builder timeline to be rejected"
+  } catch {
+    if ($_.Exception.Response.StatusCode.value__ -ne 400) {
+      throw "expected 400 for invalid Story Builder timeline, got: $_"
+    }
+  }
+  $storyBuilderReopened = Invoke-RestMethod "$base/v1/story-builder-projects/$($storyBuilder.id)"
+  if ($storyBuilderReopened.revision -ne $storyBuilderSaved.revision -or $storyBuilderReopened.tracks[1].clips[0].start_ms -ne 500) {
+    throw "invalid Story Builder save changed the durable project"
+  }
+  Invoke-RestMethod -Uri "$base/v1/story-builder-projects/$($storyBuilder.id)" -Method Delete | Out-Null
+
   # Transcription (live-transcribe request path).
   $transcription = Invoke-RestMethod -Uri "$base/v1/audio/transcriptions" -Method Post -Form @{ file = Get-Item $inputWav }
   if ($transcription.text -ne "fixture transcript") {
@@ -256,6 +295,52 @@ try {
   $speakBody = @{ input = "read this in the cloned voice"; voice = $clone.id; format = "wav" } | ConvertTo-Json
   $spoken = Invoke-WebRequest -Uri "$base/v1/audio/speech" -Method Post -ContentType "application/json" -Body $speakBody -UseBasicParsing
   Assert-WavBytes -Bytes $spoken.Content -Label "spoken text"
+
+  # Character Voice: author a durable direction beneath the Actor Voice,
+  # edit it, generate a replaceable evaluation preview through OmniVoice,
+  # and verify the grouped library response before removing it.
+  $character = Invoke-RestMethod -Uri "$base/v1/voices/$($clone.id)/characters" -Method Post -ContentType "application/json" -Body (@{
+    name = "Weathered Keeper"
+    direction = "older British woman, low and guarded"
+  } | ConvertTo-Json)
+  if (-not $character.id -or $character.actor_voice_id -ne $clone.id) {
+    throw "unexpected Character Voice response: $($character | ConvertTo-Json -Depth 4)"
+  }
+  $character = Invoke-RestMethod -Uri "$base/v1/character-voices/$($character.id)" -Method Put -ContentType "application/json" -Body (@{
+    name = "Mara"
+    direction = "older British woman, weathered, low and guarded"
+  } | ConvertTo-Json)
+  if ($character.name -ne "Mara" -or $character.direction -notlike "*weathered*") {
+    throw "Character Voice update was not retained"
+  }
+  $character = Invoke-RestMethod -Uri "$base/v1/character-voices/$($character.id)/preview" -Method Post -ContentType "application/json" -Body (@{
+    sample_text = "Keep the lamp lit."
+  } | ConvertTo-Json)
+  if (-not $character.preview_audio_url -or $character.preview.sample_text -ne "Keep the lamp lit.") {
+    throw "Character Voice preview metadata is incomplete"
+  }
+  $character = Invoke-RestMethod -Uri "$base/v1/character-voices/$($character.id)/preview" -Method Post -ContentType "application/json" -Body (@{
+    sample_text = "The preview has been replaced."
+  } | ConvertTo-Json)
+  if ($character.preview.sample_text -ne "The preview has been replaced.") {
+    throw "Character Voice replacement preview was not selected"
+  }
+  $characterPreview = Invoke-WebRequest -Uri "$base$($character.preview_audio_url)" -UseBasicParsing
+  Assert-WavBytes -Bytes $characterPreview.Content -Label "Character Voice preview"
+  $voices = Invoke-RestMethod "$base/v1/voices"
+  $groupedActor = $voices.voices | Where-Object { $_.id -eq $clone.id }
+  if (-not ($groupedActor.character_voices | Where-Object { $_.id -eq $character.id })) {
+    throw "Actor Voice did not group its Character Voice"
+  }
+  try {
+    Invoke-RestMethod -Uri "$base/v1/voices/$($clone.id)" -Method Delete | Out-Null
+    throw "expected Actor Voice deletion to be blocked while it has Character Voices"
+  } catch {
+    if ($_.Exception.Response.StatusCode.value__ -ne 409) {
+      throw "expected 409 deleting an Actor Voice with Character Voices, got: $_"
+    }
+  }
+  Invoke-RestMethod -Uri "$base/v1/character-voices/$($character.id)" -Method Delete | Out-Null
   Invoke-RestMethod -Uri "$base/v1/voices/$($clone.id)" -Method Delete | Out-Null
   $voices = Invoke-RestMethod "$base/v1/voices"
   if ($voices.voices | Where-Object { $_.id -eq $clone.id }) {

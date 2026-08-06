@@ -114,6 +114,173 @@ func TestStoreSaveListLoadDelete(t *testing.T) {
 	}
 }
 
+func TestUserCanAuthorCharacterVoicesBeneathOneActorVoice(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "voices")
+	store := NewStore(root)
+	actor, err := store.Save("Mara", "reference words", validWAVBytes(), false)
+	if err != nil {
+		t.Fatalf("save Actor Voice: %v", err)
+	}
+
+	keeper, err := store.CreateCharacterVoice(actor.ID, "Weathered keeper", "elderly, low pitch")
+	if err != nil {
+		t.Fatalf("create first Character Voice: %v", err)
+	}
+	guide, err := store.CreateCharacterVoice(actor.ID, "Harbour guide", "young adult, upbeat")
+	if err != nil {
+		t.Fatalf("create second Character Voice: %v", err)
+	}
+	if keeper.ID == guide.ID || keeper.ActorVoiceID != actor.ID || keeper.CreatedAt.IsZero() || keeper.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected Character Voices: keeper=%+v guide=%+v", keeper, guide)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".characters", keeper.ID, referenceWAVName)); !os.IsNotExist(err) {
+		t.Fatalf("Character Voice duplicated Actor Voice reference: %v", err)
+	}
+
+	characters, err := NewStore(root).ListCharacterVoices(actor.ID)
+	if err != nil {
+		t.Fatalf("list Character Voices: %v", err)
+	}
+	if len(characters) != 2 {
+		t.Fatalf("expected two Character Voices, got %+v", characters)
+	}
+
+	updated, err := store.UpdateCharacterVoice(keeper.ID, "Weathered lighthouse keeper", "elderly, whisper")
+	if err != nil {
+		t.Fatalf("edit Character Voice: %v", err)
+	}
+	if updated.Name != "Weathered lighthouse keeper" || updated.Direction != "elderly, whisper" ||
+		updated.ActorVoiceID != actor.ID || !updated.CreatedAt.Equal(keeper.CreatedAt) || !updated.UpdatedAt.After(keeper.UpdatedAt) {
+		t.Fatalf("unexpected updated Character Voice: %+v", updated)
+	}
+
+	if err := store.Delete(actor.ID); !errors.Is(err, ErrActorHasCharacters) {
+		t.Fatalf("delete Actor Voice with children error = %v, want ErrActorHasCharacters", err)
+	}
+	if err := store.DeleteCharacterVoice(keeper.ID); err != nil {
+		t.Fatalf("delete Character Voice: %v", err)
+	}
+	if _, ok, err := store.LoadCharacterVoice(keeper.ID); err != nil || ok {
+		t.Fatalf("deleted Character Voice still loads: ok=%v err=%v", ok, err)
+	}
+	remaining, err := store.ListCharacterVoices(actor.ID)
+	if err != nil || len(remaining) != 1 || remaining[0].ID != guide.ID {
+		t.Fatalf("unexpected remaining Character Voices: %+v err=%v", remaining, err)
+	}
+}
+
+func TestCharacterVoiceValidationRejectsInvalidParentsAndFields(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "voices"))
+	actor, err := store.Save("Mara", "reference words", validWAVBytes(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		actorID   string
+		voiceName string
+		direction string
+	}{
+		{name: "missing parent", actorID: "voice_missing", voiceName: "Keeper", direction: "elderly"},
+		{name: "traversal parent", actorID: "../outside", voiceName: "Keeper", direction: "elderly"},
+		{name: "missing name", actorID: actor.ID, direction: "elderly"},
+		{name: "long name", actorID: actor.ID, voiceName: strings.Repeat("n", MaxCharacterVoiceNameChars+1), direction: "elderly"},
+		{name: "missing direction", actorID: actor.ID, voiceName: "Keeper"},
+		{name: "long direction", actorID: actor.ID, voiceName: "Keeper", direction: strings.Repeat("d", MaxCharacterVoiceDirectionChars+1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := store.CreateCharacterVoice(tt.actorID, tt.voiceName, tt.direction); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+	characters, err := store.ListCharacterVoices(actor.ID)
+	if err != nil || len(characters) != 0 {
+		t.Fatalf("rejected Character Voices left partial records: %+v err=%v", characters, err)
+	}
+}
+
+func TestCharacterVoiceLimitsCountUnicodeCharacters(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "voices"))
+	actor, err := store.Save("Mara", "reference words", validWAVBytes(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	character, err := store.CreateCharacterVoice(
+		actor.ID,
+		strings.Repeat("é", MaxCharacterVoiceNameChars),
+		strings.Repeat("灯", MaxCharacterVoiceDirectionChars),
+	)
+	if err != nil {
+		t.Fatalf("valid Unicode Character Voice fields were rejected: %v", err)
+	}
+	if _, err := store.SaveCharacterPreview(
+		character.ID,
+		strings.Repeat("声", MaxCharacterPreviewTextChars),
+		wav.SyntheticTone(160),
+		character.UpdatedAt,
+	); err != nil {
+		t.Fatalf("valid Unicode preview text was rejected: %v", err)
+	}
+	if _, err := store.UpdateCharacterVoice(character.ID, strings.Repeat("é", MaxCharacterVoiceNameChars+1), "guarded"); err == nil {
+		t.Fatal("overlong Unicode Character Voice name was accepted")
+	}
+}
+
+func TestCharacterVoicePreviewIsReplaceableEvaluationData(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "voices"))
+	actor, err := store.Save("Mara", "reference words", validWAVBytes(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	character, err := store.CreateCharacterVoice(actor.ID, "Keeper", "elderly, low pitch")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.SaveCharacterPreview(character.ID, "First sample", wav.SyntheticTone(160), character.UpdatedAt)
+	if err != nil {
+		t.Fatalf("save first preview: %v", err)
+	}
+	firstPath, err := store.CharacterPreviewPath(first.ID)
+	if err != nil {
+		t.Fatalf("first preview path: %v", err)
+	}
+	if first.Preview == nil || first.Preview.SampleText != "First sample" {
+		t.Fatalf("missing first preview metadata: %+v", first)
+	}
+
+	time.Sleep(time.Millisecond)
+	second, err := store.SaveCharacterPreview(character.ID, "Replacement sample", wav.SyntheticTone(320), first.UpdatedAt)
+	if err != nil {
+		t.Fatalf("replace preview: %v", err)
+	}
+	secondPath, err := store.CharacterPreviewPath(second.ID)
+	if err != nil {
+		t.Fatalf("replacement preview path: %v", err)
+	}
+	if secondPath == firstPath || second.Preview == nil || second.Preview.SampleText != "Replacement sample" {
+		t.Fatalf("preview was not replaced: first=%q second=%+v path=%q", firstPath, second, secondPath)
+	}
+	if _, err := os.Stat(firstPath); !os.IsNotExist(err) {
+		t.Fatalf("superseded preview remains addressable: %v", err)
+	}
+
+	redirected, err := store.UpdateCharacterVoice(character.ID, "Keeper", "elderly, whisper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redirected.Preview != nil {
+		t.Fatalf("direction change retained stale preview: %+v", redirected.Preview)
+	}
+	if _, err := store.CharacterPreviewPath(character.ID); !errors.Is(err, ErrCharacterPreviewNotFound) {
+		t.Fatalf("preview path after direction change error = %v, want ErrCharacterPreviewNotFound", err)
+	}
+}
+
 func TestStoreProtectedVoiceRefusesDeletion(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "voices"))
 

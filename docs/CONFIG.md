@@ -351,7 +351,8 @@ The gateway appends request arguments to the configured base args:
 - `whisper`: appends `-f <uploaded-temp-wav>`.
 - `audio` / `dramabox`: append `--text <input> --out <generated-temp-wav>`, plus `--voice-ref <wav> --reference-text <transcript>` when the request selects a cloned voice (per-run values replace matching config flags in place). DramaBox also supports text-only requests with no reference. Its typed per-section options map to fixed allowlisted CLI/server fields; cpp-studio owns the seed and never accepts an arbitrary native argument from HTTP.
 - `sd`: appends `--prompt <prompt> --output <generated-temp-png>`, plus `--width <px> --height <px>` when the request includes `size`.
-- `voicedesign` / `omnivoice`: append `--instruct <description> --text <sample> --out <generated-temp-wav>`.
+- `voicedesign` / `omnivoice` voice design: append `--instruct <description> --text <sample> --out <generated-temp-wav>`.
+- `omnivoice` Character Voice preview: append `--voice-ref <Actor Voice wav> --reference-text <Actor Voice transcript> --instruct <Character Voice direction> --text <sample> --out <generated-temp-wav>`. Per-request values replace matching configured flags.
 - `voxcpm2`: appends `--text "(<description>)<sample>" --out <generated-temp-wav>`.
 - `vision`: a `server` engine like `llama`; the image description route infers `/v1/chat/completions` from its `healthUrl`.
 
@@ -449,6 +450,11 @@ Audiobook desk or the Resume/Restart/Discard API described in
 ```powershell
 py -3.11 ..\audio.cpp\tools\model_manager.py install voxcpm2_audiovae --source-file .\models\speech\voice-design\VoxCPM2\audiovae.pth --models-root .\models\speech\voice-design --overwrite
 ```
+
+The same `omnivoice` engine powers Character Voice previews. That path uses an
+Actor Voice reference plus the Character Voice direction, so operators who
+want previews must configure `omnivoice`; the ordinary `audio` Qwen clone path
+does not provide an equivalent instruction control.
 
 ## Local Examples
 

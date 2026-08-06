@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"cpp-studio/internal/wav"
@@ -80,9 +81,14 @@ type CloneSource struct {
 // ErrProtected reports a deletion attempt on a protected voice.
 var ErrProtected = errors.New("voice is protected and cannot be deleted")
 
+// ErrActorHasCharacters prevents removing the shared reference while one or
+// more Character Voices still inherit it.
+var ErrActorHasCharacters = errors.New("Actor Voice has Character Voices and cannot be deleted")
+
 // Store persists cloned voices, one directory per voice holding ref.wav and
 // manifest.json, in the same shape as the story store.
 type Store struct {
+	mu      sync.Mutex
 	rootDir string
 	vad     VADAnalyzer
 }
@@ -320,6 +326,9 @@ func (s *Store) ReferencePath(id string) (string, error) {
 }
 
 func (s *Store) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if err := validateVoiceID(id); err != nil {
 		return fmt.Errorf("voice not found")
 	}
@@ -327,6 +336,13 @@ func (s *Store) Delete(id string) error {
 		return err
 	} else if ok && clone.Protected {
 		return ErrProtected
+	}
+	characters, err := s.listCharacterVoices(id, false)
+	if err != nil {
+		return err
+	}
+	if len(characters) > 0 {
+		return ErrActorHasCharacters
 	}
 	if err := os.RemoveAll(filepath.Join(s.rootDir, id)); err != nil {
 		return fmt.Errorf("delete voice dir: %w", err)

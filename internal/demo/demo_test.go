@@ -338,6 +338,64 @@ func TestDevScreensaverAlwaysAnimates(t *testing.T) {
 	}
 }
 
+func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
+	tests := []struct {
+		path        string
+		contentType string
+		markers     []string
+	}{
+		{
+			path:        "/story-builder.html",
+			contentType: "text/html",
+			markers: []string{
+				"Story Builder",
+				"storyBuilderNewForm",
+				"storyBuilderProjectList",
+				"storyBuilderNameInput",
+				"storyBuilderSaveStatus",
+				"storyBuilderSaveButton",
+				"storyBuilderDeleteButton",
+				"storyBuilderAddDialogue",
+				"storyBuilderAddSFX",
+				"storyBuilderAddMusic",
+				"storyBuilderUndo",
+				"storyBuilderTracks",
+			},
+		},
+		{
+			path:        "/story-builder.js",
+			contentType: "javascript",
+			markers:     []string{"/v1/story-builder-projects", "scheduleAutosave", "saveProject", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS"},
+		},
+		{
+			path:        "/story-builder.css",
+			contentType: "text/css",
+			markers:     []string{".project-list", ".save-status", ".story-canvas", ".track-row", ".silence-clip", ".silence-block"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, test.path, nil)
+
+			Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if contentType := rec.Header().Get("Content-Type"); !strings.Contains(contentType, test.contentType) {
+				t.Fatalf("expected content type containing %q, got %q", test.contentType, contentType)
+			}
+			for _, marker := range test.markers {
+				if !strings.Contains(rec.Body.String(), marker) {
+					t.Fatalf("expected marker %q in %s", marker, test.path)
+				}
+			}
+		})
+	}
+}
+
 func TestHandlerServesAssets(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -358,6 +416,12 @@ func TestHandlerServesAssets(t *testing.T) {
 			needle:      "refreshVoices",
 		},
 		{
+			name:        "javascript character voices",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "createCharacterVoice",
+		},
+		{
 			name:        "css",
 			path:        "/styles.css",
 			contentType: "text/css",
@@ -368,6 +432,12 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/styles.css",
 			contentType: "text/css",
 			needle:      ".voice-item",
+		},
+		{
+			name:        "css character voices",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".character-voice-list",
 		},
 		{
 			name:        "javascript models catalog",
