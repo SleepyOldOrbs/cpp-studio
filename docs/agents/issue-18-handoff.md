@@ -65,9 +65,10 @@ branch `codex/story-builder-build-dialogue`.
   reservations for the build; its HTTP test proves both direct speech and
   Character Voice preview return busy. Full tests, vet, and a fresh browser
   journey on port 8901 are green.
+- Final Standards and Spec re-reviews of `origin/main...HEAD` report no
+  remaining or newly introduced actionable findings.
 
 ## Exact next step
 
-Commit the dual-reservation review fix and ask both review axes to confirm the
-final committed diff has no actionable findings. Then update issue #18 with the
-local evidence. Do not push or open a PR without explicit direction.
+Push `codex/story-builder-build-dialogue`, open its PR, wait for CI, and merge
+only when the user explicitly asks for that publication sequence.
