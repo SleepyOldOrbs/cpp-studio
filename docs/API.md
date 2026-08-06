@@ -164,6 +164,28 @@ Statuses: `queued`, `running`, `complete`, `failed`, `cancelled`. The
 registry is in-memory coordination state (finished jobs are capped at 100 and
 forgotten on restart); artifacts always persist in their pipeline's store.
 
+## Story Builder Projects
+
+The separate Story Builder tool is served at `/demo/story-builder.html`.
+Project manifests persist under `out/story-builder-projects` and survive a
+Gateway restart.
+
+- `GET /v1/story-builder-projects` — list projects newest-updated first as
+  `{"projects":[...]}`.
+- `POST /v1/story-builder-projects` — create a blank project from
+  `{"name":"Production name"}`. Returns the project with `201`.
+- `GET /v1/story-builder-projects/{id}` — read one complete project manifest.
+- `PUT /v1/story-builder-projects/{id}` — replace the editable whole-project
+  state for this slice with `{"name":"New name","revision":1}`. A successful
+  save increments `revision`; a stale revision returns `409`.
+- `DELETE /v1/story-builder-projects/{id}` — delete only that project and
+  return `204`.
+
+Names are trimmed, required, and limited to 120 bytes. Request objects reject
+unknown fields. Invalid input returns `400`, missing projects return `404`, and
+storage failures return `500`. The browser autosaves name edits and exposes a
+Save Project button that forces the same atomic write immediately.
+
 ## Audiobooks
 
 Single-narrator document narration: upload a document, pick a voice, get one

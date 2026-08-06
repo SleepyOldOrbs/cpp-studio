@@ -35,24 +35,26 @@ import (
 	"cpp-studio/internal/lifecycle"
 	"cpp-studio/internal/models"
 	"cpp-studio/internal/story"
+	"cpp-studio/internal/storybuilder"
 	"cpp-studio/internal/voice"
 	"cpp-studio/internal/wav"
 )
 
 type router struct {
-	mux        *http.ServeMux
-	cfg        config.Config
-	manager    *lifecycle.Manager
-	client     *http.Client
-	engines    engine.Invoker
-	stories    *story.Manager
-	voices     *voice.Store
-	catalog    models.Manifest
-	modelsRoot string
-	installer  *models.Installer
-	jobs       *jobs.Registry
-	library    *library.Store
-	audiobooks audiobook.Service
+	mux                  *http.ServeMux
+	cfg                  config.Config
+	manager              *lifecycle.Manager
+	client               *http.Client
+	engines              engine.Invoker
+	stories              *story.Manager
+	storyBuilderProjects *storybuilder.Store
+	voices               *voice.Store
+	catalog              models.Manifest
+	modelsRoot           string
+	installer            *models.Installer
+	jobs                 *jobs.Registry
+	library              *library.Store
+	audiobooks           audiobook.Service
 
 	// encodersMu guards the one-time probe of what the operator's ffmpeg can
 	// encode. The binary does not change under a running gateway.
@@ -98,15 +100,16 @@ const (
 // NewRouter builds the cpp-studio gateway HTTP routes.
 func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	r := &router{
-		cfg:       cfg,
-		manager:   manager,
-		client:    http.DefaultClient,
-		engines:   engine.NewRunner(cfg.Engines, manager),
-		voices:    voice.NewStore(""),
-		jobs:      jobs.NewRegistry(),
-		library:   library.NewStore(""),
-		gpuQuery:  defaultGPUQuery,
-		ggufCache: map[string]ggufCacheEntry{},
+		cfg:                  cfg,
+		manager:              manager,
+		client:               http.DefaultClient,
+		engines:              engine.NewRunner(cfg.Engines, manager),
+		voices:               voice.NewStore(""),
+		storyBuilderProjects: storybuilder.NewStore(""),
+		jobs:                 jobs.NewRegistry(),
+		library:              library.NewStore(""),
+		gpuQuery:             defaultGPUQuery,
+		ggufCache:            map[string]ggufCacheEntry{},
 	}
 	if whisperCfg, ok := cfg.Engines["whisper"]; ok && whisperVADConfigured(whisperCfg) {
 		r.voices = voice.NewStoreWithOptions("", voice.StoreOptions{AnalyzeVAD: func(wavBytes []byte) (time.Duration, error) {
@@ -206,6 +209,8 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/stories", r.handleStories)
 	mux.HandleFunc("/v1/stories/draft", r.handleStoryDraft)
 	mux.HandleFunc("/v1/stories/", r.handleStory)
+	mux.HandleFunc("/v1/story-builder-projects", r.handleStoryBuilderProjects)
+	mux.HandleFunc("/v1/story-builder-projects/", r.handleStoryBuilderProject)
 	mux.HandleFunc("/v1/audio/speech", r.handleSpeech)
 	mux.HandleFunc("/v1/audio/transcriptions", r.handleTranscriptions)
 	mux.HandleFunc("/v1/audio/diarization", r.handleDiarization)
@@ -3455,6 +3460,119 @@ func extractChatReply(body []byte) (string, error) {
 		return content, nil
 	}
 	return strings.TrimSpace(parsed.Choices[0].Text), nil
+}
+
+type storyBuilderProjectCreateRequest struct {
+	Name string `json:"name"`
+}
+
+type storyBuilderProjectUpdateRequest struct {
+	Name     string `json:"name"`
+	Revision int    `json:"revision"`
+}
+
+func (r *router) handleStoryBuilderProjects(w http.ResponseWriter, req *http.Request) {
+	switch req.Method {
+	case http.MethodGet:
+		projects, err := r.storyBuilderProjects.List()
+		if err != nil {
+			writeStoryBuilderProjectError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"projects": projects})
+	case http.MethodPost:
+		var body storyBuilderProjectCreateRequest
+		if err := decodeStoryBuilderProjectRequest(w, req, &body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		project, err := r.storyBuilderProjects.Create(body.Name)
+		if err != nil {
+			writeStoryBuilderProjectError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(project)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Request) {
+	id := strings.TrimPrefix(req.URL.Path, "/v1/story-builder-projects/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, req)
+		return
+	}
+	switch req.Method {
+	case http.MethodGet:
+		project, ok, err := r.storyBuilderProjects.Get(id)
+		if err != nil {
+			writeStoryBuilderProjectError(w, err)
+			return
+		}
+		if !ok {
+			writeStoryBuilderProjectError(w, storybuilder.ErrNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(project)
+	case http.MethodPut:
+		var body storyBuilderProjectUpdateRequest
+		if err := decodeStoryBuilderProjectRequest(w, req, &body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if body.Revision < 1 {
+			writeJSONError(w, http.StatusBadRequest, "revision must be positive")
+			return
+		}
+		project, err := r.storyBuilderProjects.Update(id, body.Revision, body.Name)
+		if err != nil {
+			writeStoryBuilderProjectError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(project)
+	case http.MethodDelete:
+		if err := r.storyBuilderProjects.Delete(id); err != nil {
+			writeStoryBuilderProjectError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.Header().Set("Allow", "GET, PUT, DELETE")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func decodeStoryBuilderProjectRequest(w http.ResponseWriter, req *http.Request, body any) error {
+	req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
+	decoder := json.NewDecoder(req.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(body); err != nil {
+		return fmt.Errorf("invalid JSON request: %v", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("invalid JSON request: expected one object")
+	}
+	return nil
+}
+
+func writeStoryBuilderProjectError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, storybuilder.ErrInvalid):
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, storybuilder.ErrNotFound):
+		writeJSONError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, storybuilder.ErrConflict):
+		writeJSONError(w, http.StatusConflict, err.Error())
+	default:
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+	}
 }
 
 func (r *router) handleStories(w http.ResponseWriter, req *http.Request) {
