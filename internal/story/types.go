@@ -390,6 +390,7 @@ type Summary struct {
 	CreatedAt       time.Time `json:"created_at"`
 	DurationSeconds int       `json:"duration_seconds"`
 	ArtifactURL     string    `json:"artifact_url"`
+	Exports         []Export  `json:"exports,omitempty"`
 }
 
 type ListResponse struct {

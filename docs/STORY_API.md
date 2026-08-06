@@ -244,6 +244,10 @@ entries carry `"status": "interrupted"` and no artifact URL; they can be
 resumed or discarded (below). The production currently running is listed by
 neither (poll its status URL instead).
 
+Finished stories may be explicitly removed from the Library with
+`DELETE /v1/stories/{id}`. Interrupted productions continue to use the
+validated `POST /v1/stories/{id}/discard` action below.
+
 Response:
 
 ```json

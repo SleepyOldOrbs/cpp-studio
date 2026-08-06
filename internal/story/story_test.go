@@ -867,6 +867,13 @@ func TestStoreSaveLoadListAndArtifactPath(t *testing.T) {
 	if err := store.Save(manifest, audio); err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
+	manifest.Renders = []Render{{
+		Revision: 1,
+		Exports:  []Export{{Format: "mp3", Bitrate: "192k", URL: "/v1/stories/" + manifest.ID + "/artifact/renders/render-001.mp3"}},
+	}}
+	if err := store.SaveManifest(manifest); err != nil {
+		t.Fatalf("SaveManifest returned error: %v", err)
+	}
 
 	loaded, ok, err := store.Load(manifest.ID)
 	if err != nil || !ok {
@@ -881,6 +888,9 @@ func TestStoreSaveLoadListAndArtifactPath(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].ID != manifest.ID {
 		t.Fatalf("unexpected list %+v", list)
+	}
+	if len(list[0].Exports) != 1 || list[0].Exports[0].Format != "mp3" {
+		t.Fatalf("expected exports in story summary, got %+v", list[0].Exports)
 	}
 	artifactPath, err := store.ArtifactPath(manifest.ID, StoryArtifactName)
 	if err != nil {

@@ -23,6 +23,7 @@
   let saveAgain = false;
   let editVersion = 0;
   let removedTracks = [];
+  let requestedProjectID = new URLSearchParams(window.location.search).get("project") || "";
 
   async function request(path, options = {}) {
     const response = await fetch(path, {
@@ -317,6 +318,12 @@
     try {
       const body = await request(apiRoot);
       projects = body.projects || [];
+      if (requestedProjectID) {
+        const id = requestedProjectID;
+        requestedProjectID = "";
+        await openProject(id);
+        return;
+      }
       showCurrent(currentProject());
     } catch (error) {
       projectList.textContent = `Could not load projects: ${error.message}`;

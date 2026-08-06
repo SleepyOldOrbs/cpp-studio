@@ -59,6 +59,9 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "handsFreeStatus") {
 		t.Fatalf("expected hands-free status chip marker, got %q", body)
 	}
+	if !strings.Contains(body, "voice-record-row") {
+		t.Fatalf("expected single-row voice transport marker, got %q", body)
+	}
 	if !strings.Contains(body, "storyLibraryButton") {
 		t.Fatalf("expected story library marker, got %q", body)
 	}
@@ -125,6 +128,49 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "tabBar") {
 		t.Fatalf("expected tab bar marker, got %q", body)
 	}
+	for _, marker := range []string{
+		`class="tab-bar"`,
+		`data-page-link="text-to-speech"`,
+		`data-page-link="voice-cloning"`,
+		`data-page="voice-convert"`,
+		`data-page="music-generation"`,
+		`data-pages="transcription extract"`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("expected tool navigation marker %q", marker)
+		}
+	}
+	if !strings.Contains(body, "Music &amp; SFX") {
+		t.Fatalf("expected Music and SFX navigation label")
+	}
+	for _, marker := range []string{
+		"ttsSpeechModelSelect",
+		"chatModelSelect",
+		"extractModelSelect",
+		"cloneModelSelect",
+		"designModelSelect",
+		"imageModelSelect",
+		"visionModelSelect",
+		"storyModelSelect",
+		"storySpeechModelSelect",
+		"audiobookEngineSelect",
+		"conversionModelSelect",
+		"conversionSourceRecordButton",
+		"conversionTargetVoiceSelect",
+		"/v1/audio/conversions",
+		"musicModelSelect",
+		"musicModeSelect",
+		"musicSourceInput",
+		"musicAnalyzeButton",
+		"musicPromptInput",
+		"musicLyricsInput",
+		"musicOutputAudio",
+		"/v1/audio/music",
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("expected tool model chooser marker %q", marker)
+		}
+	}
 	if !strings.Contains(body, "/v1/models/catalog") {
 		t.Fatalf("expected models catalog route marker, got %q", body)
 	}
@@ -133,6 +179,9 @@ func TestHandlerServesIndex(t *testing.T) {
 	}
 	if !strings.Contains(body, "modelsVerifyButton") {
 		t.Fatalf("expected verify-all marker, got %q", body)
+	}
+	if !strings.Contains(body, "Open a task group to inspect its models") {
+		t.Fatalf("expected grouped model catalog guidance, got %q", body)
 	}
 	if !strings.Contains(body, "logToggleButton") {
 		t.Fatalf("expected log drawer marker, got %q", body)
@@ -148,6 +197,11 @@ func TestHandlerServesIndex(t *testing.T) {
 	}
 	if !strings.Contains(body, "libraryList") {
 		t.Fatalf("expected library list marker, got %q", body)
+	}
+	for _, marker := range []string{"libraryJobsGroup", "libraryFilterInput", "libraryFilterClearButton", "libraryFilterEmpty"} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("expected segmented library marker %q", marker)
+		}
 	}
 	if !strings.Contains(body, "libraryImageButton") {
 		t.Fatalf("expected save-to-library marker, got %q", body)
@@ -213,6 +267,80 @@ func TestHandlerServesIndex(t *testing.T) {
 	}
 }
 
+func TestSpeechModelDropdownsAreInteractive(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	Handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, id := range []string{
+		"ttsSpeechModelSelect",
+		"cloneModelSelect",
+	} {
+		start := strings.Index(body, `<select class="text-input" id="`+id+`"`)
+		if start < 0 {
+			t.Errorf("speech model %q must be rendered as a dropdown", id)
+			continue
+		}
+		end := strings.Index(body[start:], ">")
+		if end < 0 {
+			t.Fatalf("speech model %q has no closing tag boundary", id)
+		}
+		if strings.Contains(body[start:start+end], "disabled") {
+			t.Errorf("speech model %q must be interactive", id)
+		}
+	}
+}
+
+func TestLibraryIncludesVoiceHierarchyProjectsAndExports(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/app.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, marker := range []string{"Story Builder Projects", "renderCharacterVoiceGroup(voice)", "appendLibraryExports", "/v1/story-builder-projects"} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("expected complete library marker %q", marker)
+		}
+	}
+}
+
+func TestConversionAndMusicShareRecordingAndUploadHelpers(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/app.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, marker := range []string{"openToolRecorder", "finishToolRecording", "normalizeToolAudio"} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("expected shared audio helper %q", marker)
+		}
+	}
+}
+
+func TestCatalogModelChooserAcceptsVerifiedInstall(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{
+		"function catalogModelIsInstalled(model)",
+		`model.state === "verified"`,
+		`model.state === "unverified"`,
+		"model.configured === true && catalogModelIsInstalled(model)",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("catalog chooser must accept verified on-disk models; missing %q", needle)
+		}
+	}
+}
+
 func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 	tests := []struct {
 		path        string
@@ -240,7 +368,7 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 		{
 			path:        "/story-builder.js",
 			contentType: "javascript",
-			markers:     []string{"/v1/story-builder-projects", "scheduleAutosave", "saveProject", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS"},
+			markers:     []string{"/v1/story-builder-projects", "scheduleAutosave", "saveProject", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "requestedProjectID"},
 		},
 		{
 			path:        "/story-builder.css",
@@ -318,13 +446,37 @@ func TestHandlerServesAssets(t *testing.T) {
 			name:        "javascript models catalog",
 			path:        "/app.js",
 			contentType: "javascript",
-			needle:      "refreshModels",
+			needle:      "MODEL_CATEGORIES",
 		},
 		{
-			name:        "css tab bar",
+			name:        "css studio navigation",
 			path:        "/styles.css",
 			contentType: "text/css",
 			needle:      ".tab-bar",
+		},
+		{
+			name:        "css universal model chooser",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".model-chooser",
+		},
+		{
+			name:        "css voice transport row",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".voice-record-row",
+		},
+		{
+			name:        "javascript catalog model controls",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "initCatalogModels",
+		},
+		{
+			name:        "javascript voice conversion workflow",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "runVoiceConversion",
 		},
 		{
 			name:        "javascript engine controls",
@@ -342,13 +494,19 @@ func TestHandlerServesAssets(t *testing.T) {
 			name:        "javascript library",
 			path:        "/app.js",
 			contentType: "javascript",
-			needle:      "refreshLibrary",
+			needle:      "LIBRARY_SECTIONS",
+		},
+		{
+			name:        "javascript library collection delete actions",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "appendLibraryDeleteAction",
 		},
 		{
 			name:        "css library",
 			path:        "/styles.css",
 			contentType: "text/css",
-			needle:      ".library-item",
+			needle:      ".library-group",
 		},
 		{
 			name:        "javascript audiobook",
