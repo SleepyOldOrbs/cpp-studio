@@ -362,18 +362,24 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 				"storyBuilderAddSFX",
 				"storyBuilderAddMusic",
 				"storyBuilderUndo",
+				"storyBuilderRedo",
+				"storyBuilderSnap",
+				"storyBuilderTimelineDuration",
+				"storyBuilderZoom",
+				"storyBuilderTimelineViewport",
+				"storyBuilderSelectionPanel",
 				"storyBuilderTracks",
 			},
 		},
 		{
 			path:        "/story-builder.js",
 			contentType: "javascript",
-			markers:     []string{"/v1/story-builder-projects", "scheduleAutosave", "saveProject", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "requestedProjectID"},
+			markers:     []string{"/v1/story-builder-projects", "scheduleAutosave", "saveProject", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "acceptTimelineEdit", "beginClipPointerEdit", "clampPanelPosition", "requestedProjectID"},
 		},
 		{
 			path:        "/story-builder.css",
 			contentType: "text/css",
-			markers:     []string{".project-list", ".save-status", ".story-canvas", ".track-row", ".silence-clip", ".silence-block"},
+			markers:     []string{".project-list", ".save-status", ".story-canvas", ".timeline-viewport", ".track-row", ".silence-clip", ".silence-block", ".trim-handle", ".selection-panel"},
 		},
 	}
 

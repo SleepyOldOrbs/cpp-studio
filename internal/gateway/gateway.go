@@ -4079,9 +4079,10 @@ type storyBuilderProjectCreateRequest struct {
 }
 
 type storyBuilderProjectUpdateRequest struct {
-	Name     string                `json:"name"`
-	Revision int                   `json:"revision"`
-	Tracks   *[]storybuilder.Track `json:"tracks"`
+	Name               string                `json:"name"`
+	Revision           int                   `json:"revision"`
+	TimelineDurationMS int64                 `json:"timeline_duration_ms"`
+	Tracks             *[]storybuilder.Track `json:"tracks"`
 }
 
 func (r *router) handleStoryBuilderProjects(w http.ResponseWriter, req *http.Request) {
@@ -4147,7 +4148,9 @@ func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Requ
 			writeJSONError(w, http.StatusBadRequest, "tracks is required")
 			return
 		}
-		project, err := r.storyBuilderProjects.Update(id, storybuilder.ProjectUpdate{Name: body.Name, Revision: body.Revision, Tracks: *body.Tracks})
+		project, err := r.storyBuilderProjects.Update(id, storybuilder.ProjectUpdate{
+			Name: body.Name, Revision: body.Revision, TimelineDurationMS: body.TimelineDurationMS, Tracks: *body.Tracks,
+		})
 		if err != nil {
 			writeStoryBuilderProjectError(w, err)
 			return
