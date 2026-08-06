@@ -25,7 +25,9 @@ mapping; the shared jobs registry is only a projection of live activity.
 Resume is valid only under the production's original Synthesis identity. A changed
 identity requires an explicit Restart that creates a separate production and preserves
 the original. Once the initial manifest exists, Cancel records `interrupted`; only an
-explicit, validated Discard deletes durable production state.
+explicit, validated Discard deletes interrupted production state. A separate explicit
+Delete may remove a finished production after the manager verifies that it is neither
+active nor interrupted.
 
 ## Consequences
 
