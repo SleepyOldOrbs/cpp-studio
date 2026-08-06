@@ -515,6 +515,10 @@ func (s *Store) List() ([]Summary, error) {
 		if err != nil || !ok {
 			continue
 		}
+		exports := make([]Export, 0)
+		for _, render := range manifest.Renders {
+			exports = append(exports, render.Exports...)
+		}
 		summaries = append(summaries, Summary{
 			ID:              manifest.ID,
 			Subject:         manifest.Subject,
@@ -524,6 +528,7 @@ func (s *Store) List() ([]Summary, error) {
 			CreatedAt:       manifest.CreatedAt,
 			DurationSeconds: manifest.DurationSeconds,
 			ArtifactURL:     manifest.Audio.URL,
+			Exports:         exports,
 		})
 	}
 	sort.Slice(summaries, func(i, j int) bool {
