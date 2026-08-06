@@ -2,9 +2,11 @@
   "use strict";
 
   const apiRoot = "/v1/story-builder-projects";
+  const voiceApiRoot = "/v1/voices";
   const snapIntervalMS = 250;
   const trackHeaderWidth = 224;
   const byID = (id) => document.getElementById(id);
+  const appShell = document.querySelector(".app-shell");
   const newForm = byID("storyBuilderNewForm");
   const newNameInput = byID("storyBuilderNewName");
   const projectList = byID("storyBuilderProjectList");
@@ -28,6 +30,10 @@
   const selectionPanel = byID("storyBuilderSelectionPanel");
   const selectionHandle = byID("storyBuilderSelectionHandle");
   const selectionBody = byID("storyBuilderSelectionBody");
+  const voiceSearch = byID("storyBuilderVoiceSearch");
+  const voiceRefresh = byID("storyBuilderVoiceRefresh");
+  const voiceStatus = byID("storyBuilderVoiceStatus");
+  const voiceGroups = byID("storyBuilderVoiceGroups");
 
   let projects = [];
   let currentID = "";
@@ -41,6 +47,8 @@
   let panelPosition = null;
   let clipPointerEdit = null;
   let panelPointerEdit = null;
+  let actorVoices = [];
+  let revoicePromise = null;
   let requestedProjectID = new URLSearchParams(window.location.search).get("project") || "";
 
   async function request(path, options = {}) {
@@ -63,6 +71,14 @@
 
   function currentProject() {
     return projects.find((project) => project.id === currentID) || null;
+  }
+
+  function characterVoiceDetails(id) {
+    for (const actor of actorVoices) {
+      const character = (actor.character_voices || []).find((item) => item.id === id);
+      if (character) return { actor, character };
+    }
+    return null;
   }
 
   function mintID(prefix) {
@@ -190,7 +206,8 @@
   function clipStatus(clip) {
     if (clip.status) return String(clip.status);
     if (clip.type === "silence") return "ready";
-    return clip.source_id ? "ready" : "needs audio";
+    if (clip.type === "dialogue") return "stale";
+    return clip.source_id ? "ready" : "failed";
   }
 
   function timelineError(project) {
@@ -244,6 +261,7 @@
   }
 
   function acceptTimelineEdit(mutator) {
+    if (revoicePromise) return false;
     const project = currentProject();
     if (!project) return false;
     const before = timelineSnapshot(project);
@@ -269,6 +287,7 @@
   }
 
   function restoreTimeline(source, destination) {
+    if (revoicePromise) return;
     const project = currentProject();
     if (!project || !source.length) return;
     destination.push(timelineSnapshot(project));
@@ -292,7 +311,7 @@
     document.querySelectorAll(".timeline-clip").forEach((element) => {
       const selected = selectedClipIDs.has(element.dataset.clipId);
       element.classList.toggle("is-selected", selected);
-      element.setAttribute("aria-pressed", String(selected));
+      if (element.getAttribute("role") === "button") element.setAttribute("aria-pressed", String(selected));
     });
     renderSelection();
   }
@@ -330,6 +349,25 @@
 
   function labelChanges(clip, value) {
     return { label: value.trim() || clip.label };
+  }
+
+  function dialogueLabel(text) {
+    return text.slice(0, 120);
+  }
+
+  function dialogueTextChanges(clip, value) {
+    const text = value.trim();
+    if (!text || text === clip.text) return {};
+    return { text, label: dialogueLabel(text), status: "stale", build_error: "" };
+  }
+
+  function updateDialogueText(id, value) {
+    if (!value.trim()) {
+      setStatus("failed", "Spoken text is required");
+      renderTracks();
+      return;
+    }
+    updateClip(id, (clip) => dialogueTextChanges(clip, value));
   }
 
   function startChanges(_clip, value) {
@@ -384,8 +422,12 @@
     }
 
     const { track, clip } = selected[0];
+    if (clip.type === "dialogue") {
+      selectionBody.append(selectionField("Spoken text", clip.text || clip.label, (value) => updateDialogueText(clip.id, value), { maxLength: 4000 }));
+    } else {
+      selectionBody.append(selectionField("Label", clip.label, (value) => updateClip(clip.id, (current) => labelChanges(current, value)), { maxLength: 120 }));
+    }
     selectionBody.append(
-      selectionField("Label", clip.label, (value) => updateClip(clip.id, (current) => labelChanges(current, value)), { maxLength: 120 }),
       selectionField("Track", track.name),
       selectionField("Starts at (ms)", clip.start_ms, (value) => {
         const next = Number(value);
@@ -422,12 +464,34 @@
     block.className = `timeline-clip clip-${clip.type}`;
     if (clip.type === "silence") block.classList.add("silence-block");
     block.dataset.clipId = clip.id;
-    block.tabIndex = 0;
-    block.setAttribute("role", "button");
-    block.setAttribute("aria-pressed", String(selectedClipIDs.has(clip.id)));
-    const label = document.createElement("span");
-    label.className = "clip-label";
-    label.textContent = clip.label;
+    if (clip.type === "dialogue") {
+      block.setAttribute("role", "group");
+    } else {
+      block.tabIndex = 0;
+      block.setAttribute("role", "button");
+      block.setAttribute("aria-pressed", String(selectedClipIDs.has(clip.id)));
+    }
+    let label;
+    if (clip.type === "dialogue") {
+      label = document.createElement("input");
+      label.className = "dialogue-text-inline";
+      label.value = clip.text || clip.label;
+      label.maxLength = 4000;
+      label.setAttribute("aria-label", "Spoken text");
+      label.addEventListener("pointerdown", (event) => {
+        event.stopPropagation();
+        selectClip(clip.id, event.shiftKey);
+      });
+      label.addEventListener("keydown", (event) => event.stopPropagation());
+      label.addEventListener("change", () => updateDialogueText(clip.id, label.value));
+    } else {
+      label = document.createElement("span");
+      label.className = "clip-label";
+      label.textContent = clip.label;
+    }
+    const status = document.createElement("span");
+    status.className = `clip-status-badge status-${clipStatus(clip)}`;
+    status.textContent = clipStatus(clip);
     const startHandle = document.createElement("span");
     startHandle.className = "trim-handle";
     startHandle.dataset.trimEdge = "start";
@@ -436,13 +500,15 @@
     endHandle.className = "trim-handle";
     endHandle.dataset.trimEdge = "end";
     endHandle.setAttribute("aria-hidden", "true");
-    block.append(startHandle, label, endHandle);
-    block.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        selectClip(clip.id, event.shiftKey);
-      }
-    });
+    block.append(startHandle, label, status, endHandle);
+    if (clip.type !== "dialogue") {
+      block.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectClip(clip.id, event.shiftKey);
+        }
+      });
+    }
     block.addEventListener("pointerdown", (event) => {
       const edge = event.target instanceof HTMLElement ? event.target.dataset.trimEdge : "";
       beginClipPointerEdit(event, clip.id, edge || "move");
@@ -459,18 +525,22 @@
 
   function renderClipEditor(track, clip) {
     const editorElement = document.createElement("fieldset");
-    editorElement.className = `clip-editor ${clip.source_id ? "audio-clip" : "silence-clip"}`;
+    const editorKind = clip.type === "dialogue" ? "dialogue-clip" : (clip.source_id ? "audio-clip" : "silence-clip");
+    editorElement.className = `clip-editor ${editorKind}`;
     editorElement.id = `clip-editor-${clip.id}`;
     const legend = document.createElement("legend");
-    legend.textContent = clip.source_id ? "Audio clip" : "Silence";
+    legend.textContent = clip.type === "dialogue" ? "Dialogue clip" : (clip.source_id ? "Audio clip" : "Silence");
 
     const label = document.createElement("label");
-    label.textContent = "Label";
+    label.textContent = clip.type === "dialogue" ? "Spoken text" : "Label";
     const labelInput = document.createElement("input");
-    labelInput.value = clip.label;
-    labelInput.maxLength = 120;
+    labelInput.value = clip.type === "dialogue" ? (clip.text || clip.label) : clip.label;
+    labelInput.maxLength = clip.type === "dialogue" ? 4000 : 120;
     labelInput.setAttribute("aria-label", `${legend.textContent} label`);
-    labelInput.addEventListener("change", () => updateClip(clip.id, (current) => labelChanges(current, labelInput.value)));
+    labelInput.addEventListener("change", () => {
+      if (clip.type === "dialogue") updateDialogueText(clip.id, labelInput.value);
+      else updateClip(clip.id, (current) => labelChanges(current, labelInput.value));
+    });
     label.append(labelInput);
 
     const start = document.createElement("label");
@@ -533,6 +603,23 @@
     return editorElement;
   }
 
+  function enableCharacterVoiceDrop(timeline, track) {
+    if (track.type !== "dialogue") return;
+    timeline.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      timeline.classList.add("voice-drop-target");
+    });
+    timeline.addEventListener("dragleave", () => timeline.classList.remove("voice-drop-target"));
+    timeline.addEventListener("drop", (event) => {
+      event.preventDefault();
+      timeline.classList.remove("voice-drop-target");
+      const id = event.dataTransfer?.getData("application/x-story-builder-character-voice") || event.dataTransfer?.getData("text/plain") || "";
+      const details = characterVoiceDetails(id);
+      if (details) bindCharacterVoice(track, details.actor, details.character);
+    });
+  }
+
   function renderTracks() {
     tracksElement.replaceChildren();
     const project = currentProject();
@@ -560,6 +647,7 @@
       const row = document.createElement("article");
       row.className = `track-row track-${track.type}`;
       row.dataset.trackId = track.id;
+      row.dataset.trackType = track.type;
       const header = document.createElement("header");
       header.className = "track-header";
       const identity = document.createElement("div");
@@ -572,11 +660,22 @@
       name.maxLength = 120;
       name.setAttribute("aria-label", `${type.textContent} track name`);
       name.addEventListener("input", () => {
+        if (revoicePromise) {
+          name.value = track.name;
+          return;
+        }
         track.name = name.value;
         scheduleAutosave();
         renderSelection();
       });
       identity.append(type, name);
+      if (track.type === "dialogue") {
+        const binding = document.createElement("span");
+        binding.className = "track-voice-binding";
+        const details = characterVoiceDetails(track.character_voice_id);
+        binding.textContent = details ? `${details.actor.name} / ${details.character.name}` : "No Character Voice";
+        identity.append(binding);
+      }
 
       const controls = document.createElement("div");
       controls.className = "track-controls";
@@ -593,10 +692,11 @@
       lane.setAttribute("aria-label", `${track.name} timeline`);
       const timeline = document.createElement("div");
       timeline.className = "timeline-stage";
+      enableCharacterVoiceDrop(timeline, track);
       if (!track.clips.length) {
         const hint = document.createElement("span");
         hint.className = "lane-hint";
-        hint.textContent = track.type === "dialogue" ? "Unbound dialogue track" : "Empty track";
+        hint.textContent = track.type === "dialogue" ? "Drop a Character Voice here" : "Empty track";
         timeline.append(hint);
       }
       track.clips.forEach((clip) => timeline.append(renderClipBlock(clip, timelineDuration)));
@@ -762,6 +862,7 @@
   }
 
   async function openProject(id) {
+    if (revoicePromise) return;
     window.clearTimeout(autosaveTimer);
     try {
       const project = await request(`${apiRoot}/${encodeURIComponent(id)}`);
@@ -770,6 +871,195 @@
       showCurrent(project);
     } catch (error) {
       setStatus("failed", error.message);
+    }
+  }
+
+  function setVoiceLibraryStatus(message, state = "") {
+    voiceStatus.replaceChildren(document.createTextNode(message));
+    voiceStatus.dataset.state = state;
+  }
+
+  async function revoiceCharacterVoice(track, actor, character) {
+    if (revoicePromise) return;
+    const project = currentProject();
+    if (!project || savePromise || saveStatus.dataset.state !== "saved") {
+      setVoiceLibraryStatus("Save pending timeline changes before revoicing this track.", "failed");
+      saveProject();
+      return;
+    }
+    const tracks = clone(project.tracks);
+    const replacement = tracks.find((item) => item.id === track.id);
+    if (!replacement || replacement.character_voice_id === character.id) return;
+    replacement.character_voice_id = character.id;
+    replacement.actor_voice_id = actor.id;
+    replacement.voice_fingerprint = "";
+    replacement.clips.forEach((clip) => {
+      if (clip.type !== "dialogue") return;
+      clip.character_voice_id = character.id;
+      clip.actor_voice_id = actor.id;
+      clip.voice_fingerprint = "";
+      clip.status = "stale";
+      clip.build_error = "";
+    });
+    const payload = {
+      name: project.name,
+      revision: project.revision,
+      timeline_duration_ms: project.timeline_duration_ms,
+      tracks,
+      revoice_track_ids: [track.id],
+    };
+    setStatus("saving");
+    setVoiceLibraryStatus(`Revoicing ${track.name} as ${actor.name} / ${character.name}…`);
+    appShell.inert = true;
+    revoicePromise = request(`${apiRoot}/${encodeURIComponent(project.id)}`, { method: "PUT", body: JSON.stringify(payload) });
+    try {
+      const saved = await revoicePromise;
+      if (currentID !== saved.id) return;
+      Object.assign(project, saved);
+      projects = [project, ...projects.filter((item) => item.id !== project.id)];
+      undoStack = [];
+      redoStack = [];
+      pruneSelection();
+      setStatus("saved");
+      setVoiceLibraryStatus(`Revoiced ${track.name} as ${actor.name} / ${character.name}.`, "ready");
+      renderProjects();
+      renderTracks();
+    } catch (error) {
+      const detail = error.status === 409 ? "another edit changed this project; reopen it before revoicing" : error.message;
+      setStatus("failed", detail);
+      setVoiceLibraryStatus(`Could not revoice ${track.name}: ${detail}`, "failed");
+    } finally {
+      revoicePromise = null;
+      appShell.inert = false;
+    }
+  }
+
+  function bindCharacterVoice(track, actor, character) {
+    if (track.type !== "dialogue") {
+      setVoiceLibraryStatus("Character Voices can only be added to Dialogue tracks.", "failed");
+      return;
+    }
+    if (track.clips.length) {
+      const current = characterVoiceDetails(track.character_voice_id);
+      const currentName = current ? `${current.actor.name} / ${current.character.name}` : track.name;
+      setVoiceLibraryStatus(`${track.name} already uses ${currentName}. Remove its dialogue before choosing another Character Voice.`, "failed");
+      if (track.character_voice_id !== character.id) {
+        const revoice = document.createElement("button");
+        revoice.type = "button";
+        revoice.className = "confirm-revoice";
+        revoice.textContent = `Revoice as ${character.name}`;
+        revoice.addEventListener("click", () => revoiceCharacterVoice(track, actor, character));
+        voiceStatus.append(" ", revoice);
+      }
+      return;
+    }
+    const placeholder = "Type the spoken line…";
+    const clip = {
+      id: mintID("clip"),
+      type: "dialogue",
+      label: placeholder,
+      text: placeholder,
+      status: "stale",
+      start_ms: 0,
+      duration_ms: 2400,
+      character_voice_id: character.id,
+      actor_voice_id: actor.id,
+      voice_fingerprint: "",
+    };
+    const accepted = acceptTimelineEdit(() => {
+      track.name = character.name;
+      track.character_voice_id = character.id;
+      track.actor_voice_id = actor.id;
+      track.voice_fingerprint = "";
+      track.clips.push(clip);
+      selectedClipIDs = new Set([clip.id]);
+    });
+    if (accepted) setVoiceLibraryStatus(`Added ${actor.name} / ${character.name} to ${track.name}.`, "ready");
+  }
+
+  function addCharacterVoiceToEmptyTrack(actor, character) {
+    const project = currentProject();
+    const track = project?.tracks.find((item) => item.type === "dialogue" && item.clips.length === 0);
+    if (!track) {
+      setVoiceLibraryStatus("Add an empty Dialogue track before adding this Character Voice.", "failed");
+      return;
+    }
+    bindCharacterVoice(track, actor, character);
+  }
+
+  function renderVoiceLibrary() {
+    voiceGroups.replaceChildren();
+    const query = voiceSearch.value.trim().toLowerCase();
+    let visibleCharacters = 0;
+    for (const actor of actorVoices) {
+      const actorMatches = actor.name.toLowerCase().includes(query);
+      const characters = (actor.character_voices || []).filter((character) => {
+        if (!query || actorMatches) return true;
+        return `${character.name} ${character.direction || ""}`.toLowerCase().includes(query);
+      });
+      if (!characters.length) continue;
+      visibleCharacters += characters.length;
+
+      const group = document.createElement("section");
+      group.className = "actor-voice-group";
+      const heading = document.createElement("header");
+      const actorName = document.createElement("strong");
+      actorName.textContent = actor.name;
+      const actorKind = document.createElement("span");
+      actorKind.textContent = "Actor Voice";
+      heading.append(actorName, actorKind);
+
+      const assets = document.createElement("div");
+      assets.className = "character-voice-list";
+      for (const character of characters) {
+        const asset = document.createElement("article");
+        asset.className = "character-voice-asset";
+        asset.draggable = true;
+        asset.dataset.characterVoiceId = character.id;
+        const text = document.createElement("div");
+        const name = document.createElement("strong");
+        name.textContent = character.name;
+        const direction = document.createElement("span");
+        direction.textContent = character.direction || "No direction";
+        text.append(name, direction);
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "character-voice-add";
+        add.textContent = "+";
+        add.setAttribute("aria-label", `Add ${character.name} to an empty Dialogue track`);
+        add.addEventListener("click", () => addCharacterVoiceToEmptyTrack(actor, character));
+        asset.addEventListener("dragstart", (event) => {
+          if (!event.dataTransfer) return;
+          event.dataTransfer.effectAllowed = "copy";
+          event.dataTransfer.setData("application/x-story-builder-character-voice", character.id);
+          event.dataTransfer.setData("text/plain", character.id);
+        });
+        asset.append(text, add);
+        assets.append(asset);
+      }
+      group.append(heading, assets);
+      voiceGroups.append(group);
+    }
+    if (!visibleCharacters) {
+      const empty = document.createElement("p");
+      empty.className = "voice-library-empty";
+      empty.textContent = query ? "No Character Voices match this search." : "Create Character Voices in the Library to use them here.";
+      voiceGroups.append(empty);
+    }
+  }
+
+  async function refreshVoiceLibrary() {
+    setVoiceLibraryStatus("Loading voices…");
+    try {
+      const body = await request(voiceApiRoot);
+      actorVoices = body.voices || [];
+      renderVoiceLibrary();
+      renderTracks();
+      setVoiceLibraryStatus(`${actorVoices.reduce((count, actor) => count + (actor.character_voices || []).length, 0)} Character Voices available.`);
+    } catch (error) {
+      actorVoices = [];
+      renderVoiceLibrary();
+      setVoiceLibraryStatus(`Could not load voices: ${error.message}`, "failed");
     }
   }
 
@@ -821,6 +1111,7 @@
   }
 
   async function saveProject() {
+    if (revoicePromise) return;
     window.clearTimeout(autosaveTimer);
     const project = currentProject();
     if (!project) return;
@@ -858,6 +1149,7 @@
         project.created_at = saved.created_at;
         project.timeline_duration_ms = saved.timeline_duration_ms;
         project.name = changedDuringSave ? project.name : saved.name;
+        if (!changedDuringSave) project.tracks = clone(saved.tracks);
         projects = [project, ...projects.filter((item) => item.id !== project.id)];
         if (changedDuringSave) saveAgain = true;
       } else {
@@ -865,6 +1157,7 @@
       }
       if (!changedDuringSave) setStatus("saved");
       renderProjects();
+      if (!changedDuringSave && currentID === savingID) renderTracks();
     } catch (error) {
       const detail = error.status === 409 ? "another edit changed this project; reopen it before saving" : error.message;
       setStatus("failed", detail);
@@ -939,6 +1232,10 @@
   nameInput.addEventListener("input", () => {
     const project = currentProject();
     if (!project) return;
+    if (revoicePromise) {
+      nameInput.value = project.name;
+      return;
+    }
     project.name = nameInput.value;
     renderProjects();
     scheduleAutosave();
@@ -969,6 +1266,8 @@
   selectionHandle.addEventListener("pointerdown", beginPanelPointerEdit);
   saveButton.addEventListener("click", () => saveProject());
   refreshButton.addEventListener("click", () => refreshProjects());
+  voiceRefresh.addEventListener("click", () => refreshVoiceLibrary());
+  voiceSearch.addEventListener("input", () => renderVoiceLibrary());
   deleteButton.addEventListener("click", async () => {
     const project = currentProject();
     if (!project || !window.confirm(`Delete “${project.name}”?`)) return;
@@ -1004,5 +1303,7 @@
   });
 
   renderSelection();
+  renderVoiceLibrary();
   refreshProjects();
+  refreshVoiceLibrary();
 })();

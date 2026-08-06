@@ -178,16 +178,33 @@ Gateway restart.
 - `PUT /v1/story-builder-projects/{id}` — replace the editable whole-project
   state with `{"name":"New name","revision":1,"tracks":[...]}`. A successful
   save increments `revision`; `tracks` is required so an older rename-only
-  client cannot erase a timeline, and a stale revision returns `409`.
+  client cannot erase a timeline, and a stale revision returns `409`. An
+  intentional replacement of an occupied Dialogue Track's Character Voice
+  additionally names that track in `revoice_track_ids`; an unconfirmed
+  replacement is rejected with `409`.
 - `DELETE /v1/story-builder-projects/{id}` — delete only that project and
   return `204`.
 
 Each track has a stable `id`, editable `name`, contiguous `order`, `type`
 (`dialogue`, `sfx`, or `music`), `muted` state, and `clips`. Dialogue tracks may
-be empty and unbound; a track containing a `dialogue` clip requires a
-`character_voice_id`. This slice's browser authors `silence` clips with stable
-ids, labels, and integer `start_ms` / `duration_ms` timing. Silence is manifest
-metadata and never creates audio bytes.
+be empty and unbound. Adding a Character Voice binds its `character_voice_id`,
+canonical parent `actor_voice_id`, and synthesis `voice_fingerprint`; a track
+that already contains dialogue rejects replacement by a different Character
+Voice with `409`.
+
+A `dialogue` clip stores editable spoken `text`, the same canonical voice
+provenance, and one of `stale`, `building`, `ready`, or `failed` in `status`.
+New dialogue is always `stale`. Spoken-text, Character Voice direction, and
+Actor Voice reference/transcript changes make it stale; timing, trimming,
+muting, track renaming, and track reordering preserve its existing status.
+Synthesis identity is reconciled when the project is read or saved, so an
+external voice edit is visible on reload. The browser also authors `silence`
+clips with stable ids, labels, and integer `start_ms` / `duration_ms` timing.
+Silence is manifest metadata and never creates audio bytes.
+
+If a bound Character Voice is later deleted, the project remains readable and
+listable. Its affected dialogue is returned as `failed` with `build_error`
+explaining the missing voice, and can be deliberately revoiced or removed.
 
 Names are trimmed, required, and limited to 120 Unicode characters. Request
 objects reject unknown fields. The whole project is rejected for unknown track

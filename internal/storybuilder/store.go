@@ -23,14 +23,17 @@ const (
 	MaxNameLength             = 120
 	MaxTracks                 = 128
 	MaxClips                  = 2048
+	MaxDialogueTextLength     = 4000
 	DefaultTimelineDurationMS = 30000
 	manifestName              = "project.json"
 )
 
 var (
-	ErrInvalid  = errors.New("invalid Story Builder Project")
-	ErrNotFound = errors.New("Story Builder Project not found")
-	ErrConflict = errors.New("Story Builder Project revision conflict")
+	ErrInvalid                = errors.New("invalid Story Builder Project")
+	ErrNotFound               = errors.New("Story Builder Project not found")
+	ErrConflict               = errors.New("Story Builder Project revision conflict")
+	ErrVoiceConflict          = errors.New("Dialogue Track already contains dialogue for a different Character Voice")
+	ErrCharacterVoiceNotFound = errors.New("Character Voice not found")
 )
 
 type TrackType string
@@ -48,18 +51,33 @@ const (
 	ClipTypeDialogue ClipType = "dialogue"
 )
 
+type DialogueStatus string
+
+const (
+	DialogueStatusStale    DialogueStatus = "stale"
+	DialogueStatusBuilding DialogueStatus = "building"
+	DialogueStatusReady    DialogueStatus = "ready"
+	DialogueStatusFailed   DialogueStatus = "failed"
+)
+
 // TimelineClip is timing metadata. Audio-backed clips keep nondestructive
 // source offsets; silence clips deliberately have no media source.
 type TimelineClip struct {
-	ID               string   `json:"id"`
-	Type             ClipType `json:"type"`
-	Label            string   `json:"label"`
-	StartMS          int64    `json:"start_ms"`
-	DurationMS       int64    `json:"duration_ms"`
-	SourceID         string   `json:"source_id,omitempty"`
-	SourceDurationMS int64    `json:"source_duration_ms,omitempty"`
-	SourceInMS       int64    `json:"source_in_ms,omitempty"`
-	SourceOutMS      int64    `json:"source_out_ms,omitempty"`
+	ID               string         `json:"id"`
+	Type             ClipType       `json:"type"`
+	Label            string         `json:"label"`
+	StartMS          int64          `json:"start_ms"`
+	DurationMS       int64          `json:"duration_ms"`
+	SourceID         string         `json:"source_id,omitempty"`
+	SourceDurationMS int64          `json:"source_duration_ms,omitempty"`
+	SourceInMS       int64          `json:"source_in_ms,omitempty"`
+	SourceOutMS      int64          `json:"source_out_ms,omitempty"`
+	Text             string         `json:"text,omitempty"`
+	Status           DialogueStatus `json:"status,omitempty"`
+	CharacterVoiceID string         `json:"character_voice_id,omitempty"`
+	ActorVoiceID     string         `json:"actor_voice_id,omitempty"`
+	VoiceFingerprint string         `json:"voice_fingerprint,omitempty"`
+	BuildError       string         `json:"build_error,omitempty"`
 }
 
 type Track struct {
@@ -69,14 +87,25 @@ type Track struct {
 	Order            int            `json:"order"`
 	Muted            bool           `json:"muted"`
 	CharacterVoiceID string         `json:"character_voice_id,omitempty"`
+	ActorVoiceID     string         `json:"actor_voice_id,omitempty"`
+	VoiceFingerprint string         `json:"voice_fingerprint,omitempty"`
 	Clips            []TimelineClip `json:"clips"`
 }
 
+type VoiceIdentity struct {
+	CharacterVoiceID string
+	ActorVoiceID     string
+	Fingerprint      string
+}
+
+type CharacterVoiceResolver func(id string) (VoiceIdentity, bool, error)
+
 type ProjectUpdate struct {
-	Name               string  `json:"name"`
-	Revision           int     `json:"revision"`
-	TimelineDurationMS int64   `json:"timeline_duration_ms,omitempty"`
-	Tracks             []Track `json:"tracks"`
+	Name               string   `json:"name"`
+	Revision           int      `json:"revision"`
+	TimelineDurationMS int64    `json:"timeline_duration_ms,omitempty"`
+	Tracks             []Track  `json:"tracks"`
+	RevoiceTrackIDs    []string `json:"revoice_track_ids,omitempty"`
 }
 
 // Project is one separately saved Story Builder production.
@@ -91,14 +120,16 @@ type Project struct {
 }
 
 type StoreOptions struct {
-	WriteFileAtomic func(path string, data []byte) error
+	WriteFileAtomic       func(path string, data []byte) error
+	ResolveCharacterVoice CharacterVoiceResolver
 }
 
 type Store struct {
-	mu              sync.Mutex
-	rootDir         string
-	now             func() time.Time
-	writeFileAtomic func(path string, data []byte) error
+	mu                    sync.Mutex
+	rootDir               string
+	now                   func() time.Time
+	writeFileAtomic       func(path string, data []byte) error
+	resolveCharacterVoice CharacterVoiceResolver
 }
 
 func NewStore(rootDir string) *Store {
@@ -114,9 +145,10 @@ func NewStoreWithOptions(rootDir string, options StoreOptions) *Store {
 		write = writeFileAtomic
 	}
 	return &Store{
-		rootDir:         rootDir,
-		now:             func() time.Time { return time.Now().UTC() },
-		writeFileAtomic: write,
+		rootDir:               rootDir,
+		now:                   func() time.Time { return time.Now().UTC() },
+		writeFileAtomic:       write,
+		resolveCharacterVoice: options.ResolveCharacterVoice,
 	}
 }
 
@@ -193,6 +225,13 @@ func (s *Store) Get(id string) (Project, bool, error) {
 	if project.TimelineDurationMS == 0 {
 		project.TimelineDurationMS = minimumTimelineDurationMS(project.Tracks)
 	}
+	if s.resolveCharacterVoice != nil {
+		tracks, err := s.prepareTracks(project.Tracks, project.Tracks, nil)
+		if err != nil {
+			return Project{}, false, err
+		}
+		project.Tracks = tracks
+	}
 	return project, true, nil
 }
 
@@ -263,7 +302,22 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 	if timelineDurationMS == 0 {
 		timelineDurationMS = project.TimelineDurationMS
 	}
-	if err := validateTracks(update.Tracks, timelineDurationMS); err != nil {
+	revoiceTrackIDs := make(map[string]struct{}, len(update.RevoiceTrackIDs))
+	for _, id := range update.RevoiceTrackIDs {
+		id = strings.TrimSpace(id)
+		if !validTimelineID(id) {
+			return Project{}, ErrInvalid
+		}
+		if _, exists := revoiceTrackIDs[id]; exists {
+			return Project{}, ErrInvalid
+		}
+		revoiceTrackIDs[id] = struct{}{}
+	}
+	tracks, err := s.prepareTracks(project.Tracks, update.Tracks, revoiceTrackIDs)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := validateTracks(tracks, timelineDurationMS); err != nil {
 		return Project{}, err
 	}
 	if update.Revision != project.Revision {
@@ -271,7 +325,7 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 	}
 	project.Name = name
 	project.TimelineDurationMS = timelineDurationMS
-	project.Tracks = cloneTracks(update.Tracks)
+	project.Tracks = tracks
 	project.Revision++
 	project.UpdatedAt = s.now()
 	data, err := encodeProject(project)
@@ -282,6 +336,113 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 		return Project{}, fmt.Errorf("save Story Builder Project: %w", err)
 	}
 	return project, nil
+}
+
+func (s *Store) prepareTracks(existing, incoming []Track, revoiceTrackIDs map[string]struct{}) ([]Track, error) {
+	tracks := cloneTracks(incoming)
+	existingTracks := make(map[string]Track, len(existing))
+	usedRevoiceTrackIDs := make(map[string]struct{}, len(revoiceTrackIDs))
+	for _, track := range existing {
+		existingTracks[track.ID] = track
+	}
+	for trackIndex := range tracks {
+		track := &tracks[trackIndex]
+		if track.Type != TrackTypeDialogue {
+			continue
+		}
+		oldTrack, hadTrack := existingTracks[track.ID]
+		if hadTrack && oldTrack.CharacterVoiceID != "" && oldTrack.CharacterVoiceID != track.CharacterVoiceID && hasDialogue(oldTrack) {
+			if _, allowed := revoiceTrackIDs[track.ID]; !allowed {
+				return nil, ErrVoiceConflict
+			}
+			usedRevoiceTrackIDs[track.ID] = struct{}{}
+		}
+		identity := VoiceIdentity{
+			CharacterVoiceID: track.CharacterVoiceID,
+			ActorVoiceID:     track.ActorVoiceID,
+			Fingerprint:      track.VoiceFingerprint,
+		}
+		missingExistingVoice := false
+		if track.CharacterVoiceID != "" && s.resolveCharacterVoice != nil {
+			resolved, ok, err := s.resolveCharacterVoice(track.CharacterVoiceID)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				if !hadTrack || oldTrack.CharacterVoiceID != track.CharacterVoiceID {
+					return nil, ErrCharacterVoiceNotFound
+				}
+				missingExistingVoice = true
+				identity = VoiceIdentity{
+					CharacterVoiceID: oldTrack.CharacterVoiceID,
+					ActorVoiceID:     oldTrack.ActorVoiceID,
+					Fingerprint:      oldTrack.VoiceFingerprint,
+				}
+			} else {
+				identity = resolved
+			}
+		}
+		track.CharacterVoiceID = strings.TrimSpace(identity.CharacterVoiceID)
+		track.ActorVoiceID = strings.TrimSpace(identity.ActorVoiceID)
+		track.VoiceFingerprint = strings.TrimSpace(identity.Fingerprint)
+
+		existingClips := make(map[string]TimelineClip, len(oldTrack.Clips))
+		if hadTrack {
+			for _, clip := range oldTrack.Clips {
+				existingClips[clip.ID] = clip
+			}
+		}
+		for clipIndex := range track.Clips {
+			clip := &track.Clips[clipIndex]
+			if clip.Type != ClipTypeDialogue {
+				continue
+			}
+			clip.Text = strings.TrimSpace(clip.Text)
+			if clip.Text == "" {
+				clip.Text = clip.Label
+			}
+			clip.CharacterVoiceID = track.CharacterVoiceID
+			clip.ActorVoiceID = track.ActorVoiceID
+			clip.VoiceFingerprint = track.VoiceFingerprint
+			clip.Status = DialogueStatusStale
+			clip.BuildError = ""
+			if missingExistingVoice {
+				clip.Status = DialogueStatusFailed
+				clip.BuildError = ErrCharacterVoiceNotFound.Error()
+				continue
+			}
+			if oldClip, ok := existingClips[clip.ID]; ok && oldClip.Type == ClipTypeDialogue &&
+				strings.TrimSpace(oldClip.Text) == clip.Text && oldTrack.CharacterVoiceID == track.CharacterVoiceID &&
+				oldTrack.ActorVoiceID == track.ActorVoiceID && oldTrack.VoiceFingerprint == track.VoiceFingerprint {
+				clip.Status = dialogueStatus(oldClip)
+				clip.BuildError = oldClip.BuildError
+			}
+		}
+	}
+	if len(usedRevoiceTrackIDs) != len(revoiceTrackIDs) {
+		return nil, ErrInvalid
+	}
+	return tracks, nil
+}
+
+func hasDialogue(track Track) bool {
+	for _, clip := range track.Clips {
+		if clip.Type == ClipTypeDialogue {
+			return true
+		}
+	}
+	return false
+}
+
+func dialogueStatus(clip TimelineClip) DialogueStatus {
+	switch clip.Status {
+	case DialogueStatusStale, DialogueStatusBuilding, DialogueStatusReady, DialogueStatusFailed:
+		return clip.Status
+	}
+	if clip.SourceID != "" {
+		return DialogueStatusReady
+	}
+	return DialogueStatusStale
 }
 
 func validateTracks(tracks []Track, timelineDurationMS int64) error {
@@ -302,7 +463,7 @@ func validateTracks(tracks []Track, timelineDurationMS int64) error {
 		if track.Type != TrackTypeDialogue && track.Type != TrackTypeSFX && track.Type != TrackTypeMusic {
 			return ErrInvalid
 		}
-		if track.Type != TrackTypeDialogue && track.CharacterVoiceID != "" {
+		if track.Type != TrackTypeDialogue && (track.CharacterVoiceID != "" || track.ActorVoiceID != "" || track.VoiceFingerprint != "") {
 			return ErrInvalid
 		}
 		clipCount += len(track.Clips)
@@ -329,8 +490,14 @@ func validateTracks(tracks []Track, timelineDurationMS int64) error {
 			}
 			switch clip.Type {
 			case ClipTypeSilence:
+				if clip.Text != "" || clip.Status != "" || clip.CharacterVoiceID != "" || clip.ActorVoiceID != "" || clip.VoiceFingerprint != "" || clip.BuildError != "" {
+					return ErrInvalid
+				}
 			case ClipTypeDialogue:
-				if track.Type != TrackTypeDialogue || strings.TrimSpace(track.CharacterVoiceID) == "" {
+				if track.Type != TrackTypeDialogue || strings.TrimSpace(track.CharacterVoiceID) == "" ||
+					strings.TrimSpace(clip.Text) == "" || utf8.RuneCountInString(clip.Text) > MaxDialogueTextLength ||
+					clip.CharacterVoiceID != track.CharacterVoiceID || clip.ActorVoiceID != track.ActorVoiceID ||
+					clip.VoiceFingerprint != track.VoiceFingerprint || dialogueStatus(clip) != clip.Status {
 					return ErrInvalid
 				}
 			default:
@@ -370,10 +537,16 @@ func cloneTracks(tracks []Track) []Track {
 	for i := range cloned {
 		cloned[i].Name = strings.TrimSpace(cloned[i].Name)
 		cloned[i].CharacterVoiceID = strings.TrimSpace(cloned[i].CharacterVoiceID)
+		cloned[i].ActorVoiceID = strings.TrimSpace(cloned[i].ActorVoiceID)
+		cloned[i].VoiceFingerprint = strings.TrimSpace(cloned[i].VoiceFingerprint)
 		cloned[i].Clips = append([]TimelineClip(nil), tracks[i].Clips...)
 		for j := range cloned[i].Clips {
 			cloned[i].Clips[j].Label = strings.TrimSpace(cloned[i].Clips[j].Label)
 			cloned[i].Clips[j].SourceID = strings.TrimSpace(cloned[i].Clips[j].SourceID)
+			cloned[i].Clips[j].Text = strings.TrimSpace(cloned[i].Clips[j].Text)
+			cloned[i].Clips[j].CharacterVoiceID = strings.TrimSpace(cloned[i].Clips[j].CharacterVoiceID)
+			cloned[i].Clips[j].ActorVoiceID = strings.TrimSpace(cloned[i].Clips[j].ActorVoiceID)
+			cloned[i].Clips[j].VoiceFingerprint = strings.TrimSpace(cloned[i].Clips[j].VoiceFingerprint)
 		}
 	}
 	return cloned

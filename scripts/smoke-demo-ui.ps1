@@ -214,8 +214,11 @@ try {
 
   # Separate Story Builder assets and typed-track whole-project API.
   $storyBuilderHTML = Invoke-WebRequest -Uri "$base/demo/story-builder.html" -UseBasicParsing
-  if ($storyBuilderHTML.Content -notlike "*storyBuilderAddDialogue*" -or $storyBuilderHTML.Content -notlike "*storyBuilderUndo*") {
-    throw "Story Builder is missing typed-track controls"
+  if ($storyBuilderHTML.Content -notlike "*storyBuilderAddDialogue*" -or
+      $storyBuilderHTML.Content -notlike "*storyBuilderUndo*" -or
+      $storyBuilderHTML.Content -notlike "*storyBuilderVoiceLibrary*" -or
+      $storyBuilderHTML.Content -notlike "*storyBuilderVoiceSearch*") {
+    throw "Story Builder is missing typed-track or Character Voice controls"
   }
   $storyBuilder = Invoke-RestMethod -Uri "$base/v1/story-builder-projects" -Method Post -ContentType "application/json" -Body '{"name":"Smoke timeline"}'
   $storyBuilderUpdate = [ordered]@{

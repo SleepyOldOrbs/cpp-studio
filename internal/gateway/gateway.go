@@ -104,17 +104,19 @@ const (
 // NewRouter builds the cpp-studio gateway HTTP routes.
 func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	r := &router{
-		cfg:                  cfg,
-		manager:              manager,
-		client:               http.DefaultClient,
-		engines:              engine.NewRunner(cfg.Engines, manager),
-		voices:               voice.NewStore(""),
-		storyBuilderProjects: storybuilder.NewStore(""),
-		jobs:                 jobs.NewRegistry(),
-		library:              library.NewStore(""),
-		gpuQuery:             defaultGPUQuery,
-		ggufCache:            map[string]ggufCacheEntry{},
+		cfg:       cfg,
+		manager:   manager,
+		client:    http.DefaultClient,
+		engines:   engine.NewRunner(cfg.Engines, manager),
+		voices:    voice.NewStore(""),
+		jobs:      jobs.NewRegistry(),
+		library:   library.NewStore(""),
+		gpuQuery:  defaultGPUQuery,
+		ggufCache: map[string]ggufCacheEntry{},
 	}
+	r.storyBuilderProjects = storybuilder.NewStoreWithOptions("", storybuilder.StoreOptions{
+		ResolveCharacterVoice: r.resolveStoryBuilderCharacterVoice,
+	})
 	if whisperCfg, ok := cfg.Engines["whisper"]; ok && whisperVADConfigured(whisperCfg) {
 		r.voices = voice.NewStoreWithOptions("", voice.StoreOptions{AnalyzeVAD: func(wavBytes []byte) (time.Duration, error) {
 			segments, err := r.transcribeSegments(context.Background(), wavBytes)
@@ -4083,6 +4085,7 @@ type storyBuilderProjectUpdateRequest struct {
 	Revision           int                   `json:"revision"`
 	TimelineDurationMS int64                 `json:"timeline_duration_ms"`
 	Tracks             *[]storybuilder.Track `json:"tracks"`
+	RevoiceTrackIDs    []string              `json:"revoice_track_ids"`
 }
 
 func (r *router) handleStoryBuilderProjects(w http.ResponseWriter, req *http.Request) {
@@ -4149,7 +4152,8 @@ func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Requ
 			return
 		}
 		project, err := r.storyBuilderProjects.Update(id, storybuilder.ProjectUpdate{
-			Name: body.Name, Revision: body.Revision, TimelineDurationMS: body.TimelineDurationMS, Tracks: *body.Tracks,
+			Name: body.Name, Revision: body.Revision, TimelineDurationMS: body.TimelineDurationMS,
+			Tracks: *body.Tracks, RevoiceTrackIDs: body.RevoiceTrackIDs,
 		})
 		if err != nil {
 			writeStoryBuilderProjectError(w, err)
@@ -4186,13 +4190,25 @@ func writeStoryBuilderProjectError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, storybuilder.ErrInvalid):
 		writeJSONError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, storybuilder.ErrNotFound):
+	case errors.Is(err, storybuilder.ErrNotFound), errors.Is(err, storybuilder.ErrCharacterVoiceNotFound):
 		writeJSONError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, storybuilder.ErrConflict):
+	case errors.Is(err, storybuilder.ErrConflict), errors.Is(err, storybuilder.ErrVoiceConflict):
 		writeJSONError(w, http.StatusConflict, err.Error())
 	default:
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 	}
+}
+
+func (r *router) resolveStoryBuilderCharacterVoice(id string) (storybuilder.VoiceIdentity, bool, error) {
+	identity, ok, err := r.voices.ResolveCharacterSynthesisIdentity(id)
+	if err != nil || !ok {
+		return storybuilder.VoiceIdentity{}, ok, err
+	}
+	return storybuilder.VoiceIdentity{
+		CharacterVoiceID: identity.CharacterVoiceID,
+		ActorVoiceID:     identity.ActorVoiceID,
+		Fingerprint:      identity.Fingerprint,
+	}, true, nil
 }
 
 func (r *router) handleStories(w http.ResponseWriter, req *http.Request) {
