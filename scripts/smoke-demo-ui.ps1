@@ -10,7 +10,8 @@ param(
 # transcription, the voice loop with conversation history, voice cloning,
 # a DramaBox-routed factual audiobook with persisted provenance,
 # (create / list / play / speak-with / delete), image generation, and a
-# fixed-voice story with a stitched WAV artifact.
+# fixed-voice story with a stitched WAV artifact, and the separate Story
+# Builder Project typed-track contract.
 
 $ErrorActionPreference = "Stop"
 $env:Path = $env:Path + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
@@ -210,6 +211,44 @@ try {
   if ($css.Content -notlike "*.story-library-item*") {
     throw "demo styles.css is missing its marker"
   }
+
+  # Separate Story Builder assets and typed-track whole-project API.
+  $storyBuilderHTML = Invoke-WebRequest -Uri "$base/demo/story-builder.html" -UseBasicParsing
+  if ($storyBuilderHTML.Content -notlike "*storyBuilderAddDialogue*" -or $storyBuilderHTML.Content -notlike "*storyBuilderUndo*") {
+    throw "Story Builder is missing typed-track controls"
+  }
+  $storyBuilder = Invoke-RestMethod -Uri "$base/v1/story-builder-projects" -Method Post -ContentType "application/json" -Body '{"name":"Smoke timeline"}'
+  $storyBuilderUpdate = [ordered]@{
+    name = "Smoke timeline"
+    revision = $storyBuilder.revision
+    tracks = @(
+      [ordered]@{ id = "dialogue_smoke"; name = "Narrator"; type = "dialogue"; order = 0; muted = $false; clips = @() },
+      [ordered]@{ id = "sfx_smoke"; name = "Foley"; type = "sfx"; order = 1; muted = $true; clips = @(
+        [ordered]@{ id = "silence_smoke"; type = "silence"; label = "Hold"; start_ms = 500; duration_ms = 750 }
+      ) },
+      [ordered]@{ id = "music_smoke"; name = "Score"; type = "music"; order = 2; muted = $false; clips = @() }
+    )
+  }
+  $storyBuilderSaved = Invoke-RestMethod -Uri "$base/v1/story-builder-projects/$($storyBuilder.id)" -Method Put -ContentType "application/json" -Body ($storyBuilderUpdate | ConvertTo-Json -Depth 8)
+  if ($storyBuilderSaved.tracks.Count -ne 3 -or $storyBuilderSaved.tracks[1].clips[0].duration_ms -ne 750) {
+    throw "Story Builder typed timeline did not round-trip"
+  }
+  $invalidTimeline = $storyBuilderUpdate
+  $invalidTimeline.revision = $storyBuilderSaved.revision
+  $invalidTimeline.tracks[1].clips[0].start_ms = -1
+  try {
+    Invoke-RestMethod -Uri "$base/v1/story-builder-projects/$($storyBuilder.id)" -Method Put -ContentType "application/json" -Body ($invalidTimeline | ConvertTo-Json -Depth 8) | Out-Null
+    throw "expected invalid Story Builder timeline to be rejected"
+  } catch {
+    if ($_.Exception.Response.StatusCode.value__ -ne 400) {
+      throw "expected 400 for invalid Story Builder timeline, got: $_"
+    }
+  }
+  $storyBuilderReopened = Invoke-RestMethod "$base/v1/story-builder-projects/$($storyBuilder.id)"
+  if ($storyBuilderReopened.revision -ne $storyBuilderSaved.revision -or $storyBuilderReopened.tracks[1].clips[0].start_ms -ne 500) {
+    throw "invalid Story Builder save changed the durable project"
+  }
+  Invoke-RestMethod -Uri "$base/v1/story-builder-projects/$($storyBuilder.id)" -Method Delete | Out-Null
 
   # Transcription (live-transcribe request path).
   $transcription = Invoke-RestMethod -Uri "$base/v1/audio/transcriptions" -Method Post -Form @{ file = Get-Item $inputWav }

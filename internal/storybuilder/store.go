@@ -14,11 +14,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
 	DefaultRootDir = "out/story-builder-projects"
 	MaxNameLength  = 120
+	MaxTracks      = 128
+	MaxClips       = 2048
 	manifestName   = "project.json"
 )
 
@@ -28,14 +31,55 @@ var (
 	ErrConflict = errors.New("Story Builder Project revision conflict")
 )
 
-// Project is one separately saved Story Builder production. Timeline state is
-// added to this aggregate by later vertical slices.
+type TrackType string
+
+const (
+	TrackTypeDialogue TrackType = "dialogue"
+	TrackTypeSFX      TrackType = "sfx"
+	TrackTypeMusic    TrackType = "music"
+)
+
+type ClipType string
+
+const (
+	ClipTypeSilence  ClipType = "silence"
+	ClipTypeDialogue ClipType = "dialogue"
+)
+
+// TimelineClip is timing metadata. Silence clips deliberately have no media
+// path: they represent an authored gap, not generated audio bytes.
+type TimelineClip struct {
+	ID         string   `json:"id"`
+	Type       ClipType `json:"type"`
+	Label      string   `json:"label"`
+	StartMS    int64    `json:"start_ms"`
+	DurationMS int64    `json:"duration_ms"`
+}
+
+type Track struct {
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	Type             TrackType      `json:"type"`
+	Order            int            `json:"order"`
+	Muted            bool           `json:"muted"`
+	CharacterVoiceID string         `json:"character_voice_id,omitempty"`
+	Clips            []TimelineClip `json:"clips"`
+}
+
+type ProjectUpdate struct {
+	Name     string  `json:"name"`
+	Revision int     `json:"revision"`
+	Tracks   []Track `json:"tracks"`
+}
+
+// Project is one separately saved Story Builder production.
 type Project struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Revision  int       `json:"revision"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	Tracks    []Track   `json:"tracks"`
 }
 
 type StoreOptions struct {
@@ -86,7 +130,7 @@ func (s *Store) Create(name string) (Project, error) {
 		if err != nil {
 			return Project{}, err
 		}
-		project := Project{ID: id, Name: name, Revision: 1, CreatedAt: now, UpdatedAt: now}
+		project := Project{ID: id, Name: name, Revision: 1, CreatedAt: now, UpdatedAt: now, Tracks: []Track{}}
 		finalDir := filepath.Join(s.rootDir, project.ID)
 		if _, err := os.Stat(finalDir); err == nil {
 			continue
@@ -171,15 +215,18 @@ func (s *Store) List() ([]Project, error) {
 	return projects, nil
 }
 
-func (s *Store) Update(id string, revision int, name string) (Project, error) {
+func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if !validProjectID(id) {
 		return Project{}, ErrNotFound
 	}
-	name, err := validateName(name)
+	name, err := validateName(update.Name)
 	if err != nil {
+		return Project{}, err
+	}
+	if err := validateTracks(update.Tracks); err != nil {
 		return Project{}, err
 	}
 	project, ok, err := s.Get(id)
@@ -189,10 +236,11 @@ func (s *Store) Update(id string, revision int, name string) (Project, error) {
 	if !ok {
 		return Project{}, ErrNotFound
 	}
-	if revision != project.Revision {
+	if update.Revision != project.Revision {
 		return Project{}, ErrConflict
 	}
 	project.Name = name
+	project.Tracks = cloneTracks(update.Tracks)
 	project.Revision++
 	project.UpdatedAt = s.now()
 	data, err := encodeProject(project)
@@ -203,6 +251,80 @@ func (s *Store) Update(id string, revision int, name string) (Project, error) {
 		return Project{}, fmt.Errorf("save Story Builder Project: %w", err)
 	}
 	return project, nil
+}
+
+func validateTracks(tracks []Track) error {
+	if len(tracks) > MaxTracks {
+		return ErrInvalid
+	}
+	trackIDs := make(map[string]struct{}, len(tracks))
+	clipIDs := make(map[string]struct{})
+	clipCount := 0
+	for index, track := range tracks {
+		if !validTimelineID(track.ID) || strings.TrimSpace(track.Name) == "" || utf8.RuneCountInString(track.Name) > MaxNameLength || track.Order != index {
+			return ErrInvalid
+		}
+		if _, exists := trackIDs[track.ID]; exists {
+			return ErrInvalid
+		}
+		trackIDs[track.ID] = struct{}{}
+		if track.Type != TrackTypeDialogue && track.Type != TrackTypeSFX && track.Type != TrackTypeMusic {
+			return ErrInvalid
+		}
+		if track.Type != TrackTypeDialogue && track.CharacterVoiceID != "" {
+			return ErrInvalid
+		}
+		clipCount += len(track.Clips)
+		if clipCount > MaxClips {
+			return ErrInvalid
+		}
+		for _, clip := range track.Clips {
+			if !validTimelineID(clip.ID) || strings.TrimSpace(clip.Label) == "" || utf8.RuneCountInString(clip.Label) > MaxNameLength || clip.StartMS < 0 || clip.DurationMS <= 0 {
+				return ErrInvalid
+			}
+			if _, exists := clipIDs[clip.ID]; exists {
+				return ErrInvalid
+			}
+			clipIDs[clip.ID] = struct{}{}
+			switch clip.Type {
+			case ClipTypeSilence:
+			case ClipTypeDialogue:
+				if track.Type != TrackTypeDialogue || strings.TrimSpace(track.CharacterVoiceID) == "" {
+					return ErrInvalid
+				}
+			default:
+				return ErrInvalid
+			}
+		}
+	}
+	return nil
+}
+
+func validTimelineID(id string) bool {
+	if id == "" || len(id) > 120 {
+		return false
+	}
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func cloneTracks(tracks []Track) []Track {
+	cloned := make([]Track, len(tracks))
+	copy(cloned, tracks)
+	for i := range cloned {
+		cloned[i].Name = strings.TrimSpace(cloned[i].Name)
+		cloned[i].CharacterVoiceID = strings.TrimSpace(cloned[i].CharacterVoiceID)
+		cloned[i].Clips = append([]TimelineClip(nil), tracks[i].Clips...)
+		for j := range cloned[i].Clips {
+			cloned[i].Clips[j].Label = strings.TrimSpace(cloned[i].Clips[j].Label)
+		}
+	}
+	return cloned
 }
 
 func (s *Store) Delete(id string) error {
@@ -225,7 +347,7 @@ func (s *Store) Delete(id string) error {
 
 func validateName(name string) (string, error) {
 	name = strings.TrimSpace(name)
-	if name == "" || len(name) > MaxNameLength {
+	if name == "" || utf8.RuneCountInString(name) > MaxNameLength {
 		return "", ErrInvalid
 	}
 	return name, nil

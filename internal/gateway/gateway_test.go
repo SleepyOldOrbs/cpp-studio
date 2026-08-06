@@ -69,19 +69,46 @@ func TestStoryBuilderProjectLifecycleThroughGateway(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(`{"name":"Lantern final edit","revision":1}`)))
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(`{
+		"name":"Lantern final edit",
+		"revision":1,
+		"tracks":[
+			{"id":"dialogue_mara","name":"Mara","type":"dialogue","order":0,"muted":false,"clips":[]},
+			{"id":"foley","name":"Foley","type":"sfx","order":1,"muted":true,"clips":[
+				{"id":"pause_1","type":"silence","label":"Hold for thunder","start_ms":1250,"duration_ms":800}
+			]},
+			{"id":"score","name":"Score","type":"music","order":2,"muted":false,"clips":[]}
+		]
+	}`)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("rename status = %d: %s", rec.Code, rec.Body.String())
 	}
 	var renamed storybuilder.Project
-	if err := json.NewDecoder(rec.Body).Decode(&renamed); err != nil || renamed.Name != "Lantern final edit" || renamed.Revision != 2 {
+	if err := json.NewDecoder(rec.Body).Decode(&renamed); err != nil || renamed.Name != "Lantern final edit" || renamed.Revision != 2 ||
+		len(renamed.Tracks) != 3 || renamed.Tracks[1].Clips[0].Type != storybuilder.ClipTypeSilence {
 		t.Fatalf("unexpected renamed project: %+v, err %v", renamed, err)
 	}
 
 	rec = httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(`{"name":"stale overwrite","revision":1}`)))
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(`{"name":"legacy rename","revision":2}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("track-omitting save status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(`{"name":"stale overwrite","revision":1,"tracks":[]}`)))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("stale save status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(`{
+		"name":"corrupt attempt","revision":2,
+		"tracks":[{"id":"bad","name":"Bad","type":"sfx","order":0,"muted":false,
+		"clips":[{"id":"bad_clip","type":"silence","label":"Bad","start_ms":-1,"duration_ms":100}]}]
+	}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid timeline status = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
 
 	// Rebuilding the router simulates a Gateway restart while retaining the
@@ -93,7 +120,7 @@ func TestStoryBuilderProjectLifecycleThroughGateway(t *testing.T) {
 		t.Fatalf("reopen status = %d: %s", rec.Code, rec.Body.String())
 	}
 	var reopened storybuilder.Project
-	if err := json.NewDecoder(rec.Body).Decode(&reopened); err != nil || reopened.Name != renamed.Name || reopened.Revision != renamed.Revision ||
+	if err := json.NewDecoder(rec.Body).Decode(&reopened); err != nil || reopened.Name != renamed.Name || reopened.Revision != renamed.Revision || len(reopened.Tracks) != 3 ||
 		!reopened.CreatedAt.Equal(renamed.CreatedAt) || !reopened.UpdatedAt.Equal(renamed.UpdatedAt) {
 		t.Fatalf("unexpected reopened project: %+v, err %v", reopened, err)
 	}
