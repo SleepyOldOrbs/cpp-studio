@@ -222,6 +222,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/voices", r.handleVoices)
 	mux.HandleFunc("/v1/voices/design", r.handleVoiceDesign)
 	mux.HandleFunc("/v1/voices/", r.handleVoiceClone)
+	mux.HandleFunc("/v1/character-voices/", r.handleCharacterVoice)
 	r.mux = mux
 	return r
 }
@@ -3171,8 +3172,13 @@ func (r *router) handleVoices(w http.ResponseWriter, req *http.Request) {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		summaries, err := r.actorVoiceSummaries(clones)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(voiceListResponse{Voices: voiceSummaries(clones)})
+		_ = json.NewEncoder(w).Encode(voiceListResponse{Voices: summaries})
 	case http.MethodPost:
 		req.Body = http.MaxBytesReader(w, req.Body, voice.MaxReferenceWAVBytes)
 		data, ok := readUploadedWAV(w, req)
@@ -3203,7 +3209,7 @@ func (r *router) handleVoices(w http.ResponseWriter, req *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(voiceSummary(clone))
+		_ = json.NewEncoder(w).Encode(actorVoiceSummaryOf(clone))
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -3233,10 +3239,18 @@ func (r *router) handleVoiceClone(w http.ResponseWriter, req *http.Request) {
 				writeJSONError(w, http.StatusForbidden, err.Error())
 				return
 			}
+			if errors.Is(err, voice.ErrActorHasCharacters) {
+				writeJSONError(w, http.StatusConflict, err.Error())
+				return
+			}
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "characters" {
+		r.handleActorCharacterVoices(w, req, parts[0])
 		return
 	}
 	if len(parts) == 2 && parts[0] != "" && parts[1] == "audio" {
@@ -3255,25 +3269,207 @@ func (r *router) handleVoiceClone(w http.ResponseWriter, req *http.Request) {
 	http.NotFound(w, req)
 }
 
-func voiceSummaries(clones []voice.Clone) []voiceCloneSummary {
-	summaries := make([]voiceCloneSummary, 0, len(clones))
-	for _, clone := range clones {
-		summaries = append(summaries, voiceSummary(clone))
+func (r *router) actorVoiceSummaries(actors []voice.Clone) ([]actorVoiceSummary, error) {
+	summaries := make([]actorVoiceSummary, 0, len(actors))
+	for _, actor := range actors {
+		characters, err := r.voices.ListCharacterVoices(actor.ID)
+		if err != nil {
+			return nil, err
+		}
+		summary := actorVoiceSummaryOf(actor)
+		summary.CharacterVoices = characterVoiceSummaries(characters)
+		summaries = append(summaries, summary)
+	}
+	return summaries, nil
+}
+
+func actorVoiceSummaryOf(actor voice.Clone) actorVoiceSummary {
+	return actorVoiceSummary{
+		Kind:       "actor_voice",
+		ID:         actor.ID,
+		Name:       actor.Name,
+		Transcript: actor.Transcript,
+		CreatedAt:  actor.CreatedAt,
+		Protected:  actor.Protected,
+		Source:     actor.Source,
+		Analysis:   actor.Analysis,
+		AudioURL:   "/v1/voices/" + actor.ID + "/audio",
+	}
+}
+
+type characterVoiceWriteRequest struct {
+	Name      string `json:"name"`
+	Direction string `json:"direction"`
+}
+
+type characterVoicePreviewRequest struct {
+	SampleText string `json:"sample_text"`
+}
+
+func (r *router) handleActorCharacterVoices(w http.ResponseWriter, req *http.Request, actorVoiceID string) {
+	switch req.Method {
+	case http.MethodGet:
+		characters, err := r.voices.ListCharacterVoices(actorVoiceID)
+		if err != nil {
+			writeCharacterVoiceError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"character_voices": characterVoiceSummaries(characters)})
+	case http.MethodPost:
+		var body characterVoiceWriteRequest
+		if err := decodeCharacterVoiceJSON(w, req, &body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		character, err := r.voices.CreateCharacterVoice(actorVoiceID, body.Name, body.Direction)
+		if err != nil {
+			writeCharacterVoiceError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(characterVoiceSummaryOf(character))
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (r *router) handleCharacterVoice(w http.ResponseWriter, req *http.Request) {
+	tail := strings.Trim(strings.TrimPrefix(req.URL.Path, "/v1/character-voices/"), "/")
+	parts := strings.Split(tail, "/")
+	if len(parts) == 1 && parts[0] != "" {
+		id := parts[0]
+		switch req.Method {
+		case http.MethodGet:
+			character, ok, err := r.voices.LoadCharacterVoice(id)
+			if err != nil {
+				writeCharacterVoiceError(w, err)
+				return
+			}
+			if !ok {
+				writeCharacterVoiceError(w, voice.ErrCharacterNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(characterVoiceSummaryOf(character))
+		case http.MethodPut:
+			var body characterVoiceWriteRequest
+			if err := decodeCharacterVoiceJSON(w, req, &body); err != nil {
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			character, err := r.voices.UpdateCharacterVoice(id, body.Name, body.Direction)
+			if err != nil {
+				writeCharacterVoiceError(w, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(characterVoiceSummaryOf(character))
+		case http.MethodDelete:
+			if err := r.voices.DeleteCharacterVoice(id); err != nil {
+				writeCharacterVoiceError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.Header().Set("Allow", "GET, PUT, DELETE")
+			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "preview" {
+		if !requireMethod(w, req, http.MethodPost) {
+			return
+		}
+		r.handleCharacterVoicePreview(w, req, parts[0])
+		return
+	}
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "preview" && parts[2] == "audio" {
+		if !requireMethod(w, req, http.MethodGet) {
+			return
+		}
+		path, err := r.voices.CharacterPreviewPath(parts[0])
+		if err != nil {
+			writeCharacterVoiceError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		http.ServeFile(w, req, path)
+		return
+	}
+	http.NotFound(w, req)
+}
+
+func (r *router) handleCharacterVoicePreview(w http.ResponseWriter, req *http.Request, id string) {
+	var body characterVoicePreviewRequest
+	if err := decodeCharacterVoiceJSON(w, req, &body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	authoring := voice.CharacterAuthoring{
+		Store: r.voices,
+		Speak: func(ctx context.Context, request engine.SynthesisRequest, actor *engine.Voice) ([]byte, error) {
+			return r.speakSynthesis(ctx, request, actor, false)
+		},
+	}
+	character, err := authoring.GeneratePreview(req.Context(), id, body.SampleText)
+	if err != nil {
+		var engineErr *engine.Error
+		if errors.As(err, &engineErr) {
+			writeEngineError(w, err)
+			return
+		}
+		writeCharacterVoiceError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(characterVoiceSummaryOf(character))
+}
+
+func decodeCharacterVoiceJSON(w http.ResponseWriter, req *http.Request, body any) error {
+	req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
+	decoder := json.NewDecoder(req.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(body); err != nil {
+		return fmt.Errorf("invalid JSON request: %v", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("invalid JSON request: expected one object")
+	}
+	return nil
+}
+
+func writeCharacterVoiceError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, voice.ErrActorVoiceNotFound), errors.Is(err, voice.ErrCharacterNotFound), errors.Is(err, voice.ErrCharacterPreviewNotFound):
+		writeJSONError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, voice.ErrCharacterVoiceChanged):
+		writeJSONError(w, http.StatusConflict, err.Error())
+	default:
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+func characterVoiceSummaries(characters []voice.CharacterVoice) []characterVoiceSummary {
+	summaries := make([]characterVoiceSummary, 0, len(characters))
+	for _, character := range characters {
+		summaries = append(summaries, characterVoiceSummaryOf(character))
 	}
 	return summaries
 }
 
-func voiceSummary(clone voice.Clone) voiceCloneSummary {
-	return voiceCloneSummary{
-		ID:         clone.ID,
-		Name:       clone.Name,
-		Transcript: clone.Transcript,
-		CreatedAt:  clone.CreatedAt,
-		Protected:  clone.Protected,
-		Source:     clone.Source,
-		Analysis:   clone.Analysis,
-		AudioURL:   "/v1/voices/" + clone.ID + "/audio",
+func characterVoiceSummaryOf(character voice.CharacterVoice) characterVoiceSummary {
+	summary := characterVoiceSummary{
+		ID: character.ID, ActorVoiceID: character.ActorVoiceID, Name: character.Name,
+		Direction: character.Direction, CreatedAt: character.CreatedAt, UpdatedAt: character.UpdatedAt,
+		Preview: character.Preview,
 	}
+	if character.Preview != nil {
+		summary.PreviewAudioURL = "/v1/character-voices/" + character.ID + "/preview/audio"
+	}
+	return summary
 }
 
 // parseCloneSource reads the optional provenance fields off a clone upload.
@@ -4429,19 +4625,32 @@ type visionImageURL struct {
 	URL string `json:"url"`
 }
 
-type voiceCloneSummary struct {
-	ID         string                   `json:"id"`
-	Name       string                   `json:"name"`
-	Transcript string                   `json:"transcript"`
-	CreatedAt  time.Time                `json:"created_at"`
-	Protected  bool                     `json:"protected,omitempty"`
-	Source     *voice.CloneSource       `json:"source,omitempty"`
-	Analysis   *voice.ReferenceAnalysis `json:"analysis,omitempty"`
-	AudioURL   string                   `json:"audio_url"`
+type actorVoiceSummary struct {
+	Kind            string                   `json:"kind"`
+	ID              string                   `json:"id"`
+	Name            string                   `json:"name"`
+	Transcript      string                   `json:"transcript"`
+	CreatedAt       time.Time                `json:"created_at"`
+	Protected       bool                     `json:"protected,omitempty"`
+	Source          *voice.CloneSource       `json:"source,omitempty"`
+	Analysis        *voice.ReferenceAnalysis `json:"analysis,omitempty"`
+	AudioURL        string                   `json:"audio_url"`
+	CharacterVoices []characterVoiceSummary  `json:"character_voices"`
+}
+
+type characterVoiceSummary struct {
+	ID              string                  `json:"id"`
+	ActorVoiceID    string                  `json:"actor_voice_id"`
+	Name            string                  `json:"name"`
+	Direction       string                  `json:"direction"`
+	CreatedAt       time.Time               `json:"created_at"`
+	UpdatedAt       time.Time               `json:"updated_at"`
+	Preview         *voice.CharacterPreview `json:"preview,omitempty"`
+	PreviewAudioURL string                  `json:"preview_audio_url,omitempty"`
 }
 
 type voiceListResponse struct {
-	Voices []voiceCloneSummary `json:"voices"`
+	Voices []actorVoiceSummary `json:"voices"`
 }
 
 type voiceResponse struct {

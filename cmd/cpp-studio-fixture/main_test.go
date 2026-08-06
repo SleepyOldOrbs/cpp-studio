@@ -344,6 +344,28 @@ func TestDesignWritesValidWAV(t *testing.T) {
 	assertFixtureWAV(t, data)
 }
 
+func TestDesignAcceptsActorVoiceReference(t *testing.T) {
+	dir := t.TempDir()
+	refPath := filepath.Join(dir, "reference.wav")
+	writeMinimalWAV(t, refPath)
+	outPath := filepath.Join(dir, "preview.wav")
+
+	var stdout, stderr bytes.Buffer
+	err := run([]string{
+		"design", "--instruct", "older British woman, low and guarded",
+		"--text", "Keep the lamp lit.", "--out", outPath,
+		"--voice-ref", refPath, "--reference-text", "fixture transcript",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run design with Actor Voice reference: %v", err)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read preview wav: %v", err)
+	}
+	assertFixtureWAV(t, data)
+}
+
 func TestDesignRequiresInstruct(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "designed.wav")
 

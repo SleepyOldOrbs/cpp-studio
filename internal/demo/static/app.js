@@ -1960,14 +1960,135 @@
     return text.length > 120 ? text.slice(0, 117) + "..." : text;
   }
 
+  function labeledCharacterControl(labelText, control) {
+    var label = createElement("label", "field character-voice-field");
+    label.appendChild(createElement("span", "field-label", labelText));
+    label.appendChild(control);
+    return label;
+  }
+
+  function renderCharacterVoice(character) {
+    var item = createElement("li", "character-voice-item");
+    item.appendChild(createElement("span", "voice-kind-label", "Character Voice"));
+
+    var editForm = createElement("form", "character-voice-form");
+    var nameInput = createElement("input", "text-input");
+    nameInput.type = "text";
+    nameInput.required = true;
+    nameInput.maxLength = 80;
+    nameInput.value = character.name || "";
+    nameInput.autocomplete = "off";
+    editForm.appendChild(labeledCharacterControl("Name", nameInput));
+
+    var directionInput = createElement("textarea", "text-input character-voice-direction");
+    directionInput.required = true;
+    directionInput.maxLength = 500;
+    directionInput.rows = 2;
+    directionInput.value = character.direction || "";
+    editForm.appendChild(labeledCharacterControl("Voice direction", directionInput));
+
+    var editActions = createElement("div", "voice-item-actions");
+    var saveButton = createElement("button", "secondary compact-button", "Save Character Voice");
+    saveButton.type = "submit";
+    editActions.appendChild(saveButton);
+    var deleteButton = createElement("button", "plain compact-button", "Delete Character Voice");
+    deleteButton.type = "button";
+    deleteButton.addEventListener("click", function () {
+      deleteCharacterVoice(character.id, character.name, deleteButton);
+    });
+    editActions.appendChild(deleteButton);
+    editForm.appendChild(editActions);
+    editForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      updateCharacterVoice(character.id, nameInput.value, directionInput.value, saveButton);
+    });
+    item.appendChild(editForm);
+
+    var previewForm = createElement("form", "character-voice-preview-form");
+    var sampleInput = createElement("input", "text-input");
+    sampleInput.type = "text";
+    sampleInput.required = true;
+    sampleInput.maxLength = 1000;
+    sampleInput.value = character.preview && character.preview.sample_text
+      ? character.preview.sample_text
+      : "This is how the character sounds.";
+    previewForm.appendChild(labeledCharacterControl("Preview line", sampleInput));
+    var previewButton = createElement("button", "secondary compact-button", "Generate Preview");
+    previewButton.type = "submit";
+    previewForm.appendChild(previewButton);
+    var previewAudio = createElement("audio", "character-voice-audio");
+    previewAudio.controls = true;
+    previewAudio.preload = "none";
+    previewAudio.hidden = !character.preview_audio_url;
+    if (character.preview_audio_url) {
+      previewAudio.src = character.preview_audio_url;
+    }
+    previewForm.appendChild(previewAudio);
+    previewForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      previewCharacterVoice(character.id, sampleInput.value, previewAudio, previewButton);
+    });
+    item.appendChild(previewForm);
+    return item;
+  }
+
+  function renderCharacterVoiceGroup(actor) {
+    var group = createElement("section", "character-voice-group");
+    group.setAttribute("aria-label", "Character Voices for " + (actor.name || actor.id));
+    var head = createElement("div", "character-voice-group-head");
+    head.appendChild(createElement("span", "field-label", "Character Voices"));
+    head.appendChild(createElement(
+      "span",
+      "voice-item-detail",
+      String((actor.character_voices || []).length)
+    ));
+    group.appendChild(head);
+
+    var list = createElement("ul", "character-voice-list");
+    (actor.character_voices || []).forEach(function (character) {
+      list.appendChild(renderCharacterVoice(character));
+    });
+    if (!actor.character_voices || actor.character_voices.length === 0) {
+      list.appendChild(createElement("li", "character-voice-empty", "No Character Voices yet"));
+    }
+    group.appendChild(list);
+
+    var createForm = createElement("form", "character-voice-create");
+    createForm.appendChild(createElement("span", "field-label", "Add Character Voice"));
+    var nameInput = createElement("input", "text-input");
+    nameInput.type = "text";
+    nameInput.required = true;
+    nameInput.maxLength = 80;
+    nameInput.placeholder = "Character name";
+    nameInput.setAttribute("aria-label", "New Character Voice name for " + (actor.name || actor.id));
+    var directionInput = createElement("textarea", "text-input character-voice-direction");
+    directionInput.required = true;
+    directionInput.maxLength = 500;
+    directionInput.rows = 2;
+    directionInput.placeholder = "How this character should sound";
+    directionInput.setAttribute("aria-label", "New Character Voice direction for " + (actor.name || actor.id));
+    var addButton = createElement("button", "secondary compact-button", "Add Character Voice");
+    addButton.type = "submit";
+    createForm.appendChild(nameInput);
+    createForm.appendChild(directionInput);
+    createForm.appendChild(addButton);
+    createForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      createCharacterVoice(actor.id, nameInput.value, directionInput.value, addButton);
+    });
+    group.appendChild(createForm);
+    return group;
+  }
+
   function renderVoiceLibrary(voices) {
     voiceLibrary.textContent = "";
     if (!voices || voices.length === 0) {
-      voiceLibrary.appendChild(createElement("span", "voice-library-empty", "No cloned voices yet"));
+      voiceLibrary.appendChild(createElement("span", "voice-library-empty", "No Actor Voices yet"));
       return;
     }
     voices.forEach(function (clone) {
-      var item = createElement("article", "voice-item" + (clone.id === selectedVoiceId ? " selected" : ""));
+      var item = createElement("article", "voice-item actor-voice-item" + (clone.id === selectedVoiceId ? " selected" : ""));
+      item.appendChild(createElement("span", "voice-kind-label", "Actor Voice"));
       var head = createElement("div", "voice-item-head");
       head.appendChild(createElement("span", "voice-item-name", clone.name || clone.id));
       head.appendChild(createElement("span", "voice-item-detail", clone.created_at ? new Date(clone.created_at).toLocaleString() : ""));
@@ -2014,6 +2135,7 @@
         actions.appendChild(deleteButton);
       }
       item.appendChild(actions);
+      item.appendChild(renderCharacterVoiceGroup(clone));
       voiceLibrary.appendChild(item);
     });
   }
@@ -2441,6 +2563,88 @@
       await refreshVoices(true);
     } catch (error) {
       setCloneError(error);
+    }
+  }
+
+  async function createCharacterVoice(actorVoiceID, name, direction, button) {
+    clearCloneError();
+    setBusy(button, "Adding...");
+    try {
+      var response = await fetch("/v1/voices/" + encodeURIComponent(actorVoiceID) + "/characters", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), direction: direction.trim() })
+      });
+      await ensureOk(response, "Character Voice create");
+      var character = await response.json();
+      log("Character Voice added: " + character.name);
+      await refreshVoices(true);
+    } catch (error) {
+      setCloneError(error);
+    } finally {
+      clearBusy(button);
+    }
+  }
+
+  async function updateCharacterVoice(id, name, direction, button) {
+    clearCloneError();
+    setBusy(button, "Saving...");
+    try {
+      var response = await fetch("/v1/character-voices/" + encodeURIComponent(id), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), direction: direction.trim() })
+      });
+      await ensureOk(response, "Character Voice update");
+      var character = await response.json();
+      log("Character Voice saved: " + character.name);
+      await refreshVoices(true);
+    } catch (error) {
+      setCloneError(error);
+    } finally {
+      clearBusy(button);
+    }
+  }
+
+  async function previewCharacterVoice(id, sampleText, audio, button) {
+    clearCloneError();
+    setBusy(button, "Generating...");
+    try {
+      var response = await fetch("/v1/character-voices/" + encodeURIComponent(id) + "/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sample_text: sampleText.trim() })
+      });
+      await ensureOk(response, "Character Voice preview");
+      var character = await response.json();
+      audio.hidden = false;
+      audio.src = character.preview_audio_url + "?updated=" + Date.now();
+      audio.load();
+      try {
+        await audio.play();
+      } catch (error) {
+        log("Character Voice preview is ready");
+      }
+      log("Character Voice preview generated: " + character.name);
+    } catch (error) {
+      setCloneError(error);
+    } finally {
+      clearBusy(button);
+    }
+  }
+
+  async function deleteCharacterVoice(id, name, button) {
+    clearCloneError();
+    setBusy(button, "Deleting...");
+    try {
+      var response = await fetch("/v1/character-voices/" + encodeURIComponent(id), { method: "DELETE" });
+      await ensureOk(response, "Character Voice delete");
+      log("Character Voice deleted: " + (name || id));
+      await refreshVoices(true);
+    } catch (error) {
+      setCloneError(error);
+    } finally {
+      clearBusy(button);
     }
   }
 

@@ -29,6 +29,7 @@ import (
 	"cpp-studio/internal/models"
 	"cpp-studio/internal/story"
 	"cpp-studio/internal/storybuilder"
+	"cpp-studio/internal/voice"
 	"cpp-studio/internal/wav"
 )
 
@@ -799,7 +800,7 @@ func TestStoryScriptedByLlamaWithCastVoices(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected voice create status 201, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var voiceCreated voiceCloneSummary
+	var voiceCreated actorVoiceSummary
 	if err := json.NewDecoder(rec.Body).Decode(&voiceCreated); err != nil {
 		t.Fatalf("decode voice create response: %v", err)
 	}
@@ -2662,7 +2663,7 @@ func TestVoiceCloneRecordsProvenance(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var created voiceCloneSummary
+	var created actorVoiceSummary
 	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
@@ -2703,7 +2704,7 @@ func TestVoiceCloneRecordsProvenance(t *testing.T) {
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("expected status 201, got %d: %s", rec.Code, rec.Body.String())
 		}
-		var plainClone voiceCloneSummary
+		var plainClone actorVoiceSummary
 		if err := json.NewDecoder(rec.Body).Decode(&plainClone); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
@@ -3389,7 +3390,7 @@ func TestVoiceCloneLifecycleAndClonedVoiceLoop(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected create status 201, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var created voiceCloneSummary
+	var created actorVoiceSummary
 	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
@@ -3501,6 +3502,185 @@ func TestVoiceCloneLifecycleAndClonedVoiceLoop(t *testing.T) {
 	}
 }
 
+func TestCharacterVoiceAuthoringAndPreviewThroughGateway(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"omnivoice": helperEngine("design"),
+	})
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	r.voices = voice.NewStore(filepath.Join(t.TempDir(), "voices"))
+	actor, err := r.voices.Save("Mara", "reference words", validWAVBytes(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/voices/"+actor.ID+"/characters", strings.NewReader(`{"name":"Weathered keeper","direction":"elderly, low pitch"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create Character Voice status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var character voice.CharacterVoice
+	if err := json.NewDecoder(rec.Body).Decode(&character); err != nil {
+		t.Fatal(err)
+	}
+	if character.ActorVoiceID != actor.ID || character.Name != "Weathered keeper" || character.ID == "" {
+		t.Fatalf("unexpected Character Voice: %+v", character)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/voices/"+actor.ID+"/characters", strings.NewReader(`{"name":"Harbour guide","direction":"young adult, upbeat"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create sibling status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/voices", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list Actor Voices status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var grouped voiceListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&grouped); err != nil {
+		t.Fatal(err)
+	}
+	if len(grouped.Voices) != 1 || grouped.Voices[0].Kind != "actor_voice" || len(grouped.Voices[0].CharacterVoices) != 2 {
+		t.Fatalf("Character Voices were not grouped beneath Actor Voice: %+v", grouped.Voices)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/character-voices/"+character.ID, strings.NewReader(`{"name":"Weathered lighthouse keeper","direction":"elderly, whisper"}`)))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"direction":"elderly, whisper"`) {
+		t.Fatalf("edit Character Voice status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/character-voices/"+character.ID+"/preview", strings.NewReader(`{"sample_text":"Keep the lamp lit."}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview Character Voice status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"preview_audio_url":"/v1/character-voices/`+character.ID+`/preview/audio"`) {
+		t.Fatalf("preview response missing replaceable audio URL: %s", rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/character-voices/"+character.ID+"/preview", strings.NewReader(`{"sample_text":"Replacement line."}`)))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"sample_text":"Replacement line."`) {
+		t.Fatalf("replace Character Voice preview status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/character-voices/"+character.ID+"/preview/audio", nil))
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "audio/wav" || !bytes.HasPrefix(rec.Body.Bytes(), []byte("RIFF")) {
+		t.Fatalf("preview audio status = %d type=%q bytes=%q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.Bytes())
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/voices/"+actor.ID, nil))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("Actor Voice with children delete status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/character-voices/"+character.ID, nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete Character Voice status = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCharacterVoiceGatewayRejectsInvalidAndBusyRequestsWithoutPartialRecords(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"omnivoice": helperEngine("design"),
+	})
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	r.voices = voice.NewStore(filepath.Join(t.TempDir(), "voices"))
+	actor, err := r.voices.Save("Mara", "reference words", validWAVBytes(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		status int
+	}{
+		{name: "missing parent", method: http.MethodPost, path: "/v1/voices/voice_missing/characters", body: `{"name":"Keeper","direction":"elderly"}`, status: http.StatusNotFound},
+		{name: "unknown field", method: http.MethodPost, path: "/v1/voices/" + actor.ID + "/characters", body: `{"name":"Keeper","direction":"elderly","path":"outside"}`, status: http.StatusBadRequest},
+		{name: "overlong direction", method: http.MethodPost, path: "/v1/voices/" + actor.ID + "/characters", body: `{"name":"Keeper","direction":"` + strings.Repeat("d", voice.MaxCharacterVoiceDirectionChars+1) + `"}`, status: http.StatusBadRequest},
+		{name: "missing Character Voice", method: http.MethodPut, path: "/v1/character-voices/character_missing", body: `{"name":"Keeper","direction":"elderly"}`, status: http.StatusNotFound},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(test.method, test.path, strings.NewReader(test.body)))
+			if rec.Code != test.status {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, test.status, rec.Body.String())
+			}
+		})
+	}
+	characters, err := r.voices.ListCharacterVoices(actor.ID)
+	if err != nil || len(characters) != 0 {
+		t.Fatalf("invalid requests left partial Character Voices: %+v err=%v", characters, err)
+	}
+
+	character, err := r.voices.CreateCharacterVoice(actor.ID, "Keeper", "elderly, low pitch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := engine.NewFake()
+	fake.Handle("omnivoice", func(engine.Spec) (engine.Result, error) {
+		return engine.Result{Output: wav.SyntheticTone(160)}, nil
+	})
+	r.engines = fake
+	release, ok := fake.Reserve("omnivoice")
+	if !ok {
+		t.Fatal("reserve fixture OmniVoice")
+	}
+	defer release()
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/character-voices/"+character.ID+"/preview", strings.NewReader(`{"sample_text":"Keep the lamp lit."}`)))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("busy preview status = %d, want 429: %s", rec.Code, rec.Body.String())
+	}
+	loaded, ok, err := r.voices.LoadCharacterVoice(character.ID)
+	if err != nil || !ok || loaded.Preview != nil {
+		t.Fatalf("busy preview partially updated Character Voice: ok=%v err=%v voice=%+v", ok, err, loaded)
+	}
+}
+
+func TestCharacterVoiceGatewayRejectsStalePreviewAfterDirectionChange(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"omnivoice": helperEngine("design"),
+	})
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	r.voices = voice.NewStore(filepath.Join(t.TempDir(), "voices"))
+	actor, err := r.voices.Save("Mara", "reference words", validWAVBytes(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	character, err := r.voices.CreateCharacterVoice(actor.ID, "Keeper", "quiet and guarded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := engine.NewFake()
+	fake.Handle("omnivoice", func(engine.Spec) (engine.Result, error) {
+		if _, err := r.voices.UpdateCharacterVoice(character.ID, character.Name, "urgent and breathless"); err != nil {
+			t.Fatalf("direction change during synthesis: %v", err)
+		}
+		return engine.Result{Output: wav.SyntheticTone(160)}, nil
+	})
+	r.engines = fake
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/character-voices/"+character.ID+"/preview", strings.NewReader(`{"sample_text":"Keep the lamp lit."}`)))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "changed while preview was generating") {
+		t.Fatalf("stale preview status = %d, want 409 conflict: %s", rec.Code, rec.Body.String())
+	}
+	loaded, ok, err := r.voices.LoadCharacterVoice(character.ID)
+	if err != nil || !ok || loaded.Direction != "urgent and breathless" || loaded.Preview != nil {
+		t.Fatalf("stale preview overwrote direction change: ok=%v err=%v character=%+v", ok, err, loaded)
+	}
+}
+
 func TestWhisperVADConfigurationAndSpokenDuration(t *testing.T) {
 	without := config.EngineConfig{Mode: "server", Args: []string{"--model", "whisper.bin"}}
 	with := config.EngineConfig{Mode: "server", Args: []string{"--vad", "--vad-model", "silero.bin"}}
@@ -3594,7 +3774,7 @@ func TestSpeechViaResidentAudioServer(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected voice create status 201, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var created voiceCloneSummary
+	var created actorVoiceSummary
 	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
 		t.Fatalf("decode voice create response: %v", err)
 	}
@@ -4008,7 +4188,7 @@ func TestImageDescriptionUsesVisionAndClonedVoice(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected voice create status 201, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var created voiceCloneSummary
+	var created actorVoiceSummary
 	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
 		t.Fatalf("decode voice create response: %v", err)
 	}
@@ -4138,7 +4318,7 @@ func TestVoiceCloneProtectedRefusesDeletion(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected create status 201, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var created voiceCloneSummary
+	var created actorVoiceSummary
 	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
@@ -4199,7 +4379,7 @@ func TestVoiceCloneCreateAcceptsSuppliedTranscript(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected create status 201, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var created voiceCloneSummary
+	var created actorVoiceSummary
 	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
@@ -4937,7 +5117,7 @@ func TestAudiobookDramaBoxResidentServerSupportsTextOnlyAndClone(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create clone: got %d: %s", rec.Code, rec.Body.String())
 	}
-	var clone voiceCloneSummary
+	var clone actorVoiceSummary
 	_ = json.NewDecoder(rec.Body).Decode(&clone)
 
 	rec = postAudiobook(t, router, map[string]string{"engine": "dramabox", "voice": clone.ID})

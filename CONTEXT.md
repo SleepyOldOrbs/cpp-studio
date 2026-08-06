@@ -69,6 +69,13 @@ unit behind `POST /v1/voice`. Takes the engine seam and a `ChatFunc` as
 injected dependencies, so the whole loop is testable without native binaries.
 The browser demo only records, uploads, and plays.
 
+The Voice Library uses two related terms. An **Actor Voice** is an existing
+recorded or designed reusable voice with its own reference WAV and transcript.
+A **Character Voice** is a durable child direction beneath one Actor Voice. It
+stores identity and performance direction, but never duplicates the parent's
+reference WAV. Its optional generated preview is replaceable evaluation data,
+not a Library asset or production take.
+
 ## Story (`internal/story`)
 
 The staged story pipeline behind `/v1/stories`, persisted atomically by the
