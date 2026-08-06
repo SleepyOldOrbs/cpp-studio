@@ -25,6 +25,7 @@ import (
 	"cpp-studio/internal/audiobook"
 	"cpp-studio/internal/config"
 	"cpp-studio/internal/engine"
+	"cpp-studio/internal/library"
 	"cpp-studio/internal/lifecycle"
 	"cpp-studio/internal/models"
 	"cpp-studio/internal/story"
@@ -134,6 +135,93 @@ func TestStoryBuilderProjectLifecycleThroughGateway(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+created.ID, nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("deleted project status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStoryBuilderPlacesDurableLibraryAudioThroughGateway(t *testing.T) {
+	root := t.TempDir()
+	cfg := testConfig(nil)
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	r.library = library.NewStore(filepath.Join(root, "library"))
+	r.storyBuilderProjects = storybuilder.NewStoreWithOptions(filepath.Join(root, "projects"), storybuilder.StoreOptions{
+		ResolveLibraryAudio: r.resolveStoryBuilderLibraryAudio,
+	})
+	door, err := r.library.Save("audio", "Door slam", wav.SyntheticTone(16000), map[string]string{"media_role": "sfx"})
+	if err != nil {
+		t.Fatalf("save SFX: %v", err)
+	}
+	score, err := r.library.Save("audio", "Low strings", wav.SyntheticTone(32000), map[string]string{"media_role": "music"})
+	if err != nil {
+		t.Fatalf("save music: %v", err)
+	}
+	project, err := r.storyBuilderProjects.Create("Library placement")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	project, err = r.storyBuilderProjects.Update(project.ID, storybuilder.ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: []storybuilder.Track{
+		{ID: "foley", Name: "Foley", Type: storybuilder.TrackTypeSFX, Order: 0},
+	}})
+	if err != nil {
+		t.Fatalf("add SFX track: %v", err)
+	}
+
+	place := fmt.Sprintf(`{"revision":%d,"track_id":"foley","library_item_id":%q,"start_ms":250}`, project.Revision, door.ID)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects/"+project.ID+"/library-audio", strings.NewReader(place)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("place status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var placed storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&placed); err != nil {
+		t.Fatalf("decode placed project: %v", err)
+	}
+	clip := placed.Tracks[0].Clips[0]
+	if clip.Type != storybuilder.ClipTypeSFX || clip.SourceLibraryItemID != door.ID || clip.DurationMS != 1000 || clip.MediaError != "" {
+		t.Fatalf("placed clip = %+v", clip)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+project.ID+"/media/"+clip.SourceID, nil))
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), wav.SyntheticTone(16000)) {
+		t.Fatalf("project media status = %d bytes=%d", rec.Code, rec.Body.Len())
+	}
+
+	for _, body := range []string{
+		fmt.Sprintf(`{"revision":%d,"track_id":"foley","library_item_id":%q,"start_ms":2000}`, placed.Revision, score.ID),
+		fmt.Sprintf(`{"revision":%d,"track_id":"foley","library_item_id":%q,"start_ms":2000,"source_path":"C:\\\\outside.wav"}`, placed.Revision, door.ID),
+	} {
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects/"+project.ID+"/library-audio", strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("rejected placement status = %d, want 400: %s", rec.Code, rec.Body.String())
+		}
+	}
+	unchanged, ok, err := r.storyBuilderProjects.Get(project.ID)
+	if err != nil || !ok || unchanged.Revision != placed.Revision || len(unchanged.Tracks[0].Clips) != 1 {
+		t.Fatalf("rejection mutated project: %+v ok=%v err=%v", unchanged, ok, err)
+	}
+
+	if err := r.library.Delete(door.ID); err != nil {
+		t.Fatalf("delete source Library item: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+project.ID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reopen after source deletion status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var reopened storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&reopened); err != nil || reopened.Tracks[0].Clips[0].MediaError != "" {
+		t.Fatalf("source deletion broke project: %+v err=%v", reopened, err)
+	}
+
+	mediaPath := filepath.Join(root, "projects", project.ID, "media", clip.SourceID+".wav")
+	if err := os.Remove(mediaPath); err != nil {
+		t.Fatalf("remove project media: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+project.ID, nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"media_error":"project media is missing or unreadable"`) {
+		t.Fatalf("missing media response = %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -5591,8 +5679,9 @@ func TestLibrarySaveListServeDelete(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{"llama": {Command: "llama-server"}})
 	router := NewRouter(cfg, lifecycle.NewManager(cfg))
 
+	audio := wav.SyntheticTone(1600)
 	body := fmt.Sprintf(`{"kind":"audio","name":"My take","data_b64":%q,"meta":{"voice":"cox"}}`,
-		base64.StdEncoding.EncodeToString(validWAVBytes()))
+		base64.StdEncoding.EncodeToString(audio))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/library", strings.NewReader(body)))
 	if rec.Code != http.StatusCreated {
@@ -5613,7 +5702,7 @@ func TestLibrarySaveListServeDelete(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/library/"+item.ID+"/artifact", nil))
-	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), validWAVBytes()) {
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), audio) {
 		t.Fatalf("artifact: got %d, %d bytes", rec.Code, rec.Body.Len())
 	}
 

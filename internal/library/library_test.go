@@ -2,7 +2,9 @@ package library
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -62,6 +64,48 @@ func TestSaveListGetDelete(t *testing.T) {
 	}
 	if err := s.Delete(image.ID); err == nil {
 		t.Fatal("expected error deleting missing item")
+	}
+}
+
+func TestAudioRoleAndDurationAreCanonical(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	item, err := s.Save("audio", "Door slam", wav.SyntheticTone(16000), map[string]string{"media_role": "sfx"})
+	if err != nil {
+		t.Fatalf("save classified audio: %v", err)
+	}
+	if item.MediaRole != MediaRoleSFX || item.DurationMS != 1000 {
+		t.Fatalf("classified audio = %+v, want sfx / 1000ms", item)
+	}
+	loaded, ok, err := s.Get(item.ID)
+	if err != nil || !ok || loaded.MediaRole != MediaRoleSFX || loaded.DurationMS != 1000 {
+		t.Fatalf("reloaded classified audio = %+v ok=%v err=%v", loaded, ok, err)
+	}
+
+	utility, err := s.Save("audio", "Scratch take", wav.SyntheticTone(8000), nil)
+	if err != nil {
+		t.Fatalf("save utility audio: %v", err)
+	}
+	if utility.MediaRole != MediaRoleUtility || utility.DurationMS != 500 {
+		t.Fatalf("default audio = %+v, want utility / 500ms", utility)
+	}
+	if _, err := s.Save("audio", "Bad role", wav.SyntheticTone(1600), map[string]string{"media_role": "dialogue"}); err == nil {
+		t.Fatal("unsupported audio role was accepted")
+	}
+
+	legacy := utility
+	legacy.MediaRole = ""
+	legacy.Meta = map[string]string{"media_role": "old-custom-role"}
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("encode legacy metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, legacy.ID, "item.json"), encoded, 0o644); err != nil {
+		t.Fatalf("write legacy metadata: %v", err)
+	}
+	loadedLegacy, ok, err := s.Get(legacy.ID)
+	if err != nil || !ok || loadedLegacy.MediaRole != MediaRoleUtility {
+		t.Fatalf("legacy audio role = %q ok=%v err=%v, want utility", loadedLegacy.MediaRole, ok, err)
 	}
 }
 

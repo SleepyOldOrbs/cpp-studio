@@ -1,6 +1,7 @@
 package storybuilder
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,7 +9,129 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"cpp-studio/internal/wav"
 )
+
+func TestPlaceLibraryAudioCopiesOnceAndSurvivesLibraryDeletion(t *testing.T) {
+	root := t.TempDir()
+	source := LibraryAudio{ID: "lib_door", Name: "Door slam", MediaRole: MediaRoleSFX, Data: testWAV(16000)}
+	available := true
+	resolver := func(id string) (LibraryAudio, bool, error) {
+		if !available || id != source.ID {
+			return LibraryAudio{}, false, nil
+		}
+		return source, true, nil
+	}
+	store := NewStoreWithOptions(root, StoreOptions{ResolveLibraryAudio: resolver})
+	created, err := store.Create("Durable foley")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	created, err = store.Update(created.ID, ProjectUpdate{Name: created.Name, Revision: created.Revision, Tracks: []Track{
+		{ID: "foley", Name: "Foley", Type: TrackTypeSFX, Order: 0},
+	}})
+	if err != nil {
+		t.Fatalf("add track: %v", err)
+	}
+
+	placed, err := store.PlaceLibraryAudio(created.ID, LibraryAudioPlacement{
+		Revision: created.Revision, TrackID: "foley", LibraryItemID: source.ID, StartMS: 250,
+	})
+	if err != nil {
+		t.Fatalf("place audio: %v", err)
+	}
+	clip := placed.Tracks[0].Clips[0]
+	if clip.Type != ClipTypeSFX || clip.SourceLibraryItemID != source.ID || clip.SourceLibraryName != source.Name ||
+		clip.SourceMediaRole != MediaRoleSFX || clip.StartMS != 250 || clip.DurationMS != 1000 || clip.MediaError != "" {
+		t.Fatalf("placed clip = %+v", clip)
+	}
+	mediaPath := filepath.Join(root, created.ID, "media", clip.SourceID+".wav")
+	if data, err := os.ReadFile(mediaPath); err != nil || !bytes.Equal(data, source.Data) {
+		t.Fatalf("project media copy: err=%v equal=%v", err, bytes.Equal(data, source.Data))
+	}
+
+	placed, err = store.PlaceLibraryAudio(created.ID, LibraryAudioPlacement{
+		Revision: placed.Revision, TrackID: "foley", LibraryItemID: source.ID, StartMS: 2000,
+	})
+	if err != nil {
+		t.Fatalf("reuse audio: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, created.ID, "media"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("reused media entries = %v err=%v, want one", entries, err)
+	}
+
+	available = false
+	reopened, ok, err := NewStore(root).Get(created.ID)
+	if err != nil || !ok || len(reopened.Tracks[0].Clips) != 2 {
+		t.Fatalf("reopen after Library deletion: %+v ok=%v err=%v", reopened, ok, err)
+	}
+	if reopened.Tracks[0].Clips[0].MediaError != "" {
+		t.Fatalf("Library deletion broke project copy: %+v", reopened.Tracks[0].Clips[0])
+	}
+
+	if err := os.Remove(mediaPath); err != nil {
+		t.Fatalf("remove project media: %v", err)
+	}
+	broken, ok, err := NewStore(root).Get(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("reopen missing media: ok=%v err=%v", ok, err)
+	}
+	for _, affected := range broken.Tracks[0].Clips {
+		if affected.MediaError == "" {
+			t.Fatalf("missing project media was silent: %+v", affected)
+		}
+	}
+
+	if err := os.WriteFile(mediaPath, []byte("not a WAV file"), 0o644); err != nil {
+		t.Fatalf("corrupt project media: %v", err)
+	}
+	corrupt, ok, err := NewStore(root).Get(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("reopen unreadable media: ok=%v err=%v", ok, err)
+	}
+	for _, affected := range corrupt.Tracks[0].Clips {
+		if affected.MediaError == "" {
+			t.Fatalf("unreadable project media was silent: %+v", affected)
+		}
+	}
+}
+
+func TestPlaceLibraryAudioRejectsIncompatibleOrUntrustedInputWithoutMutation(t *testing.T) {
+	root := t.TempDir()
+	store := NewStoreWithOptions(root, StoreOptions{ResolveLibraryAudio: func(id string) (LibraryAudio, bool, error) {
+		if id != "lib_score" {
+			return LibraryAudio{}, false, nil
+		}
+		return LibraryAudio{ID: id, Name: "Low strings", MediaRole: MediaRoleMusic, Data: testWAV(16000)}, true, nil
+	}})
+	created, err := store.Create("Typed placement")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	created, err = store.Update(created.ID, ProjectUpdate{Name: created.Name, Revision: created.Revision, Tracks: []Track{
+		{ID: "foley", Name: "Foley", Type: TrackTypeSFX, Order: 0},
+	}})
+	if err != nil {
+		t.Fatalf("add track: %v", err)
+	}
+	for _, itemID := range []string{"lib_score", `..\\outside.wav`} {
+		if _, err := store.PlaceLibraryAudio(created.ID, LibraryAudioPlacement{
+			Revision: created.Revision, TrackID: "foley", LibraryItemID: itemID, StartMS: 0,
+		}); err == nil {
+			t.Fatalf("placement %q succeeded", itemID)
+		}
+	}
+	loaded, ok, err := store.Get(created.ID)
+	if err != nil || !ok || loaded.Revision != created.Revision || len(loaded.Tracks[0].Clips) != 0 {
+		t.Fatalf("rejected placement mutated project: %+v ok=%v err=%v", loaded, ok, err)
+	}
+}
+
+func testWAV(samples int) []byte {
+	return wav.SyntheticTone(samples)
+}
 
 func TestUserCanArrangeTypedTracksAndSilenceClips(t *testing.T) {
 	root := t.TempDir()

@@ -120,6 +120,12 @@ Story Builder tool. Its manifest has a stable id, user-facing name, typed
 Dialogue/SFX/Music tracks, timeline clips, timestamps, and a monotonic revision.
 Tracks own stable identity, order, mute state, and optional Character Voice
 binding. Silence clips are timing-only metadata and do not own media bytes.
+Reusable SFX and Music remain Library-owned until first placement. The project
+Store then validates and copies one immutable WAV into the selected project's
+`media` directory, records source Library provenance on each clip, and reuses
+that copy for later placements. Clips expose a derived media error when their
+project-owned source is missing or unreadable; browser-provided paths are never
+part of the contract.
 Whole-project writes use the revision as an
 optimistic-concurrency boundary: a stale client receives a conflict instead of
 silently replacing newer work. Each project lives in its own directory under

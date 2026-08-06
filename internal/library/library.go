@@ -28,6 +28,14 @@ const MaxItemBytes = 64 * 1024 * 1024
 // MaxNameLength bounds the human-readable item name.
 const MaxNameLength = 120
 
+type MediaRole string
+
+const (
+	MediaRoleSFX     MediaRole = "sfx"
+	MediaRoleMusic   MediaRole = "music"
+	MediaRoleUtility MediaRole = "utility"
+)
+
 var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 
 // kinds maps each supported item kind to its artifact filename and a
@@ -47,13 +55,15 @@ var kinds = map[string]struct {
 
 // Item is one saved output.
 type Item struct {
-	ID        string            `json:"id"`
-	Kind      string            `json:"kind"`
-	Name      string            `json:"name"`
-	Filename  string            `json:"filename"`
-	Bytes     int64             `json:"bytes"`
-	Meta      map[string]string `json:"meta,omitempty"`
-	CreatedAt time.Time         `json:"createdAt"`
+	ID         string            `json:"id"`
+	Kind       string            `json:"kind"`
+	Name       string            `json:"name"`
+	Filename   string            `json:"filename"`
+	Bytes      int64             `json:"bytes"`
+	MediaRole  MediaRole         `json:"mediaRole,omitempty"`
+	DurationMS int64             `json:"durationMs,omitempty"`
+	Meta       map[string]string `json:"meta,omitempty"`
+	CreatedAt  time.Time         `json:"createdAt"`
 }
 
 type Store struct {
@@ -90,19 +100,38 @@ func (s *Store) Save(kind, name string, data []byte, meta map[string]string) (It
 	if err := spec.validate(data); err != nil {
 		return Item{}, fmt.Errorf("invalid %s data: %v", kind, err)
 	}
+	var mediaRole MediaRole
+	var durationMS int64
+	if kind == "audio" {
+		var err error
+		mediaRole, err = parseMediaRole(mediaRoleMetadata(meta))
+		if err != nil {
+			return Item{}, err
+		}
+		duration, err := wav.Duration(data)
+		if err != nil {
+			return Item{}, fmt.Errorf("invalid audio data: %v", err)
+		}
+		durationMS = duration.Milliseconds()
+		if durationMS <= 0 {
+			return Item{}, fmt.Errorf("audio duration must be positive")
+		}
+	}
 
 	suffix := make([]byte, 3)
 	if _, err := rand.Read(suffix); err != nil {
 		return Item{}, fmt.Errorf("mint item id: %w", err)
 	}
 	item := Item{
-		ID:        fmt.Sprintf("lib_%s_%s", s.now().Format("20060102_150405"), hex.EncodeToString(suffix)),
-		Kind:      kind,
-		Name:      name,
-		Filename:  spec.filename,
-		Bytes:     int64(len(data)),
-		Meta:      meta,
-		CreatedAt: s.now(),
+		ID:         fmt.Sprintf("lib_%s_%s", s.now().Format("20060102_150405"), hex.EncodeToString(suffix)),
+		Kind:       kind,
+		Name:       name,
+		Filename:   spec.filename,
+		Bytes:      int64(len(data)),
+		MediaRole:  mediaRole,
+		DurationMS: durationMS,
+		Meta:       meta,
+		CreatedAt:  s.now(),
 	}
 
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
@@ -146,7 +175,50 @@ func (s *Store) Get(id string) (Item, bool, error) {
 	if err := json.Unmarshal(data, &item); err != nil {
 		return Item{}, false, fmt.Errorf("decode item metadata: %w", err)
 	}
+	if item.Kind == "audio" {
+		storedRole := string(item.MediaRole)
+		if storedRole == "" {
+			storedRole = mediaRoleMetadata(item.Meta)
+		}
+		item.MediaRole, err = parseMediaRole(storedRole)
+		if err != nil {
+			// Older metadata was not constrained to the current role vocabulary.
+			// Keep that audio usable as utility audio; new writes remain strict.
+			item.MediaRole = MediaRoleUtility
+		}
+		if item.DurationMS == 0 {
+			artifact, readErr := os.ReadFile(filepath.Join(s.rootDir, id, item.Filename))
+			if readErr == nil {
+				if duration, durationErr := wav.Duration(artifact); durationErr == nil {
+					item.DurationMS = duration.Milliseconds()
+				}
+			}
+		}
+	}
 	return item, true, nil
+}
+
+func parseMediaRole(value string) (MediaRole, error) {
+	switch MediaRole(strings.TrimSpace(strings.ToLower(value))) {
+	case "", MediaRoleUtility:
+		return MediaRoleUtility, nil
+	case MediaRoleSFX:
+		return MediaRoleSFX, nil
+	case MediaRoleMusic:
+		return MediaRoleMusic, nil
+	default:
+		return "", fmt.Errorf("unsupported audio media role %q", value)
+	}
+}
+
+func mediaRoleMetadata(meta map[string]string) string {
+	if value := meta["media_role"]; value != "" {
+		return value
+	}
+	if meta["source"] == "music-generation" {
+		return string(MediaRoleMusic)
+	}
+	return ""
 }
 
 // List returns every saved item, newest first.

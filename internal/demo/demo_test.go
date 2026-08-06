@@ -378,12 +378,12 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 		{
 			path:        "/story-builder.js",
 			contentType: "javascript",
-			markers:     []string{"/v1/story-builder-projects", "/v1/voices", "scheduleAutosave", "saveProject", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "acceptTimelineEdit", "bindCharacterVoice", "renderVoiceLibrary", "beginClipPointerEdit", "clampPanelPosition", "requestedProjectID"},
+			markers:     []string{"/v1/story-builder-projects", "/v1/voices", "/v1/library", "library-audio", "scheduleAutosave", "saveProject", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "acceptTimelineEdit", "bindCharacterVoice", "placeLibraryAudio", "renderVoiceLibrary", "reusable-audio-asset", "beginClipPointerEdit", "clampPanelPosition", "requestedProjectID"},
 		},
 		{
 			path:        "/story-builder.css",
 			contentType: "text/css",
-			markers:     []string{".project-list", ".save-status", ".story-canvas", ".timeline-viewport", ".track-row", ".silence-clip", ".silence-block", ".trim-handle", ".selection-panel", ".voice-library", ".actor-voice-group", ".character-voice-asset", ".dialogue-text-inline", ".clip-status-badge"},
+			markers:     []string{".project-list", ".save-status", ".story-canvas", ".timeline-viewport", ".track-row", ".silence-clip", ".silence-block", ".trim-handle", ".selection-panel", ".voice-library", ".actor-voice-group", ".character-voice-asset", ".reusable-audio-group", ".reusable-audio-asset", ".clip-media-error", ".dialogue-text-inline", ".clip-status-badge"},
 		},
 	}
 

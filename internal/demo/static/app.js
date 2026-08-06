@@ -5360,6 +5360,7 @@
     if (musicOutputUrl) {
       saveToLibrary("audio", "Music " + new Date().toLocaleString(), musicOutputUrl, {
         source: "music-generation",
+        media_role: "music",
         model: musicModelSelect.value,
         route: musicModeSelect.value,
         prompt: musicPromptInput.value.trim()
@@ -7954,15 +7955,18 @@
       var nameSpan = createElement("span", "library-item-name", item.name);
       nameSpan.title = (item.meta && item.meta.text) || item.name;
       head.appendChild(nameSpan);
-      head.appendChild(createElement("span", "library-item-kind", item.kind));
+      head.appendChild(createElement("span", "library-item-kind", item.kind === "audio" ? (item.mediaRole || "utility") : item.kind));
       row.appendChild(head);
       // Items saved with their full words show them all; the name is just
       // the label.
       if (item.meta && item.meta.text && item.meta.text.length > item.name.length) {
         row.appendChild(createElement("div", "library-item-text", item.meta.text));
       }
+      var mediaDetail = item.kind === "audio" && item.durationMs
+        ? " · " + (Number(item.durationMs) / 1000).toFixed(2) + "s · " + (item.mediaRole === "music" ? "Music / ambience" : (item.mediaRole === "sfx" ? "SFX" : "Utility audio"))
+        : "";
       row.appendChild(createElement("div", "library-item-meta",
-        new Date(item.createdAt).toLocaleString() + " · " + Math.round(item.bytes / 1024) + " KB"));
+        new Date(item.createdAt).toLocaleString() + " · " + Math.round(item.bytes / 1024) + " KB" + mediaDetail));
 
       var artifactURL = "/v1/library/" + encodeURIComponent(item.id) + "/artifact";
       if (item.kind === "audio") {
@@ -7986,7 +7990,7 @@
       row.appendChild(actions);
       appendLibraryDeleteAction(row, "/v1/library/" + encodeURIComponent(item.id), "DELETE", "");
       var metaWords = item.meta ? Object.keys(item.meta).map(function (key) { return key + " " + item.meta[key]; }) : [];
-      return searchableLibraryCard(row, [item.name, item.kind].concat(metaWords));
+      return searchableLibraryCard(row, [item.name, item.kind, item.mediaRole, item.durationMs].concat(metaWords));
   }
 
   function renderLibraryVoice(voice) {
@@ -8121,7 +8125,7 @@
 
     (payload.voices || []).forEach(function (voice) { sectionLists.voices.appendChild(renderLibraryVoice(voice)); });
     (payload.items || []).forEach(function (item) {
-      var section = item.kind === "image" ? "imagery" : (item.meta && item.meta.source === "music-generation" ? "music" : "audio");
+      var section = item.kind === "image" ? "imagery" : ((item.mediaRole === "music" || item.mediaRole === "sfx") ? "music" : "audio");
       sectionLists[section].appendChild(renderSavedLibraryItem(item));
     });
     (payload.projects || []).forEach(function (project) { sectionLists.projects.appendChild(renderLibraryProject(project)); });

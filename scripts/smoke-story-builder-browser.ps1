@@ -3,7 +3,7 @@ param(
   [string]$OutDir = ".\out\story-builder-browser-smoke"
 )
 
-# Real-browser acceptance for Story Builder Timeline Clip editing. The server,
+# Real-browser acceptance for Story Builder timeline editing and Library media. The server,
 # project store, browser session, and snapshots are isolated under OutDir.
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +25,34 @@ $runtimeDir = (Resolve-Path $OutDir).Path
 $gatewayExe = Join-Path $runtimeDir "cpp-studio-story-builder-smoke.exe"
 $configPath = Join-Path $runtimeDir "config.json"
 $voiceWavPath = Join-Path $runtimeDir "actor-voice.wav"
+$libraryWavPath = Join-Path $runtimeDir "library-audio.wav"
+
+function Write-FixtureWav {
+  param([string]$Path, [int]$Samples = 16000)
+
+  $stream = [IO.MemoryStream]::new()
+  $writer = [IO.BinaryWriter]::new($stream)
+  try {
+    $pcmBytes = $Samples * 2
+    $writer.Write([Text.Encoding]::ASCII.GetBytes("RIFF"))
+    $writer.Write([uint32](36 + $pcmBytes))
+    $writer.Write([Text.Encoding]::ASCII.GetBytes("WAVEfmt "))
+    $writer.Write([uint32]16)
+    $writer.Write([uint16]1)
+    $writer.Write([uint16]1)
+    $writer.Write([uint32]16000)
+    $writer.Write([uint32]32000)
+    $writer.Write([uint16]2)
+    $writer.Write([uint16]16)
+    $writer.Write([Text.Encoding]::ASCII.GetBytes("data"))
+    $writer.Write([uint32]$pcmBytes)
+    $writer.Write([byte[]]::new($pcmBytes))
+    [IO.File]::WriteAllBytes($Path, $stream.ToArray())
+  } finally {
+    $writer.Dispose()
+    $stream.Dispose()
+  }
+}
 
 go build -o $gatewayExe .\cmd\cpp-studio
 if ($LASTEXITCODE -ne 0) {
@@ -44,6 +72,7 @@ $config = [ordered]@{
 }
 $config | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -Path $configPath
 [IO.File]::WriteAllBytes($voiceWavPath, [Convert]::FromBase64String("UklGRiYAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQIAAAAAAA=="))
+Write-FixtureWav -Path $libraryWavPath
 
 $baseURL = "http://127.0.0.1:$GatewayPort"
 $session = "story-builder-smoke-$PID"
@@ -382,6 +411,74 @@ async page => {
 }
 '@
 
+$libraryAudioCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const waitSaved = async () => {
+    await page.waitForFunction(() => document.querySelector('#storyBuilderSaveStatus')?.textContent === 'Saved');
+  };
+  const origin = page.url().split('/demo/')[0];
+
+  await page.goto(origin + '/demo/story-builder.html');
+  await page.locator('#storyBuilderNewName').fill('Reusable media browser smoke');
+  await page.getByRole('button', { name: 'Create' }).click();
+  await page.getByRole('button', { name: '+ SFX track' }).click();
+  await page.getByRole('button', { name: '+ Music track' }).click();
+  await waitSaved();
+  await page.locator('#storyBuilderVoiceRefresh').click();
+
+  const sfxGroup = page.locator('.reusable-audio-group.role-sfx');
+  const musicGroup = page.locator('.reusable-audio-group.role-music');
+  const utilityGroup = page.locator('.reusable-audio-group.role-utility');
+  assert(await sfxGroup.getByText('Door slam', { exact: true }).count() === 1, 'SFX Library group is missing its asset');
+  assert((await sfxGroup.innerText()).includes('1.00s'), 'SFX duration metadata is not displayed');
+  assert(await musicGroup.getByText('Low strings', { exact: true }).count() === 1, 'Music Library group is missing its asset');
+  assert(await utilityGroup.getByText('Scratch take', { exact: true }).count() === 1, 'utility Library group is missing its asset');
+  assert(await utilityGroup.locator('.reusable-audio-add').count() === 0, 'utility audio incorrectly exposes a placement action');
+
+  const search = page.locator('#storyBuilderVoiceSearch');
+  await search.fill('ambience');
+  assert(await page.locator('.reusable-audio-asset').count() === 1, 'Library search did not filter by media role');
+  assert(await page.getByText('Low strings', { exact: true }).count() === 1, 'Library search hid matching Music / ambience');
+  await search.fill('');
+
+  await page.getByRole('button', { name: 'Add Door slam to a compatible SFX track' }).click();
+  await page.locator('.timeline-clip.clip-sfx').waitFor();
+  await waitSaved();
+  const projectID = await page.locator('.project-item[aria-current="true"]').getAttribute('data-project-id');
+  let project = await page.evaluate(id => fetch('/v1/story-builder-projects/' + id).then(response => response.json()), projectID);
+  assert(project.tracks[0].clips[0].source_library_item_id === '__SFX_ITEM_ID__', 'keyboard Add did not persist Library provenance');
+
+  const beforeRejected = project.revision;
+  await page.locator('.reusable-audio-asset', { hasText: 'Low strings' }).dragTo(page.locator('.track-row[data-track-type="sfx"] .timeline-stage'));
+  await page.getByRole('status').filter({ hasText: /cannot be added/i }).waitFor();
+  project = await page.evaluate(id => fetch('/v1/story-builder-projects/' + id).then(response => response.json()), projectID);
+  assert(project.revision === beforeRejected, 'incompatible audio drop mutated the durable project');
+
+  await page.locator('.reusable-audio-asset', { hasText: 'Low strings' }).dragTo(page.locator('.track-row[data-track-type="music"] .timeline-stage'));
+  await page.locator('.timeline-clip.clip-music').waitFor();
+  await waitSaved();
+  project = await page.evaluate(id => fetch('/v1/story-builder-projects/' + id).then(response => response.json()), projectID);
+  assert(project.tracks[1].clips[0].source_library_item_id === '__MUSIC_ITEM_ID__', 'compatible Music drop did not persist provenance');
+
+  await page.evaluate(id => fetch('/v1/library/' + id, { method: 'DELETE' }), '__SFX_ITEM_ID__');
+  await page.goto(origin + '/demo/story-builder.html?project=' + projectID);
+  await page.locator('.timeline-clip.clip-sfx').waitFor();
+  assert(await page.locator('.clip-media-error').count() === 0, 'Library source deletion broke project-owned media');
+  assert(await page.locator('.timeline-clip').count() === 2, 'placed media did not survive project reload');
+
+  await page.goto(origin + '/demo/story-builder.html?project=__BROKEN_PROJECT_ID__');
+  await page.locator('.clip-media-error').waitFor();
+  assert((await page.locator('.clip-media-error').innerText()).includes('missing or unreadable'), 'missing project media was not shown on the affected clip');
+  await page.locator('.timeline-clip').click();
+  assert((await page.locator('#storyBuilderSelectionBody').innerText()).includes('project media is missing or unreadable'), 'Selection panel hid the project media error');
+
+  return { project: projectID, brokenProject: '__BROKEN_PROJECT_ID__' };
+}
+'@
+
 Push-Location $runtimeDir
 try {
   $ready = $false
@@ -417,6 +514,34 @@ try {
     direction = "Young, precise and curious"
   } | ConvertTo-Json)
 
+  $libraryAudioB64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($libraryWavPath))
+  $sfxItem = Invoke-RestMethod -Uri "$baseURL/v1/library" -Method Post -ContentType "application/json" -Body (@{
+    kind = "audio"; name = "Door slam"; data_b64 = $libraryAudioB64; meta = @{ media_role = "sfx" }
+  } | ConvertTo-Json -Depth 4)
+  $musicItem = Invoke-RestMethod -Uri "$baseURL/v1/library" -Method Post -ContentType "application/json" -Body (@{
+    kind = "audio"; name = "Low strings"; data_b64 = $libraryAudioB64; meta = @{ media_role = "music" }
+  } | ConvertTo-Json -Depth 4)
+  $utilityItem = Invoke-RestMethod -Uri "$baseURL/v1/library" -Method Post -ContentType "application/json" -Body (@{
+    kind = "audio"; name = "Scratch take"; data_b64 = $libraryAudioB64; meta = @{ media_role = "utility" }
+  } | ConvertTo-Json -Depth 4)
+  if ($sfxItem.mediaRole -ne "sfx" -or $sfxItem.durationMs -ne 1000 -or $musicItem.mediaRole -ne "music" -or $utilityItem.mediaRole -ne "utility") {
+    throw "Library audio role or duration metadata was not canonical"
+  }
+
+  $brokenProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects" -Method Post -ContentType "application/json" -Body '{"name":"Missing project media browser smoke"}'
+  $brokenProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects/$($brokenProject.id)" -Method Put -ContentType "application/json" -Body (@{
+    name = $brokenProject.name
+    revision = $brokenProject.revision
+    timeline_duration_ms = 30000
+    tracks = @([ordered]@{ id = "broken_foley"; name = "Broken foley"; type = "sfx"; order = 0; muted = $false; clips = @() })
+  } | ConvertTo-Json -Depth 8)
+  $brokenProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects/$($brokenProject.id)/library-audio" -Method Post -ContentType "application/json" -Body (@{
+    revision = $brokenProject.revision; track_id = "broken_foley"; library_item_id = $sfxItem.id; start_ms = 0
+  } | ConvertTo-Json)
+  $brokenSourceID = $brokenProject.tracks[0].clips[0].source_id
+  $brokenMediaPath = Join-Path $runtimeDir "out\story-builder-projects\$($brokenProject.id)\media\$brokenSourceID.wav"
+  Remove-Item -LiteralPath $brokenMediaPath
+
   $statusProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects" -Method Post -ContentType "application/json" -Body '{"name":"Dialogue status browser smoke"}'
   $statusTracks = @(
     [ordered]@{ id = "ready_track"; name = "Ready dialogue"; type = "dialogue"; order = 0; muted = $false; character_voice_id = $keeperVoice.id; clips = @(
@@ -445,6 +570,7 @@ try {
 
   $audioCode = $audioCode.Replace("__KEEPER_VOICE_ID__", $keeperVoice.id)
   $statusCode = $statusCode.Replace("__STATUS_PROJECT_ID__", $statusProject.id)
+  $libraryAudioCode = $libraryAudioCode.Replace("__SFX_ITEM_ID__", $sfxItem.id).Replace("__MUSIC_ITEM_ID__", $musicItem.id).Replace("__BROKEN_PROJECT_ID__", $brokenProject.id)
 
   Invoke-BrowserCLI -Arguments @("open", "$baseURL/demo/story-builder.html")
   Invoke-BrowserCode -Code $arrangementCode
@@ -453,6 +579,7 @@ try {
   Invoke-BrowserCode -Code $statusCode
   Invoke-BrowserCode -Code $dialogueCode
   Invoke-BrowserCode -Code $revoiceCode
+  Invoke-BrowserCode -Code $libraryAudioCode
   [ordered]@{ status = "ok"; browser = "playwright"; gateway = $baseURL } | ConvertTo-Json
 } finally {
   try {

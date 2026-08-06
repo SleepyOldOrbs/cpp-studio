@@ -3,6 +3,7 @@
 
   const apiRoot = "/v1/story-builder-projects";
   const voiceApiRoot = "/v1/voices";
+  const libraryApiRoot = "/v1/library";
   const snapIntervalMS = 250;
   const trackHeaderWidth = 224;
   const byID = (id) => document.getElementById(id);
@@ -48,7 +49,9 @@
   let clipPointerEdit = null;
   let panelPointerEdit = null;
   let actorVoices = [];
+  let libraryAudio = [];
   let revoicePromise = null;
+  let mediaPlacementPromise = null;
   let requestedProjectID = new URLSearchParams(window.location.search).get("project") || "";
 
   async function request(path, options = {}) {
@@ -71,6 +74,10 @@
 
   function currentProject() {
     return projects.find((project) => project.id === currentID) || null;
+  }
+
+  function serverMutationPending() {
+    return Boolean(revoicePromise || mediaPlacementPromise);
   }
 
   function characterVoiceDetails(id) {
@@ -204,6 +211,7 @@
   }
 
   function clipStatus(clip) {
+    if (clip.media_error) return "failed";
     if (clip.status) return String(clip.status);
     if (clip.type === "silence") return "ready";
     if (clip.type === "dialogue") return "stale";
@@ -228,6 +236,9 @@
           clip.source_out_ms <= clip.source_in_ms || clip.source_out_ms > clip.source_duration_ms ||
           clip.duration_ms !== clip.source_out_ms - clip.source_in_ms)) {
           return "Audio trims must remain inside the source bounds.";
+        }
+        if ((clip.type === "sfx" && track.type !== "sfx") || (clip.type === "music" && track.type !== "music")) {
+          return "Reusable audio must remain on a compatible track.";
         }
       }
       for (let index = 1; index < ordered.length; index += 1) {
@@ -261,7 +272,7 @@
   }
 
   function acceptTimelineEdit(mutator) {
-    if (revoicePromise) return false;
+    if (serverMutationPending()) return false;
     const project = currentProject();
     if (!project) return false;
     const before = timelineSnapshot(project);
@@ -287,7 +298,7 @@
   }
 
   function restoreTimeline(source, destination) {
-    if (revoicePromise) return;
+    if (serverMutationPending()) return;
     const project = currentProject();
     if (!project || !source.length) return;
     destination.push(timelineSnapshot(project));
@@ -455,6 +466,7 @@
       }, { type: "number", min: 1, step: 1 }));
     }
     selectionBody.append(selectionField("Status", clipStatus(clip)));
+    if (clip.media_error) selectionBody.append(selectionField("Media error", clip.media_error));
     if (panelPosition) clampPanelPosition();
   }
 
@@ -492,6 +504,7 @@
     const status = document.createElement("span");
     status.className = `clip-status-badge status-${clipStatus(clip)}`;
     status.textContent = clipStatus(clip);
+    if (clip.media_error) block.title = clip.media_error;
     const startHandle = document.createElement("span");
     startHandle.className = "trim-handle";
     startHandle.dataset.trimEdge = "start";
@@ -591,6 +604,14 @@
       fields.push(sourceOut);
     }
 
+    if (clip.media_error) {
+      const mediaError = document.createElement("p");
+      mediaError.className = "clip-media-error";
+      mediaError.setAttribute("role", "alert");
+      mediaError.textContent = clip.media_error;
+      fields.push(mediaError);
+    }
+
     const remove = actionButton("Remove", `Remove ${clip.label}`, () => {
       acceptTimelineEdit(() => {
         track.clips = track.clips.filter((item) => item.id !== clip.id);
@@ -603,8 +624,7 @@
     return editorElement;
   }
 
-  function enableCharacterVoiceDrop(timeline, track) {
-    if (track.type !== "dialogue") return;
+  function enableLibraryDrop(timeline, track) {
     timeline.addEventListener("dragover", (event) => {
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
@@ -614,8 +634,18 @@
     timeline.addEventListener("drop", (event) => {
       event.preventDefault();
       timeline.classList.remove("voice-drop-target");
-      const id = event.dataTransfer?.getData("application/x-story-builder-character-voice") || event.dataTransfer?.getData("text/plain") || "";
-      const details = characterVoiceDetails(id);
+      const audioID = event.dataTransfer?.getData("application/x-story-builder-library-audio") || "";
+      if (audioID) {
+        const asset = libraryAudio.find((item) => item.id === audioID);
+        if (asset) {
+          const rect = timeline.getBoundingClientRect();
+          const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+          placeLibraryAudio(track, asset, snappedTime(ratio * timelineDurationMS(currentProject())));
+        }
+        return;
+      }
+      const voiceID = event.dataTransfer?.getData("application/x-story-builder-character-voice") || "";
+      const details = characterVoiceDetails(voiceID);
       if (details) bindCharacterVoice(track, details.actor, details.character);
     });
   }
@@ -660,7 +690,7 @@
       name.maxLength = 120;
       name.setAttribute("aria-label", `${type.textContent} track name`);
       name.addEventListener("input", () => {
-        if (revoicePromise) {
+        if (serverMutationPending()) {
           name.value = track.name;
           return;
         }
@@ -692,11 +722,11 @@
       lane.setAttribute("aria-label", `${track.name} timeline`);
       const timeline = document.createElement("div");
       timeline.className = "timeline-stage";
-      enableCharacterVoiceDrop(timeline, track);
+      enableLibraryDrop(timeline, track);
       if (!track.clips.length) {
         const hint = document.createElement("span");
         hint.className = "lane-hint";
-        hint.textContent = track.type === "dialogue" ? "Drop a Character Voice here" : "Empty track";
+        hint.textContent = track.type === "dialogue" ? "Drop a Character Voice here" : (track.type === "sfx" ? "Drop SFX here" : "Drop Music here");
         timeline.append(hint);
       }
       track.clips.forEach((clip) => timeline.append(renderClipBlock(clip, timelineDuration)));
@@ -862,7 +892,7 @@
   }
 
   async function openProject(id) {
-    if (revoicePromise) return;
+    if (serverMutationPending()) return;
     window.clearTimeout(autosaveTimer);
     try {
       const project = await request(`${apiRoot}/${encodeURIComponent(id)}`);
@@ -880,7 +910,7 @@
   }
 
   async function revoiceCharacterVoice(track, actor, character) {
-    if (revoicePromise) return;
+    if (serverMutationPending()) return;
     const project = currentProject();
     if (!project || savePromise || saveStatus.dataset.state !== "saved") {
       setVoiceLibraryStatus("Save pending timeline changes before revoicing this track.", "failed");
@@ -987,6 +1017,80 @@
     bindCharacterVoice(track, actor, character);
   }
 
+  function mediaRoleLabel(role) {
+    if (role === "sfx") return "SFX";
+    if (role === "music") return "Music / ambience";
+    return "Utility audio";
+  }
+
+  function trackTypeForMediaRole(role) {
+    if (role === "sfx") return "sfx";
+    if (role === "music") return "music";
+    return "";
+  }
+
+  async function placeLibraryAudio(track, asset, startMS) {
+    if (serverMutationPending()) return;
+    const project = currentProject();
+    const compatibleType = trackTypeForMediaRole(asset.mediaRole);
+    if (!compatibleType || track.type !== compatibleType) {
+      setVoiceLibraryStatus(`${asset.name} is ${mediaRoleLabel(asset.mediaRole)} and cannot be added to ${track.name}.`, "failed");
+      return;
+    }
+    if (!project || savePromise || saveStatus.dataset.state !== "saved") {
+      setVoiceLibraryStatus("Save pending timeline changes before adding Library audio.", "failed");
+      saveProject();
+      return;
+    }
+    const beforeClipIDs = new Set(project.tracks.flatMap((item) => item.clips.map((clip) => clip.id)));
+    const payload = {
+      revision: project.revision,
+      track_id: track.id,
+      library_item_id: asset.id,
+      start_ms: Math.max(0, Math.round(startMS)),
+    };
+    setStatus("saving");
+    setVoiceLibraryStatus(`Copying ${asset.name} into ${project.name}…`);
+    appShell.inert = true;
+    mediaPlacementPromise = request(`${apiRoot}/${encodeURIComponent(project.id)}/library-audio`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    try {
+      const saved = await mediaPlacementPromise;
+      if (currentID !== saved.id) return;
+      Object.assign(project, saved);
+      projects = [project, ...projects.filter((item) => item.id !== project.id)];
+      const added = project.tracks.flatMap((item) => item.clips).find((clip) => !beforeClipIDs.has(clip.id));
+      selectedClipIDs = added ? new Set([added.id]) : new Set();
+      undoStack = [];
+      redoStack = [];
+      setStatus("saved");
+      setVoiceLibraryStatus(`Added ${asset.name} to ${track.name}.`, "ready");
+      renderProjects();
+      renderTracks();
+    } catch (error) {
+      const detail = error.status === 409 ? "another edit changed this project; reopen it before adding audio" : error.message;
+      setStatus("failed", detail);
+      setVoiceLibraryStatus(`Could not add ${asset.name}: ${detail}`, "failed");
+    } finally {
+      mediaPlacementPromise = null;
+      appShell.inert = false;
+    }
+  }
+
+  function addLibraryAudioToCompatibleTrack(asset) {
+    const trackType = trackTypeForMediaRole(asset.mediaRole);
+    const project = currentProject();
+    const track = project?.tracks.find((item) => item.type === trackType);
+    if (!track) {
+      setVoiceLibraryStatus(`Add a ${mediaRoleLabel(asset.mediaRole)} track before adding ${asset.name}.`, "failed");
+      return;
+    }
+    const latestEnd = track.clips.reduce((end, clip) => Math.max(end, clip.start_ms + clip.duration_ms), 0);
+    placeLibraryAudio(track, asset, snappedTime(latestEnd));
+  }
+
   function renderVoiceLibrary() {
     voiceGroups.replaceChildren();
     const query = voiceSearch.value.trim().toLowerCase();
@@ -1046,18 +1150,70 @@
       empty.textContent = query ? "No Character Voices match this search." : "Create Character Voices in the Library to use them here.";
       voiceGroups.append(empty);
     }
+
+    const roleOrder = ["sfx", "music", "utility"];
+    for (const role of roleOrder) {
+      const assetsForRole = libraryAudio.filter((item) => {
+        if (item.mediaRole !== role) return false;
+        return !query || `${item.name} ${mediaRoleLabel(item.mediaRole)}`.toLowerCase().includes(query);
+      });
+      if (!assetsForRole.length) continue;
+      const group = document.createElement("section");
+      group.className = `reusable-audio-group role-${role}`;
+      const heading = document.createElement("header");
+      const title = document.createElement("strong");
+      title.textContent = mediaRoleLabel(role);
+      const count = document.createElement("span");
+      count.textContent = `${assetsForRole.length} asset${assetsForRole.length === 1 ? "" : "s"}`;
+      heading.append(title, count);
+      const assets = document.createElement("div");
+      assets.className = "reusable-audio-list";
+      for (const item of assetsForRole) {
+        const asset = document.createElement("article");
+        asset.className = "reusable-audio-asset";
+        asset.dataset.libraryItemId = item.id;
+        asset.draggable = role !== "utility";
+        const text = document.createElement("div");
+        const name = document.createElement("strong");
+        name.textContent = item.name;
+        const detail = document.createElement("span");
+        detail.textContent = `${mediaRoleLabel(role)} · ${(Number(item.durationMs || 0) / 1000).toFixed(2)}s`;
+        text.append(name, detail);
+        asset.append(text);
+        if (role !== "utility") {
+          const add = document.createElement("button");
+          add.type = "button";
+          add.className = "reusable-audio-add";
+          add.textContent = "+";
+          add.setAttribute("aria-label", `Add ${item.name} to a compatible ${mediaRoleLabel(role)} track`);
+          add.addEventListener("click", () => addLibraryAudioToCompatibleTrack(item));
+          asset.addEventListener("dragstart", (event) => {
+            if (!event.dataTransfer) return;
+            event.dataTransfer.effectAllowed = "copy";
+            event.dataTransfer.setData("application/x-story-builder-library-audio", item.id);
+          });
+          asset.append(add);
+        }
+        assets.append(asset);
+      }
+      group.append(heading, assets);
+      voiceGroups.append(group);
+    }
   }
 
   async function refreshVoiceLibrary() {
     setVoiceLibraryStatus("Loading voices…");
     try {
-      const body = await request(voiceApiRoot);
-      actorVoices = body.voices || [];
+      const [voiceBody, libraryBody] = await Promise.all([request(voiceApiRoot), request(libraryApiRoot)]);
+      actorVoices = voiceBody.voices || [];
+      libraryAudio = (libraryBody.items || []).filter((item) => item.kind === "audio");
       renderVoiceLibrary();
       renderTracks();
-      setVoiceLibraryStatus(`${actorVoices.reduce((count, actor) => count + (actor.character_voices || []).length, 0)} Character Voices available.`);
+      const voiceCount = actorVoices.reduce((count, actor) => count + (actor.character_voices || []).length, 0);
+      setVoiceLibraryStatus(`${voiceCount} Character Voices and ${libraryAudio.length} reusable audio assets available.`);
     } catch (error) {
       actorVoices = [];
+      libraryAudio = [];
       renderVoiceLibrary();
       setVoiceLibraryStatus(`Could not load voices: ${error.message}`, "failed");
     }
@@ -1111,7 +1267,7 @@
   }
 
   async function saveProject() {
-    if (revoicePromise) return;
+    if (serverMutationPending()) return;
     window.clearTimeout(autosaveTimer);
     const project = currentProject();
     if (!project) return;
@@ -1232,7 +1388,7 @@
   nameInput.addEventListener("input", () => {
     const project = currentProject();
     if (!project) return;
-    if (revoicePromise) {
+    if (serverMutationPending()) {
       nameInput.value = project.name;
       return;
     }
