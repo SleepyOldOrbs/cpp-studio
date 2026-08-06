@@ -4339,8 +4339,14 @@ func (r *router) newStoryBuilderDialogueBuildManager() *storybuilder.DialogueBui
 	return storybuilder.NewDialogueBuildManager(storybuilder.DialogueBuildManagerOptions{
 		Store:         r.storyBuilderProjects,
 		ReserveEngine: r.reserveEngine,
-		Synthesize: func(ctx context.Context, text, actorVoiceID string) ([]byte, error) {
-			return r.synthesizeSpeech(ctx, text, actorVoiceID)
+		Synthesize: func(ctx context.Context, input storybuilder.DialogueSynthesisInput) ([]byte, error) {
+			actorVoice, err := r.resolveVoice(input.ActorVoiceID)
+			if err != nil {
+				return nil, err
+			}
+			return r.speakSynthesis(ctx, engine.SynthesisRequest{
+				Text: input.Text, EngineID: "omnivoice", Direction: input.Direction,
+			}, actorVoice, true)
 		},
 	})
 }
@@ -4353,6 +4359,7 @@ func (r *router) resolveStoryBuilderCharacterVoice(id string) (storybuilder.Voic
 	return storybuilder.VoiceIdentity{
 		CharacterVoiceID: identity.CharacterVoiceID,
 		ActorVoiceID:     identity.ActorVoiceID,
+		Direction:        identity.Direction,
 		Fingerprint:      identity.Fingerprint,
 	}, true, nil
 }

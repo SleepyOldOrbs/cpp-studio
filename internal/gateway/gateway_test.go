@@ -655,7 +655,10 @@ func TestStoryBuilderAudioTrimBoundsThroughGateway(t *testing.T) {
 }
 
 func TestStoryBuilderBuildsDialogueThroughSharedAudioReservationAndAuditionsReadyClip(t *testing.T) {
-	cfg := testConfig(map[string]config.EngineConfig{"audio": {Command: "audio-helper", Mode: "subprocess"}})
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio":     {Command: "audio-helper", Mode: "subprocess"},
+		"omnivoice": {Command: "omnivoice-helper", Mode: "subprocess"},
+	})
 	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
 	root := t.TempDir()
 	r.voices = voice.NewStore(filepath.Join(root, "voices"))
@@ -666,7 +669,7 @@ func TestStoryBuilderBuildsDialogueThroughSharedAudioReservationAndAuditionsRead
 	entered := make(chan struct{})
 	continueBuild := make(chan struct{})
 	var spoken []string
-	fake.Handle("audio", func(spec engine.Spec) (engine.Result, error) {
+	fake.Handle("omnivoice", func(spec engine.Spec) (engine.Result, error) {
 		args := strings.Join(spec.BuildArgs(spec.InputPath, "take.wav"), " ")
 		spoken = append(spoken, args)
 		if len(spoken) == 1 {
@@ -710,7 +713,11 @@ func TestStoryBuilderBuildsDialogueThroughSharedAudioReservationAndAuditionsRead
 	if err := json.NewDecoder(rec.Body).Decode(&started); err != nil {
 		t.Fatalf("decode started build: %v", err)
 	}
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("directed Story Builder synthesis did not reach the OmniVoice engine")
+	}
 
 	second := httptest.NewRecorder()
 	r.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects/"+project.ID+"/builds", strings.NewReader(body)))
@@ -730,6 +737,11 @@ func TestStoryBuilderBuildsDialogueThroughSharedAudioReservationAndAuditionsRead
 	}
 	if len(spoken) != 2 || !strings.Contains(spoken[0], "Early words.") || !strings.Contains(spoken[1], "Late words.") {
 		t.Fatalf("speech invocation order = %v", spoken)
+	}
+	for _, invocation := range spoken {
+		if !strings.Contains(invocation, "--instruct quiet and guarded") {
+			t.Fatalf("Character Voice direction was not sent to synthesis: %q", invocation)
+		}
 	}
 	loaded, ok, err := r.storyBuilderProjects.Get(project.ID)
 	if err != nil || !ok {

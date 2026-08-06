@@ -125,8 +125,9 @@ Store then validates and copies one immutable WAV into the selected project's
 `media` directory, records source Library provenance on each clip, and reuses
 that copy for later placements. A dialogue build selects stale and failed clips
 in timeline order, holds the shared `audio` Engine Reservation for the build,
-and stores each successful synthesis as an immutable project-owned WAV under
-`takes`. Each completed take is attached by an atomic manifest replacement
+resolves the current Character Voice direction into directed OmniVoice
+synthesis, and stores each successful result as an immutable project-owned WAV
+under `takes`. Each completed take is attached by an atomic manifest replacement
 before the next clip starts, so a later failure does not discard earlier work.
 Generated take identities and source metadata are server-owned. Clips expose a
 derived media error when their project-owned source is missing or unreadable;

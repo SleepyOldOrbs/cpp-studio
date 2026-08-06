@@ -115,6 +115,7 @@ type Track struct {
 type VoiceIdentity struct {
 	CharacterVoiceID string
 	ActorVoiceID     string
+	Direction        string
 	Fingerprint      string
 }
 

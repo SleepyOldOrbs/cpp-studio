@@ -73,6 +73,12 @@ $config = [ordered]@{
       mode = "subprocess"
       requestTimeoutSeconds = 10
     }
+    omnivoice = [ordered]@{
+      command = $fixtureExe
+      args = @("speech")
+      mode = "subprocess"
+      requestTimeoutSeconds = 10
+    }
     ci = [ordered]@{
       command = "go"
       args = @("version")

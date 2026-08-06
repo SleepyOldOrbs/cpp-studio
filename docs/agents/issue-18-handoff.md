@@ -54,10 +54,15 @@ branch `codex/story-builder-build-dialogue`.
   JavaScript syntax, and diff checks are green.
 - The clean fixture-backed real-browser journey is green on port 8898, including
   visible build progress, two durable ready takes, and WAV audition.
+- The two-axis review found no hard Standards violation. Its K.I.S.S. finding
+  was resolved by separating ordering candidates from synthesis input. Its P1
+  Spec finding was resolved by passing Character Voice direction through the
+  directed OmniVoice request while retaining the shared `audio` reservation.
+- The corrected directed fixture seam, focused suites, broad repository gates,
+  and a fresh real-browser journey on port 8900 are green.
 
 ## Exact next step
 
-Commit the cohesive implementation so `code-review` can compare the branch to
-`origin/main`, then run its Standards and issue #18 Spec axes. Address every
-actionable finding in a follow-up commit. Do not push or open a PR without
-explicit direction.
+Run final full tests and static analysis, commit the review fixes, and ask both
+review axes to confirm their findings are resolved. Then update issue #18 with
+the local evidence. Do not push or open a PR without explicit direction.

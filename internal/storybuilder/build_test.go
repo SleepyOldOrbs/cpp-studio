@@ -15,7 +15,7 @@ import (
 func TestDialogueBuildCandidatesAreChronologicalAndSuccessfulTakeIsDurable(t *testing.T) {
 	root := t.TempDir()
 	store := NewStoreWithOptions(root, StoreOptions{ResolveCharacterVoice: func(id string) (VoiceIdentity, bool, error) {
-		return VoiceIdentity{CharacterVoiceID: id, ActorVoiceID: "actor_mara", Fingerprint: "voice-v1"}, true, nil
+		return VoiceIdentity{CharacterVoiceID: id, ActorVoiceID: "actor_mara", Direction: "quiet and guarded", Fingerprint: "voice-v1"}, true, nil
 	}})
 	project, err := store.Create("Chronological build")
 	if err != nil {
@@ -41,14 +41,21 @@ func TestDialogueBuildCandidatesAreChronologicalAndSuccessfulTakeIsDurable(t *te
 		t.Fatalf("candidate order = %+v, want early then late", candidates)
 	}
 
-	project, err = store.BeginDialogueBuild(project.ID, candidates[0].ClipID)
+	input, err := store.BeginDialogueBuild(project.ID, candidates[0].ClipID)
 	if err != nil {
 		t.Fatalf("begin clip: %v", err)
+	}
+	project, _, err = store.Get(project.ID)
+	if err != nil {
+		t.Fatalf("reload begun clip: %v", err)
 	}
 	if got := project.Tracks[1].Clips[0].Status; got != DialogueStatusBuilding {
 		t.Fatalf("begun clip status = %q, want building", got)
 	}
-	project, err = store.CompleteDialogueBuild(project.ID, candidates[0].ClipID, wav.SyntheticTone(16000))
+	if input.Direction != "quiet and guarded" {
+		t.Fatalf("synthesis input direction = %q", input.Direction)
+	}
+	project, err = store.CompleteDialogueBuild(project.ID, input, wav.SyntheticTone(16000))
 	if err != nil {
 		t.Fatalf("complete clip: %v", err)
 	}
@@ -88,8 +95,8 @@ func TestDialogueBuildManagerRunsOneChronologicalBuildAtATime(t *testing.T) {
 		ReserveEngine: func(context.Context, string) (func(), bool) {
 			return func() { released = true }, true
 		},
-		Synthesize: func(_ context.Context, text, actorVoiceID string) ([]byte, error) {
-			spoken = append(spoken, text+"/"+actorVoiceID)
+		Synthesize: func(_ context.Context, input DialogueSynthesisInput) ([]byte, error) {
+			spoken = append(spoken, input.Text+"/"+input.ActorVoiceID)
 			if len(spoken) == 1 {
 				close(entered)
 				<-continueBuild
@@ -142,9 +149,9 @@ func TestDialogueBuildFailureKeepsCompletedTakeAndRetrySkipsIt(t *testing.T) {
 	var firstPass []string
 	manager := NewDialogueBuildManager(DialogueBuildManagerOptions{
 		Store: store,
-		Synthesize: func(_ context.Context, text, _ string) ([]byte, error) {
-			firstPass = append(firstPass, text)
-			if text == "Two." {
+		Synthesize: func(_ context.Context, input DialogueSynthesisInput) ([]byte, error) {
+			firstPass = append(firstPass, input.Text)
+			if input.Text == "Two." {
 				return nil, errors.New("fixture synthesis failed")
 			}
 			return wav.SyntheticTone(16000), nil
@@ -170,8 +177,8 @@ func TestDialogueBuildFailureKeepsCompletedTakeAndRetrySkipsIt(t *testing.T) {
 	var retryPass []string
 	retry := NewDialogueBuildManager(DialogueBuildManagerOptions{
 		Store: store,
-		Synthesize: func(_ context.Context, text, _ string) ([]byte, error) {
-			retryPass = append(retryPass, text)
+		Synthesize: func(_ context.Context, input DialogueSynthesisInput) ([]byte, error) {
+			retryPass = append(retryPass, input.Text)
 			return wav.SyntheticTone(16000), nil
 		},
 	})
@@ -189,11 +196,11 @@ func TestWholeProjectEditsCannotForgeAndSpeechChangesDetachDialogueTake(t *testi
 	store, project := buildTestProject(t, []TimelineClip{
 		{ID: "line_one", Type: ClipTypeDialogue, Label: "One", Text: "One.", StartMS: 0, DurationMS: 1000},
 	})
-	project, err := store.BeginDialogueBuild(project.ID, "line_one")
+	input, err := store.BeginDialogueBuild(project.ID, "line_one")
 	if err != nil {
 		t.Fatalf("begin build: %v", err)
 	}
-	project, err = store.CompleteDialogueBuild(project.ID, "line_one", wav.SyntheticTone(16000))
+	project, err = store.CompleteDialogueBuild(project.ID, input, wav.SyntheticTone(16000))
 	if err != nil {
 		t.Fatalf("complete build: %v", err)
 	}
@@ -227,10 +234,11 @@ func TestMissingDialogueTakeIsReportedWhenProjectReopens(t *testing.T) {
 	store, project := buildTestProject(t, []TimelineClip{
 		{ID: "line_one", Type: ClipTypeDialogue, Label: "One", Text: "One.", StartMS: 0, DurationMS: 1000},
 	})
-	if _, err := store.BeginDialogueBuild(project.ID, "line_one"); err != nil {
+	input, err := store.BeginDialogueBuild(project.ID, "line_one")
+	if err != nil {
 		t.Fatalf("begin build: %v", err)
 	}
-	project, err := store.CompleteDialogueBuild(project.ID, "line_one", wav.SyntheticTone(16000))
+	project, err = store.CompleteDialogueBuild(project.ID, input, wav.SyntheticTone(16000))
 	if err != nil {
 		t.Fatalf("complete build: %v", err)
 	}
@@ -251,7 +259,7 @@ func TestMissingDialogueTakeIsReportedWhenProjectReopens(t *testing.T) {
 func buildTestProject(t *testing.T, clips []TimelineClip) (*Store, Project) {
 	t.Helper()
 	store := NewStoreWithOptions(t.TempDir(), StoreOptions{ResolveCharacterVoice: func(id string) (VoiceIdentity, bool, error) {
-		return VoiceIdentity{CharacterVoiceID: id, ActorVoiceID: "actor_mara", Fingerprint: "voice-v1"}, true, nil
+		return VoiceIdentity{CharacterVoiceID: id, ActorVoiceID: "actor_mara", Direction: "quiet and guarded", Fingerprint: "voice-v1"}, true, nil
 	}})
 	project, err := store.Create("Build manager")
 	if err != nil {

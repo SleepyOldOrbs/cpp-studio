@@ -43,7 +43,7 @@ type DialogueBuild struct {
 }
 
 type ReserveDialogueEngineFunc func(context.Context, string) (func(), bool)
-type SynthesizeDialogueFunc func(context.Context, string, string) ([]byte, error)
+type SynthesizeDialogueFunc func(context.Context, DialogueSynthesisInput) ([]byte, error)
 
 type DialogueBuildManagerOptions struct {
 	Store         *Store
@@ -132,24 +132,18 @@ func (m *DialogueBuildManager) run(ctx context.Context, build DialogueBuild, can
 			status.Status = DialogueBuildRunning
 			status.ActiveClipID = selected.ClipID
 		})
-		project, err := m.store.BeginDialogueBuild(build.ProjectID, selected.ClipID)
+		input, err := m.store.BeginDialogueBuild(build.ProjectID, selected.ClipID)
 		if err != nil {
 			release()
 			m.fail(build.ID, err)
 			return
 		}
-		current, ok := dialogueBuildInput(project, selected.ClipID)
-		if !ok {
-			release()
-			m.fail(build.ID, ErrNotFound)
-			return
-		}
-		audio, err := m.synthesize(ctx, current.Text, current.ActorVoiceID)
+		audio, err := m.synthesize(ctx, input)
 		if err == nil {
-			_, err = m.store.CompleteDialogueBuild(build.ProjectID, current.ClipID, audio)
+			_, err = m.store.CompleteDialogueBuild(build.ProjectID, input, audio)
 		}
 		if err != nil {
-			_, _ = m.store.FailDialogueBuild(build.ProjectID, current.ClipID, err.Error())
+			_, _ = m.store.FailDialogueBuild(build.ProjectID, input.ClipID, err.Error())
 			release()
 			m.fail(build.ID, err)
 			return
@@ -189,14 +183,21 @@ func (m *DialogueBuildManager) fail(id string, err error) {
 	m.activeBuildID = ""
 }
 
-// DialogueBuildClip is the immutable input selected for one build pass.
+// DialogueBuildClip identifies one clip selected for a build pass.
 type DialogueBuildClip struct {
+	ClipID     string
+	StartMS    int64
+	TrackOrder int
+}
+
+// DialogueSynthesisInput is the current spoken content and performance identity
+// frozen when one clip enters the building state.
+type DialogueSynthesisInput struct {
 	ClipID           string
 	Text             string
-	CharacterVoiceID string
 	ActorVoiceID     string
-	StartMS          int64
-	TrackOrder       int
+	Direction        string
+	VoiceFingerprint string
 }
 
 // DialogueBuildCandidates returns stale and failed dialogue in timeline order.
@@ -224,8 +225,7 @@ func (s *Store) DialogueBuildCandidates(id string, revision int) ([]DialogueBuil
 				continue
 			}
 			candidates = append(candidates, DialogueBuildClip{
-				ClipID: clip.ID, Text: clip.Text, CharacterVoiceID: clip.CharacterVoiceID,
-				ActorVoiceID: clip.ActorVoiceID, StartMS: clip.StartMS, TrackOrder: track.Order,
+				ClipID: clip.ID, StartMS: clip.StartMS, TrackOrder: track.Order,
 			})
 		}
 	}
@@ -239,24 +239,42 @@ func (s *Store) DialogueBuildCandidates(id string, revision int) ([]DialogueBuil
 }
 
 // BeginDialogueBuild durably marks one eligible clip as the active build clip.
-func (s *Store) BeginDialogueBuild(id, clipID string) (Project, error) {
+func (s *Store) BeginDialogueBuild(id, clipID string) (DialogueSynthesisInput, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	project, clip, err := s.dialogueBuildClip(id, clipID)
 	if err != nil {
-		return Project{}, err
+		return DialogueSynthesisInput{}, err
 	}
 	if clip.Status != DialogueStatusStale && clip.Status != DialogueStatusFailed {
-		return Project{}, ErrConflict
+		return DialogueSynthesisInput{}, ErrConflict
+	}
+	direction := ""
+	if s.resolveCharacterVoice != nil {
+		identity, ok, err := s.resolveCharacterVoice(clip.CharacterVoiceID)
+		if err != nil {
+			return DialogueSynthesisInput{}, err
+		}
+		if !ok {
+			return DialogueSynthesisInput{}, ErrCharacterVoiceNotFound
+		}
+		direction = identity.Direction
+	}
+	input := DialogueSynthesisInput{
+		ClipID: clip.ID, Text: clip.Text, ActorVoiceID: clip.ActorVoiceID,
+		Direction: direction, VoiceFingerprint: clip.VoiceFingerprint,
 	}
 	clip.Status = DialogueStatusBuilding
 	clip.BuildError = ""
-	return s.saveDialogueBuildProject(project)
+	if _, err := s.saveDialogueBuildProject(project); err != nil {
+		return DialogueSynthesisInput{}, err
+	}
+	return input, nil
 }
 
 // CompleteDialogueBuild validates and publishes one immutable project-owned take.
-func (s *Store) CompleteDialogueBuild(id, clipID string, audio []byte) (Project, error) {
+func (s *Store) CompleteDialogueBuild(id string, input DialogueSynthesisInput, audio []byte) (Project, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -267,11 +285,12 @@ func (s *Store) CompleteDialogueBuild(id, clipID string, audio []byte) (Project,
 	if err != nil || duration <= 0 {
 		return Project{}, fmt.Errorf("read generated dialogue duration: %v", err)
 	}
-	project, clip, err := s.dialogueBuildClip(id, clipID)
+	project, clip, err := s.dialogueBuildClip(id, input.ClipID)
 	if err != nil {
 		return Project{}, err
 	}
-	if clip.Status != DialogueStatusBuilding {
+	if clip.Status != DialogueStatusBuilding || clip.Text != input.Text || clip.ActorVoiceID != input.ActorVoiceID ||
+		clip.VoiceFingerprint != input.VoiceFingerprint {
 		return Project{}, ErrConflict
 	}
 	sourceID, err := newTimelineID("take", s.now())
@@ -392,20 +411,6 @@ func (s *Store) saveDialogueBuildProject(project Project) (Project, error) {
 		return Project{}, fmt.Errorf("save Story Builder dialogue build: %w", err)
 	}
 	return project, nil
-}
-
-func dialogueBuildInput(project Project, clipID string) (DialogueBuildClip, bool) {
-	for _, track := range project.Tracks {
-		for _, clip := range track.Clips {
-			if clip.ID == clipID && clip.Type == ClipTypeDialogue {
-				return DialogueBuildClip{
-					ClipID: clip.ID, Text: clip.Text, CharacterVoiceID: clip.CharacterVoiceID,
-					ActorVoiceID: clip.ActorVoiceID, StartMS: clip.StartMS, TrackOrder: track.Order,
-				}, true
-			}
-		}
-	}
-	return DialogueBuildClip{}, false
 }
 
 func boundedBuildError(detail string) string {
