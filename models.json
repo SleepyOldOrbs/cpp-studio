@@ -189,6 +189,34 @@
       "source": "https://huggingface.co/openbmb/VoxCPM2-2B",
       "license": "Apache-2.0",
       "description": "Default voice-design engine: realistic free-prose descriptions and real accents (48 kHz)."
+    },
+    {
+      "id": "chatterbox-q8-0",
+      "engine": "voiceconvert",
+      "family": "chatterbox",
+      "path": "speech/conversion/Chatterbox-GGUF/chatterbox-q8_0.gguf",
+      "bytes": 2088393668,
+      "sha256": "d586dd1aa59613cab8046176fb7ca5ba191c02a9b10ffa5b0d892ed22b470656",
+      "packageId": "chatterbox_q8_0",
+      "revision": "199a4a17b9e16d6b8c3cad4a982327b031e5cf8d",
+      "downloadUrl": "https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/199a4a17b9e16d6b8c3cad4a982327b031e5cf8d/Chatterbox-GGUF/chatterbox-q8_0.gguf",
+      "source": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/199a4a17b9e16d6b8c3cad4a982327b031e5cf8d/Chatterbox-GGUF",
+      "license": "MIT",
+      "description": "Chatterbox Q8_0 voice conversion: preserves the source performance while changing its speaker identity from a target reference."
+    },
+    {
+      "id": "ace-step-turbo-q8-0",
+      "engine": "music",
+      "family": "ace_step",
+      "path": "music/generation/ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-q8_0.gguf",
+      "bytes": 6185460032,
+      "sha256": "cd7bf272588f548d4a253f57483132ef0f8f54a549f26471b09caa72c654270b",
+      "packageId": "ace_step_turbo_q8_0",
+      "revision": "199a4a17b9e16d6b8c3cad4a982327b031e5cf8d",
+      "downloadUrl": "https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/199a4a17b9e16d6b8c3cad4a982327b031e5cf8d/ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-q8_0.gguf",
+      "source": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/199a4a17b9e16d6b8c3cad4a982327b031e5cf8d/ACE-Step1.5-GGUF/turbo",
+      "license": "MIT",
+      "description": "ACE-Step 1.5 Turbo Q8_0 for prompt-to-music, lyrics, completion, covers, stem extraction, and repainting. audio.cpp labels the Q8 path as tested with possible output drift; audition important renders."
     }
   ]
 }
