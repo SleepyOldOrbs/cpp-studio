@@ -82,6 +82,22 @@
           <div id="storyBuilderSelectionBody" class="selection-panel-body"></div>
         </aside>
       </section>
+      <section id="storyBuilderVoiceLibrary" class="voice-library" aria-labelledby="storyBuilderVoiceLibraryTitle">
+        <div class="voice-library-heading">
+          <div>
+            <p class="eyebrow">Voice &amp; Character Library</p>
+            <h2 id="storyBuilderVoiceLibraryTitle">Actor Voices with Character Voices</h2>
+            <p>Drag a Character Voice onto an empty Dialogue track, or use its Add button.</p>
+          </div>
+          <div class="voice-library-tools">
+            <label for="storyBuilderVoiceSearch">Search voices</label>
+            <input id="storyBuilderVoiceSearch" type="search" placeholder="Name or direction">
+            <button id="storyBuilderVoiceRefresh" class="quiet-button" type="button">Refresh voices</button>
+          </div>
+        </div>
+        <p id="storyBuilderVoiceStatus" class="voice-library-status" role="status" aria-live="polite"></p>
+        <div id="storyBuilderVoiceGroups" class="actor-voice-groups"></div>
+      </section>
       <div class="danger-zone">
         <div>
           <strong>Delete this project</strong>

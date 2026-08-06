@@ -2,6 +2,7 @@ package voice
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -50,6 +51,55 @@ type CharacterPreview struct {
 	SampleText string    `json:"sample_text"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	FileName   string    `json:"-"`
+}
+
+// CharacterSynthesisIdentity is the durable voice choice a production needs
+// to decide whether previously generated dialogue still matches the Actor
+// Voice reference, transcript, and Character Voice direction.
+type CharacterSynthesisIdentity struct {
+	CharacterVoiceID string
+	ActorVoiceID     string
+	Fingerprint      string
+}
+
+// ResolveCharacterSynthesisIdentity returns the current synthesis identity
+// without treating display-name or preview changes as speech changes.
+func (s *Store) ResolveCharacterSynthesisIdentity(id string) (CharacterSynthesisIdentity, bool, error) {
+	character, ok, err := s.LoadCharacterVoice(id)
+	if err != nil || !ok {
+		return CharacterSynthesisIdentity{}, ok, err
+	}
+	actor, ok, err := s.Load(character.ActorVoiceID)
+	if err != nil {
+		return CharacterSynthesisIdentity{}, false, err
+	}
+	if !ok {
+		return CharacterSynthesisIdentity{}, false, ErrActorVoiceNotFound
+	}
+	referenceIdentity := ""
+	if actor.Analysis != nil {
+		referenceIdentity = actor.Analysis.ContentSHA256
+	}
+	if referenceIdentity == "" {
+		referenceWAV, err := os.ReadFile(filepath.Join(s.rootDir, actor.ID, referenceWAVName))
+		if err != nil {
+			return CharacterSynthesisIdentity{}, false, fmt.Errorf("read Actor Voice reference: %w", err)
+		}
+		referenceHash := sha256.Sum256(referenceWAV)
+		referenceIdentity = hex.EncodeToString(referenceHash[:])
+	}
+	fingerprint := sha256.Sum256([]byte(strings.Join([]string{
+		character.ID,
+		actor.ID,
+		referenceIdentity,
+		actor.Transcript,
+		character.Direction,
+	}, "\x00")))
+	return CharacterSynthesisIdentity{
+		CharacterVoiceID: character.ID,
+		ActorVoiceID:     actor.ID,
+		Fingerprint:      hex.EncodeToString(fingerprint[:]),
+	}, true, nil
 }
 
 func (s *Store) CreateCharacterVoice(actorVoiceID, name, direction string) (CharacterVoice, error) {

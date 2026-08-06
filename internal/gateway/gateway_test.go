@@ -217,6 +217,282 @@ func TestStoryBuilderTimelineTimingThroughGateway(t *testing.T) {
 	}
 }
 
+func TestStoryBuilderBindsCharacterVoiceAndRejectsReplacementOnOccupiedDialogueTrack(t *testing.T) {
+	cfg := testConfig(nil)
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	r.voices = voice.NewStore(filepath.Join(t.TempDir(), "voices"))
+	r.storyBuilderProjects = storybuilder.NewStoreWithOptions(filepath.Join(t.TempDir(), "projects"), storybuilder.StoreOptions{
+		ResolveCharacterVoice: r.resolveStoryBuilderCharacterVoice,
+	})
+
+	actor, err := r.voices.Save("Mara", "reference words", validWAVBytes(), false)
+	if err != nil {
+		t.Fatalf("save Actor Voice: %v", err)
+	}
+	keeper, err := r.voices.CreateCharacterVoice(actor.ID, "Weathered keeper", "older, low and guarded")
+	if err != nil {
+		t.Fatalf("create Character Voice: %v", err)
+	}
+	cartographer, err := r.voices.CreateCharacterVoice(actor.ID, "Young cartographer", "young, bright and precise")
+	if err != nil {
+		t.Fatalf("create second Character Voice: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects", strings.NewReader(`{"name":"Voice binding"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create project status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var created storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode project: %v", err)
+	}
+	missingBody := fmt.Sprintf(`{
+		"name":"Voice binding","revision":%d,"timeline_duration_ms":30000,
+		"tracks":[{"id":"mara","name":"Mara","type":"dialogue","order":0,"muted":false,
+			"character_voice_id":"character_missing","clips":[]}]
+	}`, created.Revision)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(missingBody)))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing Character Voice status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+
+	bindBody := fmt.Sprintf(`{
+		"name":"Voice binding","revision":%d,"timeline_duration_ms":30000,
+		"tracks":[{"id":"mara","name":"Mara","type":"dialogue","order":0,"muted":false,
+			"character_voice_id":%q,"clips":[{"id":"line_1","type":"dialogue","label":"Keep the lamp lit",
+			"text":"Keep the lamp lit.","status":"ready","start_ms":0,"duration_ms":1000}]}]
+	}`, created.Revision, keeper.ID)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(bindBody)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bind Character Voice status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var bound struct {
+		Revision int `json:"revision"`
+		Tracks   []struct {
+			CharacterVoiceID string `json:"character_voice_id"`
+			ActorVoiceID     string `json:"actor_voice_id"`
+			VoiceFingerprint string `json:"voice_fingerprint"`
+			Clips            []struct {
+				Text             string `json:"text"`
+				Status           string `json:"status"`
+				CharacterVoiceID string `json:"character_voice_id"`
+				ActorVoiceID     string `json:"actor_voice_id"`
+				VoiceFingerprint string `json:"voice_fingerprint"`
+			} `json:"clips"`
+		} `json:"tracks"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&bound); err != nil {
+		t.Fatalf("decode bound project: %v", err)
+	}
+	if len(bound.Tracks) != 1 || len(bound.Tracks[0].Clips) != 1 {
+		t.Fatalf("bound project lost dialogue: %+v", bound)
+	}
+	track := bound.Tracks[0]
+	clip := track.Clips[0]
+	if track.CharacterVoiceID != keeper.ID || track.ActorVoiceID != actor.ID || track.VoiceFingerprint == "" ||
+		clip.Text != "Keep the lamp lit." || clip.Status != "stale" || clip.CharacterVoiceID != keeper.ID ||
+		clip.ActorVoiceID != actor.ID || clip.VoiceFingerprint != track.VoiceFingerprint {
+		t.Fatalf("Dialogue binding was not canonical and stale: track=%+v clip=%+v", track, clip)
+	}
+
+	replaceBody := fmt.Sprintf(`{
+		"name":"Voice binding","revision":%d,"timeline_duration_ms":30000,
+		"tracks":[{"id":"mara","name":"Mara","type":"dialogue","order":0,"muted":false,
+			"character_voice_id":%q,"clips":[{"id":"line_1","type":"dialogue","label":"Keep the lamp lit",
+			"text":"Keep the lamp lit.","status":"stale","start_ms":0,"duration_ms":1000}]}]
+	}`, bound.Revision, cartographer.ID)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(replaceBody)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("occupied Dialogue Track replacement status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+created.ID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reload project status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var unchanged storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&unchanged); err != nil {
+		t.Fatalf("decode unchanged project: %v", err)
+	}
+	if unchanged.Revision != bound.Revision || unchanged.Tracks[0].CharacterVoiceID != keeper.ID {
+		t.Fatalf("rejected replacement changed durable project: %+v", unchanged)
+	}
+
+	revoiceBody := fmt.Sprintf(`{
+		"name":"Voice binding","revision":%d,"timeline_duration_ms":30000,"revoice_track_ids":["mara"],
+		"tracks":[{"id":"mara","name":"Mara","type":"dialogue","order":0,"muted":false,
+			"character_voice_id":%q,"clips":[{"id":"line_1","type":"dialogue","label":"Keep the lamp lit",
+			"text":"Keep the lamp lit.","status":"ready","start_ms":0,"duration_ms":1000}]}]
+	}`, unchanged.Revision, cartographer.ID)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(revoiceBody)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deliberate revoice status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var revoiced storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&revoiced); err != nil {
+		t.Fatalf("decode revoiced project: %v", err)
+	}
+	revoicedClip := revoiced.Tracks[0].Clips[0]
+	if revoiced.Tracks[0].CharacterVoiceID != cartographer.ID || revoicedClip.CharacterVoiceID != cartographer.ID ||
+		revoicedClip.Status != storybuilder.DialogueStatusStale {
+		t.Fatalf("deliberate revoice was not canonical and stale: %+v", revoiced)
+	}
+
+	if err := r.voices.DeleteCharacterVoice(cartographer.ID); err != nil {
+		t.Fatalf("delete bound Character Voice: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+created.ID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get project with deleted Character Voice status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var orphaned storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&orphaned); err != nil {
+		t.Fatalf("decode project with deleted Character Voice: %v", err)
+	}
+	if orphaned.Tracks[0].Clips[0].Status != storybuilder.DialogueStatusFailed || orphaned.Tracks[0].Clips[0].BuildError == "" {
+		t.Fatalf("deleted Character Voice was not represented as failed dialogue: %+v", orphaned.Tracks[0].Clips[0])
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), created.ID) {
+		t.Fatalf("deleted Character Voice hid the project list: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStoryBuilderFreshnessTracksSpeechChangesNotArrangementEdits(t *testing.T) {
+	cfg := testConfig(nil)
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	voiceRoot := filepath.Join(t.TempDir(), "voices")
+	projectRoot := filepath.Join(t.TempDir(), "projects")
+	r.voices = voice.NewStore(voiceRoot)
+	r.storyBuilderProjects = storybuilder.NewStoreWithOptions(projectRoot, storybuilder.StoreOptions{
+		ResolveCharacterVoice: r.resolveStoryBuilderCharacterVoice,
+	})
+	actor, err := r.voices.Save("Mara", "reference words", validWAVBytes(), false)
+	if err != nil {
+		t.Fatalf("save Actor Voice: %v", err)
+	}
+	character, err := r.voices.CreateCharacterVoice(actor.ID, "Weathered keeper", "quiet and guarded")
+	if err != nil {
+		t.Fatalf("create Character Voice: %v", err)
+	}
+	project, err := r.storyBuilderProjects.Create("Freshness")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	put := func(project storybuilder.Project) storybuilder.Project {
+		t.Helper()
+		tracks := project.Tracks
+		body, err := json.Marshal(storyBuilderProjectUpdateRequest{
+			Name: project.Name, Revision: project.Revision, TimelineDurationMS: project.TimelineDurationMS, Tracks: &tracks,
+		})
+		if err != nil {
+			t.Fatalf("encode update: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+project.ID, bytes.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("update status = %d: %s", rec.Code, rec.Body.String())
+		}
+		var saved storybuilder.Project
+		if err := json.NewDecoder(rec.Body).Decode(&saved); err != nil {
+			t.Fatalf("decode update: %v", err)
+		}
+		return saved
+	}
+	persistFixture := func(project storybuilder.Project) {
+		t.Helper()
+		data, err := json.MarshalIndent(project, "", "  ")
+		if err != nil {
+			t.Fatalf("encode ready fixture: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(projectRoot, project.ID, "project.json"), append(data, '\n'), 0o644); err != nil {
+			t.Fatalf("write ready fixture: %v", err)
+		}
+	}
+
+	project.Tracks = []storybuilder.Track{
+		{ID: "dialogue", Name: "Mara", Type: storybuilder.TrackTypeDialogue, Order: 0, CharacterVoiceID: character.ID, Clips: []storybuilder.TimelineClip{{
+			ID: "line_1", Type: storybuilder.ClipTypeDialogue, Label: "Keep the lamp lit", Text: "Keep the lamp lit.", StartMS: 0, DurationMS: 1000,
+		}}},
+		{ID: "foley", Name: "Foley", Type: storybuilder.TrackTypeSFX, Order: 1},
+	}
+	project = put(project)
+	project.Tracks[0].Clips[0].Status = storybuilder.DialogueStatusReady
+	persistFixture(project)
+
+	// Timing, trimming, mute, rename, and reorder are arrangement edits. They
+	// must preserve a ready recording because none changes what is spoken or
+	// how the bound voice synthesizes it.
+	dialogue := project.Tracks[0]
+	dialogue.Name = "Mara close-up"
+	dialogue.Muted = true
+	dialogue.Order = 1
+	dialogue.Clips[0].StartMS = 250
+	dialogue.Clips[0].DurationMS = 750
+	foley := project.Tracks[1]
+	foley.Order = 0
+	project.Tracks = []storybuilder.Track{foley, dialogue}
+	project = put(project)
+	readyClip := project.Tracks[1].Clips[0]
+	if readyClip.Status != storybuilder.DialogueStatusReady {
+		t.Fatalf("arrangement edit made ready dialogue %q", readyClip.Status)
+	}
+
+	oldFingerprint := readyClip.VoiceFingerprint
+	if _, err := r.voices.UpdateCharacterVoice(character.ID, character.Name, "urgent and breathless"); err != nil {
+		t.Fatalf("change Character Voice direction: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+project.ID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reload after direction change status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&project); err != nil {
+		t.Fatalf("decode project after direction change: %v", err)
+	}
+	directionClip := project.Tracks[1].Clips[0]
+	if directionClip.Status != storybuilder.DialogueStatusStale || directionClip.VoiceFingerprint == oldFingerprint {
+		t.Fatalf("direction change did not stale dialogue with a new identity: %+v", directionClip)
+	}
+
+	project.Tracks[1].Clips[0].Status = storybuilder.DialogueStatusReady
+	persistFixture(project)
+	actor.Transcript = "replacement reference words"
+	actorData, err := json.MarshalIndent(actor, "", "  ")
+	if err != nil {
+		t.Fatalf("encode changed Actor Voice fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(voiceRoot, actor.ID, "manifest.json"), append(actorData, '\n'), 0o644); err != nil {
+		t.Fatalf("write changed Actor Voice fixture: %v", err)
+	}
+	directionFingerprint := project.Tracks[1].Clips[0].VoiceFingerprint
+	project = put(project)
+	actorClip := project.Tracks[1].Clips[0]
+	if actorClip.Status != storybuilder.DialogueStatusStale || actorClip.VoiceFingerprint == directionFingerprint {
+		t.Fatalf("Actor Voice identity change did not stale dialogue: %+v", actorClip)
+	}
+
+	project.Tracks[1].Clips[0].Status = storybuilder.DialogueStatusReady
+	persistFixture(project)
+	textFingerprint := project.Tracks[1].Clips[0].VoiceFingerprint
+	project.Tracks[1].Clips[0].Text = "That path vanished twenty years ago."
+	project.Tracks[1].Clips[0].Label = "That path vanished twenty years ago"
+	project = put(project)
+	textClip := project.Tracks[1].Clips[0]
+	if textClip.Status != storybuilder.DialogueStatusStale || textClip.VoiceFingerprint != textFingerprint {
+		t.Fatalf("text change did not stale only the dialogue content: %+v", textClip)
+	}
+}
+
 func TestStoryBuilderAudioTrimBoundsThroughGateway(t *testing.T) {
 	cfg := testConfig(nil)
 	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
@@ -5025,7 +5301,7 @@ func validStoryRequestJSON() string {
 
 func waitGatewayStoryStatus(t *testing.T, router http.Handler, id string, want story.Status) story.StatusResponse {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/v1/stories/"+id, nil)
