@@ -52,7 +52,7 @@ func TestStoryBuilderProjectLifecycleThroughGateway(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
 		t.Fatalf("decode created project: %v", err)
 	}
-	if created.ID == "" || created.Name != "The Lantern at Crow Point" || created.Revision != 1 {
+	if created.ID == "" || created.Name != "The Lantern at Crow Point" || created.Revision != 1 || created.TimelineDurationMS != storybuilder.DefaultTimelineDurationMS {
 		t.Fatalf("unexpected created project: %+v", created)
 	}
 
@@ -134,6 +134,136 @@ func TestStoryBuilderProjectLifecycleThroughGateway(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+created.ID, nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("deleted project status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStoryBuilderTimelineTimingThroughGateway(t *testing.T) {
+	cfg := testConfig(nil)
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	r.storyBuilderProjects = storybuilder.NewStore(t.TempDir())
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects", strings.NewReader(`{"name":"Exact timing"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var created storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created project: %v", err)
+	}
+
+	validUpdate := fmt.Sprintf(`{
+		"name":"Exact timing","revision":%d,"timeline_duration_ms":30000,
+		"tracks":[
+			{"id":"foley_a","name":"Foley A","type":"sfx","order":0,"muted":false,"clips":[
+				{"id":"step_1","type":"silence","label":"First step","start_ms":101,"duration_ms":333},
+				{"id":"step_2","type":"silence","label":"Second step","start_ms":434,"duration_ms":266}
+			]},
+			{"id":"foley_b","name":"Foley B","type":"sfx","order":1,"muted":false,"clips":[
+				{"id":"rain","type":"silence","label":"Rain","start_ms":250,"duration_ms":400}
+			]}
+		]
+	}`, created.Revision)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(validUpdate)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid timing status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var saved storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&saved); err != nil {
+		t.Fatalf("decode saved project: %v", err)
+	}
+	if saved.Tracks[0].Clips[0].StartMS != 101 || saved.Tracks[0].Clips[0].DurationMS != 333 ||
+		saved.Tracks[1].Clips[0].StartMS != 250 {
+		t.Fatalf("millisecond timing drifted: %+v", saved.Tracks)
+	}
+
+	overlappingUpdate := fmt.Sprintf(`{
+		"name":"Exact timing","revision":%d,
+		"tracks":[{"id":"foley_a","name":"Foley A","type":"sfx","order":0,"muted":false,"clips":[
+			{"id":"step_1","type":"silence","label":"First step","start_ms":101,"duration_ms":333},
+			{"id":"step_2","type":"silence","label":"Overlapping step","start_ms":433,"duration_ms":266}
+		]}]
+	}`, saved.Revision)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(overlappingUpdate)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("same-track overlap status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+
+	outOfBoundsUpdate := fmt.Sprintf(`{
+		"name":"Exact timing","revision":%d,"timeline_duration_ms":30000,
+		"tracks":[{"id":"foley_a","name":"Foley A","type":"sfx","order":0,"muted":false,"clips":[
+			{"id":"late","type":"silence","label":"Past project end","start_ms":29900,"duration_ms":101}
+		]}]
+	}`, saved.Revision)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(outOfBoundsUpdate)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("project-bound status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+created.ID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reload status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var reloaded storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&reloaded); err != nil {
+		t.Fatalf("decode reloaded project: %v", err)
+	}
+	if reloaded.Revision != saved.Revision || len(reloaded.Tracks) != 2 || reloaded.Tracks[0].Clips[1].StartMS != 434 {
+		t.Fatalf("rejected overlap changed durable timing: %+v", reloaded)
+	}
+}
+
+func TestStoryBuilderAudioTrimBoundsThroughGateway(t *testing.T) {
+	cfg := testConfig(nil)
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	r.storyBuilderProjects = storybuilder.NewStore(t.TempDir())
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects", strings.NewReader(`{"name":"Trimmed dialogue"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var created storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created project: %v", err)
+	}
+
+	validUpdate := fmt.Sprintf(`{
+		"name":"Trimmed dialogue","revision":%d,
+		"tracks":[{"id":"mara","name":"Mara","type":"dialogue","order":0,"muted":false,"character_voice_id":"voice_mara","clips":[
+			{"id":"line_1","type":"dialogue","label":"Keep the lamp low","start_ms":125,"duration_ms":700,
+			 "source_id":"take_1","source_duration_ms":1200,"source_in_ms":200,"source_out_ms":900}
+		]}]
+	}`, created.Revision)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(validUpdate)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid trim status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var saved storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&saved); err != nil {
+		t.Fatalf("decode saved project: %v", err)
+	}
+	clip := saved.Tracks[0].Clips[0]
+	if clip.SourceInMS != 200 || clip.SourceOutMS != 900 || clip.DurationMS != 700 {
+		t.Fatalf("trim bounds drifted: %+v", clip)
+	}
+
+	invalidUpdate := fmt.Sprintf(`{
+		"name":"Trimmed dialogue","revision":%d,
+		"tracks":[{"id":"mara","name":"Mara","type":"dialogue","order":0,"muted":false,"character_voice_id":"voice_mara","clips":[
+			{"id":"line_1","type":"dialogue","label":"Keep the lamp low","start_ms":125,"duration_ms":1100,
+			 "source_id":"take_1","source_duration_ms":1200,"source_in_ms":200,"source_out_ms":1300}
+		]}]
+	}`, saved.Revision)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(invalidUpdate)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("out-of-bounds trim status = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
 }
 

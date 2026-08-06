@@ -50,15 +50,37 @@
             <p class="eyebrow">Story canvas</p>
             <h2 id="storyBuilderCanvasTitle">Timeline tracks</h2>
           </div>
-          <div class="track-actions" aria-label="Add track">
-            <button id="storyBuilderAddDialogue" type="button">+ Dialogue track</button>
-            <button id="storyBuilderAddSFX" type="button">+ SFX track</button>
-            <button id="storyBuilderAddMusic" type="button">+ Music track</button>
-            <button id="storyBuilderUndo" class="quiet-button" type="button" disabled>Undo remove</button>
+          <div class="canvas-tools">
+            <div class="timeline-preferences" aria-label="Timeline preferences">
+              <label><input id="storyBuilderSnap" type="checkbox" checked> Snap 250 ms</label>
+              <label for="storyBuilderTimelineDuration">Length (s)</label>
+              <input id="storyBuilderTimelineDuration" class="timeline-length" type="number" min="1" step="1" value="30">
+              <label for="storyBuilderZoom">Zoom</label>
+              <input id="storyBuilderZoom" type="range" min="24" max="160" step="4" value="44">
+              <output id="storyBuilderZoomValue" for="storyBuilderZoom">44 px/s</output>
+            </div>
+            <div class="track-actions" aria-label="Timeline actions">
+              <button id="storyBuilderAddDialogue" type="button">+ Dialogue track</button>
+              <button id="storyBuilderAddSFX" type="button">+ SFX track</button>
+              <button id="storyBuilderAddMusic" type="button">+ Music track</button>
+              <button id="storyBuilderUndo" class="quiet-button" type="button" disabled>Undo</button>
+              <button id="storyBuilderRedo" class="quiet-button" type="button" disabled>Redo</button>
+            </div>
           </div>
         </div>
-        <div class="timeline-ruler" aria-hidden="true"><span>0s</span><span>5s</span><span>10s</span><span>15s</span><span>20s</span><span>25s</span><span>30s</span></div>
-        <div id="storyBuilderTracks" class="track-list" aria-live="polite"></div>
+        <div id="storyBuilderTimelineViewport" class="timeline-viewport">
+          <div id="storyBuilderTimelineContent" class="timeline-content">
+            <div id="storyBuilderTimelineRuler" class="timeline-ruler" aria-hidden="true"><span>0s</span><span>5s</span><span>10s</span><span>15s</span><span>20s</span><span>25s</span><span>30s</span></div>
+            <div id="storyBuilderTracks" class="track-list" aria-live="polite"></div>
+          </div>
+        </div>
+        <aside id="storyBuilderSelectionPanel" class="selection-panel" aria-labelledby="storyBuilderSelectionTitle">
+          <header id="storyBuilderSelectionHandle" class="selection-panel-header">
+            <h3 id="storyBuilderSelectionTitle">Selection</h3>
+            <span>Drag to move</span>
+          </header>
+          <div id="storyBuilderSelectionBody" class="selection-panel-body"></div>
+        </aside>
       </section>
       <div class="danger-zone">
         <div>

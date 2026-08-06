@@ -1,6 +1,7 @@
 package storybuilder
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -46,6 +47,47 @@ func TestUserCanArrangeTypedTracksAndSilenceClips(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != manifestName {
 		t.Fatalf("silence clip wrote media bytes: %+v", entries)
+	}
+}
+
+func TestLegacyProjectDerivesTimelineDurationFromExistingClips(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(root)
+	created, err := store.Create("Legacy long project")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	created.Tracks = []Track{{ID: "foley", Name: "Foley", Type: TrackTypeSFX, Order: 0, Clips: []TimelineClip{
+		{ID: "late_clip", Type: ClipTypeSilence, Label: "Late clip", StartMS: 45000, DurationMS: 1000},
+	}}}
+	data, err := json.Marshal(created)
+	if err != nil {
+		t.Fatalf("encode legacy project: %v", err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		t.Fatalf("decode legacy project: %v", err)
+	}
+	delete(legacy, "timeline_duration_ms")
+	data, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("encode legacy manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, created.ID, manifestName), data, 0o644); err != nil {
+		t.Fatalf("write legacy manifest: %v", err)
+	}
+
+	reopened, ok, err := NewStore(root).Get(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("reopen legacy project: ok=%v err=%v", ok, err)
+	}
+	if reopened.TimelineDurationMS != 46000 {
+		t.Fatalf("legacy timeline duration = %d, want 46000", reopened.TimelineDurationMS)
+	}
+	if _, err := NewStore(root).Update(created.ID, ProjectUpdate{
+		Name: reopened.Name, Revision: reopened.Revision, Tracks: reopened.Tracks,
+	}); err != nil {
+		t.Fatalf("save reopened legacy project: %v", err)
 	}
 }
 

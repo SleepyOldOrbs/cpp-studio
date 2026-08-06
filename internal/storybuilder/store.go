@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,11 +19,12 @@ import (
 )
 
 const (
-	DefaultRootDir = "out/story-builder-projects"
-	MaxNameLength  = 120
-	MaxTracks      = 128
-	MaxClips       = 2048
-	manifestName   = "project.json"
+	DefaultRootDir            = "out/story-builder-projects"
+	MaxNameLength             = 120
+	MaxTracks                 = 128
+	MaxClips                  = 2048
+	DefaultTimelineDurationMS = 30000
+	manifestName              = "project.json"
 )
 
 var (
@@ -46,14 +48,18 @@ const (
 	ClipTypeDialogue ClipType = "dialogue"
 )
 
-// TimelineClip is timing metadata. Silence clips deliberately have no media
-// path: they represent an authored gap, not generated audio bytes.
+// TimelineClip is timing metadata. Audio-backed clips keep nondestructive
+// source offsets; silence clips deliberately have no media source.
 type TimelineClip struct {
-	ID         string   `json:"id"`
-	Type       ClipType `json:"type"`
-	Label      string   `json:"label"`
-	StartMS    int64    `json:"start_ms"`
-	DurationMS int64    `json:"duration_ms"`
+	ID               string   `json:"id"`
+	Type             ClipType `json:"type"`
+	Label            string   `json:"label"`
+	StartMS          int64    `json:"start_ms"`
+	DurationMS       int64    `json:"duration_ms"`
+	SourceID         string   `json:"source_id,omitempty"`
+	SourceDurationMS int64    `json:"source_duration_ms,omitempty"`
+	SourceInMS       int64    `json:"source_in_ms,omitempty"`
+	SourceOutMS      int64    `json:"source_out_ms,omitempty"`
 }
 
 type Track struct {
@@ -67,19 +73,21 @@ type Track struct {
 }
 
 type ProjectUpdate struct {
-	Name     string  `json:"name"`
-	Revision int     `json:"revision"`
-	Tracks   []Track `json:"tracks"`
+	Name               string  `json:"name"`
+	Revision           int     `json:"revision"`
+	TimelineDurationMS int64   `json:"timeline_duration_ms,omitempty"`
+	Tracks             []Track `json:"tracks"`
 }
 
 // Project is one separately saved Story Builder production.
 type Project struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Revision  int       `json:"revision"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Tracks    []Track   `json:"tracks"`
+	ID                 string    `json:"id"`
+	Name               string    `json:"name"`
+	Revision           int       `json:"revision"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	TimelineDurationMS int64     `json:"timeline_duration_ms"`
+	Tracks             []Track   `json:"tracks"`
 }
 
 type StoreOptions struct {
@@ -130,7 +138,7 @@ func (s *Store) Create(name string) (Project, error) {
 		if err != nil {
 			return Project{}, err
 		}
-		project := Project{ID: id, Name: name, Revision: 1, CreatedAt: now, UpdatedAt: now, Tracks: []Track{}}
+		project := Project{ID: id, Name: name, Revision: 1, CreatedAt: now, UpdatedAt: now, TimelineDurationMS: DefaultTimelineDurationMS, Tracks: []Track{}}
 		finalDir := filepath.Join(s.rootDir, project.ID)
 		if _, err := os.Stat(finalDir); err == nil {
 			continue
@@ -182,7 +190,25 @@ func (s *Store) Get(id string) (Project, bool, error) {
 	if project.ID != id || project.Revision < 1 {
 		return Project{}, false, fmt.Errorf("decode Story Builder Project: invalid manifest identity")
 	}
+	if project.TimelineDurationMS == 0 {
+		project.TimelineDurationMS = minimumTimelineDurationMS(project.Tracks)
+	}
 	return project, true, nil
+}
+
+func minimumTimelineDurationMS(tracks []Track) int64 {
+	durationMS := int64(DefaultTimelineDurationMS)
+	for _, track := range tracks {
+		for _, clip := range track.Clips {
+			if clip.StartMS < 0 || clip.DurationMS <= 0 || clip.StartMS > math.MaxInt64-clip.DurationMS {
+				continue
+			}
+			if endMS := clip.StartMS + clip.DurationMS; endMS > durationMS {
+				durationMS = endMS
+			}
+		}
+	}
+	return durationMS
 }
 
 func (s *Store) List() ([]Project, error) {
@@ -226,9 +252,6 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
-	if err := validateTracks(update.Tracks); err != nil {
-		return Project{}, err
-	}
 	project, ok, err := s.Get(id)
 	if err != nil {
 		return Project{}, err
@@ -236,10 +259,18 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 	if !ok {
 		return Project{}, ErrNotFound
 	}
+	timelineDurationMS := update.TimelineDurationMS
+	if timelineDurationMS == 0 {
+		timelineDurationMS = project.TimelineDurationMS
+	}
+	if err := validateTracks(update.Tracks, timelineDurationMS); err != nil {
+		return Project{}, err
+	}
 	if update.Revision != project.Revision {
 		return Project{}, ErrConflict
 	}
 	project.Name = name
+	project.TimelineDurationMS = timelineDurationMS
 	project.Tracks = cloneTracks(update.Tracks)
 	project.Revision++
 	project.UpdatedAt = s.now()
@@ -253,8 +284,8 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 	return project, nil
 }
 
-func validateTracks(tracks []Track) error {
-	if len(tracks) > MaxTracks {
+func validateTracks(tracks []Track, timelineDurationMS int64) error {
+	if len(tracks) > MaxTracks || timelineDurationMS <= 0 {
 		return ErrInvalid
 	}
 	trackIDs := make(map[string]struct{}, len(tracks))
@@ -279,13 +310,23 @@ func validateTracks(tracks []Track) error {
 			return ErrInvalid
 		}
 		for _, clip := range track.Clips {
-			if !validTimelineID(clip.ID) || strings.TrimSpace(clip.Label) == "" || utf8.RuneCountInString(clip.Label) > MaxNameLength || clip.StartMS < 0 || clip.DurationMS <= 0 {
+			if !validTimelineID(clip.ID) || strings.TrimSpace(clip.Label) == "" || utf8.RuneCountInString(clip.Label) > MaxNameLength ||
+				clip.StartMS < 0 || clip.DurationMS <= 0 || clip.StartMS > math.MaxInt64-clip.DurationMS ||
+				clip.StartMS+clip.DurationMS > timelineDurationMS {
 				return ErrInvalid
 			}
 			if _, exists := clipIDs[clip.ID]; exists {
 				return ErrInvalid
 			}
 			clipIDs[clip.ID] = struct{}{}
+			hasSource := clip.SourceID != "" || clip.SourceDurationMS != 0 || clip.SourceInMS != 0 || clip.SourceOutMS != 0
+			if hasSource {
+				if clip.Type == ClipTypeSilence || !validTimelineID(clip.SourceID) || clip.SourceDurationMS <= 0 ||
+					clip.SourceInMS < 0 || clip.SourceOutMS <= clip.SourceInMS || clip.SourceOutMS > clip.SourceDurationMS ||
+					clip.DurationMS != clip.SourceOutMS-clip.SourceInMS {
+					return ErrInvalid
+				}
+			}
 			switch clip.Type {
 			case ClipTypeSilence:
 			case ClipTypeDialogue:
@@ -293,6 +334,16 @@ func validateTracks(tracks []Track) error {
 					return ErrInvalid
 				}
 			default:
+				return ErrInvalid
+			}
+		}
+		orderedClips := append([]TimelineClip(nil), track.Clips...)
+		sort.Slice(orderedClips, func(i, j int) bool {
+			return orderedClips[i].StartMS < orderedClips[j].StartMS
+		})
+		for i := 1; i < len(orderedClips); i++ {
+			previousEnd := orderedClips[i-1].StartMS + orderedClips[i-1].DurationMS
+			if orderedClips[i].StartMS < previousEnd {
 				return ErrInvalid
 			}
 		}
@@ -322,6 +373,7 @@ func cloneTracks(tracks []Track) []Track {
 		cloned[i].Clips = append([]TimelineClip(nil), tracks[i].Clips...)
 		for j := range cloned[i].Clips {
 			cloned[i].Clips[j].Label = strings.TrimSpace(cloned[i].Clips[j].Label)
+			cloned[i].Clips[j].SourceID = strings.TrimSpace(cloned[i].Clips[j].SourceID)
 		}
 	}
 	return cloned

@@ -226,6 +226,13 @@ Individual fixture smokes: `smoke-voice-loop-fixture.ps1`,
 `smoke-story-fixture.ps1`, `smoke-demo-ui.ps1`. Measured local-engine
 latencies and policies: [`docs/LOCAL_ENGINE_PROFILE.md`](docs/LOCAL_ENGINE_PROFILE.md).
 
+The Story Builder interaction gate uses a real isolated browser and requires
+Node.js with `npx` available:
+
+```powershell
+.\scripts\smoke-story-builder-browser.ps1
+```
+
 Release packaging (`dist/`, no weights bundled): `.\scripts\package-release.ps1`
 — see [`docs/RELEASE.md`](docs/RELEASE.md).
 
