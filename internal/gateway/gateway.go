@@ -1822,18 +1822,21 @@ func validateUploadedWAV(path string, label string, maxBytes int64) error {
 	return nil
 }
 
-var musicRoutes = map[string]bool{
-	"text2music":  true,
-	"complete":    true,
-	"lego":        true,
-	"extract":     true,
-	"cover":       true,
-	"cover-nofsq": true,
-	"repaint":     true,
+type musicRoutePolicy struct {
+	sourceAllowed   bool
+	sourceRequired  bool
+	trackName       bool
+	repaintControls bool
 }
 
-var musicRoutesRequiringSource = map[string]bool{
-	"lego": true, "extract": true, "cover": true, "cover-nofsq": true, "repaint": true,
+var musicRoutePolicies = map[string]musicRoutePolicy{
+	"text2music":  {},
+	"complete":    {sourceAllowed: true},
+	"lego":        {sourceAllowed: true, sourceRequired: true, trackName: true},
+	"extract":     {sourceAllowed: true, sourceRequired: true, trackName: true},
+	"cover":       {sourceAllowed: true, sourceRequired: true},
+	"cover-nofsq": {sourceAllowed: true, sourceRequired: true},
+	"repaint":     {sourceAllowed: true, sourceRequired: true, repaintControls: true},
 }
 
 func parseMusicFloat(req *http.Request, name string, fallback float64) (float64, error) {
@@ -1871,7 +1874,8 @@ func parseMusicGenerationRequest(req *http.Request) (engine.MusicGenerationReque
 	if request.Route == "" {
 		request.Route = "text2music"
 	}
-	if !musicRoutes[request.Route] {
+	policy, ok := musicRoutePolicies[request.Route]
+	if !ok {
 		return request, fmt.Errorf("music route %q is not supported", request.Route)
 	}
 	if request.Prompt == "" {
@@ -1886,10 +1890,10 @@ func parseMusicGenerationRequest(req *http.Request) (engine.MusicGenerationReque
 	if len(request.TrackName) > 120 {
 		return request, errors.New("track_name is too long (max 120 bytes)")
 	}
-	if request.TrackName != "" && request.Route != "lego" && request.Route != "extract" {
+	if request.TrackName != "" && !policy.trackName {
 		return request, errors.New("track_name is only supported for lego and extract routes")
 	}
-	if request.Route != "repaint" && (strings.TrimSpace(req.FormValue("repaint_start")) != "" ||
+	if !policy.repaintControls && (strings.TrimSpace(req.FormValue("repaint_start")) != "" ||
 		strings.TrimSpace(req.FormValue("repaint_end")) != "" || request.RepaintMode != "" ||
 		strings.TrimSpace(req.FormValue("repaint_strength")) != "") {
 		return request, errors.New("repaint fields are only supported for the repaint route")
@@ -1919,7 +1923,7 @@ func parseMusicGenerationRequest(req *http.Request) (engine.MusicGenerationReque
 		}
 		return request, errors.New("guidance must be between 0 and 10")
 	}
-	if request.Route == "repaint" {
+	if policy.repaintControls {
 		if request.RepaintStart, err = parseMusicFloat(req, "repaint_start", 0); err != nil {
 			return request, err
 		}
@@ -1993,7 +1997,8 @@ func (r *router) handleMusicGeneration(w http.ResponseWriter, req *http.Request)
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	sourcePath, cleanup, err := r.musicSource(req, musicRequest.Route != "text2music", musicRoutesRequiringSource[musicRequest.Route])
+	policy := musicRoutePolicies[musicRequest.Route]
+	sourcePath, cleanup, err := r.musicSource(req, policy.sourceAllowed, policy.sourceRequired)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
