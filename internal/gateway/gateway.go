@@ -116,6 +116,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	}
 	r.storyBuilderProjects = storybuilder.NewStoreWithOptions("", storybuilder.StoreOptions{
 		ResolveCharacterVoice: r.resolveStoryBuilderCharacterVoice,
+		ResolveLibraryAudio:   r.resolveStoryBuilderLibraryAudio,
 	})
 	if whisperCfg, ok := cfg.Engines["whisper"]; ok && whisperVADConfigured(whisperCfg) {
 		r.voices = voice.NewStoreWithOptions("", voice.StoreOptions{AnalyzeVAD: func(wavBytes []byte) (time.Duration, error) {
@@ -4088,6 +4089,13 @@ type storyBuilderProjectUpdateRequest struct {
 	RevoiceTrackIDs    []string              `json:"revoice_track_ids"`
 }
 
+type storyBuilderLibraryAudioRequest struct {
+	Revision      int    `json:"revision"`
+	TrackID       string `json:"track_id"`
+	LibraryItemID string `json:"library_item_id"`
+	StartMS       int64  `json:"start_ms"`
+}
+
 func (r *router) handleStoryBuilderProjects(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
@@ -4119,11 +4127,21 @@ func (r *router) handleStoryBuilderProjects(w http.ResponseWriter, req *http.Req
 }
 
 func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Request) {
-	id := strings.TrimPrefix(req.URL.Path, "/v1/story-builder-projects/")
-	if id == "" || strings.Contains(id, "/") {
+	rest := strings.Trim(strings.TrimPrefix(req.URL.Path, "/v1/story-builder-projects/"), "/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 2 && parts[1] == "library-audio" {
+		r.handleStoryBuilderLibraryAudio(w, req, parts[0])
+		return
+	}
+	if len(parts) == 3 && parts[1] == "media" {
+		r.handleStoryBuilderMedia(w, req, parts[0], parts[2])
+		return
+	}
+	if len(parts) != 1 || parts[0] == "" {
 		http.NotFound(w, req)
 		return
 	}
+	id := parts[0]
 	switch req.Method {
 	case http.MethodGet:
 		project, ok, err := r.storyBuilderProjects.Get(id)
@@ -4173,6 +4191,44 @@ func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Requ
 	}
 }
 
+func (r *router) handleStoryBuilderLibraryAudio(w http.ResponseWriter, req *http.Request, id string) {
+	if req.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body storyBuilderLibraryAudioRequest
+	if err := decodeStoryBuilderProjectRequest(w, req, &body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	project, err := r.storyBuilderProjects.PlaceLibraryAudio(id, storybuilder.LibraryAudioPlacement{
+		Revision: body.Revision, TrackID: body.TrackID, LibraryItemID: body.LibraryItemID, StartMS: body.StartMS,
+	})
+	if err != nil {
+		writeStoryBuilderProjectError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(project)
+}
+
+func (r *router) handleStoryBuilderMedia(w http.ResponseWriter, req *http.Request, id, sourceID string) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	path, err := r.storyBuilderProjects.MediaPath(id, sourceID)
+	if err != nil {
+		writeStoryBuilderProjectError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	http.ServeFile(w, req, path)
+}
+
 func decodeStoryBuilderProjectRequest(w http.ResponseWriter, req *http.Request, body any) error {
 	req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
 	decoder := json.NewDecoder(req.Body)
@@ -4190,7 +4246,10 @@ func writeStoryBuilderProjectError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, storybuilder.ErrInvalid):
 		writeJSONError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, storybuilder.ErrNotFound), errors.Is(err, storybuilder.ErrCharacterVoiceNotFound):
+	case errors.Is(err, storybuilder.ErrIncompatibleMedia):
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, storybuilder.ErrNotFound), errors.Is(err, storybuilder.ErrCharacterVoiceNotFound),
+		errors.Is(err, storybuilder.ErrLibraryAudioNotFound), errors.Is(err, storybuilder.ErrProjectMediaNotFound):
 		writeJSONError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, storybuilder.ErrConflict), errors.Is(err, storybuilder.ErrVoiceConflict):
 		writeJSONError(w, http.StatusConflict, err.Error())
@@ -4208,6 +4267,24 @@ func (r *router) resolveStoryBuilderCharacterVoice(id string) (storybuilder.Voic
 		CharacterVoiceID: identity.CharacterVoiceID,
 		ActorVoiceID:     identity.ActorVoiceID,
 		Fingerprint:      identity.Fingerprint,
+	}, true, nil
+}
+
+func (r *router) resolveStoryBuilderLibraryAudio(id string) (storybuilder.LibraryAudio, bool, error) {
+	item, ok, err := r.library.Get(id)
+	if err != nil || !ok || item.Kind != "audio" {
+		return storybuilder.LibraryAudio{}, ok && item.Kind == "audio", err
+	}
+	path, _, err := r.library.ArtifactPath(id)
+	if err != nil {
+		return storybuilder.LibraryAudio{}, false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return storybuilder.LibraryAudio{}, false, err
+	}
+	return storybuilder.LibraryAudio{
+		ID: item.ID, Name: item.Name, MediaRole: storybuilder.MediaRole(item.MediaRole), Data: data,
 	}, true, nil
 }
 

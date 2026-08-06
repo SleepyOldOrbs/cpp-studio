@@ -2,6 +2,7 @@
 package storybuilder
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"cpp-studio/internal/wav"
 )
 
 const (
@@ -34,6 +37,9 @@ var (
 	ErrConflict               = errors.New("Story Builder Project revision conflict")
 	ErrVoiceConflict          = errors.New("Dialogue Track already contains dialogue for a different Character Voice")
 	ErrCharacterVoiceNotFound = errors.New("Character Voice not found")
+	ErrLibraryAudioNotFound   = errors.New("Library audio not found")
+	ErrIncompatibleMedia      = errors.New("Library audio is not compatible with the target track")
+	ErrProjectMediaNotFound   = errors.New("project media not found")
 )
 
 type TrackType string
@@ -49,6 +55,16 @@ type ClipType string
 const (
 	ClipTypeSilence  ClipType = "silence"
 	ClipTypeDialogue ClipType = "dialogue"
+	ClipTypeSFX      ClipType = "sfx"
+	ClipTypeMusic    ClipType = "music"
+)
+
+type MediaRole string
+
+const (
+	MediaRoleSFX     MediaRole = "sfx"
+	MediaRoleMusic   MediaRole = "music"
+	MediaRoleUtility MediaRole = "utility"
 )
 
 type DialogueStatus string
@@ -63,21 +79,25 @@ const (
 // TimelineClip is timing metadata. Audio-backed clips keep nondestructive
 // source offsets; silence clips deliberately have no media source.
 type TimelineClip struct {
-	ID               string         `json:"id"`
-	Type             ClipType       `json:"type"`
-	Label            string         `json:"label"`
-	StartMS          int64          `json:"start_ms"`
-	DurationMS       int64          `json:"duration_ms"`
-	SourceID         string         `json:"source_id,omitempty"`
-	SourceDurationMS int64          `json:"source_duration_ms,omitempty"`
-	SourceInMS       int64          `json:"source_in_ms,omitempty"`
-	SourceOutMS      int64          `json:"source_out_ms,omitempty"`
-	Text             string         `json:"text,omitempty"`
-	Status           DialogueStatus `json:"status,omitempty"`
-	CharacterVoiceID string         `json:"character_voice_id,omitempty"`
-	ActorVoiceID     string         `json:"actor_voice_id,omitempty"`
-	VoiceFingerprint string         `json:"voice_fingerprint,omitempty"`
-	BuildError       string         `json:"build_error,omitempty"`
+	ID                  string         `json:"id"`
+	Type                ClipType       `json:"type"`
+	Label               string         `json:"label"`
+	StartMS             int64          `json:"start_ms"`
+	DurationMS          int64          `json:"duration_ms"`
+	SourceID            string         `json:"source_id,omitempty"`
+	SourceDurationMS    int64          `json:"source_duration_ms,omitempty"`
+	SourceInMS          int64          `json:"source_in_ms,omitempty"`
+	SourceOutMS         int64          `json:"source_out_ms,omitempty"`
+	SourceLibraryItemID string         `json:"source_library_item_id,omitempty"`
+	SourceLibraryName   string         `json:"source_library_name,omitempty"`
+	SourceMediaRole     MediaRole      `json:"source_media_role,omitempty"`
+	MediaError          string         `json:"media_error,omitempty"`
+	Text                string         `json:"text,omitempty"`
+	Status              DialogueStatus `json:"status,omitempty"`
+	CharacterVoiceID    string         `json:"character_voice_id,omitempty"`
+	ActorVoiceID        string         `json:"actor_voice_id,omitempty"`
+	VoiceFingerprint    string         `json:"voice_fingerprint,omitempty"`
+	BuildError          string         `json:"build_error,omitempty"`
 }
 
 type Track struct {
@@ -99,6 +119,22 @@ type VoiceIdentity struct {
 }
 
 type CharacterVoiceResolver func(id string) (VoiceIdentity, bool, error)
+
+type LibraryAudio struct {
+	ID        string
+	Name      string
+	MediaRole MediaRole
+	Data      []byte
+}
+
+type LibraryAudioResolver func(id string) (LibraryAudio, bool, error)
+
+type LibraryAudioPlacement struct {
+	Revision      int
+	TrackID       string
+	LibraryItemID string
+	StartMS       int64
+}
 
 type ProjectUpdate struct {
 	Name               string   `json:"name"`
@@ -122,6 +158,7 @@ type Project struct {
 type StoreOptions struct {
 	WriteFileAtomic       func(path string, data []byte) error
 	ResolveCharacterVoice CharacterVoiceResolver
+	ResolveLibraryAudio   LibraryAudioResolver
 }
 
 type Store struct {
@@ -130,6 +167,7 @@ type Store struct {
 	now                   func() time.Time
 	writeFileAtomic       func(path string, data []byte) error
 	resolveCharacterVoice CharacterVoiceResolver
+	resolveLibraryAudio   LibraryAudioResolver
 }
 
 func NewStore(rootDir string) *Store {
@@ -149,6 +187,7 @@ func NewStoreWithOptions(rootDir string, options StoreOptions) *Store {
 		now:                   func() time.Time { return time.Now().UTC() },
 		writeFileAtomic:       write,
 		resolveCharacterVoice: options.ResolveCharacterVoice,
+		resolveLibraryAudio:   options.ResolveLibraryAudio,
 	}
 }
 
@@ -232,6 +271,7 @@ func (s *Store) Get(id string) (Project, bool, error) {
 		}
 		project.Tracks = tracks
 	}
+	s.markMediaErrors(&project)
 	return project, true, nil
 }
 
@@ -338,6 +378,183 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 	return project, nil
 }
 
+func (s *Store) PlaceLibraryAudio(id string, placement LibraryAudioPlacement) (Project, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !validProjectID(id) {
+		return Project{}, ErrNotFound
+	}
+	if placement.Revision < 1 || !validTimelineID(placement.TrackID) || !validTimelineID(placement.LibraryItemID) || placement.StartMS < 0 {
+		return Project{}, ErrInvalid
+	}
+	project, ok, err := s.Get(id)
+	if err != nil {
+		return Project{}, err
+	}
+	if !ok {
+		return Project{}, ErrNotFound
+	}
+	if placement.Revision != project.Revision {
+		return Project{}, ErrConflict
+	}
+	var track *Track
+	for i := range project.Tracks {
+		if project.Tracks[i].ID == placement.TrackID {
+			track = &project.Tracks[i]
+			break
+		}
+	}
+	if track == nil || s.resolveLibraryAudio == nil {
+		return Project{}, ErrLibraryAudioNotFound
+	}
+	asset, ok, err := s.resolveLibraryAudio(placement.LibraryItemID)
+	if err != nil {
+		return Project{}, err
+	}
+	if !ok || asset.ID != placement.LibraryItemID || !validTimelineID(asset.ID) {
+		return Project{}, ErrLibraryAudioNotFound
+	}
+	asset.Name = strings.TrimSpace(asset.Name)
+	if asset.Name == "" || utf8.RuneCountInString(asset.Name) > MaxNameLength {
+		return Project{}, ErrInvalid
+	}
+	clipType := ClipType("")
+	switch asset.MediaRole {
+	case MediaRoleSFX:
+		if track.Type != TrackTypeSFX {
+			return Project{}, ErrIncompatibleMedia
+		}
+		clipType = ClipTypeSFX
+	case MediaRoleMusic:
+		if track.Type != TrackTypeMusic {
+			return Project{}, ErrIncompatibleMedia
+		}
+		clipType = ClipTypeMusic
+	default:
+		return Project{}, ErrIncompatibleMedia
+	}
+	if err := wav.ValidateBytes(asset.Data); err != nil {
+		return Project{}, fmt.Errorf("validate Library audio: %w", err)
+	}
+	duration, err := wav.Duration(asset.Data)
+	if err != nil || duration.Milliseconds() <= 0 {
+		return Project{}, fmt.Errorf("read Library audio duration: %w", err)
+	}
+	durationMS := duration.Milliseconds()
+	if placement.StartMS > math.MaxInt64-durationMS || placement.StartMS+durationMS > project.TimelineDurationMS {
+		return Project{}, ErrInvalid
+	}
+	clipID, err := newTimelineID("clip", s.now())
+	if err != nil {
+		return Project{}, err
+	}
+	sourceID := "media_" + asset.ID
+	if !validTimelineID(sourceID) {
+		return Project{}, ErrInvalid
+	}
+	track.Clips = append(track.Clips, TimelineClip{
+		ID: clipID, Type: clipType, Label: asset.Name, StartMS: placement.StartMS, DurationMS: durationMS,
+		SourceID: sourceID, SourceDurationMS: durationMS, SourceOutMS: durationMS,
+		SourceLibraryItemID: asset.ID, SourceLibraryName: asset.Name, SourceMediaRole: asset.MediaRole,
+	})
+	if err := validateTracks(project.Tracks, project.TimelineDurationMS); err != nil {
+		return Project{}, err
+	}
+
+	mediaDir := filepath.Join(s.rootDir, id, "media")
+	if err := os.MkdirAll(mediaDir, 0o755); err != nil {
+		return Project{}, fmt.Errorf("create project media directory: %w", err)
+	}
+	mediaPath := filepath.Join(mediaDir, sourceID+".wav")
+	createdMedia := false
+	if existing, readErr := os.ReadFile(mediaPath); readErr == nil {
+		if !bytes.Equal(existing, asset.Data) {
+			return Project{}, fmt.Errorf("project media identity conflict")
+		}
+	} else if !os.IsNotExist(readErr) {
+		return Project{}, fmt.Errorf("read project media: %w", readErr)
+	} else {
+		if err := s.writeFileAtomic(mediaPath, asset.Data); err != nil {
+			return Project{}, fmt.Errorf("copy project media: %w", err)
+		}
+		createdMedia = true
+	}
+
+	project.Revision++
+	project.UpdatedAt = s.now()
+	data, err := encodeProject(project)
+	if err == nil {
+		err = s.writeFileAtomic(filepath.Join(s.rootDir, id, manifestName), data)
+	}
+	if err != nil {
+		if createdMedia {
+			_ = os.Remove(mediaPath)
+		}
+		return Project{}, fmt.Errorf("save Story Builder Project: %w", err)
+	}
+	return project, nil
+}
+
+func (s *Store) MediaPath(id, sourceID string) (string, error) {
+	if !validProjectID(id) || !validTimelineID(sourceID) {
+		return "", ErrProjectMediaNotFound
+	}
+	project, ok, err := s.Get(id)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", ErrNotFound
+	}
+	referenced := false
+	for _, track := range project.Tracks {
+		for _, clip := range track.Clips {
+			if (clip.Type == ClipTypeSFX || clip.Type == ClipTypeMusic) && clip.SourceID == sourceID {
+				referenced = true
+				break
+			}
+		}
+	}
+	if !referenced {
+		return "", ErrProjectMediaNotFound
+	}
+	path := filepath.Join(s.rootDir, id, "media", sourceID+".wav")
+	if err := wav.ValidateFile(path); err != nil {
+		return "", ErrProjectMediaNotFound
+	}
+	return path, nil
+}
+
+func (s *Store) markMediaErrors(project *Project) {
+	checked := make(map[string]string)
+	for trackIndex := range project.Tracks {
+		for clipIndex := range project.Tracks[trackIndex].Clips {
+			clip := &project.Tracks[trackIndex].Clips[clipIndex]
+			if clip.Type != ClipTypeSFX && clip.Type != ClipTypeMusic {
+				continue
+			}
+			errorText, seen := checked[clip.SourceID]
+			if !seen {
+				path := filepath.Join(s.rootDir, project.ID, "media", clip.SourceID+".wav")
+				data, err := os.ReadFile(path)
+				if err == nil {
+					var duration time.Duration
+					duration, err = wav.Duration(data)
+					if err == nil && duration.Milliseconds() != clip.SourceDurationMS {
+						err = fmt.Errorf("duration changed")
+					}
+				}
+				if err != nil {
+					errorText = "project media is missing or unreadable"
+				}
+				checked[clip.SourceID] = errorText
+			}
+			clip.MediaError = errorText
+		}
+	}
+}
+
 func (s *Store) prepareTracks(existing, incoming []Track, revoiceTrackIDs map[string]struct{}) ([]Track, error) {
 	tracks := cloneTracks(incoming)
 	existingTracks := make(map[string]Track, len(existing))
@@ -347,10 +564,32 @@ func (s *Store) prepareTracks(existing, incoming []Track, revoiceTrackIDs map[st
 	}
 	for trackIndex := range tracks {
 		track := &tracks[trackIndex]
+		oldTrack, hadTrack := existingTracks[track.ID]
 		if track.Type != TrackTypeDialogue {
+			existingClips := make(map[string]TimelineClip, len(oldTrack.Clips))
+			if hadTrack {
+				for _, clip := range oldTrack.Clips {
+					existingClips[clip.ID] = clip
+				}
+			}
+			for clipIndex := range track.Clips {
+				clip := &track.Clips[clipIndex]
+				if clip.Type == ClipTypeSilence {
+					continue
+				}
+				oldClip, ok := existingClips[clip.ID]
+				if !ok || oldClip.Type != clip.Type {
+					return nil, ErrInvalid
+				}
+				clip.SourceID = oldClip.SourceID
+				clip.SourceDurationMS = oldClip.SourceDurationMS
+				clip.SourceLibraryItemID = oldClip.SourceLibraryItemID
+				clip.SourceLibraryName = oldClip.SourceLibraryName
+				clip.SourceMediaRole = oldClip.SourceMediaRole
+				clip.MediaError = oldClip.MediaError
+			}
 			continue
 		}
-		oldTrack, hadTrack := existingTracks[track.ID]
 		if hadTrack && oldTrack.CharacterVoiceID != "" && oldTrack.CharacterVoiceID != track.CharacterVoiceID && hasDialogue(oldTrack) {
 			if _, allowed := revoiceTrackIDs[track.ID]; !allowed {
 				return nil, ErrVoiceConflict
@@ -490,14 +729,26 @@ func validateTracks(tracks []Track, timelineDurationMS int64) error {
 			}
 			switch clip.Type {
 			case ClipTypeSilence:
-				if clip.Text != "" || clip.Status != "" || clip.CharacterVoiceID != "" || clip.ActorVoiceID != "" || clip.VoiceFingerprint != "" || clip.BuildError != "" {
+				if hasSource || clip.SourceLibraryItemID != "" || clip.SourceLibraryName != "" || clip.SourceMediaRole != "" || clip.MediaError != "" ||
+					clip.Text != "" || clip.Status != "" || clip.CharacterVoiceID != "" || clip.ActorVoiceID != "" || clip.VoiceFingerprint != "" || clip.BuildError != "" {
 					return ErrInvalid
 				}
 			case ClipTypeDialogue:
 				if track.Type != TrackTypeDialogue || strings.TrimSpace(track.CharacterVoiceID) == "" ||
 					strings.TrimSpace(clip.Text) == "" || utf8.RuneCountInString(clip.Text) > MaxDialogueTextLength ||
+					clip.SourceLibraryItemID != "" || clip.SourceLibraryName != "" || clip.SourceMediaRole != "" || clip.MediaError != "" ||
 					clip.CharacterVoiceID != track.CharacterVoiceID || clip.ActorVoiceID != track.ActorVoiceID ||
 					clip.VoiceFingerprint != track.VoiceFingerprint || dialogueStatus(clip) != clip.Status {
+					return ErrInvalid
+				}
+			case ClipTypeSFX:
+				if track.Type != TrackTypeSFX || !hasSource || clip.SourceLibraryItemID == "" || clip.SourceLibraryName == "" || clip.SourceMediaRole != MediaRoleSFX ||
+					clip.Text != "" || clip.Status != "" || clip.CharacterVoiceID != "" || clip.ActorVoiceID != "" || clip.VoiceFingerprint != "" || clip.BuildError != "" {
+					return ErrInvalid
+				}
+			case ClipTypeMusic:
+				if track.Type != TrackTypeMusic || !hasSource || clip.SourceLibraryItemID == "" || clip.SourceLibraryName == "" || clip.SourceMediaRole != MediaRoleMusic ||
+					clip.Text != "" || clip.Status != "" || clip.CharacterVoiceID != "" || clip.ActorVoiceID != "" || clip.VoiceFingerprint != "" || clip.BuildError != "" {
 					return ErrInvalid
 				}
 			default:
@@ -543,6 +794,8 @@ func cloneTracks(tracks []Track) []Track {
 		for j := range cloned[i].Clips {
 			cloned[i].Clips[j].Label = strings.TrimSpace(cloned[i].Clips[j].Label)
 			cloned[i].Clips[j].SourceID = strings.TrimSpace(cloned[i].Clips[j].SourceID)
+			cloned[i].Clips[j].SourceLibraryItemID = strings.TrimSpace(cloned[i].Clips[j].SourceLibraryItemID)
+			cloned[i].Clips[j].SourceLibraryName = strings.TrimSpace(cloned[i].Clips[j].SourceLibraryName)
 			cloned[i].Clips[j].Text = strings.TrimSpace(cloned[i].Clips[j].Text)
 			cloned[i].Clips[j].CharacterVoiceID = strings.TrimSpace(cloned[i].Clips[j].CharacterVoiceID)
 			cloned[i].Clips[j].ActorVoiceID = strings.TrimSpace(cloned[i].Clips[j].ActorVoiceID)
@@ -597,6 +850,14 @@ func newProjectID(now time.Time) (string, error) {
 		return "", fmt.Errorf("mint Story Builder Project id: %w", err)
 	}
 	return fmt.Sprintf("sbp_%s_%s", now.Format("20060102_150405"), hex.EncodeToString(suffix)), nil
+}
+
+func newTimelineID(prefix string, now time.Time) (string, error) {
+	suffix := make([]byte, 3)
+	if _, err := rand.Read(suffix); err != nil {
+		return "", fmt.Errorf("mint timeline id: %w", err)
+	}
+	return fmt.Sprintf("%s_%d_%s", prefix, now.UnixMilli(), hex.EncodeToString(suffix)), nil
 }
 
 func encodeProject(project Project) ([]byte, error) {

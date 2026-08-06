@@ -184,6 +184,14 @@ Gateway restart.
   replacement is rejected with `409`.
 - `DELETE /v1/story-builder-projects/{id}` — delete only that project and
   return `204`.
+- `POST /v1/story-builder-projects/{id}/library-audio` — atomically place one
+  reusable Library item with
+  `{"revision":2,"track_id":"foley","library_item_id":"lib_...","start_ms":250}`.
+  Only SFX-on-SFX and Music-on-Music placement is accepted. The Gateway resolves
+  the Library item server-side; unknown request fields such as filesystem paths
+  are rejected. Returns the incremented project with `201`.
+- `GET /v1/story-builder-projects/{id}/media/{source-id}` — serve a referenced,
+  validated project-owned WAV. Arbitrary files and unreferenced media ids are not exposed.
 
 Each track has a stable `id`, editable `name`, contiguous `order`, `type`
 (`dialogue`, `sfx`, or `music`), `muted` state, and `clips`. Dialogue tracks may
@@ -201,6 +209,14 @@ Synthesis identity is reconciled when the project is read or saved, so an
 external voice edit is visible on reload. The browser also authors `silence`
 clips with stable ids, labels, and integer `start_ms` / `duration_ms` timing.
 Silence is manifest metadata and never creates audio bytes.
+
+SFX and Music clips are created only through the Library placement action.
+First placement validates and copies the source WAV into the project's `media`
+directory, then records the Library item id, name, media role, source duration,
+and nondestructive trim bounds on the clip. Reusing that Library item in the
+same project reuses the one immutable project copy. Removing the original
+Library item does not affect the project; a missing or unreadable project copy
+is returned as `media_error` on every affected clip.
 
 If a bound Character Voice is later deleted, the project remains readable and
 listable. Its affected dialogue is returned as `failed` with `build_error`
@@ -320,8 +336,10 @@ console live in `out/library` on disk and survive restarts.
 
 - `GET /v1/library` — all saved items, newest first.
 - `POST /v1/library` — save one item:
-  `{"kind":"audio"|"image","name":"My take","data_b64":"...","meta":{"voice":"cox"}}`.
-  Bytes are validated against the kind (WAV header / PNG signature); the
+  `{"kind":"audio"|"image","name":"Door slam","data_b64":"...","meta":{"media_role":"sfx"}}`.
+  Audio roles are `sfx`, `music`, or `utility` (the default). Audio records
+  expose canonical `mediaRole` and server-derived `durationMs`; legacy generated
+  music is recognized from its source metadata. Bytes are validated against the kind (complete WAV / PNG signature); the
   artifact cap is 64 MB. Returns `201` with the item record.
 - `GET /v1/library/{id}/artifact` — the raw WAV/PNG.
 - `DELETE /v1/library/{id}` — remove an item (`204`).

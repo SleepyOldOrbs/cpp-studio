@@ -65,6 +65,32 @@ func TestSaveListGetDelete(t *testing.T) {
 	}
 }
 
+func TestAudioRoleAndDurationAreCanonical(t *testing.T) {
+	s := NewStore(t.TempDir())
+	item, err := s.Save("audio", "Door slam", wav.SyntheticTone(16000), map[string]string{"media_role": "sfx"})
+	if err != nil {
+		t.Fatalf("save classified audio: %v", err)
+	}
+	if item.MediaRole != MediaRoleSFX || item.DurationMS != 1000 {
+		t.Fatalf("classified audio = %+v, want sfx / 1000ms", item)
+	}
+	loaded, ok, err := s.Get(item.ID)
+	if err != nil || !ok || loaded.MediaRole != MediaRoleSFX || loaded.DurationMS != 1000 {
+		t.Fatalf("reloaded classified audio = %+v ok=%v err=%v", loaded, ok, err)
+	}
+
+	utility, err := s.Save("audio", "Scratch take", wav.SyntheticTone(8000), nil)
+	if err != nil {
+		t.Fatalf("save utility audio: %v", err)
+	}
+	if utility.MediaRole != MediaRoleUtility || utility.DurationMS != 500 {
+		t.Fatalf("default audio = %+v, want utility / 500ms", utility)
+	}
+	if _, err := s.Save("audio", "Bad role", wav.SyntheticTone(1600), map[string]string{"media_role": "dialogue"}); err == nil {
+		t.Fatal("unsupported audio role was accepted")
+	}
+}
+
 func TestSaveValidation(t *testing.T) {
 	s := NewStore(t.TempDir())
 	cases := []struct {
