@@ -123,6 +123,7 @@ type Service interface {
 	Restart(context.Context, string) (string, int, error)
 	Cancel(string) error
 	Discard(string) error
+	Delete(string) error
 	CanResume(context.Context, string) error
 	Status(string) (Manifest, bool, error)
 	List() ([]Manifest, error)
@@ -1115,6 +1116,30 @@ func (m *Manager) Discard(id string) error {
 		return ErrProductionNotInterrupted
 	}
 	return m.store.DiscardWIP(id)
+}
+
+// Delete removes a finished audiobook from the library. Interrupted
+// productions retain the separate Discard lifecycle so recoverable work is
+// never mistaken for a completed artifact.
+func (m *Manager) Delete(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeID == id {
+		return ErrProductionActive
+	}
+	manifest, ok, err := loadManifest(filepath.Join(m.rootDir, id, manifestFileName))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrProductionNotFound
+	}
+	// Legacy finished audiobooks predate the durable status field; their
+	// presence in the final directory is the completion marker.
+	if manifest.Status != "" && manifest.Status != ProductionStatusComplete {
+		return ErrProductionActive
+	}
+	return m.store.DeleteFinal(id)
 }
 
 func (m *Manager) run(ctx context.Context, id, title string, req Request, identity SynthesisIdentity, resolvedVoice VoiceIdentity, units []narrationUnit, initial *Manifest, release func()) {

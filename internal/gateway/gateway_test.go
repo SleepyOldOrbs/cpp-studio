@@ -202,6 +202,166 @@ func TestSpeechSuccess(t *testing.T) {
 	}
 }
 
+func TestVoiceConversionUsesSourceAndTargetWAVs(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		engine.VoiceConversionEngineID: {Command: "audiocpp-cli"},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	fake := engine.NewFake()
+	fake.Handle(engine.VoiceConversionEngineID, func(spec engine.Spec) (engine.Result, error) {
+		args := spec.BuildArgs(spec.InputPath, "converted.wav")
+		if len(args) != 6 || args[0] != "--audio" || args[2] != "--voice-ref" {
+			t.Fatalf("unexpected conversion args %v", args)
+		}
+		for _, path := range []string{args[1], args[3]} {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read staged WAV %q: %v", path, err)
+			}
+			if err := wav.ValidateBytes(data); err != nil {
+				t.Fatalf("staged input %q is not WAV: %v", path, err)
+			}
+		}
+		return engine.Result{Output: validWAVBytes()}, nil
+	})
+	router.engines = fake
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for field, filename := range map[string]string{"source": "performance.wav", "target": "voice.wav"} {
+		part, err := writer.CreateFormFile(field, filename)
+		if err != nil {
+			t.Fatalf("create %s part: %v", field, err)
+		}
+		if _, err := part.Write(validWAVBytes()); err != nil {
+			t.Fatalf("write %s part: %v", field, err)
+		}
+	}
+	_ = writer.WriteField("model", "chatterbox-q8-0")
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/conversions", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "audio/wav" {
+		t.Fatalf("expected audio/wav, got %q", got)
+	}
+	if err := wav.ValidateBytes(rec.Body.Bytes()); err != nil {
+		t.Fatalf("response is not WAV: %v", err)
+	}
+}
+
+func TestMusicGenerationUsesCuratedACEFieldsAndSourceWAV(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		engine.MusicEngineID: {Command: "audiocpp-cli"},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	fake := engine.NewFake()
+	fake.Handle(engine.MusicEngineID, func(spec engine.Spec) (engine.Result, error) {
+		if spec.InputPath == "" {
+			t.Fatal("expected staged source WAV")
+		}
+		if err := wav.ValidateFile(spec.InputPath); err != nil {
+			t.Fatalf("source is not WAV: %v", err)
+		}
+		args := strings.Join(spec.BuildArgs(spec.InputPath, "song.wav"), " ")
+		for _, want := range []string{"--task-route cover", "--text brighter acoustic cover", "--lyrics new words", "--duration-seconds 30", "--seed 7", "--num-inference-steps 8", "--guidance-scale 1.25", "--audio " + spec.InputPath, "--out song.wav"} {
+			if !strings.Contains(args, want) {
+				t.Fatalf("music args %q missing %q", args, want)
+			}
+		}
+		return engine.Result{Output: validWAVBytes()}, nil
+	})
+	router.engines = fake
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("source", "source.wav")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write(validWAVBytes())
+	for key, value := range map[string]string{
+		"model": "ace-step-turbo-q8-0", "route": "cover", "prompt": "brighter acoustic cover",
+		"lyrics": "new words", "duration": "30", "seed": "7", "steps": "8", "guidance": "1.25",
+	} {
+		_ = writer.WriteField(key, value)
+	}
+	_ = writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/music", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Music-Model") != "ace-step-turbo-q8-0" {
+		t.Fatalf("missing model identity header: %v", rec.Header())
+	}
+	if err := wav.ValidateBytes(rec.Body.Bytes()); err != nil {
+		t.Fatalf("response is not WAV: %v", err)
+	}
+}
+
+func TestMusicGenerationRequiresSourceForEditRoutes(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{engine.MusicEngineID: {Command: "audiocpp-cli"}})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	for _, route := range []string{"lego", "extract", "cover", "cover-nofsq", "repaint"} {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		_ = writer.WriteField("route", route)
+		_ = writer.WriteField("prompt", "test edit")
+		if route == "repaint" {
+			_ = writer.WriteField("repaint_start", "1")
+			_ = writer.WriteField("repaint_end", "2")
+		}
+		_ = writer.Close()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/audio/music", &body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "source") {
+			t.Fatalf("route %s accepted without source: %d %s", route, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestMusicSourceAnalysisReturnsStructuredMetadata(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{engine.MusicEngineID: {Command: "audiocpp-cli"}})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	fake := engine.NewFake()
+	fake.Handle(engine.MusicEngineID, func(spec engine.Spec) (engine.Result, error) {
+		args := strings.Join(spec.BuildArgs(spec.InputPath, ""), " ")
+		if !strings.Contains(args, "--task-route analyze") || !strings.Contains(args, "--seed 1234") {
+			t.Fatalf("unexpected analysis args: %s", args)
+		}
+		return engine.Result{Stdout: []byte("loader ready\ntext_output={\"caption\":\"warm jazz trio\",\"bpm\":92,\"keyscale\":\"C minor\",\"timesignature\":\"4/4\"}\n")}, nil
+	})
+	router.engines = fake
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("source", "source.wav")
+	_, _ = part.Write(validWAVBytes())
+	_ = writer.WriteField("seed", "-1")
+	_ = writer.Close()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/music/analyze", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"caption":"warm jazz trio"`) || !strings.Contains(rec.Body.String(), `"bpm":92`) {
+		t.Fatalf("unexpected analysis response: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestImageGenerationSuccess(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{
 		"sd": helperEngine("image-require-size"),
@@ -637,6 +797,69 @@ func TestStoryCreateStatusArtifactAndList(t *testing.T) {
 	}
 	if len(list.Stories) != 1 || list.Stories[0].ID != create.ID {
 		t.Fatalf("unexpected story list %+v", list)
+	}
+}
+
+func TestCompletedProductionsCanBeDeletedFromLibrary(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech-tone"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	storyCreate := httptest.NewRecorder()
+	router.ServeHTTP(storyCreate, httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(validStoryRequestJSON())))
+	if storyCreate.Code != http.StatusAccepted {
+		t.Fatalf("create story: %d %s", storyCreate.Code, storyCreate.Body.String())
+	}
+	var createdStory story.CreateResponse
+	if err := json.NewDecoder(storyCreate.Body).Decode(&createdStory); err != nil {
+		t.Fatalf("decode story: %v", err)
+	}
+	waitGatewayStoryStatus(t, router, createdStory.ID, story.StatusComplete)
+
+	storyDelete := httptest.NewRecorder()
+	router.ServeHTTP(storyDelete, httptest.NewRequest(http.MethodDelete, "/v1/stories/"+createdStory.ID, nil))
+	if storyDelete.Code != http.StatusNoContent {
+		t.Fatalf("delete story: %d %s", storyDelete.Code, storyDelete.Body.String())
+	}
+	storyStatus := httptest.NewRecorder()
+	router.ServeHTTP(storyStatus, httptest.NewRequest(http.MethodGet, "/v1/stories/"+createdStory.ID, nil))
+	if storyStatus.Code != http.StatusNotFound {
+		t.Fatalf("deleted story status: %d %s", storyStatus.Code, storyStatus.Body.String())
+	}
+
+	bookCreate := postAudiobook(t, router, nil)
+	if bookCreate.Code != http.StatusAccepted {
+		t.Fatalf("create audiobook: %d %s", bookCreate.Code, bookCreate.Body.String())
+	}
+	var createdBook struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(bookCreate.Body).Decode(&createdBook); err != nil {
+		t.Fatalf("decode audiobook: %v", err)
+	}
+	if job := waitGatewayAudiobookJob(t, router, createdBook.ID); job.Status != "complete" {
+		t.Fatalf("audiobook job: %+v", job)
+	}
+
+	var bookDelete *httptest.ResponseRecorder
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		bookDelete = httptest.NewRecorder()
+		router.ServeHTTP(bookDelete, httptest.NewRequest(http.MethodDelete, "/v1/audiobooks/"+createdBook.ID, nil))
+		if bookDelete.Code != http.StatusConflict {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if bookDelete.Code != http.StatusNoContent {
+		t.Fatalf("delete audiobook: %d %s", bookDelete.Code, bookDelete.Body.String())
+	}
+	bookStatus := httptest.NewRecorder()
+	router.ServeHTTP(bookStatus, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/"+createdBook.ID, nil))
+	if bookStatus.Code != http.StatusNotFound {
+		t.Fatalf("deleted audiobook status: %d %s", bookStatus.Code, bookStatus.Body.String())
 	}
 }
 
@@ -1914,6 +2137,81 @@ func TestSpeechBusy(t *testing.T) {
 	first := <-done
 	if first.Code != http.StatusOK {
 		t.Fatalf("expected first request to complete, got %d: %s", first.Code, first.Body.String())
+	}
+}
+
+func TestSpeechRoutesToSelectedModelEngine(t *testing.T) {
+	dir := t.TempDir()
+	defaultRef := filepath.Join(dir, "default.wav")
+	if err := os.WriteFile(defaultRef, validWAVBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	audioCfg := helperEngine("fail")
+	audioCfg.DefaultVoiceRef = defaultRef
+	audioCfg.DefaultVoiceText = "default reference words"
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio":     audioCfg,
+		"voxcpm2":   helperEngine("speech-require-voice"),
+		"omnivoice": helperEngine("speech"),
+	})
+	manager := lifecycle.NewManager(cfg)
+	router := NewRouter(cfg, manager)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"input":"hello","model":"voxcpm2","format":"wav"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected selected model status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if manager.Health().Engines["voxcpm2"].LastSuccessAt == nil {
+		t.Fatalf("expected voxcpm2 to serve the request")
+	}
+	if manager.Health().Engines["audio"].LastSuccessAt != nil {
+		t.Fatalf("default audio engine must not serve a voxcpm2 request")
+	}
+}
+
+func TestSpeechRejectsUnknownModelEngine(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"audio": helperEngine("speech")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"input":"hello","model":"not-a-model","format":"wav"}`))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected unknown model status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVoiceLoopRoutesToSelectedSpeechModel(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"selected model reply"}}]}`))
+	}))
+	defer upstream.Close()
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio":   helperEngine("fail"),
+		"voxcpm2": helperEngine("speech"),
+		"llama":   {Command: "llama-server", HealthURL: upstream.URL + "/health"},
+	})
+	manager := lifecycle.NewManager(cfg)
+	router := NewRouter(cfg, manager)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("message", "hello")
+	_ = writer.WriteField("speech_model", "voxcpm2")
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/voice", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected selected voice-loop model status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if manager.Health().Engines["voxcpm2"].LastSuccessAt == nil {
+		t.Fatalf("expected voxcpm2 to speak the voice-loop reply")
 	}
 }
 

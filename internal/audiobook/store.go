@@ -577,6 +577,24 @@ func (s *Store) DiscardWIP(id string) error {
 	return os.RemoveAll(path)
 }
 
+func (s *Store) DeleteFinal(id string) error {
+	if err := validateBookID(id); err != nil {
+		return err
+	}
+	path := filepath.Join(s.rootDir, id)
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return ErrProductionNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: audiobook path is not a directory", ErrStoreCorrupt)
+	}
+	return os.RemoveAll(path)
+}
+
 // FinalizeWIP writes the validated book beside its durable source/sections and
 // publishes the complete directory atomically.
 func (s *Store) FinalizeWIP(manifest Manifest, audio []byte) error {

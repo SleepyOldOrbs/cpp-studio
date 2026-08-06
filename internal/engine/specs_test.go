@@ -153,6 +153,99 @@ func TestSpeechVoiceSpecForTargetsNamedEngine(t *testing.T) {
 	}
 }
 
+func TestVoiceConversionSpecMapsSourceTargetAndOutput(t *testing.T) {
+	spec := VoiceConversionSpec(`C:\clips\source.wav`, `C:\voices\target.wav`)
+
+	if spec.Engine != VoiceConversionEngineID {
+		t.Fatalf("expected %q engine, got %q", VoiceConversionEngineID, spec.Engine)
+	}
+	if spec.InputPath != `C:\clips\source.wav` {
+		t.Fatalf("unexpected source path %q", spec.InputPath)
+	}
+	if spec.OutputPattern != "cpp-studio-voice-conversion-*.wav" {
+		t.Fatalf("unexpected output pattern %q", spec.OutputPattern)
+	}
+	want := []string{"--audio", `C:\clips\source.wav`, "--voice-ref", `C:\voices\target.wav`, "--out", "converted.wav"}
+	if got := spec.BuildArgs(spec.InputPath, "converted.wav"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("conversion args = %v, want %v", got, want)
+	}
+}
+
+func TestMusicGenerationSpecMapsCuratedACEControls(t *testing.T) {
+	request := MusicGenerationRequest{
+		Route:           "repaint",
+		Prompt:          "replace the chorus with bright synth pop",
+		Lyrics:          "We rise into the light",
+		DurationSeconds: 30,
+		Seed:            42,
+		Steps:           8,
+		GuidanceScale:   1.5,
+		TrackName:       "chorus",
+		RepaintStart:    8,
+		RepaintEnd:      16,
+		RepaintMode:     "balanced",
+		RepaintStrength: 0.5,
+	}
+	spec := MusicGenerationSpec(`C:\music\source.wav`, request)
+
+	if spec.Engine != MusicEngineID {
+		t.Fatalf("expected %q engine, got %q", MusicEngineID, spec.Engine)
+	}
+	if spec.InputPath != `C:\music\source.wav` {
+		t.Fatalf("unexpected source path %q", spec.InputPath)
+	}
+	if spec.OutputPattern != "cpp-studio-music-*.wav" {
+		t.Fatalf("unexpected output pattern %q", spec.OutputPattern)
+	}
+	want := []string{
+		"--task-route", "repaint",
+		"--text", "replace the chorus with bright synth pop",
+		"--lyrics", "We rise into the light",
+		"--duration-seconds", "30",
+		"--seed", "42",
+		"--num-inference-steps", "8",
+		"--guidance-scale", "1.5",
+		"--track-name", "chorus",
+		"--repaint-start", "8",
+		"--repaint-end", "16",
+		"--repaint-mode", "balanced",
+		"--repaint-strength", "0.5",
+		"--audio", `C:\music\source.wav`,
+		"--out", "song.wav",
+	}
+	if got := spec.BuildArgs(spec.InputPath, "song.wav"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("music args = %v, want %v", got, want)
+	}
+}
+
+func TestMusicGenerationSpecOmitsRandomSeedSentinel(t *testing.T) {
+	request := MusicGenerationRequest{
+		Route:           "text2music",
+		Prompt:          "classic opera",
+		DurationSeconds: 30,
+		Seed:            -1,
+		Steps:           8,
+		GuidanceScale:   1,
+	}
+	args := MusicGenerationSpec("", request).BuildArgs("", "music.wav")
+	for i, arg := range args {
+		if arg == "--seed" || (i > 0 && args[i-1] == "--seed" && arg == "-1") {
+			t.Fatalf("random seed sentinel leaked into audio.cpp CLI args: %v", args)
+		}
+	}
+}
+
+func TestMusicAnalysisSpecUsesDeterministicACEAnalyzeRoute(t *testing.T) {
+	spec := MusicAnalysisSpec(`C:\music\source.wav`, 1234)
+	want := []string{"--task-route", "analyze", "--text", "analyze", "--seed", "1234", "--audio", `C:\music\source.wav`}
+	if spec.Engine != MusicEngineID || spec.OutputPattern != "" {
+		t.Fatalf("unexpected analysis spec: %+v", spec)
+	}
+	if got := spec.BuildArgs(spec.InputPath, ""); !reflect.DeepEqual(got, want) {
+		t.Fatalf("analysis args = %v, want %v", got, want)
+	}
+}
+
 func TestResolveDramaBoxSynthesisOptionsFillsDefaultsAndAllowsCuratedOverrides(t *testing.T) {
 	got, err := ResolveSynthesisOptions(DramaBoxSpeechEngineID, `{"guidance_scale":3.25,"cross_fade_duration_sec":0}`)
 	if err != nil {

@@ -412,6 +412,26 @@ func (m *Manager) Discard(id string) error {
 	return nil
 }
 
+// Delete removes a finished story from the library. Interrupted work remains
+// behind Discard so its recoverable takes cannot be removed by the wrong action.
+func (m *Manager) Delete(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeID == id {
+		return NewError(CodeCannotCancel, "story is being produced; cancel it instead")
+	}
+	if _, ok, err := m.store.Load(id); err != nil {
+		return NewError(CodeStoreFailure, err.Error())
+	} else if !ok {
+		return NewError(CodeNotFound, "story not found")
+	}
+	if err := m.store.Delete(id); err != nil {
+		return NewError(CodeStoreFailure, err.Error())
+	}
+	delete(m.jobs, id)
+	return nil
+}
+
 // ArtifactPath resolves a whitelisted artifact of a stored story: the
 // current mix, one take, or one render revision.
 func (m *Manager) ArtifactPath(id string, segments ...string) (string, error) {

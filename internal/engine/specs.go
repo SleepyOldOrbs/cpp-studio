@@ -21,11 +21,17 @@ const (
 	// DramaBoxSpeechEngineID is the audio.cpp expressive, text-only-capable
 	// speech lane used by audiobooks.
 	DramaBoxSpeechEngineID = "dramabox"
+	// VoiceConversionEngineID is the audio.cpp source-to-target voice lane.
+	VoiceConversionEngineID = "voiceconvert"
+	// MusicEngineID is the audio.cpp ACE-Step music generation/edit lane.
+	MusicEngineID = "music"
 
-	DefaultTranscriptionTimeout = 120 * time.Second
-	DefaultSpeechTimeout        = 180 * time.Second
-	DefaultImageTimeout         = 300 * time.Second
-	DefaultDiarizationTimeout   = 300 * time.Second
+	DefaultTranscriptionTimeout   = 120 * time.Second
+	DefaultSpeechTimeout          = 180 * time.Second
+	DefaultVoiceConversionTimeout = 900 * time.Second
+	DefaultMusicTimeout           = 1800 * time.Second
+	DefaultImageTimeout           = 300 * time.Second
+	DefaultDiarizationTimeout     = 300 * time.Second
 	// DefaultImportTimeout is generous because it covers a network download
 	// of a whole episode, not a local inference run.
 	DefaultImportTimeout = 900 * time.Second
@@ -64,6 +70,119 @@ func SpeechEngineAllowsTextOnly(engineName string) bool {
 type Voice struct {
 	RefWAVPath string
 	RefText    string
+}
+
+// VoiceConversionSpec invokes audio.cpp's offline voice-conversion task.
+// The gateway owns and validates the two WAV paths; the engine module owns
+// their CLI mapping and the converted-output contract.
+func VoiceConversionSpec(sourcePath string, targetVoicePath string) Spec {
+	return Spec{
+		Engine:        VoiceConversionEngineID,
+		Label:         "audio.cpp voice conversion command",
+		Timeout:       DefaultVoiceConversionTimeout,
+		InputPath:     sourcePath,
+		OutputPattern: "cpp-studio-voice-conversion-*.wav",
+		OutputLabel:   "converted voice wav",
+		BuildArgs: func(inPath, outPath string) []string {
+			return []string{"--audio", inPath, "--voice-ref", targetVoicePath, "--out", outPath}
+		},
+		ValidateOutput: func(path string) error {
+			if err := wav.ValidateFile(path); err != nil {
+				return fmt.Errorf("produced invalid WAV: %v", err)
+			}
+			if err := validateFileSize(path, MaxDecodedAudioBytes, "converted voice wav"); err != nil {
+				return fmt.Errorf("produced oversized WAV: %v", err)
+			}
+			return nil
+		},
+	}
+}
+
+// MusicGenerationRequest is the bounded ACE-Step control surface exposed by
+// CPP Studio. It intentionally does not accept arbitrary native request
+// options: paths and flags remain owned by the gateway and this package.
+type MusicGenerationRequest struct {
+	Route           string
+	Prompt          string
+	Lyrics          string
+	DurationSeconds float64
+	Seed            int
+	Steps           int
+	GuidanceScale   float64
+	TrackName       string
+	RepaintStart    float64
+	RepaintEnd      float64
+	RepaintMode     string
+	RepaintStrength float64
+}
+
+// MusicGenerationSpec invokes audio.cpp's offline ACE-Step generation task.
+// sourcePath is blank for text-to-music and may be present for complete; the
+// gateway enforces which edit routes require source audio.
+func MusicGenerationSpec(sourcePath string, request MusicGenerationRequest) Spec {
+	return Spec{
+		Engine:        MusicEngineID,
+		Label:         "audio.cpp music generation command",
+		Timeout:       DefaultMusicTimeout,
+		InputPath:     sourcePath,
+		OutputPattern: "cpp-studio-music-*.wav",
+		OutputLabel:   "generated music wav",
+		BuildArgs: func(inPath, outPath string) []string {
+			args := []string{
+				"--task-route", request.Route,
+				"--text", request.Prompt,
+			}
+			if request.Lyrics != "" {
+				args = append(args, "--lyrics", request.Lyrics)
+			}
+			args = append(args, "--duration-seconds", strconv.FormatFloat(request.DurationSeconds, 'f', -1, 64))
+			if request.Seed >= 0 {
+				args = append(args, "--seed", strconv.Itoa(request.Seed))
+			}
+			args = append(args,
+				"--num-inference-steps", strconv.Itoa(request.Steps),
+				"--guidance-scale", strconv.FormatFloat(request.GuidanceScale, 'f', -1, 64),
+			)
+			if request.TrackName != "" {
+				args = append(args, "--track-name", request.TrackName)
+			}
+			if request.Route == "repaint" {
+				args = append(args,
+					"--repaint-start", strconv.FormatFloat(request.RepaintStart, 'f', -1, 64),
+					"--repaint-end", strconv.FormatFloat(request.RepaintEnd, 'f', -1, 64),
+					"--repaint-mode", request.RepaintMode,
+					"--repaint-strength", strconv.FormatFloat(request.RepaintStrength, 'f', -1, 64),
+				)
+			}
+			if inPath != "" {
+				args = append(args, "--audio", inPath)
+			}
+			return append(args, "--out", outPath)
+		},
+		ValidateOutput: func(path string) error {
+			if err := wav.ValidateFile(path); err != nil {
+				return fmt.Errorf("produced invalid WAV: %v", err)
+			}
+			if err := validateFileSize(path, MaxDecodedAudioBytes, "generated music wav"); err != nil {
+				return fmt.Errorf("produced oversized WAV: %v", err)
+			}
+			return nil
+		},
+	}
+}
+
+// MusicAnalysisSpec asks ACE-Step's planner to infer a source caption and
+// musical metadata. The CLI writes the JSON payload as text_output on stdout.
+func MusicAnalysisSpec(sourcePath string, seed int) Spec {
+	return Spec{
+		Engine:    MusicEngineID,
+		Label:     "audio.cpp music source analysis command",
+		Timeout:   DefaultMusicTimeout,
+		InputPath: sourcePath,
+		BuildArgs: func(inPath, _ string) []string {
+			return []string{"--task-route", "analyze", "--text", "analyze", "--seed", strconv.Itoa(seed), "--audio", inPath}
+		},
+	}
 }
 
 // SpeechSpec invokes the "audio" engine: --text <input> --out <wav path>.

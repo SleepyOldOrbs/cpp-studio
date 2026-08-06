@@ -106,6 +106,39 @@ one mutable file, which is what makes an edit visible. Because `Status`
 prefers a tracked in-memory job over the store, every take-room mutation must
 republish the manifest that job is serving.
 
+## Story Builder Project
+
+A separately saved, editable production made from ordered Timeline Tracks and
+Timeline Clips. It does not replace the Story pipeline; a retained Story may be
+opened into a Story Builder Project without changing the original.
+
+## Actor Voice
+
+A reusable performer identity created from a recorded or designed voice. An
+Actor Voice is not a character and may parent multiple Character Voices.
+
+## Character Voice
+
+A named character performance derived from one Actor Voice, including the
+direction that distinguishes that character's delivery. Dialogue Tracks select
+a Character Voice rather than using an Actor Voice directly.
+
+## Timeline Track
+
+An ordered lane in a Story Builder Project, typed as Dialogue, SFX, or Music.
+A Dialogue Track belongs to one Character Voice.
+
+## Timeline Clip
+
+A timed piece of dialogue, SFX, music, or silence placed on a Timeline Track.
+Clips may overlap across tracks but not within the same track.
+
+## Library
+
+The studio-wide browse, search, and launch surface over durable work. Voices,
+Stories, Audiobooks, Story Builder Projects, reusable audio, and exports remain
+owned by their purpose-built stores rather than being copied into one store.
+
 ## Audiobook production
 
 An Audiobook production is a long-running narration of one immutable source

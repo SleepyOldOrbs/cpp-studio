@@ -14,12 +14,12 @@
       "managerScript": "${root}\\..\\audio.cpp\\tools\\model_manager_v2.py",
       "audioCli": "${root}\\..\\audio.cpp\\build\\windows-cuda-release\\bin\\audiocpp_cli.exe",
       "workingDir": "${root}\\..\\audio.cpp",
-      "allowedPackages": ["dramabox_q8_0"],
+      "allowedPackages": ["dramabox_q8_0", "chatterbox_q8_0", "ace_step_turbo_q8_0"],
       "timeoutSeconds": 10
     }
   },
   "profiles": {
-    "everything": ["llama", "whisper", "audio", "sd"],
+    "everything": ["llama", "whisper", "audio", "voiceconvert", "music", "sd"],
     "chat": ["llama", "whisper", "audio"],
     "art": ["sd"]
   },
@@ -69,6 +69,31 @@
       ],
       "mode": "subprocess",
       "requestTimeoutSeconds": 180,
+      "gpu": true
+    },
+    "voiceconvert": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "vc",
+        "--family", "chatterbox",
+        "--model", "${root}\\models\\speech\\conversion\\Chatterbox-GGUF\\chatterbox-q8_0.gguf",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 900,
+      "gpu": true
+    },
+    "music": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "gen",
+        "--family", "ace_step",
+        "--model", "${root}\\models\\music\\generation\\ACE-Step1.5-GGUF\\turbo\\ace-step-1.5-turbo-q8_0.gguf",
+        "--backend", "cuda",
+        "--session-option", "ace_step.mem_saver=true"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 1800,
       "gpu": true
     },
     "diarize": {
