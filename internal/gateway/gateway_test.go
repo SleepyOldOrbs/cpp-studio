@@ -729,6 +729,12 @@ func TestStoryBuilderBuildsDialogueThroughSharedAudioReservationAndAuditionsRead
 	if direct.Code != http.StatusTooManyRequests {
 		t.Fatalf("direct speech while build owns audio = %d, want 429: %s", direct.Code, direct.Body.String())
 	}
+	preview := httptest.NewRecorder()
+	r.ServeHTTP(preview, httptest.NewRequest(http.MethodPost,
+		"/v1/character-voices/"+character.ID+"/preview", strings.NewReader(`{"sample_text":"Do not race the build."}`)))
+	if preview.Code != http.StatusTooManyRequests {
+		t.Fatalf("Character Voice preview while build owns OmniVoice = %d, want 429: %s", preview.Code, preview.Body.String())
+	}
 
 	close(continueBuild)
 	status := waitGatewayStoryBuilderBuild(t, r, project.ID, started.ID, storybuilder.DialogueBuildComplete)

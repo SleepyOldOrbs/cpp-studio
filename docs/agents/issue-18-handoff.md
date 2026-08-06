@@ -60,9 +60,14 @@ branch `codex/story-builder-build-dialogue`.
   directed OmniVoice request while retaining the shared `audio` reservation.
 - The corrected directed fixture seam, focused suites, broad repository gates,
   and a fresh real-browser journey on port 8900 are green.
+- Follow-up review found that holding only `audio` while calling reserved
+  OmniVoice could race Character Voice preview. The Gateway now holds both
+  reservations for the build; its HTTP test proves both direct speech and
+  Character Voice preview return busy. Full tests, vet, and a fresh browser
+  journey on port 8901 are green.
 
 ## Exact next step
 
-Run final full tests and static analysis, commit the review fixes, and ask both
-review axes to confirm their findings are resolved. Then update issue #18 with
-the local evidence. Do not push or open a PR without explicit direction.
+Commit the dual-reservation review fix and ask both review axes to confirm the
+final committed diff has no actionable findings. Then update issue #18 with the
+local evidence. Do not push or open a PR without explicit direction.

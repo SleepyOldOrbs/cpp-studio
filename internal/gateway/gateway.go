@@ -4338,7 +4338,7 @@ func writeStoryBuilderProjectError(w http.ResponseWriter, err error) {
 func (r *router) newStoryBuilderDialogueBuildManager() *storybuilder.DialogueBuildManager {
 	return storybuilder.NewDialogueBuildManager(storybuilder.DialogueBuildManagerOptions{
 		Store:         r.storyBuilderProjects,
-		ReserveEngine: r.reserveEngine,
+		ReserveEngine: r.reserveStoryBuilderDialogueEngines,
 		Synthesize: func(ctx context.Context, input storybuilder.DialogueSynthesisInput) ([]byte, error) {
 			actorVoice, err := r.resolveVoice(input.ActorVoiceID)
 			if err != nil {
@@ -4349,6 +4349,24 @@ func (r *router) newStoryBuilderDialogueBuildManager() *storybuilder.DialogueBui
 			}, actorVoice, true)
 		},
 	})
+}
+
+// reserveStoryBuilderDialogueEngines keeps the build behind the studio-wide
+// audio gate while also owning the directed OmniVoice lane it actually invokes.
+func (r *router) reserveStoryBuilderDialogueEngines(ctx context.Context, _ string) (func(), bool) {
+	releaseAudio, ok := r.reserveEngine(ctx, engine.DefaultSpeechEngineID)
+	if !ok {
+		return nil, false
+	}
+	releaseOmniVoice, ok := r.reserveEngine(ctx, "omnivoice")
+	if !ok {
+		releaseAudio()
+		return nil, false
+	}
+	return func() {
+		releaseOmniVoice()
+		releaseAudio()
+	}, true
 }
 
 func (r *router) resolveStoryBuilderCharacterVoice(id string) (storybuilder.VoiceIdentity, bool, error) {

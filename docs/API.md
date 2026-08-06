@@ -222,8 +222,9 @@ clips with stable ids, labels, and integer `start_ms` / `duration_ms` timing.
 Silence is manifest metadata and never creates audio bytes.
 
 Dialogue builds process stale and failed clips chronologically and skip ready
-clips. They reserve the shared `audio` engine once for the entire build and use
-the current Character Voice direction for directed OmniVoice synthesis. Every
+clips. They reserve both the shared `audio` gate and the directed `omnivoice`
+engine once for the entire build, then use the current Character Voice direction
+for synthesis. Every
 successful synthesis is validated and copied to the project's `takes`
 directory, then attached to its clip in an atomic manifest save before the next
 clip starts. On failure the active clip becomes failed, later clips remain
