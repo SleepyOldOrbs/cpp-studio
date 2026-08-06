@@ -265,6 +265,8 @@ stitched WAV. Runs as an `audiobook` job on the jobs surface.
   optional `direction`, status, sections, and verification; older finished manifests
   without those fields remain readable.
 - `GET /v1/audiobooks/{id}` — one finished or hash-valid durable production.
+- `DELETE /v1/audiobooks/{id}` — explicitly remove one inactive, finished
+  audiobook from the Library. Interrupted work continues to use `discard`.
 - `POST /v1/audiobooks/{id}/resume` — continue the same interrupted id only when
   its resolved synthesis identity still matches.
 - `POST /v1/audiobooks/{id}/restart` — fork the stored hash-valid source into a new
@@ -306,6 +308,11 @@ console live in `out/library` on disk and survive restarts.
   artifact cap is 64 MB. Returns `201` with the item record.
 - `GET /v1/library/{id}/artifact` — the raw WAV/PNG.
 - `DELETE /v1/library/{id}` — remove an item (`204`).
+
+Cloned voices use `DELETE /v1/voices/{id}` (protected voices remain
+undeletable). Finished stories and audiobooks use `DELETE /v1/stories/{id}`
+and `DELETE /v1/audiobooks/{id}`; interrupted productions retain their
+validated `POST .../discard` lifecycle action.
 
 ## GET /v1/gpu
 

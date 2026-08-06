@@ -1491,20 +1491,29 @@ func (r *router) handleAudiobook(w http.ResponseWriter, req *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(req.URL.Path, "/v1/audiobooks/"), "/")
 	parts := strings.Split(rest, "/")
 	if len(parts) == 1 && parts[0] != "" {
-		if !requireMethod(w, req, http.MethodGet) {
-			return
+		switch req.Method {
+		case http.MethodGet:
+			manifest, ok, err := r.audiobooks.Status(parts[0])
+			if err != nil {
+				writeAudiobookError(w, err)
+				return
+			}
+			if !ok {
+				writeJSONError(w, http.StatusNotFound, "audiobook production not found")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(manifest)
+		case http.MethodDelete:
+			if err := r.audiobooks.Delete(parts[0]); err != nil {
+				writeAudiobookError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.Header().Set("Allow", "GET, DELETE")
+			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
-		manifest, ok, err := r.audiobooks.Status(parts[0])
-		if err != nil {
-			writeAudiobookError(w, err)
-			return
-		}
-		if !ok {
-			writeJSONError(w, http.StatusNotFound, "audiobook production not found")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(manifest)
 		return
 	}
 	if len(parts) == 2 && parts[0] != "" && parts[1] == "resume" {
@@ -3868,20 +3877,29 @@ func (r *router) handleStory(w http.ResponseWriter, req *http.Request) {
 	tail := strings.TrimPrefix(req.URL.Path, "/v1/stories/")
 	parts := strings.Split(tail, "/")
 	if len(parts) == 1 && parts[0] != "" {
-		if !requireMethod(w, req, http.MethodGet) {
-			return
+		switch req.Method {
+		case http.MethodGet:
+			status, ok, err := r.stories.Status(parts[0])
+			if err != nil {
+				writeStoryErrorFromError(w, err)
+				return
+			}
+			if !ok {
+				writeStoryError(w, http.StatusNotFound, story.CodeNotFound, "story not found")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(status)
+		case http.MethodDelete:
+			if err := r.stories.Delete(parts[0]); err != nil {
+				writeStoryErrorFromError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.Header().Set("Allow", "GET, DELETE")
+			writeStoryError(w, http.StatusMethodNotAllowed, story.CodeInvalidRequest, "method not allowed")
 		}
-		status, ok, err := r.stories.Status(parts[0])
-		if err != nil {
-			writeStoryErrorFromError(w, err)
-			return
-		}
-		if !ok {
-			writeStoryError(w, http.StatusNotFound, story.CodeNotFound, "story not found")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(status)
 		return
 	}
 	if len(parts) == 2 && parts[0] != "" && parts[1] == "cancel" {

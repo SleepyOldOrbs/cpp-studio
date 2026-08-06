@@ -775,6 +775,69 @@ func TestStoryCreateStatusArtifactAndList(t *testing.T) {
 	}
 }
 
+func TestCompletedProductionsCanBeDeletedFromLibrary(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{
+		"audio": helperEngine("speech-tone"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	storyCreate := httptest.NewRecorder()
+	router.ServeHTTP(storyCreate, httptest.NewRequest(http.MethodPost, "/v1/stories", strings.NewReader(validStoryRequestJSON())))
+	if storyCreate.Code != http.StatusAccepted {
+		t.Fatalf("create story: %d %s", storyCreate.Code, storyCreate.Body.String())
+	}
+	var createdStory story.CreateResponse
+	if err := json.NewDecoder(storyCreate.Body).Decode(&createdStory); err != nil {
+		t.Fatalf("decode story: %v", err)
+	}
+	waitGatewayStoryStatus(t, router, createdStory.ID, story.StatusComplete)
+
+	storyDelete := httptest.NewRecorder()
+	router.ServeHTTP(storyDelete, httptest.NewRequest(http.MethodDelete, "/v1/stories/"+createdStory.ID, nil))
+	if storyDelete.Code != http.StatusNoContent {
+		t.Fatalf("delete story: %d %s", storyDelete.Code, storyDelete.Body.String())
+	}
+	storyStatus := httptest.NewRecorder()
+	router.ServeHTTP(storyStatus, httptest.NewRequest(http.MethodGet, "/v1/stories/"+createdStory.ID, nil))
+	if storyStatus.Code != http.StatusNotFound {
+		t.Fatalf("deleted story status: %d %s", storyStatus.Code, storyStatus.Body.String())
+	}
+
+	bookCreate := postAudiobook(t, router, nil)
+	if bookCreate.Code != http.StatusAccepted {
+		t.Fatalf("create audiobook: %d %s", bookCreate.Code, bookCreate.Body.String())
+	}
+	var createdBook struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(bookCreate.Body).Decode(&createdBook); err != nil {
+		t.Fatalf("decode audiobook: %v", err)
+	}
+	if job := waitGatewayAudiobookJob(t, router, createdBook.ID); job.Status != "complete" {
+		t.Fatalf("audiobook job: %+v", job)
+	}
+
+	var bookDelete *httptest.ResponseRecorder
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		bookDelete = httptest.NewRecorder()
+		router.ServeHTTP(bookDelete, httptest.NewRequest(http.MethodDelete, "/v1/audiobooks/"+createdBook.ID, nil))
+		if bookDelete.Code != http.StatusConflict {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if bookDelete.Code != http.StatusNoContent {
+		t.Fatalf("delete audiobook: %d %s", bookDelete.Code, bookDelete.Body.String())
+	}
+	bookStatus := httptest.NewRecorder()
+	router.ServeHTTP(bookStatus, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/"+createdBook.ID, nil))
+	if bookStatus.Code != http.StatusNotFound {
+		t.Fatalf("deleted audiobook status: %d %s", bookStatus.Code, bookStatus.Body.String())
+	}
+}
+
 func TestStoryScriptedByLlamaWithCastVoices(t *testing.T) {
 	t.Chdir(t.TempDir())
 	scriptJSON := `{"title": "The Llama Tale", "script": [
