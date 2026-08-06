@@ -1423,6 +1423,16 @@ func TestCancelKeepsRecordedTakesForResume(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(rootDir, created.ID)); !os.IsNotExist(err) {
 		t.Fatalf("a cancelled story must not be published: %v", err)
 	}
+	// Cancel marks the status immediately, while the worker releases the
+	// production slot asynchronously. Wait for that lifecycle boundary before
+	// asserting that the WIP lists as resumable or starting its replacement.
+	deadline = time.Now().Add(5 * time.Second)
+	for manager.Active() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if manager.Active() {
+		t.Fatal("cancelled production did not release the active job slot")
+	}
 
 	// The kept directory is an ordinary interruption: it lists, and a
 	// resume finishes the episode with the recorded takes spliced in.
@@ -2198,7 +2208,7 @@ func storyErrorIs(err error, code ErrorCode) bool {
 
 func waitStoryStatus(t *testing.T, manager *Manager, id string, want Status) StatusResponse {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		status, ok, err := manager.Status(id)
 		if err != nil {

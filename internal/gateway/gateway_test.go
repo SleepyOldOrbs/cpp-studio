@@ -28,9 +28,116 @@ import (
 	"cpp-studio/internal/lifecycle"
 	"cpp-studio/internal/models"
 	"cpp-studio/internal/story"
+	"cpp-studio/internal/storybuilder"
 	"cpp-studio/internal/voice"
 	"cpp-studio/internal/wav"
 )
+
+func TestStoryBuilderProjectLifecycleThroughGateway(t *testing.T) {
+	root := t.TempDir()
+	newRouter := func() *router {
+		cfg := testConfig(nil)
+		r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+		r.storyBuilderProjects = storybuilder.NewStore(root)
+		return r
+	}
+	r := newRouter()
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects", strings.NewReader(`{"name":"The Lantern at Crow Point"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var created storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created project: %v", err)
+	}
+	if created.ID == "" || created.Name != "The Lantern at Crow Point" || created.Revision != 1 {
+		t.Fatalf("unexpected created project: %+v", created)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Projects []storybuilder.Project `json:"projects"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil || len(list.Projects) != 1 || list.Projects[0].ID != created.ID {
+		t.Fatalf("unexpected project list: %+v, err %v", list, err)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(`{"name":"Lantern final edit","revision":1}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rename status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var renamed storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&renamed); err != nil || renamed.Name != "Lantern final edit" || renamed.Revision != 2 {
+		t.Fatalf("unexpected renamed project: %+v, err %v", renamed, err)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(`{"name":"stale overwrite","revision":1}`)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale save status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+
+	// Rebuilding the router simulates a Gateway restart while retaining the
+	// same purpose-built Story Builder Project store.
+	r = newRouter()
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+created.ID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reopen status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var reopened storybuilder.Project
+	if err := json.NewDecoder(rec.Body).Decode(&reopened); err != nil || reopened.Name != renamed.Name || reopened.Revision != renamed.Revision ||
+		!reopened.CreatedAt.Equal(renamed.CreatedAt) || !reopened.UpdatedAt.Equal(renamed.UpdatedAt) {
+		t.Fatalf("unexpected reopened project: %+v, err %v", reopened, err)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/story-builder-projects/"+created.ID, nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+created.ID, nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("deleted project status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStoryBuilderProjectGatewayRejectsInvalidRequests(t *testing.T) {
+	cfg := testConfig(nil)
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	r.storyBuilderProjects = storybuilder.NewStore(t.TempDir())
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		status int
+	}{
+		{name: "empty name", method: http.MethodPost, path: "/v1/story-builder-projects", body: `{"name":" "}`, status: http.StatusBadRequest},
+		{name: "unknown create field", method: http.MethodPost, path: "/v1/story-builder-projects", body: `{"name":"x","path":"C:\\\\outside"}`, status: http.StatusBadRequest},
+		{name: "collection method", method: http.MethodDelete, path: "/v1/story-builder-projects", status: http.StatusMethodNotAllowed},
+		{name: "traversal id", method: http.MethodGet, path: "/v1/story-builder-projects/bad..id", status: http.StatusNotFound},
+		{name: "nested path", method: http.MethodGet, path: "/v1/story-builder-projects/project/manifest", status: http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body)))
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.status, rec.Body.String())
+			}
+		})
+	}
+}
 
 func TestHealth(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{
