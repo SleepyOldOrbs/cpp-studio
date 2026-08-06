@@ -94,6 +94,10 @@ const (
 	defaultChatTimeout          = 120 * time.Second
 	maxJSONBodyBytes            = 64 * 1024
 	maxTranscriptionUploadBytes = 32 * 1024 * 1024
+	maxVoiceConversionWAVBytes  = 64 * 1024 * 1024
+	maxVoiceConversionBodyBytes = 2*maxVoiceConversionWAVBytes + 1024*1024
+	maxMusicSourceWAVBytes      = 192 * 1024 * 1024
+	maxMusicBodyBytes           = maxMusicSourceWAVBytes + 1024*1024
 	maxChatReplyBytes           = 1024 * 1024
 )
 
@@ -212,6 +216,9 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/story-builder-projects", r.handleStoryBuilderProjects)
 	mux.HandleFunc("/v1/story-builder-projects/", r.handleStoryBuilderProject)
 	mux.HandleFunc("/v1/audio/speech", r.handleSpeech)
+	mux.HandleFunc("/v1/audio/conversions", r.handleVoiceConversion)
+	mux.HandleFunc("/v1/audio/music", r.handleMusicGeneration)
+	mux.HandleFunc("/v1/audio/music/analyze", r.handleMusicAnalysis)
 	mux.HandleFunc("/v1/audio/transcriptions", r.handleTranscriptions)
 	mux.HandleFunc("/v1/audio/diarization", r.handleDiarization)
 	mux.HandleFunc("/v1/audio/import", r.handleAudioImport)
@@ -1704,8 +1711,13 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	speechEngine, err := resolveSpeechModelEngine(body.Model)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	audio, err := r.speak(req.Context(), body.Input, clonedVoice, false)
+	audio, err := r.speakWithEngine(req.Context(), speechEngine, body.Input, clonedVoice, false)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -1714,6 +1726,362 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "audio/wav")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(padSpeech(audio))
+}
+
+// handleVoiceConversion changes the speaker identity of an existing
+// performance while preserving its spoken content and timing. The source and
+// target references are server-validated WAVs; target_voice may name a saved
+// studio voice instead of uploading the same reference again.
+func (r *router) handleVoiceConversion(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	if _, ok := r.engine(engine.VoiceConversionEngineID); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, `engine "voiceconvert" is not configured`)
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxVoiceConversionBodyBytes)
+
+	model := strings.TrimSpace(req.FormValue("model"))
+	if model != "" && model != "chatterbox" && model != "chatterbox-q8-0" {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("voice conversion model %q is not supported", model))
+		return
+	}
+
+	sourceUpload, sourceHeader, err := req.FormFile("source")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "multipart field source is required")
+		return
+	}
+	defer sourceUpload.Close()
+	sourcePath, cleanupSource, err := spoolUpload(sourceUpload, filepath.Ext(sourceHeader.Filename))
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer cleanupSource()
+	if err := validateUploadedWAV(sourcePath, "source", maxVoiceConversionWAVBytes); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	targetPath := ""
+	cleanupTarget := func() {}
+	if targetVoiceID := strings.TrimSpace(req.FormValue("target_voice")); targetVoiceID != "" {
+		voiceRef, err := r.resolveVoice(targetVoiceID)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if voiceRef != nil {
+			targetPath = voiceRef.RefWAVPath
+		}
+	}
+	if targetPath == "" {
+		targetUpload, targetHeader, err := req.FormFile("target")
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "multipart field target or target_voice is required")
+			return
+		}
+		defer targetUpload.Close()
+		targetPath, cleanupTarget, err = spoolUpload(targetUpload, filepath.Ext(targetHeader.Filename))
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	defer cleanupTarget()
+	if err := validateUploadedWAV(targetPath, "target", maxVoiceConversionWAVBytes); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	result, err := r.engines.Run(req.Context(), engine.VoiceConversionSpec(sourcePath, targetPath))
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("X-Conversion-Model", "chatterbox-q8-0")
+	w.Header().Set("Access-Control-Expose-Headers", "X-Conversion-Model")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(result.Output)
+}
+
+func validateUploadedWAV(path string, label string, maxBytes int64) error {
+	if err := wav.ValidateFile(path); err != nil {
+		return fmt.Errorf("%s must be a valid WAV: %v", label, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat %s WAV: %v", label, err)
+	}
+	if info.Size() > maxBytes {
+		return fmt.Errorf("%s WAV is %d bytes, max is %d bytes", label, info.Size(), maxBytes)
+	}
+	return nil
+}
+
+var musicRoutes = map[string]bool{
+	"text2music":  true,
+	"complete":    true,
+	"lego":        true,
+	"extract":     true,
+	"cover":       true,
+	"cover-nofsq": true,
+	"repaint":     true,
+}
+
+var musicRoutesRequiringSource = map[string]bool{
+	"lego": true, "extract": true, "cover": true, "cover-nofsq": true, "repaint": true,
+}
+
+func parseMusicFloat(req *http.Request, name string, fallback float64) (float64, error) {
+	raw := strings.TrimSpace(req.FormValue(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, fmt.Errorf("%s must be a number", name)
+	}
+	return value, nil
+}
+
+func parseMusicInt(req *http.Request, name string, fallback int) (int, error) {
+	raw := strings.TrimSpace(req.FormValue(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", name)
+	}
+	return value, nil
+}
+
+func parseMusicGenerationRequest(req *http.Request) (engine.MusicGenerationRequest, error) {
+	request := engine.MusicGenerationRequest{
+		Route:       strings.TrimSpace(req.FormValue("route")),
+		Prompt:      strings.TrimSpace(req.FormValue("prompt")),
+		Lyrics:      strings.TrimSpace(req.FormValue("lyrics")),
+		TrackName:   strings.TrimSpace(req.FormValue("track_name")),
+		RepaintMode: strings.TrimSpace(req.FormValue("repaint_mode")),
+	}
+	if request.Route == "" {
+		request.Route = "text2music"
+	}
+	if !musicRoutes[request.Route] {
+		return request, fmt.Errorf("music route %q is not supported", request.Route)
+	}
+	if request.Prompt == "" {
+		return request, errors.New("prompt is required")
+	}
+	if len(request.Prompt) > 4000 {
+		return request, errors.New("prompt is too long (max 4000 bytes)")
+	}
+	if len(request.Lyrics) > 32768 {
+		return request, errors.New("lyrics are too long (max 32768 bytes)")
+	}
+	if len(request.TrackName) > 120 {
+		return request, errors.New("track_name is too long (max 120 bytes)")
+	}
+	if request.TrackName != "" && request.Route != "lego" && request.Route != "extract" {
+		return request, errors.New("track_name is only supported for lego and extract routes")
+	}
+	if request.Route != "repaint" && (strings.TrimSpace(req.FormValue("repaint_start")) != "" ||
+		strings.TrimSpace(req.FormValue("repaint_end")) != "" || request.RepaintMode != "" ||
+		strings.TrimSpace(req.FormValue("repaint_strength")) != "") {
+		return request, errors.New("repaint fields are only supported for the repaint route")
+	}
+	var err error
+	if request.DurationSeconds, err = parseMusicFloat(req, "duration", 30); err != nil || request.DurationSeconds < 5 || request.DurationSeconds > 240 {
+		if err != nil {
+			return request, err
+		}
+		return request, errors.New("duration must be between 5 and 240 seconds")
+	}
+	if request.Seed, err = parseMusicInt(req, "seed", -1); err != nil || request.Seed < -1 {
+		if err != nil {
+			return request, err
+		}
+		return request, errors.New("seed must be -1 or greater")
+	}
+	if request.Steps, err = parseMusicInt(req, "steps", 8); err != nil || request.Steps < 1 || request.Steps > 20 {
+		if err != nil {
+			return request, err
+		}
+		return request, errors.New("steps must be between 1 and 20")
+	}
+	if request.GuidanceScale, err = parseMusicFloat(req, "guidance", 1); err != nil || request.GuidanceScale < 0 || request.GuidanceScale > 10 {
+		if err != nil {
+			return request, err
+		}
+		return request, errors.New("guidance must be between 0 and 10")
+	}
+	if request.Route == "repaint" {
+		if request.RepaintStart, err = parseMusicFloat(req, "repaint_start", 0); err != nil {
+			return request, err
+		}
+		if request.RepaintEnd, err = parseMusicFloat(req, "repaint_end", 0); err != nil {
+			return request, err
+		}
+		if request.RepaintStart < 0 || request.RepaintEnd <= request.RepaintStart {
+			return request, errors.New("repaint_end must be greater than repaint_start")
+		}
+		if request.RepaintMode == "" {
+			request.RepaintMode = "balanced"
+		}
+		if request.RepaintMode != "balanced" && request.RepaintMode != "conservative" && request.RepaintMode != "aggressive" {
+			return request, errors.New("repaint_mode must be balanced, conservative, or aggressive")
+		}
+		if request.RepaintStrength, err = parseMusicFloat(req, "repaint_strength", 0.5); err != nil || request.RepaintStrength < 0 || request.RepaintStrength > 1 {
+			if err != nil {
+				return request, err
+			}
+			return request, errors.New("repaint_strength must be between 0 and 1")
+		}
+	}
+	return request, nil
+}
+
+func (r *router) musicSource(req *http.Request, allowed bool, required bool) (string, func(), error) {
+	upload, header, err := req.FormFile("source")
+	if err != nil {
+		if !required && errors.Is(err, http.ErrMissingFile) {
+			return "", func() {}, nil
+		}
+		return "", func() {}, errors.New("multipart field source is required for this music route")
+	}
+	defer upload.Close()
+	if !allowed {
+		return "", func() {}, errors.New("multipart field source is not supported for this music route")
+	}
+	path, cleanup, err := spoolUpload(upload, filepath.Ext(header.Filename))
+	if err != nil {
+		return "", func() {}, err
+	}
+	if err := validateUploadedWAV(path, "source", maxMusicSourceWAVBytes); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	return path, cleanup, nil
+}
+
+// handleMusicGeneration exposes ACE-Step through a small, allowlisted form.
+// Browser-selected source media is normalized to WAV by /v1/audio/decode.
+func (r *router) handleMusicGeneration(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	if _, ok := r.engine(engine.MusicEngineID); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, `engine "music" is not configured`)
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxMusicBodyBytes)
+	if err := req.ParseMultipartForm(2 * 1024 * 1024); err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid multipart request: %v", err))
+		return
+	}
+	model := strings.TrimSpace(req.FormValue("model"))
+	if model != "" && model != "ace-step" && model != "ace-step-turbo-q8-0" {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("music model %q is not supported", model))
+		return
+	}
+	musicRequest, err := parseMusicGenerationRequest(req)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sourcePath, cleanup, err := r.musicSource(req, musicRequest.Route != "text2music", musicRoutesRequiringSource[musicRequest.Route])
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	defer cleanup()
+	result, err := r.engines.Run(req.Context(), engine.MusicGenerationSpec(sourcePath, musicRequest))
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("X-Music-Model", "ace-step-turbo-q8-0")
+	w.Header().Set("Access-Control-Expose-Headers", "X-Music-Model")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(result.Output)
+}
+
+func musicAnalysisJSON(stdout []byte) (map[string]any, error) {
+	const marker = "text_output="
+	index := bytes.LastIndex(stdout, []byte(marker))
+	if index < 0 {
+		return nil, errors.New("ACE-Step analysis returned no text_output")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(stdout[index+len(marker):]))
+	var analysis map[string]any
+	if err := decoder.Decode(&analysis); err != nil {
+		return nil, fmt.Errorf("ACE-Step analysis returned invalid JSON: %v", err)
+	}
+	return analysis, nil
+}
+
+func (r *router) handleMusicAnalysis(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	if _, ok := r.engine(engine.MusicEngineID); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, `engine "music" is not configured`)
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxMusicBodyBytes)
+	if err := req.ParseMultipartForm(2 * 1024 * 1024); err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid multipart request: %v", err))
+		return
+	}
+	seed, err := parseMusicInt(req, "seed", 1234)
+	if err != nil || seed < -1 {
+		writeJSONError(w, http.StatusBadRequest, "seed must be -1 or greater")
+		return
+	}
+	if seed == -1 {
+		seed = 1234
+	}
+	sourcePath, cleanup, err := r.musicSource(req, true, true)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	defer cleanup()
+	result, err := r.engines.Run(req.Context(), engine.MusicAnalysisSpec(sourcePath, seed))
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	analysis, err := musicAnalysisJSON(result.Stdout)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(analysis)
+}
+
+// resolveSpeechModelEngine is the public speech-model allowlist. The UI uses
+// engine ids as stable model values because each configured audio.cpp model
+// has its own resident or subprocess lane. Catalogue ids are accepted too so
+// direct API callers can use the model name they see in /v1/models/catalog.
+func resolveSpeechModelEngine(value string) (string, error) {
+	switch value = strings.TrimSpace(value); value {
+	case "", "audio", "qwen3-tts-0.6b-base":
+		return engine.DefaultSpeechEngineID, nil
+	case "omnivoice", "voxcpm2", engine.DramaBoxSpeechEngineID, "dramabox-q8-0":
+		if value == "dramabox-q8-0" {
+			return engine.DramaBoxSpeechEngineID, nil
+		}
+		return value, nil
+	default:
+		return "", fmt.Errorf("speech model %q is not supported", value)
+	}
 }
 
 // audioServerModelID is the model id a server-mode audio engine must expose
@@ -1733,7 +2101,11 @@ func (r *router) speak(ctx context.Context, text string, clonedVoice *engine.Voi
 // normal audio server retains its required default voice reference, while
 // DramaBox supports both text-only requests and explicit stored clones.
 func (r *router) speakWithEngine(ctx context.Context, engineName string, text string, clonedVoice *engine.Voice, reserved bool) ([]byte, error) {
-	return r.speakSynthesis(ctx, engine.SynthesisRequest{Text: text, EngineID: engineName}, clonedVoice, reserved)
+	request := engine.SynthesisRequest{Text: text, EngineID: engineName}
+	if engineName == engine.DramaBoxSpeechEngineID {
+		request.Options = engine.DefaultDramaBoxOptions()
+	}
+	return r.speakSynthesis(ctx, request, clonedVoice, reserved)
 }
 
 func (r *router) speakSynthesis(ctx context.Context, request engine.SynthesisRequest, clonedVoice *engine.Voice, reserved bool) ([]byte, error) {
@@ -1742,8 +2114,12 @@ func (r *router) speakSynthesis(ctx context.Context, request engine.SynthesisReq
 	if !ok {
 		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("engine %q is not configured", engineName)}
 	}
+	effectiveVoice := clonedVoice
+	if effectiveVoice == nil {
+		effectiveVoice = r.defaultSpeechVoice(engineName)
+	}
 	if engineCfg.Mode != "server" {
-		spec := engine.SpeechVoiceSpecForRequest(request, clonedVoice)
+		spec := engine.SpeechVoiceSpecForRequest(request, effectiveVoice)
 		var res engine.Result
 		var err error
 		if reserved {
@@ -1768,17 +2144,14 @@ func (r *router) speakSynthesis(ctx context.Context, request engine.SynthesisReq
 	if !ok {
 		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("engine %q healthUrl must end in /health to infer /v1/audio/speech", engineName)}
 	}
-	refPath := engineCfg.DefaultVoiceRef
-	if clonedVoice != nil {
-		refPath = clonedVoice.RefWAVPath
+	refPath := ""
+	if effectiveVoice != nil {
+		refPath = effectiveVoice.RefWAVPath
 	}
 	if refPath == "" && !engine.SpeechEngineAllowsTextOnly(engineName) {
 		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("server-mode engine %q needs defaultVoiceRef configured", engineName)}
 	}
-	var defaultVoice *engine.Voice
-	if engineCfg.DefaultVoiceRef != "" || engineCfg.DefaultVoiceText != "" {
-		defaultVoice = &engine.Voice{RefWAVPath: engineCfg.DefaultVoiceRef, RefText: engineCfg.DefaultVoiceText}
-	}
+	defaultVoice := r.defaultSpeechVoice(engineName)
 	payload, err := engine.MarshalSpeechServerRequest(audioServerModelID, request, clonedVoice, defaultVoice)
 	if err != nil {
 		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode speech request: %v", err)}
@@ -1812,6 +2185,30 @@ func (r *router) speakSynthesis(ctx context.Context, request engine.SynthesisReq
 	}
 	r.manager.MarkSuccess(engineName)
 	return data, nil
+}
+
+// defaultSpeechVoice gives every selectable speech engine the same studio
+// default reference unless that engine declares its own. This matters for the
+// subprocess TTS models: selecting OmniVoice or VoxCPM2 without first choosing
+// a stored clone should still speak with the studio default voice.
+func (r *router) defaultSpeechVoice(engineName string) *engine.Voice {
+	voiceFrom := func(cfg config.EngineConfig) *engine.Voice {
+		if cfg.DefaultVoiceRef == "" && cfg.DefaultVoiceText == "" {
+			return nil
+		}
+		return &engine.Voice{RefWAVPath: cfg.DefaultVoiceRef, RefText: cfg.DefaultVoiceText}
+	}
+	if cfg, ok := r.engine(engineName); ok {
+		if voice := voiceFrom(cfg); voice != nil {
+			return voice
+		}
+	}
+	if engineName != engine.DefaultSpeechEngineID {
+		if cfg, ok := r.engine(engine.DefaultSpeechEngineID); ok {
+			return voiceFrom(cfg)
+		}
+	}
+	return nil
 }
 
 type audioServerSpeechRequest struct {
@@ -2945,13 +3342,18 @@ func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	speechEngine, err := resolveSpeechModelEngine(req.FormValue("speech_model"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	loop := voice.Loop{
 		Engines:    r.engines,
 		Chat:       r.chatOnce,
 		Transcribe: r.transcribe,
 		Speak: func(ctx context.Context, text string, v *engine.Voice) ([]byte, error) {
-			return r.speak(ctx, text, v, false)
+			return r.speakWithEngine(ctx, speechEngine, text, v, false)
 		},
 	}
 	result, err := loop.Run(req.Context(), voice.Request{
@@ -4564,6 +4966,7 @@ func storyHTTPStatus(code story.ErrorCode) int {
 type speechRequest struct {
 	Input  string `json:"input"`
 	Voice  string `json:"voice"`
+	Model  string `json:"model"`
 	Format string `json:"format"`
 }
 

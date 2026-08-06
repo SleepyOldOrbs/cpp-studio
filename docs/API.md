@@ -508,6 +508,71 @@ Behavior:
 - Only one speech request can run at a time for this gateway process; concurrent requests return `429`.
 - Command failure or invalid output marks `audio` crashed and returns `502` with bounded stdout/stderr details.
 
+## POST /v1/audio/conversions
+
+Runs the configured `voiceconvert` audio.cpp subprocess and returns a converted
+WAV. The source performance supplies the words, timing, and expression; the
+target reference supplies the speaker identity.
+
+Multipart form fields (combined request limit 129 MiB):
+
+- `source`: required WAV performance, at most 64 MiB.
+- `target`: target-voice WAV, at most 64 MiB; required unless `target_voice` is used.
+- `target_voice`: an existing Studio voice id. It reuses that voice's saved
+  reference WAV and is mutually substitutable with `target`.
+- `model`: optional; blank, `chatterbox`, and `chatterbox-q8-0` select the
+  configured Chatterbox lane. Other values return `400`.
+
+Gateway subprocess arguments:
+
+```text
+<configured voiceconvert args> --audio <source-wav> --voice-ref <target-wav> --out <generated-temp-wav>
+```
+
+The generated output must be a valid WAV and fit the gateway's decoded-audio
+limit. Missing engine configuration returns `503`; busy conversion returns
+`429`; malformed input returns `400`; native command or output failure returns
+`502`. The browser converts non-WAV uploads through the configured ffmpeg route
+before submitting them.
+
+## POST /v1/audio/music
+
+Runs the configured `music` audio.cpp subprocess with ACE-Step and returns a
+generated WAV. The multipart request is deliberately allowlisted rather than
+accepting arbitrary native JSON options:
+
+- `model`: blank, `ace-step`, or `ace-step-turbo-q8-0`.
+- `route`: `text2music` (default), `complete`, `lego`, `extract`, `cover`,
+  `cover-nofsq`, or `repaint`.
+- `prompt`: required music brief or edit instruction, at most 4000 bytes.
+- `lyrics`: optional, at most 32768 bytes.
+- `source`: optional WAV for `complete`; required for every edit route.
+- `duration`: 5-240 seconds; default 30. Source-locked routes may ignore it.
+- `seed`: `-1` for random or a non-negative integer; default `-1`.
+- `steps`: 1-20; default 8 for the Turbo model.
+- `guidance`: 0-10; default 1.
+- `track_name`: optional named layer/stem for `lego` and `extract`.
+- repaint fields: `repaint_start`, `repaint_end`, `repaint_mode` (`balanced`,
+  `conservative`, or `aggressive`), and `repaint_strength` (0-1).
+
+Gateway subprocess shape:
+
+```text
+<configured music args> --task-route <route> --text <prompt> ... [--audio <source-wav>] --out <generated-temp-wav>
+```
+
+The response is `audio/wav` and includes `X-Music-Model:
+ace-step-turbo-q8-0`. Missing engine configuration returns `503`; a concurrent
+run returns `429`; invalid fields/source audio return `400`; native command or
+output failure returns `502`.
+
+## POST /v1/audio/music/analyze
+
+Accepts a required multipart `source` WAV and optional `seed`. ACE-Step infers
+a caption, lyrics, BPM, key, and time signature where available and returns its
+JSON object. `seed=-1` resolves to 1234 so analysis is repeatable. The Studio
+can apply the returned caption to the editable music brief.
+
 ## Actor Voices and Character Voices
 
 An Actor Voice is the existing reusable recorded or designed voice returned by
