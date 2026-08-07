@@ -105,9 +105,12 @@ button { padding: .55rem .75rem; }
 .build-status { max-width: 20rem; color: var(--muted); font-size: .72rem; }
 .build-status[data-state="running"] { color: #91c8ff; }
 .build-status[data-state="ready"] { color: #8ee3b4; }
+.build-status[data-state="cancelled"] { color: #f0c77b; }
 .build-status[data-state="failed"] { color: var(--danger); }
 .build-button { color: #0d1b12; border-color: #5bc58b; background: #77dba3; font-weight: 800; }
 .build-button:disabled { opacity: .45; cursor: default; }
+.cancel-build-button { color: #fff0d2; border-color: #9a7130; background: #543b19; }
+.cancel-build-button:disabled { opacity: .55; cursor: default; }
 .audition-dialogue { width: 100%; color: #d9efff; border-color: #4f91ce; background: #183958; }
 .story-canvas { min-height: 30rem; margin-top: 1rem; overflow: hidden; border: 1px solid var(--line); border-radius: .65rem; background: rgba(10, 15, 22, .86); }
 .canvas-heading { min-height: 4.7rem; padding: .85rem 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); background: var(--panel); }

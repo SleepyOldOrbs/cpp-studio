@@ -18,6 +18,7 @@
   const saveButton = byID("storyBuilderSaveButton");
   const buildStatus = byID("storyBuilderBuildStatus");
   const buildButton = byID("storyBuilderBuildButton");
+  const buildCancelButton = byID("storyBuilderBuildCancelButton");
   const deleteButton = byID("storyBuilderDeleteButton");
   const refreshButton = byID("storyBuilderRefreshButton");
   const tracksElement = byID("storyBuilderTracks");
@@ -55,6 +56,8 @@
   let revoicePromise = null;
   let mediaPlacementPromise = null;
   let dialogueBuildPromise = null;
+  let activeDialogueBuild = null;
+  let dialogueCancelPending = false;
   let requestedProjectID = new URLSearchParams(window.location.search).get("project") || "";
 
   async function request(path, options = {}) {
@@ -224,13 +227,17 @@
   function dialogueBuildableCount(project = currentProject()) {
     if (!project) return 0;
     return project.tracks.reduce((count, track) => count + track.clips.filter((clip) =>
-      clip.type === "dialogue" && (clipStatus(clip) === "stale" || clipStatus(clip) === "failed")).length, 0);
+      clip.type === "dialogue" && ["stale", "failed", "building"].includes(clipStatus(clip))).length, 0);
   }
 
   function updateBuildControls() {
     const count = dialogueBuildableCount();
     buildButton.disabled = Boolean(dialogueBuildPromise || !count);
     buildButton.textContent = count ? `Build stale (${count})` : "Build stale";
+    const cancellable = Boolean(dialogueBuildPromise && activeDialogueBuild &&
+      (activeDialogueBuild.status === "queued" || activeDialogueBuild.status === "running"));
+    buildCancelButton.hidden = !cancellable;
+    buildCancelButton.disabled = !cancellable || dialogueCancelPending;
   }
 
   function setBuildStatus(message, state = "") {
@@ -788,6 +795,61 @@
     return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
   }
 
+  async function monitorDialogueBuild(started) {
+    if (dialogueBuildPromise) return dialogueBuildPromise;
+    activeDialogueBuild = started;
+    dialogueBuildPromise = Promise.resolve().then(async () => {
+      let build = activeDialogueBuild;
+      while (build.status === "queued" || build.status === "running") {
+        activeDialogueBuild = build;
+        updateBuildControls();
+        const active = build.active_clip_id ? ` · ${build.active_clip_id}` : "";
+        setBuildStatus(`Building ${build.completed}/${build.total}${active}`, "running");
+        await refreshBuiltProject(build.project_id);
+        await wait(100);
+        build = await request(build.status_url);
+      }
+      activeDialogueBuild = build;
+      const saved = await refreshBuiltProject(build.project_id);
+      if (build.status === "complete") {
+        undoStack = [];
+        redoStack = [];
+        const remaining = dialogueBuildableCount(saved);
+        setBuildStatus(remaining
+          ? `Previous build complete · ${remaining} dialogue clip${remaining === 1 ? "" : "s"} need building`
+          : `Dialogue ready · ${build.completed}/${build.total} built`, remaining ? "" : "ready");
+        return;
+      }
+      if (build.status === "cancelled") {
+        setBuildStatus(`Dialogue build cancelled · ${build.completed}/${build.total} completed takes kept`, "cancelled");
+        return;
+      }
+      setBuildStatus(`Dialogue build failed after ${build.completed}/${build.total}: ${build.error || "unknown error"}`, "failed");
+    });
+    updateBuildControls();
+    try {
+      await dialogueBuildPromise;
+    } catch (error) {
+      const detail = error.status === 409 ? "the project changed or another build is active" : error.message;
+      setBuildStatus(`Could not build dialogue: ${detail}`, "failed");
+    } finally {
+      dialogueBuildPromise = null;
+      activeDialogueBuild = null;
+      dialogueCancelPending = false;
+      updateBuildControls();
+    }
+  }
+
+  async function resumeDialogueBuild(projectID) {
+    if (!projectID || dialogueBuildPromise) return;
+    try {
+      const build = await request(`${apiRoot}/${encodeURIComponent(projectID)}/builds`);
+      if (build && currentID === projectID) await monitorDialogueBuild(build);
+    } catch (error) {
+      if (currentID === projectID) setBuildStatus(`Could not recover dialogue build status: ${error.message}`, "failed");
+    }
+  }
+
   async function buildStaleDialogue() {
     if (serverMutationPending()) return;
     let project = currentProject();
@@ -800,41 +862,30 @@
         return;
       }
     }
-
-    dialogueBuildPromise = (async () => {
-      appShell.inert = true;
-      updateBuildControls();
-      setBuildStatus("Starting dialogue build…", "running");
+    setBuildStatus("Starting dialogue build…", "running");
+    try {
       const started = await request(`${apiRoot}/${encodeURIComponent(project.id)}/builds`, {
         method: "POST",
         body: JSON.stringify({ revision: project.revision }),
       });
-      let build = started;
-      while (build.status === "queued" || build.status === "running") {
-        const active = build.active_clip_id ? ` · ${build.active_clip_id}` : "";
-        setBuildStatus(`Building ${build.completed}/${build.total}${active}`, "running");
-        await refreshBuiltProject(project.id);
-        await wait(100);
-        build = await request(build.status_url);
-      }
-      await refreshBuiltProject(project.id);
-      if (build.status === "complete") {
-        undoStack = [];
-        redoStack = [];
-        setBuildStatus(`Dialogue ready · ${build.completed}/${build.total} built`, "ready");
-        return;
-      }
-      setBuildStatus(`Dialogue build failed after ${build.completed}/${build.total}: ${build.error || "unknown error"}`, "failed");
-    })();
-    try {
-      await dialogueBuildPromise;
+      await monitorDialogueBuild(started);
     } catch (error) {
       const detail = error.status === 409 ? "the project changed or another build is active" : error.message;
       setBuildStatus(`Could not build dialogue: ${detail}`, "failed");
-    } finally {
-      dialogueBuildPromise = null;
-      appShell.inert = false;
+    }
+  }
+
+  async function cancelDialogueBuild() {
+    if (!activeDialogueBuild?.cancel_url || dialogueCancelPending) return;
+    dialogueCancelPending = true;
+    updateBuildControls();
+    setBuildStatus(`Cancelling dialogue build · ${activeDialogueBuild.completed}/${activeDialogueBuild.total} completed…`, "running");
+    try {
+      await request(activeDialogueBuild.cancel_url, { method: "POST" });
+    } catch (error) {
+      dialogueCancelPending = false;
       updateBuildControls();
+      setBuildStatus(`Could not cancel dialogue build: ${error.message}`, "failed");
     }
   }
 
@@ -976,6 +1027,7 @@
     }
     renderProjects();
     renderTracks();
+    if (project && !dialogueBuildPromise) void resumeDialogueBuild(project.id);
     if (project && !panelPosition) {
       const heading = document.querySelector(".canvas-heading").getBoundingClientRect();
       clampPanelPosition({ x: window.innerWidth - selectionPanel.offsetWidth - 24, y: heading.bottom + 12 });
@@ -1478,6 +1530,7 @@
 
   newForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (serverMutationPending()) return;
     const name = newNameInput.value.trim();
     if (!name) return;
     try {
@@ -1528,11 +1581,13 @@
   });
   selectionHandle.addEventListener("pointerdown", beginPanelPointerEdit);
   buildButton.addEventListener("click", () => buildStaleDialogue());
+  buildCancelButton.addEventListener("click", () => cancelDialogueBuild());
   saveButton.addEventListener("click", () => saveProject());
   refreshButton.addEventListener("click", () => refreshProjects());
   voiceRefresh.addEventListener("click", () => refreshVoiceLibrary());
   voiceSearch.addEventListener("input", () => renderVoiceLibrary());
   deleteButton.addEventListener("click", async () => {
+    if (serverMutationPending()) return;
     const project = currentProject();
     if (!project || !window.confirm(`Delete “${project.name}”?`)) return;
     try {
