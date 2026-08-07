@@ -166,7 +166,8 @@ forgotten on restart); artifacts always persist in their pipeline's store.
 
 ## Story Builder Projects
 
-The separate Story Builder tool is served at `/demo/story-builder.html`.
+The main Studio links to the separate Story Builder tool served at
+`/demo/story-builder.html`; a Library project launch may add `?project={id}`.
 Project manifests persist under `out/story-builder-projects` and survive a
 Gateway restart.
 

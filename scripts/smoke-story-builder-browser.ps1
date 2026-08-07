@@ -128,6 +128,29 @@ function Invoke-BrowserCode {
   Invoke-BrowserCLI -Arguments @("run-code", "async page => await (eval($jsonCode))(page)")
 }
 
+$launchCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const launch = page.getByRole('link', { name: 'Story Builder', exact: true });
+  await launch.waitFor();
+  await page.keyboard.press('Tab');
+  await launch.focus();
+  const focus = await launch.evaluate(node => {
+    const style = getComputedStyle(node);
+    return { style: style.outlineStyle, width: style.outlineWidth };
+  });
+  assert(focus.style !== 'none' && parseFloat(focus.width) > 0, 'main-studio Story Builder launch lacked visible keyboard focus');
+  await Promise.all([
+    page.waitForURL(/\/demo\/story-builder\.html$/),
+    page.keyboard.press('Enter'),
+  ]);
+  assert((await page.getByRole('heading', { name: 'Story Builder', exact: true }).count()) === 1,
+    'main-studio launch did not open the separate Story Builder tool');
+}
+'@
+
 $arrangementCode = @'
 async page => {
   const assert = (condition, message) => {
@@ -189,6 +212,16 @@ async page => {
   await page.mouse.move(box.x + box.width / 2 - trimPixels, box.y + box.height / 2);
   await page.mouse.up();
   assert((await clipLabels())[0].includes('for 750 milliseconds'), 'silence trim did not resize the clip');
+
+  clips = page.locator('.timeline-clip');
+  await clips.nth(1).click();
+  inspector = page.locator('#storyBuilderSelectionBody');
+  startInput = inspector.getByLabel('Starts at (ms)');
+  const acceptedSecondStart = await startInput.inputValue();
+  await startInput.fill(String(movedStarts[0] + 500));
+  await startInput.press('Tab');
+  assert((await page.locator('#storyBuilderSaveStatus').textContent()).includes('cannot overlap'), 'same-track overlap was not rejected');
+  assert(await inspector.getByLabel('Starts at (ms)').inputValue() === acceptedSecondStart, 'rejected overlap changed clip timing');
 
   await page.getByRole('button', { name: /Mute SFX/ }).click();
   await page.getByRole('button', { name: 'Undo' }).click();
@@ -332,6 +365,7 @@ async page => {
   await page.locator('#storyBuilderVoiceRefresh').click();
 
   const group = page.locator('.actor-voice-group', { hasText: 'Mara' });
+  await group.waitFor();
   assert(await group.count() === 1, 'Actor Voice parent group was not rendered');
   assert(await group.getByText('Weathered keeper', { exact: true }).count() === 1, 'first Character Voice was not grouped beneath its Actor Voice');
   assert(await group.getByText('Young cartographer', { exact: true }).count() === 1, 'second Character Voice was not grouped beneath its Actor Voice');
@@ -455,6 +489,78 @@ async page => {
   assert(response.ok() && (response.headers()['content-type'] || '').includes('audio/wav'), 'ready Dialogue Clip audition did not return WAV audio');
 
   return { project: projectID, built: dialogue.map(clip => clip.id) };
+}
+'@
+
+$keyboardCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const waitSaved = async () => {
+    await page.waitForFunction(() => document.querySelector('#storyBuilderSaveStatus')?.textContent === 'Saved');
+  };
+  const name = page.locator('#storyBuilderNameInput');
+  const save = page.getByRole('button', { name: 'Save Project', exact: true });
+  const clips = page.locator('.timeline-clip');
+  const sfxRow = page.locator('.track-row[data-track-type="sfx"]');
+  const sfxMute = () => sfxRow.getByRole('button', { name: /^(Mute|Unmute) / });
+  await clips.first().click();
+
+  await page.keyboard.press('Tab');
+  for (const target of [
+    save,
+    page.getByRole('button', { name: '+ SFX track', exact: true }),
+    sfxMute(),
+    page.locator('#storyBuilderSelectionBody').getByLabel('Starts at (ms)'),
+    page.getByRole('button', { name: 'Delete Project', exact: true }),
+  ]) {
+    await target.focus();
+    const focus = await target.evaluate(node => {
+      const style = getComputedStyle(node);
+      return { style: style.outlineStyle, width: style.outlineWidth };
+    });
+    assert(focus.style !== 'none' && parseFloat(focus.width) > 0, 'keyboard target lacked visible focus');
+  }
+
+  const beforeTextKey = await clips.count();
+  const playbackBefore = await page.locator('#storyBuilderPlaybackStatus').innerText();
+  await name.focus();
+  await name.press('End');
+  await name.press('Backspace');
+  await name.press('Space');
+  await name.press('Control+z');
+  assert(await clips.count() === beforeTextKey, 'text-field keys deleted a selected timeline clip');
+  assert(await page.locator('#storyBuilderPlaybackStatus').innerText() === playbackBefore, 'Space in a text field started playback');
+
+  const mute = sfxMute();
+  const beforeMute = await mute.innerText();
+  await mute.click();
+  await waitSaved();
+  await save.focus();
+  await page.keyboard.press('Control+z');
+  assert(await sfxRow.getByRole('button', { name: new RegExp('^' + beforeMute + ' ') }).count() === 1,
+    'Ctrl+Z outside a text field did not undo the timeline edit');
+  await page.keyboard.press('Control+y');
+  assert(await sfxRow.getByRole('button', { name: new RegExp('^' + (beforeMute === 'Mute' ? 'Unmute' : 'Mute') + ' ') }).count() === 1,
+    'Ctrl+Y outside a text field did not redo the timeline edit');
+
+  const renamed = (await name.inputValue()).trim() + ' keyboard';
+  await name.fill(renamed);
+  await save.focus();
+  const savedResponse = page.waitForResponse(response => response.request().method() === 'PUT' && response.url().includes('/v1/story-builder-projects/'));
+  await page.keyboard.press('Control+s');
+  assert((await savedResponse).ok(), 'Ctrl+S did not save the project');
+  await waitSaved();
+
+  const beforeDelete = await clips.count();
+  await clips.first().click();
+  await save.focus();
+  await page.keyboard.press('Delete');
+  assert(await clips.count() === beforeDelete - 1, 'Delete outside a text field did not remove the selected clip');
+  await page.keyboard.press('Control+z');
+  assert(await clips.count() === beforeDelete, 'Ctrl+Z did not restore the keyboard-deleted clip');
+  return { projectName: renamed, shortcuts: ['save', 'undo', 'redo', 'delete', 'text-field guard'] };
 }
 '@
 
@@ -1152,6 +1258,124 @@ async page => {
 }
 '@
 
+$completeGatewayWorkflowCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const origin = page.url().split('/demo/')[0];
+  const api = async (path, options = {}) => {
+    const { body, ...requestOptions } = options;
+    const response = await page.request.fetch(origin + path, {
+      ...requestOptions,
+      data: body,
+      headers: body ? { 'Content-Type': 'application/json', ...(options.headers || {}) } : options.headers,
+    });
+    if (!response.ok()) throw new Error(`${options.method || 'GET'} ${path} returned ${response.status()}: ${await response.text()}`);
+    return response.status() === 204 ? null : response.json();
+  };
+
+  let project = await api('/v1/story-builder-projects', {
+    method: 'POST', body: JSON.stringify({ name: 'Complete Story Builder workflow' }),
+  });
+  project = await api(`/v1/story-builder-projects/${project.id}`, {
+    method: 'PUT', body: JSON.stringify({
+      name: project.name,
+      revision: project.revision,
+      timeline_duration_ms: 3000,
+      tracks: [
+        { id: 'complete_dialogue', name: 'Dialogue', type: 'dialogue', order: 0, muted: false,
+          character_voice_id: '__CHARACTER_VOICE_ID__', clips: [
+            { id: 'complete_line', type: 'dialogue', label: 'Keep the lamp lit', text: 'Keep the lamp lit.', status: 'stale', start_ms: 0, duration_ms: 1000 },
+          ] },
+        { id: 'complete_sfx', name: 'SFX', type: 'sfx', order: 1, muted: false, clips: [] },
+      ],
+    }),
+  });
+  project = await api(`/v1/story-builder-projects/${project.id}/library-audio`, {
+    method: 'POST', body: JSON.stringify({ revision: project.revision, track_id: 'complete_sfx', library_item_id: '__SFX_ITEM_ID__', start_ms: 1250 }),
+  });
+  const reloadedBeforeBuild = await api(`/v1/story-builder-projects/${project.id}`);
+  assert(reloadedBeforeBuild.revision === project.revision && reloadedBeforeBuild.tracks[1].clips[0].source_library_item_id === '__SFX_ITEM_ID__',
+    'complete workflow did not save and reload copied reusable audio');
+
+  const build = await api(`/v1/story-builder-projects/${project.id}/builds`, {
+    method: 'POST', body: JSON.stringify({ revision: project.revision }),
+  });
+  let buildState = build;
+  for (let attempt = 0; attempt < 80 && !['complete', 'failed', 'cancelled'].includes(buildState.status); attempt += 1) {
+    await page.waitForTimeout(100);
+    buildState = await api(`/v1/story-builder-projects/${project.id}/builds/${build.id}`);
+  }
+  assert(buildState.status === 'complete' && buildState.completed === 1, `complete workflow build ended ${buildState.status}`);
+  project = await api(`/v1/story-builder-projects/${project.id}`);
+  const dialogue = project.tracks[0].clips[0];
+  assert(dialogue.status === 'ready' && dialogue.source_id, 'complete workflow did not reload ready generated dialogue');
+  const dialogueAudio = await page.request.get(origin + `/v1/story-builder-projects/${project.id}/clips/${dialogue.id}/audio`);
+  assert(dialogueAudio.ok() && (await dialogueAudio.body()).byteLength > 44, 'complete workflow dialogue artifact was unavailable');
+  await page.goto(origin + '/demo/story-builder.html?project=' + project.id);
+  await page.locator(`.project-item[data-project-id="${project.id}"][aria-current="true"]`).waitFor();
+  return { project: project.id, build: build.id };
+}
+'@
+
+$completeGatewayDeliveryCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const origin = page.url().split('/demo/')[0];
+  const projectID = await page.locator('.project-item[aria-current="true"]').getAttribute('data-project-id');
+  const api = async (path, options = {}) => {
+    const { body, ...requestOptions } = options;
+    const response = await page.request.fetch(origin + path, {
+      ...requestOptions,
+      data: body,
+      headers: body ? { 'Content-Type': 'application/json', ...(options.headers || {}) } : options.headers,
+    });
+    if (!response.ok()) throw new Error(`${options.method || 'GET'} ${path} returned ${response.status()}: ${await response.text()}`);
+    return response.status() === 204 ? null : response.json();
+  };
+
+  let project = await api(`/v1/story-builder-projects/${projectID}`);
+  const rendered = await api(`/v1/story-builder-projects/${project.id}/renders`, {
+    method: 'POST', body: JSON.stringify({ revision: project.revision }),
+  });
+  project = rendered.project;
+  const wav = await page.request.get(origin + rendered.render.url);
+  const wavBytes = await wav.body();
+  assert(wav.ok() && String.fromCharCode(...wavBytes.slice(0, 4)) === 'RIFF', 'complete workflow render was not a durable WAV');
+  const exported = await api(`/v1/story-builder-projects/${project.id}/renders/${rendered.render.revision}/exports`, {
+    method: 'POST', body: JSON.stringify({ revision: project.revision, format: 'mp3' }),
+  });
+  project = exported.project;
+  const mp3 = await page.request.get(origin + exported.export.url);
+  const mp3Bytes = await mp3.body();
+  assert(mp3.ok() && String.fromCharCode(...mp3Bytes.slice(0, 3)) === 'ID3', 'complete workflow export was not a durable MP3');
+
+  const catalog = await api('/v1/library');
+  const entry = catalog.entries.find(item => item.kind === 'story_builder_project' && item.id === project.id);
+  assert(entry?.launch_action?.url === `/demo/story-builder.html?project=${project.id}`,
+    'complete workflow project was not discoverable through Library');
+  await page.goto(origin + '/demo/#library');
+  const productions = page.locator('.library-group[data-library-category="productions"]');
+  if (!(await productions.getAttribute('open'))) await productions.locator('summary').click();
+  const card = page.locator('.library-item', { hasText: 'Complete Story Builder workflow' }).first();
+  await card.waitFor();
+  await Promise.all([
+    page.waitForURL(new RegExp('story-builder\\.html\\?project=' + project.id), { waitUntil: 'commit' }),
+    card.getByRole('link', { name: 'Open Story Builder', exact: true }).click(),
+  ]);
+  const reopened = page.locator(`.project-item[data-project-id="${project.id}"][aria-current="true"]`);
+  await reopened.waitFor();
+  assert(await reopened.count() === 1,
+    'Library reopen did not restore the complete workflow project');
+  const durable = await api(`/v1/story-builder-projects/${project.id}`);
+  assert(durable.renders?.[0]?.exports?.[0]?.format === 'mp3', 'complete workflow artifacts did not survive Library reopen');
+  return { project: project.id, render: rendered.render.revision, export: 'mp3' };
+}
+'@
+
 $deletionBoundaryCode = @'
 async page => {
   const assert = (condition, message) => {
@@ -1424,15 +1648,20 @@ try {
   $renderMasterCode = $renderMasterCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id).Replace("__BROKEN_PROJECT_ID__", $brokenProject.id)
   $exportMasterCode = $exportMasterCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id)
   $storyImportCode = $storyImportCode.Replace("__IMPORT_STORY_ID__", $storyImportStart.id).Replace("__IMPORT_SUGGESTED_CHARACTER_ID__", $matchedCharacterVoice.id).Replace("__IMPORT_AMBIGUOUS_ACTOR_ID__", $actorVoice.id)
+  $completeGatewayWorkflowCode = $completeGatewayWorkflowCode.Replace("__CHARACTER_VOICE_ID__", $keeperVoice.id).Replace("__SFX_ITEM_ID__", $sfxItem.id)
 
-  Invoke-BrowserCLI -Arguments @("open", "$baseURL/demo/story-builder.html")
+  Invoke-BrowserCLI -Arguments @("open", "$baseURL/demo/")
+  Invoke-BrowserCode -Code $launchCode
   Invoke-BrowserCode -Code $arrangementCode
   Invoke-BrowserCode -Code $panelCode
+  Invoke-BrowserCode -Code $keyboardCode
   Invoke-BrowserCode -Code $audioCode
   Invoke-BrowserCode -Code $statusCode
   Invoke-BrowserCode -Code $dialogueCode
   Invoke-BrowserCode -Code $revoiceCode
   Invoke-BrowserCode -Code $buildDialogueCode
+  Invoke-BrowserCode -Code $completeGatewayWorkflowCode
+  Invoke-BrowserCode -Code $completeGatewayDeliveryCode
   Invoke-BrowserCode -Code $libraryAudioCode
   $catalogSFXItem = Invoke-RestMethod -Uri "$baseURL/v1/library" -Method Post -ContentType "application/json" -Body (@{
     kind = "audio"; name = "Library bell"; data_b64 = $libraryAudioB64; meta = @{ media_role = "sfx" }

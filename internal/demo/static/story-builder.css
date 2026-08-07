@@ -38,6 +38,16 @@ button:focus-visible, input:focus-visible, a:focus-visible {
   outline-offset: 2px;
 }
 
+kbd {
+  padding: .08rem .3rem;
+  border: 1px solid var(--line);
+  border-radius: .25rem;
+  color: var(--text);
+  background: #111a25;
+  font: inherit;
+  white-space: nowrap;
+}
+
 .app-header {
   min-height: 6.4rem;
   padding: 1.1rem 1.4rem;
@@ -134,6 +144,7 @@ button { padding: .55rem .75rem; }
 .canvas-tools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .65rem 1rem; }
 .timeline-transport { padding: .55rem 1rem; display: grid; grid-template-columns: auto auto auto minmax(8rem, 1fr) 5.5rem minmax(10rem, auto); align-items: center; gap: .55rem; border-bottom: 1px solid var(--line); background: #121a25; color: var(--muted); font-size: .72rem; }
 .timeline-transport input[type="range"] { width: 100%; padding: 0; accent-color: var(--accent); }
+.shortcut-help { margin: .45rem 0 .7rem; color: var(--muted); font-size: .7rem; }
 .timeline-transport output { color: var(--text); font-variant-numeric: tabular-nums; }
 .playback-status { overflow: hidden; color: var(--muted); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .playback-status[data-state="playing"] { color: #91c8ff; }

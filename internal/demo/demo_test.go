@@ -130,6 +130,7 @@ func TestHandlerServesIndex(t *testing.T) {
 	}
 	for _, marker := range []string{
 		`class="tab-bar"`,
+		`href="/demo/story-builder.html">Story Builder</a>`,
 		`data-page-link="text-to-speech"`,
 		`data-page-link="voice-cloning"`,
 		`data-page="voice-convert"`,
@@ -380,6 +381,7 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 				"storyBuilderVoiceRefresh",
 				"storyBuilderVoiceGroups",
 				"project-owned media, takes, renders, and exports",
+				"Keyboard shortcuts",
 			},
 		},
 		{

@@ -227,7 +227,9 @@ Individual fixture smokes: `smoke-voice-loop-fixture.ps1`,
 latencies and policies: [`docs/LOCAL_ENGINE_PROFILE.md`](docs/LOCAL_ENGINE_PROFILE.md).
 
 The Story Builder interaction gate uses a real isolated browser and requires
-Node.js with `npx` available:
+Node.js with `npx` available. It covers the explicit main-Studio launch,
+keyboard focus and shortcuts, the complete save/build/render/export/Library
+round trip, and the focused timeline regressions:
 
 ```powershell
 .\scripts\smoke-story-builder-browser.ps1
