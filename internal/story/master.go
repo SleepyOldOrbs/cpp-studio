@@ -138,7 +138,20 @@ func (m *Manager) levelSpeakers(ctx context.Context, script []ScriptLine, has fu
 // masterRender places a finished stitch at the delivery target with one
 // linear gain, refusing to breach the true-peak ceiling to get there.
 func (m *Manager) masterRender(ctx context.Context, stitched []byte, speakerGains map[string]float64) ([]byte, *Master, error) {
-	before, err := m.measure(ctx, stitched)
+	return masterWAV(ctx, stitched, speakerGains, m.measure)
+}
+
+// MasterWAV applies the same final mixed-master rules used by retained Story
+// renders without requiring another package to construct a Story Manager.
+func MasterWAV(ctx context.Context, audio []byte, measure MeasureFunc) ([]byte, *Master, error) {
+	if measure == nil {
+		return audio, nil, nil
+	}
+	return masterWAV(ctx, audio, nil, measure)
+}
+
+func masterWAV(ctx context.Context, stitched []byte, speakerGains map[string]float64, measure MeasureFunc) ([]byte, *Master, error) {
+	before, err := measure(ctx, stitched)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -166,7 +179,7 @@ func (m *Manager) masterRender(ctx context.Context, stitched []byte, speakerGain
 			// The peak arithmetic should make this unreachable; if it ever
 			// happens, say so rather than shipping clipped audio quietly.
 			note = fmt.Sprintf("%d samples clipped applying %.1f dB; the render was left unmastered", clipped, gain)
-			after, _ := m.measure(ctx, stitched)
+			after, _ := measure(ctx, stitched)
 			return stitched, &Master{
 				TargetLUFS: TargetLUFS, TargetPeakDBTP: TargetTruePeakDBTP,
 				Before: before, After: after, GainDB: 0,
@@ -178,7 +191,7 @@ func (m *Manager) masterRender(ctx context.Context, stitched []byte, speakerGain
 
 	// Measure the result rather than predicting it: a recorded number that
 	// was never observed is the thing this whole feature exists to avoid.
-	after, err := m.measure(ctx, mastered)
+	after, err := measure(ctx, mastered)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -19,6 +19,9 @@
   const buildStatus = byID("storyBuilderBuildStatus");
   const buildButton = byID("storyBuilderBuildButton");
   const buildCancelButton = byID("storyBuilderBuildCancelButton");
+  const renderStatus = byID("storyBuilderRenderStatus");
+  const renderButton = byID("storyBuilderRenderButton");
+  const latestMaster = byID("storyBuilderLatestMaster");
   const deleteButton = byID("storyBuilderDeleteButton");
   const refreshButton = byID("storyBuilderRefreshButton");
   const tracksElement = byID("storyBuilderTracks");
@@ -62,6 +65,7 @@
   let revoicePromise = null;
   let mediaPlacementPromise = null;
   let dialogueBuildPromise = null;
+  let renderPromise = null;
   let activeDialogueBuild = null;
   let dialogueCancelPending = false;
   let audioContext = null;
@@ -97,7 +101,7 @@
   }
 
   function serverMutationPending() {
-    return Boolean(revoicePromise || mediaPlacementPromise || dialogueBuildPromise);
+    return Boolean(revoicePromise || mediaPlacementPromise || dialogueBuildPromise || renderPromise);
   }
 
   function characterVoiceDetails(id) {
@@ -298,6 +302,28 @@
   function setBuildStatus(message, state = "") {
     buildStatus.textContent = message;
     buildStatus.dataset.state = state;
+  }
+
+  function setRenderStatus(message, state = "") {
+    renderStatus.textContent = message;
+    renderStatus.dataset.state = state;
+  }
+
+  function updateRenderControls() {
+    const project = currentProject();
+    renderButton.disabled = !project || serverMutationPending();
+    const renders = project?.renders || [];
+    const latest = renders[renders.length - 1];
+    latestMaster.hidden = !latest;
+    if (latest) {
+      latestMaster.href = `${apiRoot}/${encodeURIComponent(project.id)}/master`;
+      latestMaster.textContent = `Latest master (r${latest.revision})`;
+      if (!renderPromise) setRenderStatus(`Rendered revision ${latest.revision}`, "ready");
+    } else {
+      latestMaster.removeAttribute("href");
+      latestMaster.textContent = "Latest master";
+      if (!renderPromise) setRenderStatus("No master rendered");
+    }
   }
 
   function timelineError(project) {
@@ -748,6 +774,7 @@
     const project = currentProject();
     if (!project) {
       updateBuildControls();
+      updateRenderControls();
       updatePlayheadDisplay();
       renderSelection();
       return;
@@ -760,6 +787,7 @@
     updateTimelineWidth(timelineDuration);
     updateHistoryButtons();
     updateBuildControls();
+    updateRenderControls();
     if (!project.tracks.length) {
       const empty = document.createElement("div");
       empty.className = "tracks-empty";
@@ -1736,6 +1764,42 @@
     }
   }
 
+  async function renderMaster() {
+    if (serverMutationPending()) return;
+    stopBrowserPlayback(true);
+    if (saveStatus.dataset.state !== "saved" || savePromise) await saveProject();
+    const project = currentProject();
+    if (!project || saveStatus.dataset.state !== "saved") {
+      setRenderStatus("Save the project before rendering", "failed");
+      return;
+    }
+    setRenderStatus("Rendering mixed master…", "running");
+    renderPromise = request(`${apiRoot}/${encodeURIComponent(project.id)}/renders`, {
+      method: "POST",
+      body: JSON.stringify({ revision: project.revision }),
+    });
+    appShell.inert = true;
+    updateRenderControls();
+    let failure = "";
+    try {
+      const response = await renderPromise;
+      if (currentID !== response.project.id) return;
+      Object.assign(project, response.project);
+      projects = [project, ...projects.filter((item) => item.id !== project.id)];
+      setStatus("saved");
+      setRenderStatus(`Rendered revision ${response.render.revision}`, "ready");
+      renderProjects();
+    } catch (error) {
+      const detail = error.status === 409 ? "the saved arrangement is not ready or changed; reopen it and try again" : error.message;
+      failure = `Render failed — ${detail}`;
+    } finally {
+      renderPromise = null;
+      appShell.inert = false;
+      updateRenderControls();
+      if (failure) setRenderStatus(failure, "failed");
+    }
+  }
+
   function clampPanelPosition(position = panelPosition) {
     if (!position) return;
     const width = selectionPanel.offsetWidth;
@@ -1836,6 +1900,7 @@
   playheadInput.addEventListener("change", () => seekTimeline(Number(playheadInput.value)));
   buildButton.addEventListener("click", () => buildStaleDialogue());
   buildCancelButton.addEventListener("click", () => cancelDialogueBuild());
+  renderButton.addEventListener("click", () => renderMaster());
   saveButton.addEventListener("click", () => saveProject());
   refreshButton.addEventListener("click", () => refreshProjects());
   voiceRefresh.addEventListener("click", () => refreshVoiceLibrary());

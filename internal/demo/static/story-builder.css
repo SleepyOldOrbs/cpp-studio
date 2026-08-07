@@ -111,6 +111,13 @@ button { padding: .55rem .75rem; }
 .build-button:disabled { opacity: .45; cursor: default; }
 .cancel-build-button { color: #fff0d2; border-color: #9a7130; background: #543b19; }
 .cancel-build-button:disabled { opacity: .55; cursor: default; }
+.render-status { max-width: 16rem; color: var(--muted); font-size: .72rem; }
+.render-status[data-state="running"] { color: #91c8ff; }
+.render-status[data-state="ready"] { color: #8ee3b4; }
+.render-status[data-state="failed"] { color: var(--danger); }
+.render-button { color: #f4ecff; border-color: #8d70a0; background: #594365; font-weight: 800; }
+.render-button:disabled { opacity: .45; cursor: default; }
+.latest-master { color: #b9e8cc; font-size: .72rem; font-weight: 800; }
 .audition-clip { width: 100%; color: #d9efff; border-color: #4f91ce; background: #183958; }
 .story-canvas { min-height: 30rem; margin-top: 1rem; overflow: hidden; border: 1px solid var(--line); border-radius: .65rem; background: rgba(10, 15, 22, .86); }
 .canvas-heading { min-height: 4.7rem; padding: .85rem 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); background: var(--panel); }

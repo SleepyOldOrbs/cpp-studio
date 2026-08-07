@@ -225,6 +225,23 @@ Gateway restart.
 - `GET /v1/story-builder-projects/{id}/clips/{clip-id}/audio` — audition a ready
   dialogue clip's referenced, validated project-owned WAV. It does not render a
   combined production.
+- `POST /v1/story-builder-projects/{id}/renders` — validate and render the saved
+  arrangement from `{"revision":4}`. Audible Dialogue must be ready and every
+  audible source must still be a valid project-owned WAV. A success returns
+  `201` with `{project,render}`, increments the project revision, and creates the
+  next immutable `renders/render-NNN.wav`. Track mute, clip placement and
+  trims, explicit silence, and cross-track overlap shape a project-length
+  16 kHz mono 16-bit PCM mix; valid PCM source rates, channel counts, and
+  8/16/24/32-bit depths are normalized deterministically. When ffmpeg loudness measurement is configured, the final mix
+  uses the retained Story mastering target and true-peak ceiling and records the
+  measured `master` report. Validation, mixing, mastering, or manifest failure
+  does not publish a render revision.
+- `GET /v1/story-builder-projects/{id}/renders/{revision}` — serve only an exact
+  positive decimal revision recorded in that project's manifest. Filenames,
+  paths, leading-zero aliases, and unsupported artifacts are not accepted.
+- `GET /v1/story-builder-projects/{id}/master` — redirect to the newest recorded
+  immutable render URL. This is a stable convenience action, not a mutable
+  render identity and not a second copy of the WAV.
 
 Timeline playback is browser-owned and read-only. The Story Builder fetches the
 existing project-owned dialogue, SFX, and Music WAVs and schedules them with the

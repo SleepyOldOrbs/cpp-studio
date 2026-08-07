@@ -139,6 +139,67 @@ func TestStoryBuilderProjectLifecycleThroughGateway(t *testing.T) {
 	}
 }
 
+func TestStoryBuilderRenderRoutesServeOnlyRecordedImmutableWAVs(t *testing.T) {
+	root := t.TempDir()
+	cfg := testConfig(nil)
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	tone := wav.SyntheticTone(wav.ToneSampleRate)
+	r.storyBuilderProjects = storybuilder.NewStoreWithOptions(root, storybuilder.StoreOptions{ResolveLibraryAudio: func(id string) (storybuilder.LibraryAudio, bool, error) {
+		return storybuilder.LibraryAudio{ID: id, Name: "Door", MediaRole: storybuilder.MediaRoleSFX, Data: tone}, true, nil
+	}})
+	project, err := r.storyBuilderProjects.Create("Gateway render")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err = r.storyBuilderProjects.Update(project.ID, storybuilder.ProjectUpdate{Name: project.Name, Revision: project.Revision, TimelineDurationMS: 1000, Tracks: []storybuilder.Track{{
+		ID: "foley", Name: "Foley", Type: storybuilder.TrackTypeSFX, Order: 0,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err = r.storyBuilderProjects.PlaceLibraryAudio(project.ID, storybuilder.LibraryAudioPlacement{
+		Revision: project.Revision, TrackID: "foley", LibraryItemID: "door",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects/"+project.ID+"/renders", strings.NewReader(fmt.Sprintf(`{"revision":%d}`, project.Revision))))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("render status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var response storybuilder.RenderResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil || response.Render.Revision != 1 || response.Project.Revision != project.Revision+1 {
+		t.Fatalf("render response = %+v, err=%v", response, err)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, response.Render.URL, nil))
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "audio/wav" || wav.ValidateBytes(rec.Body.Bytes()) != nil {
+		t.Fatalf("immutable render response = %d %q (%d bytes)", rec.Code, rec.Header().Get("Content-Type"), rec.Body.Len())
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+project.ID+"/master", nil))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != response.Render.URL {
+		t.Fatalf("latest master = %d location %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	for _, path := range []string{
+		"/v1/story-builder-projects/" + project.ID + "/renders/project.json",
+		"/v1/story-builder-projects/" + project.ID + "/renders/01",
+		"/v1/story-builder-projects/" + project.ID + "/renders/1.wav",
+		"/v1/story-builder-projects/" + project.ID + "/renders/1/extra",
+		"/v1/story-builder-projects/" + project.ID + "/master/extra",
+	} {
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("unsupported artifact %q status = %d", path, rec.Code)
+		}
+	}
+}
+
 func TestStoryBuilderPlacesDurableLibraryAudioThroughGateway(t *testing.T) {
 	root := t.TempDir()
 	cfg := testConfig(nil)

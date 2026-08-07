@@ -47,7 +47,18 @@ function Write-FixtureWav {
     $writer.Write([uint16]16)
     $writer.Write([Text.Encoding]::ASCII.GetBytes("data"))
     $writer.Write([uint32]$pcmBytes)
-    $writer.Write([byte[]]::new($pcmBytes))
+    $pcm = [byte[]]::new($pcmBytes)
+    $split = [Math]::Floor($Samples / 2)
+    for ($sample = 0; $sample -lt $Samples; $sample++) {
+      if ($sample -lt $split) {
+        $pcm[$sample * 2] = 232
+        $pcm[$sample * 2 + 1] = 3
+      } else {
+        $pcm[$sample * 2] = 184
+        $pcm[$sample * 2 + 1] = 11
+      }
+    }
+    $writer.Write($pcm)
     [IO.File]::WriteAllBytes($Path, $stream.ToArray())
   } finally {
     $writer.Dispose()
@@ -694,7 +705,7 @@ async page => {
   const sought = state.starts.slice(-3);
   const soughtOffsets = sought.map(item => Number(item.offset.toFixed(2))).sort();
   const soughtDurations = sought.map(item => Number(item.duration.toFixed(2))).sort();
-  assert(JSON.stringify(soughtOffsets) === JSON.stringify([0.25, 0.45, 0.5]), 'seek did not apply dialogue and source-trim offsets');
+  assert(JSON.stringify(soughtOffsets) === JSON.stringify([0.25, 0.5, 0.75]), 'seek did not apply dialogue and source-trim offsets');
   assert(JSON.stringify(soughtDurations) === JSON.stringify([0.25, 0.5, 0.75]), 'seek did not shorten remaining clip durations');
   const playheadGeometry = await page.evaluate(() => {
     const stage = document.querySelector('.timeline-stage').getBoundingClientRect();
@@ -727,7 +738,7 @@ async page => {
   await page.waitForFunction(count => window.__storyPlayback.starts.length === count + 1, beforeAudition.starts.length);
   const auditioned = await playbackState();
   const isolated = auditioned.starts.at(-1);
-  assert(Number(isolated.offset.toFixed(2)) === 0.2 && Number(isolated.duration.toFixed(2)) === 0.5,
+  assert(Number(isolated.offset.toFixed(2)) === 0.5 && Number(isolated.duration.toFixed(2)) === 0.5,
     'isolated audition ignored selected source trim');
   assert(auditioned.stops > beforeAudition.stops, 'audition did not stop timeline playback');
   assert((await page.locator('#storyBuilderPlaybackStatus').innerText()).includes('only'), 'audition did not report isolation');
@@ -777,6 +788,58 @@ async page => {
   await page.locator('#storyBuilderPlaybackStatus').filter({ hasText: /unavailable clips:.*missing or unreadable/i }).waitFor();
 
   return { project: projectID, unavailable: true };
+}
+'@
+
+$renderMasterCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const origin = page.url().split('/demo/')[0];
+  const projectID = '__PLAYBACK_PROJECT_ID__';
+  const brokenID = '__BROKEN_PROJECT_ID__';
+  const projectState = id => page.evaluate(id => fetch(`/v1/story-builder-projects/${id}`).then(response => response.json()), id);
+  const digest = url => page.evaluate(async url => {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`render fetch failed ${response.status}`);
+    const bytes = await response.arrayBuffer();
+    const hash = await crypto.subtle.digest('SHA-256', bytes);
+    const view = new DataView(bytes);
+    const samples = [0, 250, 800, 1100, 1300].map(ms => view.getInt16(44 + ms * 16 * 2, true));
+    return { bytes: bytes.byteLength, hash: Array.from(new Uint8Array(hash), value => value.toString(16).padStart(2, '0')).join(''), samples, url: response.url };
+  }, url);
+
+  await page.goto(`${origin}/demo/story-builder.html?project=${projectID}`);
+  const renderButton = page.getByRole('button', { name: 'Render master' });
+  assert(!(await renderButton.isDisabled()), 'render button was disabled for a saved ready arrangement');
+  await renderButton.click();
+  await page.waitForFunction(() => document.querySelector('#storyBuilderRenderStatus')?.textContent === 'Rendered revision 1');
+  let project = await projectState(projectID);
+  assert(project.renders?.length === 1 && project.renders[0].revision === 1, 'first browser render was not recorded');
+  assert(await page.locator('#storyBuilderLatestMaster').getAttribute('href') === `/v1/story-builder-projects/${projectID}/master`, 'latest-master action is not stable');
+  const first = await digest(project.renders[0].url);
+  assert(first.bytes === 96044, `three-second mixed WAV had ${first.bytes} bytes`);
+  assert(JSON.stringify(first.samples) === JSON.stringify([1000, 5000, 6000, 3000, 0]),
+    `mixed WAV ignored placement, trim, mute, silence, or overlap: ${first.samples}`);
+  const latest = await digest(`/v1/story-builder-projects/${projectID}/master`);
+  assert(latest.hash === first.hash && latest.url.endsWith('/renders/1'), 'latest-master did not identify revision 1');
+
+  await renderButton.click();
+  await page.waitForFunction(() => document.querySelector('#storyBuilderRenderStatus')?.textContent === 'Rendered revision 2');
+  project = await projectState(projectID);
+  assert(project.renders?.length === 2 && project.renders[1].revision === 2, 'second browser render was not recorded');
+  const unchangedFirst = await digest(project.renders[0].url);
+  assert(unchangedFirst.hash === first.hash, 'second render rewrote revision 1');
+  const latestSecond = await digest(`/v1/story-builder-projects/${projectID}/master`);
+  assert(latestSecond.url.endsWith('/renders/2'), 'latest-master did not advance to revision 2');
+
+  await page.goto(`${origin}/demo/story-builder.html?project=${brokenID}`);
+  await page.getByRole('button', { name: 'Render master' }).click();
+  await page.waitForFunction(() => document.querySelector('#storyBuilderRenderStatus')?.dataset.state === 'failed');
+  const broken = await projectState(brokenID);
+  assert(!broken.renders?.length, 'missing-media render published a revision');
+  await page.goto(`${origin}/demo/story-builder.html?project=${projectID}`);
 }
 '@
 
@@ -1100,8 +1163,8 @@ try {
     revision = $playbackProject.revision; track_id = "playback_muted"; library_item_id = $sfxItem.id; start_ms = 250
   } | ConvertTo-Json)
   $playbackSFXClip = $playbackProject.tracks | Where-Object { $_.id -eq "playback_sfx" } | Select-Object -ExpandProperty clips | Select-Object -First 1
-  $playbackSFXClip | Add-Member -NotePropertyName source_in_ms -NotePropertyValue 200
-  $playbackSFXClip.source_out_ms = 700
+  $playbackSFXClip | Add-Member -NotePropertyName source_in_ms -NotePropertyValue 500
+  $playbackSFXClip.source_out_ms = 1000
   $playbackSFXClip.duration_ms = 500
   $playbackProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects/$($playbackProject.id)" -Method Put -ContentType "application/json" -Body (@{
     name = $playbackProject.name
@@ -1130,6 +1193,7 @@ try {
   $playbackSetupCode = $playbackSetupCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id)
   $playbackTimelineCode = $playbackTimelineCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id)
   $playbackUnavailableCode = $playbackUnavailableCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id).Replace("__BROKEN_PROJECT_ID__", $brokenProject.id)
+  $renderMasterCode = $renderMasterCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id).Replace("__BROKEN_PROJECT_ID__", $brokenProject.id)
   $storyImportCode = $storyImportCode.Replace("__IMPORT_STORY_ID__", $storyImportStart.id).Replace("__IMPORT_SUGGESTED_CHARACTER_ID__", $matchedCharacterVoice.id).Replace("__IMPORT_AMBIGUOUS_ACTOR_ID__", $actorVoice.id)
 
   Invoke-BrowserCLI -Arguments @("open", "$baseURL/demo/story-builder.html")
@@ -1145,6 +1209,7 @@ try {
   Invoke-BrowserCode -Code $buildCancellationRecoveryCode
   Invoke-BrowserCode -Code $playbackSetupCode
   Invoke-BrowserCode -Code $playbackTimelineCode
+  Invoke-BrowserCode -Code $renderMasterCode
   Invoke-BrowserCode -Code $playbackUnavailableCode
   Invoke-BrowserCode -Code $storyImportCode
   [ordered]@{ status = "ok"; browser = "playwright"; gateway = $baseURL } | ConvertTo-Json

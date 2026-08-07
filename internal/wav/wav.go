@@ -51,6 +51,129 @@ type Format struct {
 	BitsPerSample uint16
 }
 
+// TimelinePlacement is one nondestructive source slice in a mixed WAV.
+type TimelinePlacement struct {
+	Data       []byte
+	StartMS    int64
+	SourceInMS int64
+	DurationMS int64
+}
+
+// TimelineMixFormat is the one delivery format used by deterministic timeline
+// renders. Sources are converted to it while they are mixed.
+func TimelineMixFormat() Format {
+	return Format{Channels: toneChannels, SampleRate: ToneSampleRate, BitsPerSample: toneBitsPerSample}
+}
+
+// MixTimeline renders placements onto a silent canvas. PCM sources are
+// deterministically resampled and downmixed to TimelineMixFormat; samples are
+// summed across overlaps and clamped once at the final output boundary.
+func MixTimeline(durationMS int64, placements []TimelinePlacement) ([]byte, error) {
+	if durationMS <= 0 {
+		return nil, fmt.Errorf("timeline duration must be positive")
+	}
+	format := TimelineMixFormat()
+	type decodedPlacement struct {
+		format                  Format
+		pcm                     []byte
+		startFrame, sourceFrame int64
+		frameCount              int64
+	}
+	decoded := make([]decodedPlacement, 0, len(placements))
+	for i, placement := range placements {
+		if placement.StartMS < 0 || placement.SourceInMS < 0 || placement.DurationMS <= 0 {
+			return nil, fmt.Errorf("placement %d has invalid timing", i+1)
+		}
+		clipFormat, pcm, err := Decode(placement.Data)
+		if err != nil {
+			return nil, fmt.Errorf("placement %d: %w", i+1, err)
+		}
+		if clipFormat.Channels == 0 || clipFormat.SampleRate == 0 ||
+			(clipFormat.BitsPerSample != 8 && clipFormat.BitsPerSample != 16 && clipFormat.BitsPerSample != 24 && clipFormat.BitsPerSample != 32) {
+			return nil, fmt.Errorf("placement %d has unsupported PCM format %+v", i+1, clipFormat)
+		}
+		blockAlign := int64(clipFormat.Channels) * int64(clipFormat.BitsPerSample/8)
+		if int64(len(pcm))%blockAlign != 0 {
+			return nil, fmt.Errorf("placement %d PCM is not frame-aligned", i+1)
+		}
+		outputRate := int64(format.SampleRate)
+		sourceRate := int64(clipFormat.SampleRate)
+		if placement.StartMS > math.MaxInt64/outputRate || placement.DurationMS > math.MaxInt64/outputRate ||
+			placement.SourceInMS > math.MaxInt64/sourceRate {
+			return nil, fmt.Errorf("placement %d timing is too large", i+1)
+		}
+		startFrame := placement.StartMS * outputRate / 1000
+		sourceFrame := placement.SourceInMS * sourceRate / 1000
+		frameCount := placement.DurationMS * outputRate / 1000
+		if frameCount <= 0 {
+			return nil, fmt.Errorf("placement %d trim exceeds its source", i+1)
+		}
+		lastSourceFrame := sourceFrame + (frameCount-1)*sourceRate/outputRate
+		if sourceFrame < 0 || lastSourceFrame >= int64(len(pcm))/blockAlign {
+			return nil, fmt.Errorf("placement %d trim exceeds its source", i+1)
+		}
+		decoded = append(decoded, decodedPlacement{format: clipFormat, pcm: pcm, startFrame: startFrame, sourceFrame: sourceFrame, frameCount: frameCount})
+	}
+
+	if durationMS > math.MaxInt64/int64(format.SampleRate) {
+		return nil, fmt.Errorf("timeline duration is too large")
+	}
+	outputFrames := durationMS * int64(format.SampleRate) / 1000
+	if outputFrames <= 0 {
+		return nil, fmt.Errorf("timeline duration is shorter than one sample")
+	}
+	const maxTimelineWAVBytes = 256 * 1024 * 1024
+	if outputFrames > (maxTimelineWAVBytes-44)/2 || outputFrames > int64(int(^uint(0)>>1))/8 {
+		return nil, fmt.Errorf("mixed WAV is too large")
+	}
+	mix := make([]int64, int(outputFrames))
+	for i, placement := range decoded {
+		if placement.startFrame > outputFrames-placement.frameCount {
+			return nil, fmt.Errorf("placement %d exceeds the timeline", i+1)
+		}
+		for frame := int64(0); frame < placement.frameCount; frame++ {
+			sourceFrame := placement.sourceFrame + frame*int64(placement.format.SampleRate)/int64(format.SampleRate)
+			var sum int64
+			for channel := int64(0); channel < int64(placement.format.Channels); channel++ {
+				sourceSample := sourceFrame*int64(placement.format.Channels) + channel
+				sum += pcmSample16(placement.pcm, placement.format.BitsPerSample, sourceSample)
+			}
+			mix[placement.startFrame+frame] += sum / int64(placement.format.Channels)
+		}
+	}
+	pcm := make([]byte, len(mix)*2)
+	for i, sample := range mix {
+		if sample > math.MaxInt16 {
+			sample = math.MaxInt16
+		} else if sample < math.MinInt16 {
+			sample = math.MinInt16
+		}
+		binary.LittleEndian.PutUint16(pcm[i*2:i*2+2], uint16(int16(sample)))
+	}
+	return Encode(format, pcm), nil
+}
+
+func pcmSample16(pcm []byte, bits uint16, sample int64) int64 {
+	bytesPerSample := int64(bits / 8)
+	offset := sample * bytesPerSample
+	switch bits {
+	case 8:
+		return (int64(pcm[offset]) - 128) << 8
+	case 16:
+		return int64(int16(binary.LittleEndian.Uint16(pcm[offset : offset+2])))
+	case 24:
+		value := int32(pcm[offset]) | int32(pcm[offset+1])<<8 | int32(pcm[offset+2])<<16
+		if value&0x800000 != 0 {
+			value |= ^int32(0xffffff)
+		}
+		return int64(value >> 8)
+	case 32:
+		return int64(int32(binary.LittleEndian.Uint32(pcm[offset:offset+4])) >> 16)
+	default:
+		return 0
+	}
+}
+
 // Decode splits a WAV into its format and raw PCM data by walking the RIFF
 // chunks; chunks other than fmt and data (LIST, cue, ...) are skipped.
 func Decode(data []byte) (Format, []byte, error) {
