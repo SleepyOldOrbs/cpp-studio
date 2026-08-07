@@ -171,15 +171,18 @@ through the owning Voice Store deletion. Deleting a project removes only its
 directory and owned media, takes, renders, and exports; it never removes the
 imported Story, bound voices, or original reusable Library audio.
 
-The separate browser tool at `/demo/story-builder.html` owns project and typed
-track arrangement, starts/polls asynchronous dialogue builds, requests
+The main Studio links explicitly to the separate browser tool at
+`/demo/story-builder.html`, which owns project and typed track arrangement,
+starts/polls asynchronous dialogue builds, requests
 immutable project renders, and exposes revision-specific WAV, MP3, and FLAC
 delivery actions. Build
 coordination is in memory, while clip status and successful takes are durable in
 the project Store. It also derives read-only timeline playback and isolated clip
 audition from those project-owned WAVs without creating a render or changing the
-project revision. Later Story Builder slices extend this aggregate rather than
-creating a second persistence system.
+project revision. Native controls remain keyboard reachable with visible focus;
+save, undo, redo, playback, and selected-clip deletion shortcuts apply only
+outside editable text and numeric fields. Later Story Builder slices extend
+this aggregate rather than creating a second persistence system.
 
 ## Timeline Track
 

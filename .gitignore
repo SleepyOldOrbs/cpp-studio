@@ -2,6 +2,7 @@ bin/
 dist/
 out/
 /output/playwright/
+/output/native/
 /engines/
 /models/
 config.real.json
