@@ -140,7 +140,7 @@ func TestSpeechWritesValidWAV(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested-name.wav")
 
 	var stdout, stderr bytes.Buffer
-	if err := run([]string{"speech", "--text", "hello", "--out", path}, &stdout, &stderr); err != nil {
+	if err := run([]string{"speech", "--text", "hello", "--instruct", "quiet and guarded", "--out", path}, &stdout, &stderr); err != nil {
 		t.Fatalf("run speech: %v", err)
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {

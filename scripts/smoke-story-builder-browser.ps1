@@ -23,6 +23,7 @@ Assert-PortFree -Port $GatewayPort
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $runtimeDir = (Resolve-Path $OutDir).Path
 $gatewayExe = Join-Path $runtimeDir "cpp-studio-story-builder-smoke.exe"
+$fixtureExe = Join-Path $runtimeDir "cpp-studio-fixture.exe"
 $configPath = Join-Path $runtimeDir "config.json"
 $voiceWavPath = Join-Path $runtimeDir "actor-voice.wav"
 $libraryWavPath = Join-Path $runtimeDir "library-audio.wav"
@@ -58,10 +59,26 @@ go build -o $gatewayExe .\cmd\cpp-studio
 if ($LASTEXITCODE -ne 0) {
   throw "failed to build the Story Builder browser-smoke Gateway"
 }
+go build -o $fixtureExe .\cmd\cpp-studio-fixture
+if ($LASTEXITCODE -ne 0) {
+  throw "failed to build the Story Builder browser-smoke fixture Engine"
+}
 
 $config = [ordered]@{
   gateway = [ordered]@{ host = "127.0.0.1"; port = $GatewayPort }
   engines = [ordered]@{
+    audio = [ordered]@{
+      command = $fixtureExe
+      args = @("speech")
+      mode = "subprocess"
+      requestTimeoutSeconds = 10
+    }
+    omnivoice = [ordered]@{
+      command = $fixtureExe
+      args = @("speech")
+      mode = "subprocess"
+      requestTimeoutSeconds = 10
+    }
     ci = [ordered]@{
       command = "go"
       args = @("version")
@@ -224,21 +241,7 @@ async page => {
   };
   const clipLabels = () => page.locator('.timeline-clip').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')));
 
-  const audioID = await page.evaluate(async () => {
-    const created = await fetch('/v1/story-builder-projects', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Audio trim browser smoke' }),
-    }).then(response => response.json());
-    const saved = await fetch('/v1/story-builder-projects/' + created.id, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
-        name: created.name, revision: created.revision, timeline_duration_ms: 30000,
-        tracks: [{ id: 'mara', name: 'Mara', type: 'dialogue', order: 0, muted: false, character_voice_id: '__KEEPER_VOICE_ID__', clips: [{
-          id: 'line_1', type: 'dialogue', label: 'Keep the lamp low', start_ms: 125, duration_ms: 700,
-          source_id: 'take_1', source_duration_ms: 1200, source_in_ms: 200, source_out_ms: 900,
-        }] }],
-      }),
-    }).then(response => response.json());
-    return saved.id;
-  });
+  const audioID = '__AUDIO_TRIM_PROJECT_ID__';
   const origin = page.url().split('/demo/')[0];
   await page.goto(origin + '/demo/story-builder.html?project=' + audioID);
   await page.locator('.timeline-clip').click();
@@ -411,6 +414,33 @@ async page => {
 }
 '@
 
+$buildDialogueCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const projectID = await page.locator('.project-item[aria-current="true"]').getAttribute('data-project-id');
+  await page.getByRole('button', { name: /Build stale/ }).click();
+  const buildStatus = page.locator('#storyBuilderBuildStatus');
+  await buildStatus.filter({ hasText: /Building/ }).waitFor();
+  await buildStatus.filter({ hasText: /Dialogue ready/ }).waitFor({ timeout: 15000 });
+  const states = await page.locator('.clip-status-badge').allInnerTexts();
+  assert(states.length === 2 && states.every(state => state.toLowerCase() === 'ready'), 'Gateway build state did not refresh every Dialogue Clip to ready');
+
+  const project = await page.evaluate(id => fetch('/v1/story-builder-projects/' + id).then(response => response.json()), projectID);
+  const dialogue = project.tracks.flatMap(track => track.clips).filter(clip => clip.type === 'dialogue');
+  assert(dialogue.length === 2 && dialogue.every(clip => clip.status === 'ready' && clip.source_id), 'built takes were not durably attached to the project');
+
+  await page.locator('.dialogue-text-inline').first().click({ force: true });
+  const auditionResponse = page.waitForResponse(response => response.url().includes('/clips/') && response.url().endsWith('/audio'));
+  await page.getByRole('button', { name: 'Audition selected clip' }).click();
+  const response = await auditionResponse;
+  assert(response.ok() && (response.headers()['content-type'] || '').includes('audio/wav'), 'ready Dialogue Clip audition did not return WAV audio');
+
+  return { project: projectID, built: dialogue.map(clip => clip.id) };
+}
+'@
+
 $libraryAudioCode = @'
 async page => {
   const assert = (condition, message) => {
@@ -568,7 +598,29 @@ try {
   $statusManifest.tracks[2].clips[0] | Add-Member -NotePropertyName build_error -NotePropertyValue "fixture failure"
   $statusManifest | ConvertTo-Json -Depth 12 | Set-Content -Encoding UTF8 -Path $statusManifestPath
 
-  $audioCode = $audioCode.Replace("__KEEPER_VOICE_ID__", $keeperVoice.id)
+  $audioTrimProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects" -Method Post -ContentType "application/json" -Body '{"name":"Audio trim browser smoke"}'
+  $audioTrimProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects/$($audioTrimProject.id)" -Method Put -ContentType "application/json" -Body (@{
+    name = $audioTrimProject.name
+    revision = $audioTrimProject.revision
+    timeline_duration_ms = 30000
+    tracks = @([ordered]@{ id = "mara"; name = "Mara"; type = "dialogue"; order = 0; muted = $false; character_voice_id = $keeperVoice.id; clips = @(
+      [ordered]@{ id = "line_1"; type = "dialogue"; label = "Keep the lamp low"; text = "Keep the lamp low"; start_ms = 125; duration_ms = 700 }
+    ) })
+  } | ConvertTo-Json -Depth 10)
+  $audioTrimManifestPath = Join-Path $runtimeDir "out\story-builder-projects\$($audioTrimProject.id)\project.json"
+  $audioTrimManifest = Get-Content -Raw $audioTrimManifestPath | ConvertFrom-Json
+  $audioTrimClip = $audioTrimManifest.tracks[0].clips[0]
+  $audioTrimClip.status = "ready"
+  $audioTrimClip | Add-Member -NotePropertyName source_id -NotePropertyValue "take_1"
+  $audioTrimClip | Add-Member -NotePropertyName source_duration_ms -NotePropertyValue 1200
+  $audioTrimClip | Add-Member -NotePropertyName source_in_ms -NotePropertyValue 200
+  $audioTrimClip | Add-Member -NotePropertyName source_out_ms -NotePropertyValue 900
+  $audioTrimManifest | ConvertTo-Json -Depth 12 | Set-Content -Encoding UTF8 -Path $audioTrimManifestPath
+  $audioTrimTakesDir = Join-Path $runtimeDir "out\story-builder-projects\$($audioTrimProject.id)\takes"
+  New-Item -ItemType Directory -Force -Path $audioTrimTakesDir | Out-Null
+  Write-FixtureWav -Path (Join-Path $audioTrimTakesDir "take_1.wav") -Samples 19200
+
+  $audioCode = $audioCode.Replace("__AUDIO_TRIM_PROJECT_ID__", $audioTrimProject.id)
   $statusCode = $statusCode.Replace("__STATUS_PROJECT_ID__", $statusProject.id)
   $libraryAudioCode = $libraryAudioCode.Replace("__SFX_ITEM_ID__", $sfxItem.id).Replace("__MUSIC_ITEM_ID__", $musicItem.id).Replace("__BROKEN_PROJECT_ID__", $brokenProject.id)
 
@@ -579,6 +631,7 @@ try {
   Invoke-BrowserCode -Code $statusCode
   Invoke-BrowserCode -Code $dialogueCode
   Invoke-BrowserCode -Code $revoiceCode
+  Invoke-BrowserCode -Code $buildDialogueCode
   Invoke-BrowserCode -Code $libraryAudioCode
   [ordered]@{ status = "ok"; browser = "playwright"; gateway = $baseURL } | ConvertTo-Json
 } finally {

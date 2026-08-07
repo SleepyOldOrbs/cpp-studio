@@ -115,6 +115,7 @@ type Track struct {
 type VoiceIdentity struct {
 	CharacterVoiceID string
 	ActorVoiceID     string
+	Direction        string
 	Fingerprint      string
 }
 
@@ -531,12 +532,21 @@ func (s *Store) markMediaErrors(project *Project) {
 	for trackIndex := range project.Tracks {
 		for clipIndex := range project.Tracks[trackIndex].Clips {
 			clip := &project.Tracks[trackIndex].Clips[clipIndex]
-			if clip.Type != ClipTypeSFX && clip.Type != ClipTypeMusic {
+			directory := "media"
+			errorMessage := "project media is missing or unreadable"
+			if clip.Type == ClipTypeDialogue {
+				if clip.Status != DialogueStatusReady || clip.SourceID == "" {
+					continue
+				}
+				directory = "takes"
+				errorMessage = "dialogue take is missing or unreadable"
+			} else if clip.Type != ClipTypeSFX && clip.Type != ClipTypeMusic {
 				continue
 			}
-			errorText, seen := checked[clip.SourceID]
+			cacheKey := directory + "/" + clip.SourceID
+			errorText, seen := checked[cacheKey]
 			if !seen {
-				path := filepath.Join(s.rootDir, project.ID, "media", clip.SourceID+".wav")
+				path := filepath.Join(s.rootDir, project.ID, directory, clip.SourceID+".wav")
 				data, err := os.ReadFile(path)
 				if err == nil {
 					var duration time.Duration
@@ -546,9 +556,9 @@ func (s *Store) markMediaErrors(project *Project) {
 					}
 				}
 				if err != nil {
-					errorText = "project media is missing or unreadable"
+					errorText = errorMessage
 				}
-				checked[clip.SourceID] = errorText
+				checked[cacheKey] = errorText
 			}
 			clip.MediaError = errorText
 		}
@@ -636,6 +646,13 @@ func (s *Store) prepareTracks(existing, incoming []Track, revoiceTrackIDs map[st
 			if clip.Type != ClipTypeDialogue {
 				continue
 			}
+			// Generated dialogue sources are server-owned. Whole-project edits
+			// may preserve the current take, but cannot introduce or replace it.
+			clip.SourceID = ""
+			clip.SourceDurationMS = 0
+			clip.SourceInMS = 0
+			clip.SourceOutMS = 0
+			clip.MediaError = ""
 			clip.Text = strings.TrimSpace(clip.Text)
 			if clip.Text == "" {
 				clip.Text = clip.Label
@@ -655,6 +672,11 @@ func (s *Store) prepareTracks(existing, incoming []Track, revoiceTrackIDs map[st
 				oldTrack.ActorVoiceID == track.ActorVoiceID && oldTrack.VoiceFingerprint == track.VoiceFingerprint {
 				clip.Status = dialogueStatus(oldClip)
 				clip.BuildError = oldClip.BuildError
+				clip.SourceID = oldClip.SourceID
+				clip.SourceDurationMS = oldClip.SourceDurationMS
+				clip.SourceInMS = oldClip.SourceInMS
+				clip.SourceOutMS = oldClip.SourceOutMS
+				clip.MediaError = oldClip.MediaError
 			}
 		}
 	}

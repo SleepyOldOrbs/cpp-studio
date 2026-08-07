@@ -59,6 +59,7 @@ type CharacterPreview struct {
 type CharacterSynthesisIdentity struct {
 	CharacterVoiceID string
 	ActorVoiceID     string
+	Direction        string
 	Fingerprint      string
 }
 
@@ -98,6 +99,7 @@ func (s *Store) ResolveCharacterSynthesisIdentity(id string) (CharacterSynthesis
 	return CharacterSynthesisIdentity{
 		CharacterVoiceID: character.ID,
 		ActorVoiceID:     actor.ID,
+		Direction:        character.Direction,
 		Fingerprint:      hex.EncodeToString(fingerprint[:]),
 	}, true, nil
 }
