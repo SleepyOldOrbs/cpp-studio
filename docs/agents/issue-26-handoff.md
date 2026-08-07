@@ -41,10 +41,11 @@ workflow**, on branch `codex/story-builder-complete-workflow`, stacked on issue
 
 ## Verification
 
-- `scripts/smoke-story-builder-browser.ps1 -GatewayPort 8923 -OutDir
-  output/playwright/story-builder-issue26-complete` passes the full isolated
+- `scripts/smoke-story-builder-browser.ps1 -GatewayPort 8925 -OutDir
+  output/playwright/story-builder-issue26-overlap-final-2` passes the full isolated
   real-browser suite. The new journey covers main launch, visible focus,
-  text-field shortcut guards, save/undo/redo/delete, save/reload, dialogue
+  text-field shortcut guards, save/undo/redo/delete, same-track overlap rejection,
+  save/reload, dialogue
   build, project-owned reusable audio, WAV render, MP3 export, Library launch,
   and durable artifact records.
 - `config.real.json` passes `cpp-studio --check`. The focused native run used
@@ -63,7 +64,7 @@ workflow**, on branch `codex/story-builder-complete-workflow`, stacked on issue
 
 ## Exact next step
 
-Run focused and full verification, then perform the two-axis review against
-`6e0a537`. Address every actionable finding before committing, pushing, and
-opening a draft pull request based on `codex/protect-deletion-boundaries`. Do
-not merge without explicit user approval.
+Have a human listen to the configured-native mixed WAV and record whether the
+sentence/content and dialogue/SFX timing are acceptable. If that perceptual gate
+passes, the green draft stack can be considered for merge in order from PR #35.
+Do not merge without explicit user approval.
