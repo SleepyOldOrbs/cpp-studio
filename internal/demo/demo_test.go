@@ -293,14 +293,14 @@ func TestSpeechModelDropdownsAreInteractive(t *testing.T) {
 	}
 }
 
-func TestLibraryIncludesVoiceHierarchyProjectsAndExports(t *testing.T) {
+func TestLibraryRendersUnifiedHierarchyAndOwningActions(t *testing.T) {
 	rec := httptest.NewRecorder()
 	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/app.js", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, marker := range []string{"Story Builder Projects", "renderCharacterVoiceGroup(voice)", "appendLibraryExports", "/v1/story-builder-projects"} {
+	for _, marker := range []string{"Story Builder Projects", "libraryEntrySearchParts", "entry.children", "entry.artifact_action", "renderLibraryItems({ entries: libraryPayload.entries"} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("expected complete library marker %q", marker)
 		}
@@ -516,7 +516,7 @@ func TestHandlerServesAssets(t *testing.T) {
 			name:        "javascript library collection delete actions",
 			path:        "/app.js",
 			contentType: "javascript",
-			needle:      "appendLibraryDeleteAction",
+			needle:      "appendLibraryEntryActions",
 		},
 		{
 			name:        "css library",

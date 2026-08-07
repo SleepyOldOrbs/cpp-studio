@@ -308,11 +308,23 @@ type Render struct {
 
 // Export is one delivery encoding of a render revision.
 type Export struct {
-	Format    string    `json:"format"`
-	Bitrate   string    `json:"bitrate"`
-	Bytes     int       `json:"bytes"`
-	CreatedAt time.Time `json:"created_at"`
-	URL       string    `json:"url"`
+	Format         string    `json:"format"`
+	Bitrate        string    `json:"bitrate"`
+	Bytes          int       `json:"bytes"`
+	CreatedAt      time.Time `json:"created_at"`
+	URL            string    `json:"url"`
+	RenderRevision int       `json:"render_revision,omitempty"`
+}
+
+// RenderSummary is the immutable identity and delivery surface needed by
+// collection readers without repeating a render's full recipe.
+type RenderSummary struct {
+	Revision        int       `json:"revision"`
+	CreatedAt       time.Time `json:"created_at"`
+	DurationSeconds int       `json:"duration_seconds"`
+	Bytes           int       `json:"bytes"`
+	URL             string    `json:"url"`
+	Exports         []Export  `json:"exports,omitempty"`
 }
 
 // RenderLine is one line as it stood when a revision was published.
@@ -382,15 +394,16 @@ type StatusResponse struct {
 }
 
 type Summary struct {
-	ID              string    `json:"id"`
-	Subject         string    `json:"subject"`
-	Mode            string    `json:"mode,omitempty"`
-	Title           string    `json:"title"`
-	Status          Status    `json:"status"`
-	CreatedAt       time.Time `json:"created_at"`
-	DurationSeconds int       `json:"duration_seconds"`
-	ArtifactURL     string    `json:"artifact_url"`
-	Exports         []Export  `json:"exports,omitempty"`
+	ID              string          `json:"id"`
+	Subject         string          `json:"subject"`
+	Mode            string          `json:"mode,omitempty"`
+	Title           string          `json:"title"`
+	Status          Status          `json:"status"`
+	CreatedAt       time.Time       `json:"created_at"`
+	DurationSeconds int             `json:"duration_seconds"`
+	ArtifactURL     string          `json:"artifact_url"`
+	Exports         []Export        `json:"exports,omitempty"`
+	Renders         []RenderSummary `json:"renders,omitempty"`
 }
 
 type ListResponse struct {

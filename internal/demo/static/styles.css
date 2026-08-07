@@ -2476,6 +2476,23 @@ pre {
   flex-wrap: wrap;
 }
 
+.library-entry-children {
+  display: grid;
+  gap: 7px;
+  margin-top: 3px;
+  padding: 8px 0 0 12px;
+  border-left: 2px solid var(--line-soft);
+}
+
+.library-child {
+  display: grid;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--well);
+}
+
 @media (max-width: 640px) {
   .library-jobs-summary,
   .library-group-summary,

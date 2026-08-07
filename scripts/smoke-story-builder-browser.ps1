@@ -1059,6 +1059,99 @@ async page => {
 }
 '@
 
+$unifiedLibraryAPICode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const projectID = '__PLAYBACK_PROJECT_ID__';
+  const storyID = '__IMPORT_STORY_ID__';
+
+  const catalog = await page.evaluate(() => fetch('/v1/library').then(response => response.json()));
+  const actor = catalog.entries.find(entry => entry.kind === 'actor_voice' && entry.name === 'Mara');
+  const project = catalog.entries.find(entry => entry.kind === 'story_builder_project' && entry.id === projectID);
+  const masters = catalog.entries.filter(entry => entry.kind === 'mixed_master' && entry.relationship?.id === projectID);
+  const exports = catalog.entries.filter(entry => entry.kind === 'export' && entry.id.startsWith(projectID + '/render/'));
+  const storyRender = catalog.entries.find(entry => entry.kind === 'render_revision' && entry.relationship?.id === storyID);
+  assert(actor?.children?.some(child => child.name === 'Weathered keeper' && child.metadata.direction.includes('weathered')),
+    'unified response did not nest Character Voices beneath their Actor Voice');
+  assert(project?.launch_action?.url === `/demo/story-builder.html?project=${projectID}`,
+    'project did not expose its owning-tool launch');
+  assert(masters.length === 2 && exports.some(entry => entry.subtype === 'mp3') && exports.some(entry => entry.subtype === 'flac'),
+    'render revisions or delivery exports were missing from unified response');
+  assert(storyRender?.artifact_action?.content_type === 'audio/wav', 'retained Story render revision was not discoverable');
+  assert(catalog.items.some(item => item.id === '__CATALOG_SFX_ITEM_ID__'), 'legacy saved-item projection was not preserved');
+
+  return { entries: catalog.entries.length, project: projectID };
+}
+'@
+
+$unifiedLibraryCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const origin = page.url().split('/demo/')[0];
+  const projectID = '__PLAYBACK_PROJECT_ID__';
+
+  await page.goto(origin + '/demo/#library');
+  await page.locator('.library-item', { hasText: 'Mara' }).waitFor({ state: 'attached' });
+  for (const category of ['voices', 'sfx', 'music', 'utility', 'productions', 'masters']) {
+    const group = page.locator(`.library-group[data-library-category="${category}"]`);
+    if (!(await group.getAttribute('open'))) await group.locator('summary').click();
+  }
+  const actorCard = page.locator('.library-item', { hasText: 'Mara' }).first();
+  assert(await actorCard.locator('.library-child', { hasText: 'Weathered keeper' }).count() === 1,
+    'Library UI did not nest Weathered keeper');
+  assert(await actorCard.locator('.library-child', { hasText: 'Young cartographer' }).count() === 1,
+    'Library UI did not nest Young cartographer');
+  assert(await page.locator('.library-group[data-library-category="sfx"]', { hasText: 'Library bell' }).count() === 1,
+    'SFX was not grouped separately');
+  assert(await page.locator('.library-group[data-library-category="music"]', { hasText: 'Low strings' }).count() === 1,
+    'Music and ambience group is missing its asset');
+  assert(await page.locator('.library-group[data-library-category="utility"]', { hasText: 'Scratch take' }).count() === 1,
+    'utility group is missing its asset');
+  assert(await page.locator('.library-group[data-library-category="productions"]', { hasText: 'Retained Story import browser smoke' }).count() === 1,
+    'retained Story was missing from Productions');
+  assert(await page.locator('.library-group[data-library-category="masters"]', { hasText: 'master r2' }).count() === 1,
+    'mixed masters were missing from Masters & exports');
+
+  const search = page.locator('#libraryFilterInput');
+  await search.fill('weathered, low');
+  assert(await page.locator('.library-item:visible').count() === 1 && await page.locator('.library-item:visible', { hasText: 'Mara' }).count() === 1,
+    'Character Voice direction search did not find its Actor family');
+  await search.fill('music');
+  assert(await page.locator('.library-item:visible', { hasText: 'Low strings' }).count() === 1,
+    'audio role search did not find Music');
+  await search.fill('');
+
+  const namesBefore = await page.locator('.library-item > .library-item-head > .library-item-name').allTextContents();
+  await page.reload();
+  await page.locator('.library-item', { hasText: 'Mara' }).waitFor({ state: 'attached' });
+  const namesAfter = await page.locator('.library-item > .library-item-head > .library-item-name').allTextContents();
+  assert(JSON.stringify(namesAfter) === JSON.stringify(namesBefore), 'Library reload changed the unified entry set or order');
+
+  const productions = page.locator('.library-group[data-library-category="productions"]');
+  if (!(await productions.getAttribute('open'))) await productions.locator('summary').click();
+  const projectCard = page.locator('.library-item', { hasText: 'Timeline playback browser smoke' }).first();
+  await Promise.all([
+    page.waitForURL(new RegExp('story-builder\\.html\\?project=' + projectID)),
+    projectCard.getByRole('link', { name: 'Open Story Builder', exact: true }).click(),
+  ]);
+  assert(page.url().endsWith('project=' + projectID), 'owning-tool launch lost the selected project identity');
+
+  await page.route('**/v1/library', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify({ entries: [], items: [] }),
+  }));
+  await page.goto(origin + '/demo/#library');
+  await page.locator('.library-group-empty').first().waitFor({ state: 'attached' });
+  assert(await page.locator('.library-group-empty').count() === 7, 'empty unified Library did not render every group state');
+  await page.unroute('**/v1/library');
+
+  return { project: projectID, empty: true };
+}
+'@
+
 Push-Location $runtimeDir
 try {
   $ready = $false
@@ -1282,6 +1375,11 @@ try {
   Invoke-BrowserCode -Code $revoiceCode
   Invoke-BrowserCode -Code $buildDialogueCode
   Invoke-BrowserCode -Code $libraryAudioCode
+  $catalogSFXItem = Invoke-RestMethod -Uri "$baseURL/v1/library" -Method Post -ContentType "application/json" -Body (@{
+    kind = "audio"; name = "Library bell"; data_b64 = $libraryAudioB64; meta = @{ media_role = "sfx" }
+  } | ConvertTo-Json -Depth 4)
+  $unifiedLibraryAPICode = $unifiedLibraryAPICode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id).Replace("__IMPORT_STORY_ID__", $storyImportStart.id).Replace("__CATALOG_SFX_ITEM_ID__", $catalogSFXItem.id)
+  $unifiedLibraryCode = $unifiedLibraryCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id)
   Invoke-BrowserCode -Code $buildFailureRecoveryCode
   Invoke-BrowserCode -Code $buildCancellationRecoveryCode
   Invoke-BrowserCode -Code $playbackSetupCode
@@ -1290,6 +1388,8 @@ try {
   Invoke-BrowserCode -Code $exportMasterCode
   Invoke-BrowserCode -Code $playbackUnavailableCode
   Invoke-BrowserCode -Code $storyImportCode
+  Invoke-BrowserCode -Code $unifiedLibraryAPICode
+  Invoke-BrowserCode -Code $unifiedLibraryCode
   [ordered]@{ status = "ok"; browser = "playwright"; gateway = $baseURL } | ConvertTo-Json
 } finally {
   try {
