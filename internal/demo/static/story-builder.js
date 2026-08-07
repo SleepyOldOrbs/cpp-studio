@@ -31,6 +31,12 @@
   const timelineViewport = byID("storyBuilderTimelineViewport");
   const timelineContent = byID("storyBuilderTimelineContent");
   const timelineRuler = byID("storyBuilderTimelineRuler");
+  const playButton = byID("storyBuilderPlay");
+  const pauseButton = byID("storyBuilderPause");
+  const playheadInput = byID("storyBuilderPlayhead");
+  const playheadValue = byID("storyBuilderPlayheadValue");
+  const playheadLine = byID("storyBuilderPlayheadLine");
+  const playbackStatus = byID("storyBuilderPlaybackStatus");
   const selectionPanel = byID("storyBuilderSelectionPanel");
   const selectionHandle = byID("storyBuilderSelectionHandle");
   const selectionBody = byID("storyBuilderSelectionBody");
@@ -58,6 +64,14 @@
   let dialogueBuildPromise = null;
   let activeDialogueBuild = null;
   let dialogueCancelPending = false;
+  let audioContext = null;
+  let playbackToken = 0;
+  let playbackPlaying = false;
+  let playbackStartMS = 0;
+  let playbackStartContextTime = 0;
+  let playbackAnimation = 0;
+  let playbackSources = new Set();
+  let playheadMS = 0;
   let requestedProjectID = new URLSearchParams(window.location.search).get("project") || "";
 
   async function request(path, options = {}) {
@@ -142,6 +156,47 @@
     timelineContent.style.width = `${Math.max(timelineViewport.clientWidth, requestedWidth)}px`;
     zoomValue.value = `${pixelsPerSecond} px/s`;
     zoomValue.textContent = `${pixelsPerSecond} px/s`;
+    updatePlayheadDisplay();
+  }
+
+  function formatPlayhead(value) {
+    const milliseconds = Math.max(0, Math.round(value));
+    const minutes = Math.floor(milliseconds / 60000);
+    const seconds = Math.floor((milliseconds % 60000) / 1000);
+    const remainder = milliseconds % 1000;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(remainder).padStart(3, "0")}`;
+  }
+
+  function setPlaybackStatus(message, state = "") {
+    playbackStatus.textContent = message;
+    playbackStatus.dataset.state = state;
+  }
+
+  function setPlayhead(value) {
+    const project = currentProject();
+    const duration = project ? timelineDurationMS(project) : 0;
+    playheadMS = Math.max(0, Math.min(Math.round(value), duration));
+    updatePlayheadDisplay();
+  }
+
+  function updatePlayheadDisplay() {
+    const project = currentProject();
+    const duration = project ? timelineDurationMS(project) : 0;
+    playheadMS = Math.max(0, Math.min(playheadMS, duration));
+    playheadInput.max = String(duration);
+    playheadInput.value = String(playheadMS);
+    playheadValue.value = formatPlayhead(playheadMS);
+    playheadValue.textContent = formatPlayhead(playheadMS);
+    const stage = tracksElement.querySelector(".timeline-stage");
+    if (stage && duration > 0) {
+      const contentBounds = timelineContent.getBoundingClientRect();
+      const stageBounds = stage.getBoundingClientRect();
+      playheadLine.style.left = `${stageBounds.left - contentBounds.left + (playheadMS / duration) * stageBounds.width}px`;
+    } else {
+      playheadLine.style.left = `${trackHeaderWidth}px`;
+    }
+    playButton.disabled = !project || duration <= 0;
+    pauseButton.disabled = !playbackPlaying;
   }
 
   function setStatus(state, detail = "") {
@@ -259,9 +314,10 @@
           return "Clips must remain inside the project length.";
         }
         const hasSource = Boolean(clip.source_id || clip.source_duration_ms || clip.source_in_ms || clip.source_out_ms);
-        if (hasSource && (clip.type === "silence" || !clip.source_id || clip.source_duration_ms <= 0 || clip.source_in_ms < 0 ||
-          clip.source_out_ms <= clip.source_in_ms || clip.source_out_ms > clip.source_duration_ms ||
-          clip.duration_ms !== clip.source_out_ms - clip.source_in_ms)) {
+        const sourceInMS = clip.source_in_ms || 0;
+        if (hasSource && (clip.type === "silence" || !clip.source_id || clip.source_duration_ms <= 0 || sourceInMS < 0 ||
+          clip.source_out_ms <= sourceInMS || clip.source_out_ms > clip.source_duration_ms ||
+          clip.duration_ms !== clip.source_out_ms - sourceInMS)) {
           return "Audio trims must remain inside the source bounds.";
         }
         if ((clip.type === "sfx" && track.type !== "sfx") || (clip.type === "music" && track.type !== "music")) {
@@ -300,6 +356,7 @@
 
   function acceptTimelineEdit(mutator) {
     if (serverMutationPending()) return false;
+    stopBrowserPlayback(true);
     const project = currentProject();
     if (!project) return false;
     const before = timelineSnapshot(project);
@@ -328,6 +385,7 @@
     if (serverMutationPending()) return;
     const project = currentProject();
     if (!project || !source.length) return;
+    stopBrowserPlayback(true);
     destination.push(timelineSnapshot(project));
     applyTimelineSnapshot(project, source.pop());
     pruneSelection();
@@ -494,12 +552,12 @@
     }
     selectionBody.append(selectionField("Status", clipStatus(clip)));
     if (clip.media_error) selectionBody.append(selectionField("Media error", clip.media_error));
-    if (clip.type === "dialogue" && clipStatus(clip) === "ready" && !clip.media_error) {
+    if (clip.type !== "silence" && clipStatus(clip) === "ready" && !clip.media_error && clipAudioURL(currentProject(), clip)) {
       const audition = document.createElement("button");
       audition.type = "button";
-      audition.className = "audition-dialogue";
+      audition.className = "audition-clip";
       audition.textContent = "Audition selected clip";
-      audition.addEventListener("click", () => auditionDialogueClip(clip));
+      audition.addEventListener("click", () => auditionClip(clip));
       selectionBody.append(audition);
     }
     if (panelPosition) clampPanelPosition();
@@ -690,6 +748,7 @@
     const project = currentProject();
     if (!project) {
       updateBuildControls();
+      updatePlayheadDisplay();
       renderSelection();
       return;
     }
@@ -777,6 +836,7 @@
       tracksElement.append(row);
     });
     refreshSelectionUI();
+    updatePlayheadDisplay();
   }
 
   async function refreshBuiltProject(projectID) {
@@ -852,6 +912,7 @@
 
   async function buildStaleDialogue() {
     if (serverMutationPending()) return;
+    stopBrowserPlayback(true);
     let project = currentProject();
     if (!project || dialogueBuildableCount(project) === 0) return;
     if (savePromise || saveStatus.dataset.state !== "saved") {
@@ -889,14 +950,197 @@
     }
   }
 
-  function auditionDialogueClip(clip) {
+  function clipAudioURL(project, clip) {
+    if (clip.type === "dialogue") {
+      return `${apiRoot}/${encodeURIComponent(project.id)}/clips/${encodeURIComponent(clip.id)}/audio`;
+    }
+    if ((clip.type === "sfx" || clip.type === "music") && clip.source_id) {
+      return `${apiRoot}/${encodeURIComponent(project.id)}/media/${encodeURIComponent(clip.source_id)}`;
+    }
+    return "";
+  }
+
+  function playbackPlan(project, startMS) {
+    const entries = [];
+    const issues = [];
+    for (const track of project.tracks) {
+      if (track.muted) continue;
+      for (const clip of track.clips) {
+        if (clip.start_ms + clip.duration_ms <= startMS || clip.type === "silence") continue;
+        if (clip.media_error) {
+          issues.push(`${clip.label}: ${clip.media_error}`);
+          continue;
+        }
+        if (clip.type === "dialogue" && clipStatus(clip) !== "ready") {
+          issues.push(`${clip.label} is ${clipStatus(clip)}; build current dialogue before playback`);
+          continue;
+        }
+        const url = clipAudioURL(project, clip);
+        if (!url) {
+          issues.push(`${clip.label} has no playable project audio`);
+          continue;
+        }
+        const elapsedMS = Math.max(0, startMS - clip.start_ms);
+        entries.push({
+          clip,
+          url,
+          timelineStartMS: Math.max(startMS, clip.start_ms),
+          sourceStartMS: (clip.source_in_ms || 0) + elapsedMS,
+          durationMS: clip.duration_ms - elapsedMS,
+        });
+      }
+    }
+    return { entries, issues };
+  }
+
+  function ensureAudioContext() {
+    if (audioContext) return audioContext;
+    const AudioContextType = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextType) throw new Error("Web Audio playback is not available in this browser");
+    audioContext = new AudioContextType();
+    return audioContext;
+  }
+
+  async function loadPlaybackEntry(context, entry) {
+    const response = await fetch(entry.url);
+    if (!response.ok) throw new Error(`Could not load ${entry.clip.label} (${response.status})`);
+    const bytes = await response.arrayBuffer();
+    const buffer = await context.decodeAudioData(bytes);
+    return { ...entry, buffer };
+  }
+
+  function currentPlaybackPlayhead() {
+    if (!playbackPlaying || !audioContext) return playheadMS;
+    const elapsedMS = Math.max(0, audioContext.currentTime - playbackStartContextTime) * 1000;
     const project = currentProject();
-    if (!project || clipStatus(clip) !== "ready") return;
-    const audio = new Audio(`${apiRoot}/${encodeURIComponent(project.id)}/clips/${encodeURIComponent(clip.id)}/audio`);
-    setBuildStatus(`Auditioning ${clip.label}…`);
-    audio.addEventListener("ended", () => setBuildStatus(`Auditioned ${clip.label}.`, "ready"), { once: true });
-    audio.addEventListener("error", () => setBuildStatus(`Could not audition ${clip.label}.`, "failed"), { once: true });
-    audio.play().catch((error) => setBuildStatus(`Could not audition ${clip.label}: ${error.message}`, "failed"));
+    return Math.min(playbackStartMS + elapsedMS, project ? timelineDurationMS(project) : playbackStartMS);
+  }
+
+  function stopBrowserPlayback(retainPlayhead = true, message = "") {
+    if (retainPlayhead) setPlayhead(currentPlaybackPlayhead());
+    playbackToken += 1;
+    playbackPlaying = false;
+    window.cancelAnimationFrame(playbackAnimation);
+    playbackAnimation = 0;
+    for (const source of playbackSources) {
+      try { source.stop(); } catch (_) { /* A source may already have ended. */ }
+    }
+    playbackSources = new Set();
+    updatePlayheadDisplay();
+    if (message) setPlaybackStatus(message);
+  }
+
+  function updatePlaybackClock(token) {
+    if (!playbackPlaying || token !== playbackToken) return;
+    const project = currentProject();
+    if (!project) {
+      stopBrowserPlayback(false, "Playback stopped because the project closed.");
+      return;
+    }
+    const next = currentPlaybackPlayhead();
+    if (next >= timelineDurationMS(project)) {
+      stopBrowserPlayback(false, "Playback complete.");
+      setPlayhead(timelineDurationMS(project));
+      return;
+    }
+    setPlayhead(next);
+    playbackAnimation = window.requestAnimationFrame(() => updatePlaybackClock(token));
+  }
+
+  async function playTimeline() {
+    const project = currentProject();
+    if (!project) return;
+    stopBrowserPlayback(true);
+    if (playheadMS >= timelineDurationMS(project)) setPlayhead(0);
+    const token = playbackToken;
+    const plan = playbackPlan(project, playheadMS);
+    setPlaybackStatus("Loading timeline audio…");
+    let context;
+    try {
+      context = ensureAudioContext();
+      await context.resume();
+      const loaded = await Promise.all(plan.entries.map(async (entry) => {
+        try {
+          return await loadPlaybackEntry(context, entry);
+        } catch (error) {
+          plan.issues.push(error.message);
+          return null;
+        }
+      }));
+      if (token !== playbackToken) return;
+      const contextStart = context.currentTime + 0.05;
+      playbackStartMS = playheadMS;
+      playbackStartContextTime = contextStart;
+      for (const entry of loaded.filter(Boolean)) {
+        const source = context.createBufferSource();
+        source.buffer = entry.buffer;
+        source.connect(context.destination);
+        playbackSources.add(source);
+        source.onended = () => playbackSources.delete(source);
+        source.start(
+          contextStart + (entry.timelineStartMS - playheadMS) / 1000,
+          entry.sourceStartMS / 1000,
+          entry.durationMS / 1000,
+        );
+      }
+      playbackPlaying = true;
+      updatePlayheadDisplay();
+      if (plan.issues.length) {
+        setPlaybackStatus(`Playing with unavailable clips: ${plan.issues.join(" · ")}`, "warning");
+      } else {
+        setPlaybackStatus(`Playing from ${formatPlayhead(playheadMS)}.`, "playing");
+      }
+      playbackAnimation = window.requestAnimationFrame(() => updatePlaybackClock(token));
+    } catch (error) {
+      if (token === playbackToken) {
+        stopBrowserPlayback(false);
+        setPlaybackStatus(`Could not play timeline: ${error.message}`, "failed");
+      }
+    }
+  }
+
+  function pauseTimeline() {
+    stopBrowserPlayback(true, `Paused at ${formatPlayhead(currentPlaybackPlayhead())}.`);
+  }
+
+  function seekTimeline(value) {
+    const resume = playbackPlaying;
+    stopBrowserPlayback(false);
+    setPlayhead(value);
+    setPlaybackStatus(`Playhead at ${formatPlayhead(playheadMS)}.`);
+    if (resume) void playTimeline();
+  }
+
+  async function auditionClip(clip) {
+    const project = currentProject();
+    if (!project || clipStatus(clip) !== "ready" || clip.media_error || !clipAudioURL(project, clip)) return;
+    stopBrowserPlayback(true);
+    const token = playbackToken;
+    setPlaybackStatus(`Loading ${clip.label} for isolated audition…`);
+    try {
+      const context = ensureAudioContext();
+      await context.resume();
+      const entry = await loadPlaybackEntry(context, {
+        clip,
+        url: clipAudioURL(project, clip),
+        timelineStartMS: 0,
+        sourceStartMS: clip.source_in_ms || 0,
+        durationMS: clip.duration_ms,
+      });
+      if (token !== playbackToken) return;
+      const source = context.createBufferSource();
+      source.buffer = entry.buffer;
+      source.connect(context.destination);
+      playbackSources.add(source);
+      source.onended = () => {
+        playbackSources.delete(source);
+        if (token === playbackToken) setPlaybackStatus(`Auditioned ${clip.label}.`);
+      };
+      source.start(context.currentTime + 0.01, entry.sourceStartMS / 1000, entry.durationMS / 1000);
+      setPlaybackStatus(`Auditioning ${clip.label} only.`, "playing");
+    } catch (error) {
+      if (token === playbackToken) setPlaybackStatus(`Could not audition ${clip.label}: ${error.message}`, "failed");
+    }
   }
 
   function snappedTime(value) {
@@ -1013,6 +1257,11 @@
   }
 
   function showCurrent(project, preserveInput = false) {
+    const changedProject = currentID !== (project ? project.id : "");
+    if (changedProject) {
+      stopBrowserPlayback(false);
+      playheadMS = 0;
+    }
     currentID = project ? project.id : "";
     editor.hidden = !project;
     emptyState.hidden = Boolean(project);
@@ -1070,6 +1319,7 @@
 
   async function revoiceCharacterVoice(track, actor, character) {
     if (serverMutationPending()) return;
+    stopBrowserPlayback(true);
     const project = currentProject();
     if (!project || savePromise || saveStatus.dataset.state !== "saved") {
       setVoiceLibraryStatus("Save pending timeline changes before revoicing this track.", "failed");
@@ -1190,6 +1440,7 @@
 
   async function placeLibraryAudio(track, asset, startMS) {
     if (serverMutationPending()) return;
+    stopBrowserPlayback(true);
     const project = currentProject();
     const compatibleType = trackTypeForMediaRole(asset.mediaRole);
     if (!compatibleType || track.type !== compatibleType) {
@@ -1580,6 +1831,9 @@
     timelineViewport.scrollLeft = scrollRatio * (timelineViewport.scrollWidth - timelineViewport.clientWidth);
   });
   selectionHandle.addEventListener("pointerdown", beginPanelPointerEdit);
+  playButton.addEventListener("click", () => playTimeline());
+  pauseButton.addEventListener("click", () => pauseTimeline());
+  playheadInput.addEventListener("change", () => seekTimeline(Number(playheadInput.value)));
   buildButton.addEventListener("click", () => buildStaleDialogue());
   buildCancelButton.addEventListener("click", () => cancelDialogueBuild());
   saveButton.addEventListener("click", () => saveProject());
@@ -1610,6 +1864,10 @@
     } else if (command && event.key.toLowerCase() === "y") {
       event.preventDefault();
       restoreTimeline(redoStack, undoStack);
+    } else if (!command && event.key === " ") {
+      event.preventDefault();
+      if (playbackPlaying) pauseTimeline();
+      else void playTimeline();
     } else if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
       removeSelectedClips();
@@ -1623,6 +1881,7 @@
 
   renderSelection();
   renderVoiceLibrary();
+  updatePlayheadDisplay();
   refreshProjects();
   refreshVoiceLibrary();
 })();

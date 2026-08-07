@@ -71,9 +71,18 @@
             </div>
           </div>
         </div>
+        <div class="timeline-transport" role="group" aria-label="Timeline playback">
+          <button id="storyBuilderPlay" type="button">Play timeline</button>
+          <button id="storyBuilderPause" class="quiet-button" type="button" disabled>Pause timeline</button>
+          <label for="storyBuilderPlayhead">Playhead</label>
+          <input id="storyBuilderPlayhead" type="range" min="0" max="30000" step="1" value="0">
+          <output id="storyBuilderPlayheadValue" for="storyBuilderPlayhead">00:00.000</output>
+          <span id="storyBuilderPlaybackStatus" class="playback-status" role="status" aria-live="polite">Ready to play</span>
+        </div>
         <div id="storyBuilderTimelineViewport" class="timeline-viewport">
           <div id="storyBuilderTimelineContent" class="timeline-content">
             <div id="storyBuilderTimelineRuler" class="timeline-ruler" aria-hidden="true"><span>0s</span><span>5s</span><span>10s</span><span>15s</span><span>20s</span><span>25s</span><span>30s</span></div>
+            <div id="storyBuilderPlayheadLine" class="timeline-playhead" aria-hidden="true"></div>
             <div id="storyBuilderTracks" class="track-list" aria-live="polite"></div>
           </div>
         </div>

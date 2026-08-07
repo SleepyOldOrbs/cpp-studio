@@ -211,6 +211,15 @@ Gateway restart.
   dialogue clip's referenced, validated project-owned WAV. It does not render a
   combined production.
 
+Timeline playback is browser-owned and read-only. The Story Builder fetches the
+existing project-owned dialogue, SFX, and Music WAVs and schedules them with the
+Web Audio API from the current playhead. Clip start, duration, source trim,
+track mute, silence, and cross-track overlap all shape that schedule; zooming
+and scrolling do not. Isolated audition uses the selected ready audio-backed
+clip only. Playback and audition do not create a render or increment the project
+revision, and stale dialogue or missing project media is reported in the
+transport status instead of being silently skipped.
+
 Each track has a stable `id`, editable `name`, contiguous `order`, `type`
 (`dialogue`, `sfx`, or `music`), `muted` state, and `clips`. Dialogue tracks may
 be empty and unbound. Adding a Character Voice binds its `character_voice_id`,

@@ -367,6 +367,11 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 				"storyBuilderSnap",
 				"storyBuilderTimelineDuration",
 				"storyBuilderZoom",
+				"storyBuilderPlay",
+				"storyBuilderPause",
+				"storyBuilderPlayhead",
+				"storyBuilderPlaybackStatus",
+				"storyBuilderPlayheadLine",
 				"storyBuilderTimelineViewport",
 				"storyBuilderSelectionPanel",
 				"storyBuilderTracks",
@@ -379,12 +384,12 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 		{
 			path:        "/story-builder.js",
 			contentType: "javascript",
-			markers:     []string{"/v1/story-builder-projects", "/v1/voices", "/v1/library", "library-audio", "scheduleAutosave", "saveProject", "monitorDialogueBuild", "resumeDialogueBuild", "cancelDialogueBuild", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "acceptTimelineEdit", "bindCharacterVoice", "placeLibraryAudio", "renderVoiceLibrary", "reusable-audio-asset", "beginClipPointerEdit", "clampPanelPosition", "requestedProjectID"},
+			markers:     []string{"/v1/story-builder-projects", "/v1/voices", "/v1/library", "library-audio", "scheduleAutosave", "saveProject", "monitorDialogueBuild", "resumeDialogueBuild", "cancelDialogueBuild", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "acceptTimelineEdit", "bindCharacterVoice", "placeLibraryAudio", "renderVoiceLibrary", "reusable-audio-asset", "beginClipPointerEdit", "clampPanelPosition", "requestedProjectID", "playbackPlan", "playTimeline", "pauseTimeline", "auditionClip", "stopBrowserPlayback"},
 		},
 		{
 			path:        "/story-builder.css",
 			contentType: "text/css",
-			markers:     []string{".project-list", ".save-status", ".story-canvas", ".timeline-viewport", ".track-row", ".silence-clip", ".silence-block", ".trim-handle", ".selection-panel", ".voice-library", ".actor-voice-group", ".character-voice-asset", ".reusable-audio-group", ".reusable-audio-asset", ".clip-media-error", ".dialogue-text-inline", ".clip-status-badge"},
+			markers:     []string{".project-list", ".save-status", ".story-canvas", ".timeline-transport", ".timeline-playhead", ".playback-status", ".timeline-viewport", ".track-row", ".silence-clip", ".silence-block", ".trim-handle", ".selection-panel", ".voice-library", ".actor-voice-group", ".character-voice-asset", ".reusable-audio-group", ".reusable-audio-asset", ".clip-media-error", ".dialogue-text-inline", ".clip-status-badge", ".audition-clip"},
 		},
 	}
 
