@@ -4347,11 +4347,11 @@ func decodeStoryBuilderProjectRequest(w http.ResponseWriter, req *http.Request, 
 
 func writeStoryBuilderProjectError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, storybuilder.ErrInvalid):
+	case errors.Is(err, storybuilder.ErrInvalid), errors.Is(err, storybuilder.ErrStoryMappingRequired):
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, storybuilder.ErrIncompatibleMedia):
 		writeJSONError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, storybuilder.ErrNotFound), errors.Is(err, storybuilder.ErrCharacterVoiceNotFound),
+	case errors.Is(err, storybuilder.ErrNotFound), errors.Is(err, storybuilder.ErrStoryNotFound), errors.Is(err, storybuilder.ErrCharacterVoiceNotFound),
 		errors.Is(err, storybuilder.ErrLibraryAudioNotFound), errors.Is(err, storybuilder.ErrProjectMediaNotFound),
 		errors.Is(err, storybuilder.ErrDialogueBuildMissing):
 		writeJSONError(w, http.StatusNotFound, err.Error())
@@ -4522,6 +4522,10 @@ func (r *router) handleStoryDraft(w http.ResponseWriter, req *http.Request) {
 func (r *router) handleStory(w http.ResponseWriter, req *http.Request) {
 	tail := strings.TrimPrefix(req.URL.Path, "/v1/stories/")
 	parts := strings.Split(tail, "/")
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "story-builder-import" {
+		r.handleStoryBuilderImport(w, req, parts[0])
+		return
+	}
 	if len(parts) == 1 && parts[0] != "" {
 		switch req.Method {
 		case http.MethodGet:
@@ -4698,6 +4702,55 @@ func (r *router) handleStory(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	http.NotFound(w, req)
+}
+
+func (r *router) handleStoryBuilderImport(w http.ResponseWriter, req *http.Request, storyID string) {
+	importer := storybuilder.NewStoryImporter(r.stories, r.storyBuilderProjects, r.listStoryBuilderCharacterVoices)
+	switch req.Method {
+	case http.MethodGet:
+		preview, err := importer.Preview(storyID)
+		if err != nil {
+			writeStoryBuilderProjectError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(preview)
+	case http.MethodPost:
+		var body storybuilder.StoryImportRequest
+		if err := decodeStoryBuilderProjectRequest(w, req, &body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		project, err := importer.Import(storyID, body)
+		if err != nil {
+			writeStoryBuilderProjectError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(project)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (r *router) listStoryBuilderCharacterVoices(actorVoiceID string) ([]storybuilder.VoiceIdentity, error) {
+	characters, err := r.voices.ListCharacterVoices(actorVoiceID)
+	if errors.Is(err, voice.ErrActorVoiceNotFound) {
+		return []storybuilder.VoiceIdentity{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	identities := make([]storybuilder.VoiceIdentity, 0, len(characters))
+	for _, character := range characters {
+		identities = append(identities, storybuilder.VoiceIdentity{
+			CharacterVoiceID: character.ID,
+			ActorVoiceID:     character.ActorVoiceID,
+		})
+	}
+	return identities, nil
 }
 
 func (r *router) engine(name string) (config.EngineConfig, bool) {

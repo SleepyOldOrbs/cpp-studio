@@ -969,6 +969,47 @@ audio {
   gap: 6px;
 }
 
+.story-builder-import {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 12px;
+}
+
+.story-builder-import-panel,
+.story-builder-import-speakers {
+  display: grid;
+  gap: 10px;
+}
+
+.story-builder-import-speaker {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  padding: 10px;
+  background: var(--well);
+}
+
+.story-builder-import-speaker-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.story-builder-import-create {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) minmax(180px, 2fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+@media (max-width: 760px) {
+  .story-builder-import-create {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Scenes fold: 330 flat lines is not a workspace. The summary row keeps
    the numbers that matter visible while a scene is closed. */
 .take-scene {

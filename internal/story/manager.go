@@ -244,6 +244,16 @@ func (m *Manager) Status(id string) (StatusResponse, bool, error) {
 	}, true, nil
 }
 
+// LoadRetained returns a completed Story without exposing its store for mutation.
+func (m *Manager) LoadRetained(id string) (Manifest, bool, error) {
+	return m.store.Load(id)
+}
+
+// LoadRetainedTake reads one immutable take from a completed Story.
+func (m *Manager) LoadRetainedTake(storyID, lineID, takeID string) ([]byte, error) {
+	return m.store.LoadTake(storyID, lineID, takeID)
+}
+
 func (m *Manager) Cancel(id string) (StatusResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -615,7 +625,8 @@ func (m *Manager) produce(ctx context.Context, j *job, manifest Manifest, create
 
 // lineGap is the silence inserted between spoken script lines.
 const (
-	lineGap = 350 * time.Millisecond
+	DefaultLineGapMS = 350
+	lineGap          = DefaultLineGapMS * time.Millisecond
 	// artifactPad is the lead/trail silence around the stitched story WAV.
 	artifactPad = 250 * time.Millisecond
 )

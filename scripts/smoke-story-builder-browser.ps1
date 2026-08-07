@@ -780,6 +780,78 @@ async page => {
 }
 '@
 
+$storyImportCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const storyID = '__IMPORT_STORY_ID__';
+  const origin = page.url().split('/demo/')[0];
+  const sourceSnapshot = await page.evaluate(async id => {
+    const manifest = await fetch(`/v1/stories/${id}`).then(response => response.json());
+    const takeURL = manifest.manifest.script[0].takes[0].url;
+    const take = await fetch(takeURL).then(response => response.arrayBuffer());
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', take)))
+      .map(value => value.toString(16).padStart(2, '0')).join('');
+    return { manifest: JSON.stringify(manifest.manifest), digest };
+  }, storyID);
+
+  await page.goto(`${origin}/demo/#story`);
+  await page.locator(`.story-library-item[data-story-id="${storyID}"]`).click();
+  const open = page.getByRole('button', { name: 'Open in Story Builder' });
+  await open.waitFor();
+  await open.click();
+  const rows = page.locator('.story-builder-import-speaker');
+  await rows.nth(1).waitFor();
+  assert(await rows.count() === 2, 'speaker mapping did not preserve Story cast order');
+  assert(await rows.nth(0).getByLabel('Character Voice for Mara', { exact: true }).inputValue() === '__IMPORT_SUGGESTED_CHARACTER_ID__',
+    'unambiguous Story Actor provenance was not preselected');
+  assert(await rows.nth(1).getByLabel('Character Voice for Jon', { exact: true }).inputValue() === '',
+    'ambiguous Story Actor provenance was silently defaulted');
+
+  await page.getByRole('button', { name: 'Create Story Builder Project' }).click();
+  await page.locator('#storyErrorBox').filter({ hasText: /every speaker/i }).waitFor();
+
+  const unresolved = rows.nth(1);
+  await unresolved.locator('summary').click();
+  await unresolved.getByLabel(/Actor Voice for new/).selectOption('__IMPORT_AMBIGUOUS_ACTOR_ID__');
+  await unresolved.getByLabel('Character name').fill('Imported Jon');
+  await unresolved.getByLabel('Voice direction').fill('Warm and deliberate');
+  await unresolved.getByRole('button', { name: 'Create and select' }).click();
+  await page.waitForFunction(() => {
+    const selects = document.querySelectorAll('.story-builder-import-speaker select[aria-label^="Character Voice for"]');
+    return selects.length === 2 && Boolean(selects[1].value);
+  });
+
+  await Promise.all([
+    page.waitForURL(/story-builder\.html\?project=/),
+    page.getByRole('button', { name: 'Create Story Builder Project' }).click(),
+  ]);
+  const projectID = decodeURIComponent(page.url().split('project=')[1].split('&')[0]);
+  const project = await page.evaluate(id => fetch(`/v1/story-builder-projects/${id}`).then(response => response.json()), projectID);
+  assert(project.tracks.length === 2 && project.tracks[0].name === 'Mara' && project.tracks[1].name === 'Jon',
+    'imported Dialogue Tracks lost speaker order');
+  assert(project.tracks[0].clips[0].status === 'ready' && Boolean(project.tracks[0].clips[0].source_id),
+    'compatible retained take was not copied ready');
+  assert(project.tracks[1].clips[0].status === 'stale' && !project.tracks[1].clips[0].source_id,
+    'edited retained line was not imported stale');
+  assert(project.tracks[0].clips[0].source_story_id === storyID && project.tracks[0].clips[0].source_story_line_id,
+    'source Story IDs were not retained as provenance');
+
+  const sourceAfter = await page.evaluate(async id => {
+    const manifest = await fetch(`/v1/stories/${id}`).then(response => response.json());
+    const takeURL = manifest.manifest.script[0].takes[0].url;
+    const take = await fetch(takeURL).then(response => response.arrayBuffer());
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', take)))
+      .map(value => value.toString(16).padStart(2, '0')).join('');
+    return { manifest: JSON.stringify(manifest.manifest), digest };
+  }, storyID);
+  assert(sourceAfter.manifest === sourceSnapshot.manifest && sourceAfter.digest === sourceSnapshot.digest,
+    'browser import mutated the retained Story or its take');
+  return { story: storyID, project: projectID };
+}
+'@
+
 $libraryAudioCode = @'
 async page => {
   const assert = (condition, message) => {
@@ -881,6 +953,50 @@ try {
   $cartographerVoice = Invoke-RestMethod -Uri "$baseURL/v1/voices/$($actorVoice.id)/characters" -Method Post -ContentType "application/json" -Body (@{
     name = "Young cartographer"
     direction = "Young, precise and curious"
+  } | ConvertTo-Json)
+
+  $matchedActorVoice = Invoke-RestMethod -Uri "$baseURL/v1/voices" -Method Post -Form @{
+    name = "Lena actor"
+    transcript = "A second short reference transcript."
+    file = Get-Item $voiceWavPath
+  }
+  $matchedCharacterVoice = Invoke-RestMethod -Uri "$baseURL/v1/voices/$($matchedActorVoice.id)/characters" -Method Post -ContentType "application/json" -Body (@{
+    name = "Lena exact match"
+    direction = "Steady and close"
+  } | ConvertTo-Json)
+
+  $storyImportStart = Invoke-RestMethod -Uri "$baseURL/v1/stories" -Method Post -ContentType "application/json" -Body (@{
+    subject = "Story Builder import browser smoke"
+    mode = "sketch"
+    premise = "Two speakers test a retained Story import."
+    style = "Plain"
+    target_seconds = 30
+    voice_mode = "fixed"
+    cast = @(
+      @{ id = "mara"; name = "Mara"; voice_id = $matchedActorVoice.id },
+      @{ id = "jon"; name = "Jon"; voice_id = $actorVoice.id }
+    )
+    title = "Retained Story import browser smoke"
+    script = @(
+      @{ id = "line-001"; speaker_id = "mara"; text = "This take remains compatible."; fact_ids = @() },
+      @{ id = "line-002"; speaker_id = "jon"; text = "This take will become stale."; fact_ids = @() }
+    )
+  } | ConvertTo-Json -Depth 8)
+  $storyImportStatus = $null
+  for ($attempt = 0; $attempt -lt 80; $attempt++) {
+    $storyImportStatus = Invoke-RestMethod -Uri "$baseURL/v1/stories/$($storyImportStart.id)" -Method Get
+    if ($storyImportStatus.status -eq "complete") { break }
+    if ($storyImportStatus.status -eq "failed" -or $storyImportStatus.status -eq "cancelled") {
+      throw "retained Story import fixture ended as $($storyImportStatus.status)"
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  if ($storyImportStatus.status -ne "complete") {
+    throw "retained Story import fixture did not complete"
+  }
+  $storyImportSecondLine = $storyImportStatus.manifest.script[1]
+  $storyImportPatched = Invoke-RestMethod -Uri "$baseURL/v1/stories/$($storyImportStart.id)/lines/$($storyImportSecondLine.id)" -Method Patch -ContentType "application/json" -Body (@{
+    text = "This line changed after its retained take."
   } | ConvertTo-Json)
 
   $libraryAudioB64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($libraryWavPath))
@@ -1014,6 +1130,7 @@ try {
   $playbackSetupCode = $playbackSetupCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id)
   $playbackTimelineCode = $playbackTimelineCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id)
   $playbackUnavailableCode = $playbackUnavailableCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id).Replace("__BROKEN_PROJECT_ID__", $brokenProject.id)
+  $storyImportCode = $storyImportCode.Replace("__IMPORT_STORY_ID__", $storyImportStart.id).Replace("__IMPORT_SUGGESTED_CHARACTER_ID__", $matchedCharacterVoice.id).Replace("__IMPORT_AMBIGUOUS_ACTOR_ID__", $actorVoice.id)
 
   Invoke-BrowserCLI -Arguments @("open", "$baseURL/demo/story-builder.html")
   Invoke-BrowserCode -Code $arrangementCode
@@ -1029,6 +1146,7 @@ try {
   Invoke-BrowserCode -Code $playbackSetupCode
   Invoke-BrowserCode -Code $playbackTimelineCode
   Invoke-BrowserCode -Code $playbackUnavailableCode
+  Invoke-BrowserCode -Code $storyImportCode
   [ordered]@{ status = "ok"; browser = "playwright"; gateway = $baseURL } | ConvertTo-Json
 } finally {
   try {

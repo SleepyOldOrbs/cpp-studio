@@ -93,6 +93,12 @@
   var takeRoomNextButton = document.getElementById("takeRoomNextButton");
   var takeLines = document.getElementById("takeLines");
   var storyExportRow = document.getElementById("storyExportRow");
+  var storyBuilderImportSection = document.getElementById("storyBuilderImportSection");
+  var storyBuilderImportOpenButton = document.getElementById("storyBuilderImportOpenButton");
+  var storyBuilderImportPanel = document.getElementById("storyBuilderImportPanel");
+  var storyBuilderImportSpeakers = document.getElementById("storyBuilderImportSpeakers");
+  var storyBuilderImportCancelButton = document.getElementById("storyBuilderImportCancelButton");
+  var storyBuilderImportButton = document.getElementById("storyBuilderImportButton");
   var storyFacts = document.getElementById("storyFacts");
   var voiceSelect = document.getElementById("voiceSelect");
   var cloneForm = document.getElementById("cloneForm");
@@ -1636,12 +1642,189 @@
     renderExportRow(manifest);
   }
 
+  var storyBuilderImportStoryID = "";
+  var storyBuilderImportPreview = null;
+  var storyBuilderImportSelections = {};
+
+  function closeStoryBuilderImport() {
+    storyBuilderImportPanel.hidden = true;
+    storyBuilderImportSpeakers.textContent = "";
+    storyBuilderImportPreview = null;
+    storyBuilderImportSelections = {};
+  }
+
+  function characterVoiceOptions(select) {
+    select.appendChild(createElement("option", "", "Choose a Character Voice"));
+    libraryVoices.forEach(function (actor) {
+      var characters = actor.character_voices || [];
+      if (!characters.length) {
+        return;
+      }
+      var group = document.createElement("optgroup");
+      group.label = actor.name || actor.id;
+      characters.forEach(function (character) {
+        var option = createElement("option", "", character.name || character.id);
+        option.value = character.id;
+        group.appendChild(option);
+      });
+      select.appendChild(group);
+    });
+  }
+
+  function actorVoiceOptions(select, preferredID) {
+    select.appendChild(createElement("option", "", "Choose an Actor Voice"));
+    libraryVoices.forEach(function (actor) {
+      var option = createElement("option", "", actor.name || actor.id);
+      option.value = actor.id;
+      select.appendChild(option);
+    });
+    select.value = preferredID || "";
+  }
+
+  async function createMappedCharacterVoice(speaker, actorSelect, nameInput, directionInput, button) {
+    clearStoryError();
+    var actorID = actorSelect.value;
+    var name = nameInput.value.trim();
+    var direction = directionInput.value.trim();
+    if (!actorID || !name || !direction) {
+      setStoryError(new Error("Choose an Actor Voice and enter a Character name and direction"));
+      return;
+    }
+    setBusy(button, "Creating...");
+    try {
+      var character = await saveNewCharacterVoice(actorID, name, direction);
+      var actor = libraryVoices.find(function (item) { return item.id === actorID; });
+      if (actor && !(actor.character_voices || []).some(function (item) { return item.id === character.id; })) {
+        actor.character_voices = (actor.character_voices || []).concat([character]);
+      }
+      storyBuilderImportSelections[speaker.id] = character.id;
+      renderStoryBuilderImportSpeakers();
+      log("Character Voice created for Story import: " + (character.name || character.id));
+    } catch (error) {
+      setStoryError(error);
+    } finally {
+      clearBusy(button);
+    }
+  }
+
+  function renderStoryBuilderImportSpeakers() {
+    storyBuilderImportSpeakers.textContent = "";
+    if (!storyBuilderImportPreview) {
+      return;
+    }
+    (storyBuilderImportPreview.speakers || []).forEach(function (speaker) {
+      var row = createElement("section", "story-builder-import-speaker");
+      var head = createElement("div", "story-builder-import-speaker-head");
+      head.appendChild(createElement("strong", "", speaker.display_name || speaker.id));
+      var sourceActor = libraryVoices.find(function (actor) { return actor.id === speaker.source_actor_voice_id; });
+      head.appendChild(createElement("span", "story-library-detail",
+        speaker.source_actor_voice_id ? "Story Actor Voice: " + (sourceActor ? sourceActor.name : speaker.source_actor_voice_id) : "No Actor Voice provenance"));
+      row.appendChild(head);
+
+      var characterSelect = createElement("select", "text-input");
+      characterSelect.setAttribute("aria-label", "Character Voice for " + (speaker.display_name || speaker.id));
+      characterVoiceOptions(characterSelect);
+      var selected = storyBuilderImportSelections[speaker.id];
+      if (selected === undefined) {
+        selected = speaker.suggested_character_voice_id || "";
+        storyBuilderImportSelections[speaker.id] = selected;
+      }
+      characterSelect.value = selected;
+      characterSelect.addEventListener("change", function () {
+        storyBuilderImportSelections[speaker.id] = characterSelect.value;
+      });
+      row.appendChild(labeledCharacterControl("Character Voice", characterSelect));
+
+      var createDetails = createElement("details", "");
+      createDetails.appendChild(createElement("summary", "source-label", "Create a Character Voice"));
+      var createRow = createElement("div", "story-builder-import-create");
+      var actorSelect = createElement("select", "text-input");
+      actorSelect.setAttribute("aria-label", "Actor Voice for new " + (speaker.display_name || speaker.id) + " Character Voice");
+      actorVoiceOptions(actorSelect, speaker.source_actor_voice_id);
+      createRow.appendChild(labeledCharacterControl("Actor Voice", actorSelect));
+      var nameInput = createElement("input", "text-input");
+      nameInput.type = "text";
+      nameInput.maxLength = 80;
+      nameInput.value = speaker.display_name || "";
+      createRow.appendChild(labeledCharacterControl("Character name", nameInput));
+      var directionInput = createElement("input", "text-input");
+      directionInput.type = "text";
+      directionInput.maxLength = 500;
+      directionInput.placeholder = "How this character should sound";
+      createRow.appendChild(labeledCharacterControl("Voice direction", directionInput));
+      var createButton = createElement("button", "secondary compact-button", "Create and select");
+      createButton.type = "button";
+      createButton.addEventListener("click", function () {
+        createMappedCharacterVoice(speaker, actorSelect, nameInput, directionInput, createButton);
+      });
+      createRow.appendChild(createButton);
+      createDetails.appendChild(createRow);
+      row.appendChild(createDetails);
+      storyBuilderImportSpeakers.appendChild(row);
+    });
+  }
+
+  async function openStoryBuilderImport() {
+    clearStoryError();
+    setBusy(storyBuilderImportOpenButton, "Loading...");
+    try {
+      await refreshVoices(true);
+      var response = await fetch("/v1/stories/" + encodeURIComponent(storyBuilderImportStoryID) + "/story-builder-import");
+      await ensureOk(response, "Story Builder import mapping");
+      storyBuilderImportPreview = await response.json();
+      storyBuilderImportSelections = {};
+      renderStoryBuilderImportSpeakers();
+      storyBuilderImportPanel.hidden = false;
+    } catch (error) {
+      setStoryError(error);
+    } finally {
+      clearBusy(storyBuilderImportOpenButton);
+    }
+  }
+
+  async function importStoryToStoryBuilder() {
+    clearStoryError();
+    if (!storyBuilderImportPreview) {
+      return;
+    }
+    var mappings = (storyBuilderImportPreview.speakers || []).map(function (speaker) {
+      return { speaker_id: speaker.id, character_voice_id: storyBuilderImportSelections[speaker.id] || "" };
+    });
+    if (mappings.some(function (mapping) { return !mapping.character_voice_id; })) {
+      setStoryError(new Error("Choose or create a Character Voice for every speaker"));
+      return;
+    }
+    setBusy(storyBuilderImportButton, "Creating...");
+    try {
+      var response = await fetch("/v1/stories/" + encodeURIComponent(storyBuilderImportStoryID) + "/story-builder-import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mappings: mappings })
+      });
+      await ensureOk(response, "Story Builder import");
+      var project = await response.json();
+      log("Opened retained Story as Story Builder Project " + project.id);
+      window.location.href = "/demo/story-builder.html?project=" + encodeURIComponent(project.id);
+    } catch (error) {
+      setStoryError(error);
+      clearBusy(storyBuilderImportButton);
+    }
+  }
+
   function renderStoryManifest(manifest) {
     storyFacts.textContent = "";
     renderTakeRoom(manifest);
     if (!manifest) {
+      storyBuilderImportStoryID = "";
+      storyBuilderImportSection.hidden = true;
+      closeStoryBuilderImport();
       return;
     }
+    if (storyBuilderImportStoryID !== manifest.id) {
+      closeStoryBuilderImport();
+    }
+    storyBuilderImportStoryID = manifest.id;
+    storyBuilderImportSection.hidden = !manifest.id;
 
     var sourcesList = createElement("ul");
     (manifest.sources || []).forEach(function (source) {
@@ -2904,19 +3087,24 @@
     }
   }
 
+  async function saveNewCharacterVoice(actorVoiceID, name, direction) {
+    var response = await fetch("/v1/voices/" + encodeURIComponent(actorVoiceID) + "/characters", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim(), direction: direction.trim() })
+    });
+    await ensureOk(response, "Character Voice create");
+    var character = await response.json();
+    await refreshVoices(true);
+    return character;
+  }
+
   async function createCharacterVoice(actorVoiceID, name, direction, button) {
     clearCloneError();
     setBusy(button, "Adding...");
     try {
-      var response = await fetch("/v1/voices/" + encodeURIComponent(actorVoiceID) + "/characters", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), direction: direction.trim() })
-      });
-      await ensureOk(response, "Character Voice create");
-      var character = await response.json();
+      var character = await saveNewCharacterVoice(actorVoiceID, name, direction);
       log("Character Voice added: " + character.name);
-      await refreshVoices(true);
     } catch (error) {
       setCloneError(error);
     } finally {
@@ -5185,6 +5373,9 @@
   });
   takeRoomRenderButton.addEventListener("click", rerenderStory);
   takeRoomNextButton.addEventListener("click", jumpToNextNeedsWork);
+  storyBuilderImportOpenButton.addEventListener("click", openStoryBuilderImport);
+  storyBuilderImportCancelButton.addEventListener("click", closeStoryBuilderImport);
+  storyBuilderImportButton.addEventListener("click", importStoryToStoryBuilder);
   storyDraftButton.addEventListener("click", draftStory);
   scriptDiscardButton.addEventListener("click", function () {
     discardDraft();
