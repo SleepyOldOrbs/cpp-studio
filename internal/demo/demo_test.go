@@ -379,6 +379,7 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 				"storyBuilderVoiceSearch",
 				"storyBuilderVoiceRefresh",
 				"storyBuilderVoiceGroups",
+				"project-owned media, takes, renders, and exports",
 			},
 		},
 		{

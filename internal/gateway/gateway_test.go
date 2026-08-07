@@ -625,7 +625,7 @@ func TestStoryBuilderBindsCharacterVoiceAndRejectsReplacementOnOccupiedDialogueT
 		ResolveCharacterVoice: r.resolveStoryBuilderCharacterVoice,
 	})
 
-	actor, err := r.voices.Save("Mara", "reference words", validWAVBytes(), false)
+	actor, err := r.voices.Save("Mara", "reference words", wav.SyntheticTone(16000), false)
 	if err != nil {
 		t.Fatalf("save Actor Voice: %v", err)
 	}
@@ -5066,6 +5066,120 @@ func TestCharacterVoiceAuthoringAndPreviewThroughGateway(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/character-voices/"+character.ID, nil))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("delete Character Voice status = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVoiceDeletionReportsDependentProjectsAndProjectDeletePreservesSources(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(nil)
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	actor, err := r.voices.Save("Mara", "reference words", validWAVBytes(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	character, err := r.voices.CreateCharacterVoice(actor.ID, "Weathered keeper", "low and guarded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset, err := r.library.Save("audio", "Door slam", wav.SyntheticTone(16000), map[string]string{"media_role": "sfx"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := r.storyBuilderProjects.Create("Lighthouse edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err = r.storyBuilderProjects.Update(project.ID, storybuilder.ProjectUpdate{
+		Name: project.Name, Revision: project.Revision, Tracks: []storybuilder.Track{
+			{ID: "keeper", Name: "Keeper", Type: storybuilder.TrackTypeDialogue, CharacterVoiceID: character.ID, Clips: []storybuilder.TimelineClip{{
+				ID: "line_1", Type: storybuilder.ClipTypeDialogue, Label: "Keep watch", Text: "Keep watch", DurationMS: 1000,
+			}}},
+			{ID: "foley", Name: "Foley", Type: storybuilder.TrackTypeSFX, Order: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err = r.storyBuilderProjects.PlaceLibraryAudio(project.ID, storybuilder.LibraryAudioPlacement{
+		Revision: project.Revision, TrackID: "foley", LibraryItemID: asset.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := r.storyBuilderProjects.BeginDialogueBuild(project.ID, "line_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.storyBuilderProjects.CompleteDialogueBuild(project.ID, input, wav.SyntheticTone(16000)); err != nil {
+		t.Fatal(err)
+	}
+	directActor, err := r.voices.Save("Direct actor", "direct reference", validWAVBytes(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directProject, err := r.storyBuilderProjects.Create("Direct Actor edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directProject.Tracks = []storybuilder.Track{{
+		ID: "direct_actor", Name: "Direct Actor", Type: storybuilder.TrackTypeDialogue, ActorVoiceID: directActor.ID,
+	}}
+	directManifest, err := json.MarshalIndent(directProject, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storybuilder.DefaultRootDir, directProject.ID, "project.json"), append(directManifest, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	assertBlocked := func(path, kind string, expected storybuilder.Project) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, path, nil))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s delete status = %d: %s", kind, rec.Code, rec.Body.String())
+		}
+		var response struct {
+			Error      string                          `json:"error"`
+			Dependents []storybuilder.DependentProject `json:"dependent_projects"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil || len(response.Dependents) != 1 || response.Dependents[0].ID != expected.ID || response.Dependents[0].Name != expected.Name || !strings.Contains(response.Error, expected.Name) {
+			t.Fatalf("%s dependency response = %+v, err %v", kind, response, err)
+		}
+	}
+	assertBlocked("/v1/voices/"+actor.ID, "Actor Voice", project)
+	assertBlocked("/v1/character-voices/"+character.ID, "Character Voice", project)
+	assertBlocked("/v1/voices/"+directActor.ID, "direct Actor Voice", directProject)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/story-builder-projects/"+project.ID, nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("project delete status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, ok, err := r.storyBuilderProjects.Get(project.ID); err != nil || ok {
+		t.Fatalf("project survived delete: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := r.voices.Load(actor.ID); err != nil || !ok {
+		t.Fatalf("project delete removed Actor Voice: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := r.voices.LoadCharacterVoice(character.ID); err != nil || !ok {
+		t.Fatalf("project delete removed Character Voice: ok=%v err=%v", ok, err)
+	}
+	if _, _, err := r.library.ArtifactPath(asset.ID); err != nil {
+		t.Fatalf("project delete removed original Library audio: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/story-builder-projects/"+directProject.ID, nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("direct project delete status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	for _, path := range []string{"/v1/character-voices/" + character.ID, "/v1/voices/" + actor.ID, "/v1/voices/" + directActor.ID} {
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, path, nil))
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("delete after project removal %s = %d: %s", path, rec.Code, rec.Body.String())
+		}
 	}
 }
 

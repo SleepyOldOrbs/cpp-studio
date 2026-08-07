@@ -3682,16 +3682,34 @@ func (r *router) handleVoiceClone(w http.ResponseWriter, req *http.Request) {
 		if !requireMethod(w, req, http.MethodDelete) {
 			return
 		}
-		_, ok, err := r.voices.Load(parts[0])
+		clone, ok, err := r.voices.Load(parts[0])
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("Actor Voice delete load failed: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "Actor Voice delete failed")
 			return
 		}
 		if !ok {
 			writeJSONError(w, http.StatusNotFound, "voice not found")
 			return
 		}
-		if err := r.voices.Delete(parts[0]); err != nil {
+		if clone.Protected {
+			writeJSONError(w, http.StatusForbidden, voice.ErrProtected.Error())
+			return
+		}
+		characters, err := r.voices.ListCharacterVoices(parts[0])
+		if err != nil {
+			log.Printf("Actor Voice dependency check failed: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "Actor Voice dependency check failed")
+			return
+		}
+		characterIDs := make([]string, 0, len(characters))
+		for _, character := range characters {
+			characterIDs = append(characterIDs, character.ID)
+		}
+		dependents, err := r.storyBuilderProjects.GuardActorVoiceDeletion(parts[0], characterIDs, func() error {
+			return r.voices.Delete(parts[0])
+		})
+		if err != nil {
 			if errors.Is(err, voice.ErrProtected) {
 				writeJSONError(w, http.StatusForbidden, err.Error())
 				return
@@ -3700,7 +3718,12 @@ func (r *router) handleVoiceClone(w http.ResponseWriter, req *http.Request) {
 				writeJSONError(w, http.StatusConflict, err.Error())
 				return
 			}
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			log.Printf("Actor Voice guarded delete failed: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "Actor Voice delete failed")
+			return
+		}
+		if len(dependents) > 0 {
+			writeVoiceDependencyError(w, "Actor Voice", dependents)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -3825,8 +3848,29 @@ func (r *router) handleCharacterVoice(w http.ResponseWriter, req *http.Request) 
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(characterVoiceSummaryOf(character))
 		case http.MethodDelete:
-			if err := r.voices.DeleteCharacterVoice(id); err != nil {
+			character, ok, err := r.voices.LoadCharacterVoice(id)
+			if err != nil {
 				writeCharacterVoiceError(w, err)
+				return
+			}
+			if !ok {
+				writeCharacterVoiceError(w, voice.ErrCharacterNotFound)
+				return
+			}
+			dependents, err := r.storyBuilderProjects.GuardCharacterVoiceDeletion(character.ID, func() error {
+				return r.voices.DeleteCharacterVoice(id)
+			})
+			if err != nil {
+				if errors.Is(err, voice.ErrCharacterNotFound) {
+					writeCharacterVoiceError(w, err)
+					return
+				}
+				log.Printf("Character Voice guarded delete failed: %v", err)
+				writeJSONError(w, http.StatusInternalServerError, "Character Voice delete failed")
+				return
+			}
+			if len(dependents) > 0 {
+				writeVoiceDependencyError(w, "Character Voice", dependents)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -3907,6 +3951,22 @@ func writeCharacterVoiceError(w http.ResponseWriter, err error) {
 	default:
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 	}
+}
+
+func writeVoiceDependencyError(w http.ResponseWriter, kind string, dependents []storybuilder.DependentProject) {
+	identities := make([]string, 0, len(dependents))
+	for _, project := range dependents {
+		identities = append(identities, fmt.Sprintf("%s (%s)", project.Name, project.ID))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	_ = json.NewEncoder(w).Encode(struct {
+		Error             string                          `json:"error"`
+		DependentProjects []storybuilder.DependentProject `json:"dependent_projects"`
+	}{
+		Error:             kind + " is required by Story Builder Projects: " + strings.Join(identities, ", "),
+		DependentProjects: dependents,
+	})
 }
 
 func characterVoiceSummaries(characters []voice.CharacterVoice) []characterVoiceSummary {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -306,12 +307,30 @@ func TestUserCanCreateRenameReloadAndDeleteProject(t *testing.T) {
 	if err := os.WriteFile(sentinelPath, []byte("keep"), 0o644); err != nil {
 		t.Fatalf("write root sentinel: %v", err)
 	}
+	for _, directory := range []string{"media", "takes", "renders"} {
+		path := filepath.Join(root, created.ID, directory)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("create owned %s: %v", directory, err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "owned.bin"), []byte("remove"), 0o644); err != nil {
+			t.Fatalf("write owned %s: %v", directory, err)
+		}
+	}
+	sourcesRoot := t.TempDir()
+	for _, source := range []string{"source-story", "actor-voice", "character-voice", "library-audio"} {
+		if err := os.WriteFile(filepath.Join(sourcesRoot, source), []byte("keep"), 0o644); err != nil {
+			t.Fatalf("write source sentinel: %v", err)
+		}
+	}
 
 	if err := restarted.Delete(created.ID); err != nil {
 		t.Fatalf("delete project: %v", err)
 	}
 	if _, ok, err := restarted.Get(created.ID); err != nil || ok {
 		t.Fatalf("deleted project still loads: ok=%v err=%v", ok, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, created.ID)); !os.IsNotExist(err) {
+		t.Fatalf("project-owned directory survived delete: %v", err)
 	}
 	if err := restarted.Delete(created.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("delete missing project error = %v, want ErrNotFound", err)
@@ -321,6 +340,182 @@ func TestUserCanCreateRenameReloadAndDeleteProject(t *testing.T) {
 	}
 	if data, err := os.ReadFile(sentinelPath); err != nil || string(data) != "keep" {
 		t.Fatalf("delete changed root sentinel: data=%q err=%v", data, err)
+	}
+	for _, source := range []string{"source-story", "actor-voice", "character-voice", "library-audio"} {
+		if data, err := os.ReadFile(filepath.Join(sourcesRoot, source)); err != nil || string(data) != "keep" {
+			t.Fatalf("delete changed %s source: data=%q err=%v", source, data, err)
+		}
+	}
+}
+
+func TestVoiceDependenciesIncludeReadyDialogue(t *testing.T) {
+	store := NewStore(t.TempDir())
+	project, err := store.Create("Lighthouse edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err = store.Update(project.ID, ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: []Track{{
+		ID: "keeper", Name: "Keeper", Type: TrackTypeDialogue, CharacterVoiceID: "character_keeper",
+		ActorVoiceID: "voice_mara", VoiceFingerprint: "voice-fingerprint", Clips: []TimelineClip{{
+			ID: "line_1", Type: ClipTypeDialogue, Label: "Keep watch", Text: "Keep watch", StartMS: 0, DurationMS: 1000,
+		}},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := store.BeginDialogueBuild(project.ID, "line_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteDialogueBuild(project.ID, input, testWAV(16000)); err != nil {
+		t.Fatal(err)
+	}
+
+	deleteCalled := false
+	characterDependents, err := store.GuardCharacterVoiceDeletion("character_keeper", func() error {
+		deleteCalled = true
+		return nil
+	})
+	if err != nil || deleteCalled || len(characterDependents) != 1 || characterDependents[0].ID != project.ID || characterDependents[0].Name != project.Name {
+		t.Fatalf("Character Voice dependents = %+v, err %v", characterDependents, err)
+	}
+	actorDependents, err := store.GuardActorVoiceDeletion("voice_mara", []string{"character_keeper"}, func() error {
+		deleteCalled = true
+		return nil
+	})
+	if err != nil || deleteCalled || len(actorDependents) != 1 || actorDependents[0].ID != project.ID {
+		t.Fatalf("Actor Voice dependents = %+v, err %v", actorDependents, err)
+	}
+	unrelated, err := store.GuardActorVoiceDeletion("voice_other", nil, func() error {
+		deleteCalled = true
+		return nil
+	})
+	if err != nil || !deleteCalled || len(unrelated) != 0 {
+		t.Fatalf("unrelated Actor dependents = %+v, err %v", unrelated, err)
+	}
+
+	direct, err := store.Create("Direct Actor edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct.Tracks = []Track{{
+		ID: "direct_actor", Name: "Direct Actor", Type: TrackTypeDialogue, ActorVoiceID: "voice_direct",
+	}}
+	data, err := encodeProject(direct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.rootDir, direct.ID, manifestName), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deleteCalled = false
+	directDependents, err := store.GuardActorVoiceDeletion("voice_direct", nil, func() error {
+		deleteCalled = true
+		return nil
+	})
+	if err != nil || deleteCalled || len(directDependents) != 1 || directDependents[0].ID != direct.ID {
+		t.Fatalf("direct Actor dependents = %+v, err %v", directDependents, err)
+	}
+}
+
+func TestVoiceDeletionGuardBlocksConcurrentBinding(t *testing.T) {
+	var voiceAvailable atomic.Bool
+	voiceAvailable.Store(true)
+	resolverEntered := make(chan struct{}, 1)
+	store := NewStoreWithOptions(t.TempDir(), StoreOptions{ResolveCharacterVoice: func(id string) (VoiceIdentity, bool, error) {
+		resolverEntered <- struct{}{}
+		if id != "character_keeper" || !voiceAvailable.Load() {
+			return VoiceIdentity{}, false, nil
+		}
+		return VoiceIdentity{CharacterVoiceID: id, ActorVoiceID: "voice_mara", Fingerprint: "voice-fingerprint"}, true, nil
+	}})
+	project, err := store.Create("Guarded edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deleteEntered := make(chan struct{})
+	allowDelete := make(chan struct{})
+	guardResult := make(chan error, 1)
+	go func() {
+		dependents, err := store.GuardCharacterVoiceDeletion("character_keeper", func() error {
+			close(deleteEntered)
+			<-allowDelete
+			voiceAvailable.Store(false)
+			return nil
+		})
+		if err == nil && len(dependents) != 0 {
+			err = fmt.Errorf("unexpected dependents: %+v", dependents)
+		}
+		guardResult <- err
+	}()
+	<-deleteEntered
+
+	updateResult := make(chan error, 1)
+	go func() {
+		_, err := store.Update(project.ID, ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: []Track{{
+			ID: "keeper", Name: "Keeper", Type: TrackTypeDialogue, CharacterVoiceID: "character_keeper", Clips: []TimelineClip{{
+				ID: "line_1", Type: ClipTypeDialogue, Label: "Keep watch", Text: "Keep watch", DurationMS: 1000,
+			}},
+		}}})
+		updateResult <- err
+	}()
+	select {
+	case <-resolverEntered:
+		close(allowDelete)
+		<-guardResult
+		<-updateResult
+		t.Fatal("project update resolved a Voice while deletion guard was active")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(allowDelete)
+	if err := <-guardResult; err != nil {
+		t.Fatalf("guard deletion: %v", err)
+	}
+	if err := <-updateResult; !errors.Is(err, ErrCharacterVoiceNotFound) {
+		t.Fatalf("concurrent binding error = %v, want ErrCharacterVoiceNotFound", err)
+	}
+	deleteCalled := false
+	if dependents, err := store.GuardCharacterVoiceDeletion("character_keeper", func() error {
+		deleteCalled = true
+		return nil
+	}); err != nil || !deleteCalled || len(dependents) != 0 {
+		t.Fatalf("failed concurrent binding left dependents = %+v, err %v", dependents, err)
+	}
+
+	actorDeleteEntered := make(chan struct{})
+	allowActorDelete := make(chan struct{})
+	actorGuardResult := make(chan error, 1)
+	go func() {
+		_, err := store.GuardActorVoiceDeletion("voice_direct", nil, func() error {
+			close(actorDeleteEntered)
+			<-allowActorDelete
+			return nil
+		})
+		actorGuardResult <- err
+	}()
+	<-actorDeleteEntered
+	actorUpdateResult := make(chan error, 1)
+	go func() {
+		_, err := store.Update(project.ID, ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: []Track{{
+			ID: "direct_actor", Name: "Direct Actor", Type: TrackTypeDialogue, ActorVoiceID: "voice_direct",
+		}}})
+		actorUpdateResult <- err
+	}()
+	select {
+	case err := <-actorUpdateResult:
+		close(allowActorDelete)
+		<-actorGuardResult
+		t.Fatalf("direct Actor binding returned before deletion completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(allowActorDelete)
+	if err := <-actorGuardResult; err != nil {
+		t.Fatalf("guard Actor deletion: %v", err)
+	}
+	if err := <-actorUpdateResult; !errors.Is(err, ErrInvalid) {
+		t.Fatalf("concurrent direct Actor binding error = %v, want ErrInvalid", err)
 	}
 }
 

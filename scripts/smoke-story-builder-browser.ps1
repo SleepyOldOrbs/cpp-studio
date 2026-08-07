@@ -1152,6 +1152,65 @@ async page => {
 }
 '@
 
+$deletionBoundaryCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const origin = page.url().split('/demo/')[0];
+  const projectID = '__PLAYBACK_PROJECT_ID__';
+
+  await page.goto(origin + '/demo/#voice-cloning');
+  const actorCard = page.locator('.actor-voice-item', { hasText: 'Mara' }).first();
+  await actorCard.waitFor();
+  await actorCard.getByRole('button', { name: 'Delete', exact: true }).click();
+  await page.locator('#cloneErrorBox').filter({ hasText: 'Timeline playback browser smoke' }).waitFor();
+  assert(await page.evaluate(id => fetch('/v1/story-builder-projects/' + id).then(response => response.ok), projectID),
+    'blocked Actor Voice delete changed its dependent project');
+
+  const characterRows = actorCard.locator('.character-voice-item');
+  const characterNames = await characterRows.locator('.character-voice-form input').evaluateAll(nodes => nodes.map(node => node.value));
+  const characterIndex = characterNames.indexOf('Weathered keeper');
+  assert(characterIndex >= 0, 'Weathered keeper was not listed under its Actor Voice');
+  const characterRow = characterRows.nth(characterIndex);
+  await characterRow.getByRole('button', { name: 'Delete Character Voice', exact: true }).click();
+  await page.locator('#cloneErrorBox').filter({ hasText: 'Timeline playback browser smoke' }).waitFor();
+  assert(await page.evaluate(id => fetch('/v1/character-voices/' + id).then(response => response.ok), '__CHARACTER_VOICE_ID__'),
+    'blocked Character Voice delete removed the Voice');
+
+  await page.goto(origin + '/demo/story-builder.html?project=' + projectID);
+  await page.locator('#storyBuilderDeleteButton').waitFor();
+  const dialogMessage = new Promise(resolve => page.once('dialog', async dialog => {
+    const message = dialog.message();
+    await dialog.accept();
+    resolve(message);
+  }));
+  const deleted = page.waitForResponse(response => response.request().method() === 'DELETE' && response.url().endsWith('/story-builder-projects/' + projectID));
+  await page.locator('#storyBuilderDeleteButton').click();
+  const message = await dialogMessage;
+  const response = await deleted;
+  assert(response.status() === 204, 'project deletion did not return 204');
+  assert(message.includes('project-owned media, takes, renders, and exports') && message.includes('Source Stories, voices, and Library audio stay'),
+    'project deletion confirmation did not identify destructive scope');
+
+  const survival = await page.evaluate(async ids => {
+    const paths = {
+      project: `/v1/story-builder-projects/${ids.project}`,
+      actor: `/v1/voices/${ids.actor}/audio`,
+      character: `/v1/character-voices/${ids.character}`,
+      library: `/v1/library/${ids.library}/artifact`,
+      story: `/v1/stories/${ids.story}`,
+    };
+    return Object.fromEntries(await Promise.all(Object.entries(paths).map(async ([key, path]) => [key, (await fetch(path)).status])));
+  }, { project: projectID, actor: '__ACTOR_VOICE_ID__', character: '__CHARACTER_VOICE_ID__', library: '__MUSIC_ITEM_ID__', story: '__IMPORT_STORY_ID__' });
+  assert(survival.project === 404, 'deleted project remained available');
+  assert(survival.actor === 200 && survival.character === 200 && survival.library === 200 && survival.story === 200,
+    `project deletion crossed an ownership boundary: ${JSON.stringify(survival)}`);
+
+  return { project: projectID, blocked: ['actor', 'character'], survival };
+}
+'@
+
 Push-Location $runtimeDir
 try {
   $ready = $false
@@ -1380,6 +1439,7 @@ try {
   } | ConvertTo-Json -Depth 4)
   $unifiedLibraryAPICode = $unifiedLibraryAPICode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id).Replace("__IMPORT_STORY_ID__", $storyImportStart.id).Replace("__CATALOG_SFX_ITEM_ID__", $catalogSFXItem.id)
   $unifiedLibraryCode = $unifiedLibraryCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id)
+  $deletionBoundaryCode = $deletionBoundaryCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id).Replace("__ACTOR_VOICE_ID__", $actorVoice.id).Replace("__CHARACTER_VOICE_ID__", $keeperVoice.id).Replace("__MUSIC_ITEM_ID__", $musicItem.id).Replace("__IMPORT_STORY_ID__", $storyImportStart.id)
   Invoke-BrowserCode -Code $buildFailureRecoveryCode
   Invoke-BrowserCode -Code $buildCancellationRecoveryCode
   Invoke-BrowserCode -Code $playbackSetupCode
@@ -1390,6 +1450,7 @@ try {
   Invoke-BrowserCode -Code $storyImportCode
   Invoke-BrowserCode -Code $unifiedLibraryAPICode
   Invoke-BrowserCode -Code $unifiedLibraryCode
+  Invoke-BrowserCode -Code $deletionBoundaryCode
   [ordered]@{ status = "ok"; browser = "playwright"; gateway = $baseURL } | ConvertTo-Json
 } finally {
   try {

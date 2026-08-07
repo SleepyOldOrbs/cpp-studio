@@ -2001,7 +2001,9 @@
   deleteButton.addEventListener("click", async () => {
     if (serverMutationPending()) return;
     const project = currentProject();
-    if (!project || !window.confirm(`Delete “${project.name}”?`)) return;
+    if (!project || !window.confirm(
+      `Delete “${project.name}” and its project-owned media, takes, renders, and exports? Source Stories, voices, and Library audio stay.`
+    )) return;
     try {
       await request(`${apiRoot}/${encodeURIComponent(project.id)}`, { method: "DELETE" });
       projects = projects.filter((item) => item.id !== project.id);

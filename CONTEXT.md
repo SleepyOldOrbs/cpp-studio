@@ -162,7 +162,14 @@ Whole-project writes use the revision as an
 optimistic-concurrency boundary: a stale client receives a conflict instead of
 silently replacing newer work. Each project lives in its own directory under
 `out/story-builder-projects`; atomic manifest replacement and project-scoped
-deletion are owned by the project Store.
+deletion are owned by the project Store. Actor and Character Voices remain
+project dependencies even when every current dialogue clip has a ready take,
+because a future text edit or rebuild still needs the bound voice. Voice
+deletion is blocked while any project depends on it, and the conflict names the
+affected projects; the dependency check holds the project mutation boundary
+through the owning Voice Store deletion. Deleting a project removes only its
+directory and owned media, takes, renders, and exports; it never removes the
+imported Story, bound voices, or original reusable Library audio.
 
 The separate browser tool at `/demo/story-builder.html` owns project and typed
 track arrangement, starts/polls asynchronous dialogue builds, requests

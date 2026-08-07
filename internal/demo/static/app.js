@@ -8172,6 +8172,8 @@
             refreshLibrary(true);
           } catch (err) {
             log((remove.label || "Delete") + " failed: " + err.message, "error");
+            libraryErrorBox.textContent = (remove.label || "Delete") + " failed: " + err.message;
+            libraryErrorBox.hidden = false;
             removeButton.disabled = false;
           }
         });
