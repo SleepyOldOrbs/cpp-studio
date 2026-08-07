@@ -391,6 +391,35 @@ func runFFmpeg(args []string, stdout, stderr io.Writer) error {
 			}
 		}
 	}
+	for _, arg := range args {
+		if strings.Contains(arg, "loudnorm=") {
+			if inPath == "" {
+				return errors.New("ffmpeg loudness measurement needs -i <input>")
+			}
+			if err := validateWAVFile(inPath); err != nil {
+				return fmt.Errorf("ffmpeg input: %w", err)
+			}
+			_, err := fmt.Fprintln(stderr, `{"input_i":"-16.0","input_tp":"-6.0","input_lra":"2.0"}`)
+			return err
+		}
+	}
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-f" && args[i+1] == "null" {
+			if inPath == "" {
+				return errors.New("ffmpeg encoded-audio validation needs -i <input>")
+			}
+			data, err := os.ReadFile(inPath)
+			if err != nil {
+				return fmt.Errorf("ffmpeg could not read encoded audio: %w", err)
+			}
+			encoded := string(data)
+			if len(data) < 8 || strings.Contains(encoded, "CORRUPT") ||
+				(!strings.HasPrefix(encoded, "ID3") && !strings.HasPrefix(encoded, "OggS") && !strings.HasPrefix(encoded, "fLaC")) {
+				return errors.New("ffmpeg could not decode the complete encoded audio")
+			}
+			return nil
+		}
+	}
 	// ffmpeg's output path is the last positional argument.
 	if len(args) > 0 {
 		outPath = args[len(args)-1]
@@ -422,7 +451,13 @@ func runFFmpeg(args []string, stdout, stderr io.Writer) error {
 	}
 	// Stand in for compression: a header the sniffer recognises plus a
 	// fraction of the source, so callers see a smaller, non-empty file.
-	encoded := append([]byte("ID3\x03\x00\x00\x00"), source[:len(source)/8]...)
+	header := []byte("ID3\x03\x00\x00\x00")
+	if codec == "libopus" {
+		header = []byte("OggS")
+	} else if codec == "flac" {
+		header = []byte("fLaC")
+	}
+	encoded := append(header, source[:len(source)/8]...)
 	return os.WriteFile(outPath, encoded, 0o600)
 }
 
@@ -435,6 +470,7 @@ const fixtureEncoderList = `Encoders:
  A....D aac                  AAC (Advanced Audio Coding)
  A....D libmp3lame           libmp3lame MP3 (MPEG audio layer 3)
  A....D libopus              libopus Opus
+ A....D flac                 FLAC (Free Lossless Audio Codec)
  A....D pcm_s16le            PCM signed 16-bit little-endian
 `
 

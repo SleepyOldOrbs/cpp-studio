@@ -118,6 +118,15 @@ button { padding: .55rem .75rem; }
 .render-button { color: #f4ecff; border-color: #8d70a0; background: #594365; font-weight: 800; }
 .render-button:disabled { opacity: .45; cursor: default; }
 .latest-master { color: #b9e8cc; font-size: .72rem; font-weight: 800; }
+.render-history { margin-bottom: 1rem; padding: .75rem 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; border: 1px solid var(--line); border-radius: .65rem; background: rgba(21, 28, 38, .92); }
+.render-history h2 { margin: 0; font-size: .95rem; }
+.render-history-list { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .55rem; }
+.render-history-empty { margin: 0; color: var(--muted); font-size: .72rem; }
+.render-revision { padding: .45rem .55rem; display: flex; align-items: center; gap: .45rem; border: 1px solid #35465c; border-radius: .45rem; background: #111923; font-size: .7rem; }
+.render-revision strong { color: var(--text); }
+.render-revision a { color: #b9e8cc; font-weight: 800; }
+.render-revision button { padding: .3rem .42rem; font-size: .68rem; }
+.render-revision button:disabled { opacity: .5; cursor: default; }
 .audition-clip { width: 100%; color: #d9efff; border-color: #4f91ce; background: #183958; }
 .story-canvas { min-height: 30rem; margin-top: 1rem; overflow: hidden; border: 1px solid var(--line); border-radius: .65rem; background: rgba(10, 15, 22, .86); }
 .canvas-heading { min-height: 4.7rem; padding: .85rem 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); background: var(--panel); }

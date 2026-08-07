@@ -454,13 +454,12 @@ type AudioFormat struct {
 	Label          string `json:"label"`
 }
 
-// AudioFormats are the delivery formats the studio offers. Both are widely
-// playable and both cut a spoken-word WAV by more than an order of
-// magnitude; opus is smaller at equal quality, mp3 plays absolutely
-// everywhere.
+// AudioFormats are the delivery formats the studio offers. MP3 and Opus are
+// compact lossy delivery encodings; FLAC preserves the PCM losslessly.
 var AudioFormats = []AudioFormat{
 	{ID: "mp3", Encoder: "libmp3lame", ContentType: "audio/mpeg", DefaultBitrate: "128k", Label: "MP3"},
 	{ID: "opus", Encoder: "libopus", ContentType: "audio/ogg", DefaultBitrate: "64k", Label: "Opus"},
+	{ID: "flac", Encoder: "flac", ContentType: "audio/flac", Label: "FLAC"},
 }
 
 // LookupAudioFormat finds a delivery format by id.
@@ -504,24 +503,48 @@ func TranscodeSpec(inPath string, outPath string, format AudioFormat, bitrate st
 		InputPath:  inPath,
 		OutputPath: outPath,
 		BuildArgs: func(in, out string) []string {
-			return []string{
+			args := []string{
 				"-nostdin", "-y",
 				"-i", in,
 				"-vn",
 				"-c:a", format.Encoder,
-				"-b:a", bitrate,
-				out,
 			}
+			if format.DefaultBitrate != "" {
+				args = append(args, "-b:a", bitrate)
+			}
+			return append(args, out)
 		},
 		ValidateOutput: func(path string) error {
-			info, err := os.Stat(path)
-			if err != nil {
-				return fmt.Errorf("stat encoded audio: %v", err)
-			}
-			if info.Size() == 0 {
-				return fmt.Errorf("produced an empty file")
-			}
-			return nil
+			return ValidateEncodedAudio(path, format)
+		},
+	}
+}
+
+// ValidateEncodedAudio checks that an encoder produced the requested delivery
+// container rather than merely exiting successfully with a non-empty file.
+func ValidateEncodedAudio(path string, format AudioFormat) error {
+	head, err := readFileHead(path, 16)
+	if err != nil {
+		return fmt.Errorf("read encoded audio: %v", err)
+	}
+	contentType, ok := SniffAudioContentType(head)
+	if !ok || contentType != format.ContentType {
+		return fmt.Errorf("encoded audio is not %s", format.Label)
+	}
+	return nil
+}
+
+// ProbeEncodedAudioSpec asks ffmpeg to decode the complete delivery file to a
+// null sink. Container sniffing rejects a wrong format early; this probe catches
+// truncation or corrupt frames before the Store publishes the derived file.
+func ProbeEncodedAudioSpec(path string) Spec {
+	return Spec{
+		Engine:    "ffmpeg",
+		Label:     "ffmpeg encoded-audio validation command",
+		Timeout:   DefaultTranscodeTimeout,
+		InputPath: path,
+		BuildArgs: func(in, _ string) []string {
+			return []string{"-nostdin", "-v", "error", "-xerror", "-i", in, "-map", "0:a:0", "-f", "null", "-"}
 		},
 	}
 }
