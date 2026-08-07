@@ -190,6 +190,13 @@ type Project struct {
 	Renders            []RenderRevision `json:"renders,omitempty"`
 }
 
+// DependentProject identifies a saved project that still needs a Voice for
+// future dialogue rebuilds.
+type DependentProject struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type StoreOptions struct {
 	WriteFileAtomic       func(path string, data []byte) error
 	ResolveCharacterVoice CharacterVoiceResolver
@@ -385,6 +392,106 @@ func (s *Store) List() ([]Project, error) {
 		return projects[i].UpdatedAt.After(projects[j].UpdatedAt)
 	})
 	return projects, nil
+}
+
+// GuardCharacterVoiceDeletion holds the project mutation boundary while the
+// owning Voice Store performs the deletion. A concurrent project save cannot
+// add a dependency between the check and deletion.
+func (s *Store) GuardCharacterVoiceDeletion(characterVoiceID string, deleteVoice func() error) ([]DependentProject, error) {
+	characterVoiceID = strings.TrimSpace(characterVoiceID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dependents, err := s.projectsDependingOnVoice(func(track Track) bool {
+		return trackDependsOnCharacterVoice(track, characterVoiceID)
+	})
+	if err != nil || len(dependents) > 0 {
+		return dependents, err
+	}
+	return dependents, deleteVoice()
+}
+
+// GuardActorVoiceDeletion provides the same boundary for direct Actor Voice
+// bindings and bindings through one of the Actor's Character Voices.
+func (s *Store) GuardActorVoiceDeletion(actorVoiceID string, characterVoiceIDs []string, deleteVoice func() error) ([]DependentProject, error) {
+	actorVoiceID = strings.TrimSpace(actorVoiceID)
+	characters := characterVoiceIDSet(characterVoiceIDs)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dependents, err := s.projectsDependingOnVoice(func(track Track) bool {
+		return trackDependsOnActorVoice(track, actorVoiceID, characters)
+	})
+	if err != nil || len(dependents) > 0 {
+		return dependents, err
+	}
+	return dependents, deleteVoice()
+}
+
+func characterVoiceIDSet(ids []string) map[string]struct{} {
+	characters := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			characters[id] = struct{}{}
+		}
+	}
+	return characters
+}
+
+func trackDependsOnCharacterVoice(track Track, characterVoiceID string) bool {
+	if characterVoiceID == "" {
+		return false
+	}
+	if track.CharacterVoiceID == characterVoiceID {
+		return true
+	}
+	for _, clip := range track.Clips {
+		if clip.CharacterVoiceID == characterVoiceID {
+			return true
+		}
+	}
+	return false
+}
+
+func trackDependsOnActorVoice(track Track, actorVoiceID string, characterVoiceIDs map[string]struct{}) bool {
+	if actorVoiceID != "" && track.ActorVoiceID == actorVoiceID {
+		return true
+	}
+	if _, ok := characterVoiceIDs[track.CharacterVoiceID]; ok {
+		return true
+	}
+	for _, clip := range track.Clips {
+		if actorVoiceID != "" && clip.ActorVoiceID == actorVoiceID {
+			return true
+		}
+		if _, ok := characterVoiceIDs[clip.CharacterVoiceID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) projectsDependingOnVoice(matches func(Track) bool) ([]DependentProject, error) {
+	projects, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	dependents := make([]DependentProject, 0)
+	for _, project := range projects {
+		for _, track := range project.Tracks {
+			if matches(track) {
+				dependents = append(dependents, DependentProject{ID: project.ID, Name: project.Name})
+				break
+			}
+		}
+	}
+	sort.Slice(dependents, func(i, j int) bool {
+		if dependents[i].Name == dependents[j].Name {
+			return dependents[i].ID < dependents[j].ID
+		}
+		return dependents[i].Name < dependents[j].Name
+	})
+	return dependents, nil
 }
 
 func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
@@ -665,6 +772,12 @@ func (s *Store) prepareTracks(existing, incoming []Track, revoiceTrackIDs map[st
 				clip.MediaError = oldClip.MediaError
 			}
 			continue
+		}
+		if track.CharacterVoiceID == "" && track.ActorVoiceID != "" &&
+			(!hadTrack || oldTrack.CharacterVoiceID != "" || oldTrack.ActorVoiceID != track.ActorVoiceID) {
+			// Direct Actor ids are retained for older manifests, but new voice
+			// bindings must be selected through a resolvable Character Voice.
+			return nil, ErrInvalid
 		}
 		if hadTrack && oldTrack.CharacterVoiceID != "" && oldTrack.CharacterVoiceID != track.CharacterVoiceID && hasDialogue(oldTrack) {
 			if _, allowed := revoiceTrackIDs[track.ID]; !allowed {

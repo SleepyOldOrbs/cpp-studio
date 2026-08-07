@@ -197,8 +197,9 @@ Gateway restart.
   intentional replacement of an occupied Dialogue Track's Character Voice
   additionally names that track in `revoice_track_ids`; an unconfirmed
   replacement is rejected with `409`.
-- `DELETE /v1/story-builder-projects/{id}` — delete only that project and
-  return `204`.
+- `DELETE /v1/story-builder-projects/{id}` — delete only that project and its
+  owned media, takes, renders, and exports, then return `204`. Source Stories,
+  Actor Voices, Character Voices, and original reusable Library audio remain.
 - `POST /v1/story-builder-projects/{id}/library-audio` — atomically place one
   reusable Library item with
   `{"revision":2,"track_id":"foley","library_item_id":"lib_...","start_ms":250}`.
@@ -271,7 +272,9 @@ Each track has a stable `id`, editable `name`, contiguous `order`, `type`
 be empty and unbound. Adding a Character Voice binds its `character_voice_id`,
 canonical parent `actor_voice_id`, and synthesis `voice_fingerprint`; a track
 that already contains dialogue rejects replacement by a different Character
-Voice with `409`.
+Voice with `409`. The Actor id and fingerprint are server-derived; a client
+cannot introduce a new direct Actor-only binding, while retained older manifests
+with that provenance remain protected by Actor Voice dependency checks.
 
 A `dialogue` clip stores editable spoken `text`, the same canonical voice
 provenance, and one of `stale`, `building`, `ready`, or `failed` in `status`.
@@ -451,7 +454,9 @@ mutations. Audio and images explicitly saved from the console still live in
 - `DELETE /v1/library/{id}` — remove an item (`204`).
 
 Cloned voices use `DELETE /v1/voices/{id}` (protected voices remain
-undeletable). Finished stories and audiobooks use `DELETE /v1/stories/{id}`
+undeletable). An Actor or Character Voice required by a Story Builder Project
+returns `409` with `dependent_projects` identities instead of being removed.
+Finished stories and audiobooks use `DELETE /v1/stories/{id}`
 and `DELETE /v1/audiobooks/{id}`; interrupted productions retain their
 validated `POST .../discard` lifecycle action. Story Builder Projects use
 `DELETE /v1/story-builder-projects/{id}`. There is no generic mutation route
@@ -750,7 +755,9 @@ Character Voice routes accept JSON bodies up to 64 KiB:
 - `PUT /v1/character-voices/{id}` replaces its name and direction using the
   same JSON shape while retaining its id, parent id, and creation time.
 - `DELETE /v1/character-voices/{id}` deletes the child and any evaluation
-  preview, returning `204`.
+  preview, returning `204`. Deletion returns `409` with
+  `{"error":"...","dependent_projects":[{"id":"project_...","name":"Episode edit"}]}`
+  while a Story Builder Dialogue Track uses the Character Voice.
 - `POST /v1/character-voices/{id}/preview` accepts
   `{"sample_text":"Keep the lamp lit."}` and returns the Character Voice with
   `preview` metadata and `preview_audio_url`.
