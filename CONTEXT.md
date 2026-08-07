@@ -143,7 +143,9 @@ deletion are owned by the project Store.
 The separate browser tool at `/demo/story-builder.html` owns project and typed
 track arrangement and starts/polls asynchronous dialogue builds. Build
 coordination is in memory, while clip status and successful takes are durable in
-the project Store. Later Story Builder slices extend this aggregate rather than
+the project Store. It also derives read-only timeline playback and isolated clip
+audition from those project-owned WAVs without creating a render or changing the
+project revision. Later Story Builder slices extend this aggregate rather than
 creating a second persistence system.
 
 ## Timeline Track

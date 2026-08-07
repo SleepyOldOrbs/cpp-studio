@@ -611,6 +611,175 @@ async page => {
 }
 '@
 
+$playbackSetupCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  await page.addInitScript(() => {
+    window.__storyPlayback = { starts: [], stops: 0, decoded: [] };
+    class FixtureSource {
+      connect() {}
+      start(when, offset, duration) {
+        window.__storyPlayback.starts.push({ when, offset, duration });
+      }
+      stop() { window.__storyPlayback.stops += 1; }
+    }
+    class FixtureAudioContext {
+      constructor() {
+        this.born = performance.now();
+        this.destination = {};
+      }
+      get currentTime() { return (performance.now() - this.born) / 1000; }
+      resume() { return Promise.resolve(); }
+      decodeAudioData(bytes) {
+        window.__storyPlayback.decoded.push(bytes.byteLength);
+        return Promise.resolve({ duration: 1 });
+      }
+      createBufferSource() { return new FixtureSource(); }
+    }
+    window.AudioContext = FixtureAudioContext;
+  });
+
+  const projectID = '__PLAYBACK_PROJECT_ID__';
+  const playbackState = () => page.evaluate(() => structuredClone(window.__storyPlayback));
+  await page.goto(`${page.url().split('/demo/')[0]}/demo/story-builder.html?project=${projectID}`);
+  const play = page.getByRole('button', { name: 'Play timeline' });
+  const pause = page.getByRole('button', { name: 'Pause timeline' });
+  const playhead = page.getByRole('slider', { name: 'Playhead' });
+  await play.waitFor();
+  assert(await play.isEnabled(), 'Play timeline was not available');
+  assert(await pause.isDisabled(), 'Pause timeline was enabled before playback');
+
+  await page.keyboard.press('Space');
+  await page.locator('#storyBuilderPlaybackStatus').filter({ hasText: /Playing from/ }).waitFor();
+  await page.waitForFunction(() => window.__storyPlayback.starts.length === 3);
+  let state = await playbackState();
+  assert(state.decoded.length === 3 && state.decoded.every(size => size > 44), 'timeline did not decode all fixture WAVs');
+  assert(state.starts.length === 3, 'mute or silence scheduled unexpected audio');
+  const initialDurations = state.starts.map(item => Number(item.duration.toFixed(2))).sort();
+  assert(JSON.stringify(initialDurations) === JSON.stringify([0.5, 1, 1]), 'initial clip durations ignored trim, mute, or silence');
+  const futureStarts = state.starts.filter(item => item.when - state.starts[0].when > 0.15);
+  assert(futureStarts.length === 2 && Math.abs(futureStarts[0].when - futureStarts[1].when) < 0.01,
+    'cross-track overlap was not scheduled simultaneously');
+
+  await page.waitForTimeout(140);
+  await page.keyboard.press('Space');
+  await page.locator('#storyBuilderPlaybackStatus').filter({ hasText: /Paused at/ }).waitFor();
+  const pausedAt = Number(await playhead.inputValue());
+  assert(pausedAt >= 50 && pausedAt < 700, 'Pause did not retain the current playhead');
+
+  return { project: projectID, pausedAt };
+}
+'@
+
+$playbackTimelineCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const projectID = '__PLAYBACK_PROJECT_ID__';
+  const projectState = id => page.evaluate(id => fetch(`/v1/story-builder-projects/${id}`).then(response => response.json()), id);
+  const playbackState = () => page.evaluate(() => structuredClone(window.__storyPlayback));
+  const play = page.getByRole('button', { name: 'Play timeline' });
+  const pause = page.getByRole('button', { name: 'Pause timeline' });
+  const playhead = page.getByRole('slider', { name: 'Playhead' });
+  const revisionBefore = (await projectState(projectID)).revision;
+
+  await playhead.fill('500');
+  await page.locator('#storyBuilderPlaybackStatus').filter({ hasText: /00:00\.500/ }).waitFor();
+  await play.click();
+  await page.waitForFunction(() => window.__storyPlayback.starts.length === 6);
+  const state = await playbackState();
+  const sought = state.starts.slice(-3);
+  const soughtOffsets = sought.map(item => Number(item.offset.toFixed(2))).sort();
+  const soughtDurations = sought.map(item => Number(item.duration.toFixed(2))).sort();
+  assert(JSON.stringify(soughtOffsets) === JSON.stringify([0.25, 0.45, 0.5]), 'seek did not apply dialogue and source-trim offsets');
+  assert(JSON.stringify(soughtDurations) === JSON.stringify([0.25, 0.5, 0.75]), 'seek did not shorten remaining clip durations');
+  const playheadGeometry = await page.evaluate(() => {
+    const stage = document.querySelector('.timeline-stage').getBoundingClientRect();
+    const line = document.querySelector('#storyBuilderPlayheadLine').getBoundingClientRect();
+    const playhead = Number(document.querySelector('#storyBuilderPlayhead').value);
+    return { actual: line.left, expected: stage.left + stage.width * playhead / 3000 };
+  });
+  assert(Math.abs(playheadGeometry.actual - playheadGeometry.expected) < 1,
+    'visible playhead did not share the rendered clip-lane scale');
+
+  const startsBeforeViewChange = state.starts.length;
+  await page.getByRole('slider', { name: 'Zoom' }).fill('160');
+  await page.locator('#storyBuilderTimelineViewport').evaluate(node => { node.scrollLeft = 300; });
+  await page.waitForTimeout(80);
+  assert((await playbackState()).starts.length === startsBeforeViewChange, 'zoom or horizontal scroll changed playback scheduling');
+  await pause.click();
+
+  await playhead.fill('0');
+  await play.click();
+  await page.waitForFunction(count => window.__storyPlayback.starts.length === count + 3, startsBeforeViewChange);
+  const beforeRestart = await playbackState();
+  await play.click();
+  await page.waitForFunction(count => window.__storyPlayback.starts.length === count + 3, beforeRestart.starts.length);
+  const restarted = await playbackState();
+  assert(restarted.stops >= 3, 'new Play did not stop conflicting browser sources');
+
+  await page.locator('.timeline-clip.clip-sfx').first().click();
+  const beforeAudition = await playbackState();
+  await page.getByRole('button', { name: 'Audition selected clip' }).click();
+  await page.waitForFunction(count => window.__storyPlayback.starts.length === count + 1, beforeAudition.starts.length);
+  const auditioned = await playbackState();
+  const isolated = auditioned.starts.at(-1);
+  assert(Number(isolated.offset.toFixed(2)) === 0.2 && Number(isolated.duration.toFixed(2)) === 0.5,
+    'isolated audition ignored selected source trim');
+  assert(auditioned.stops > beforeAudition.stops, 'audition did not stop timeline playback');
+  assert((await page.locator('#storyBuilderPlaybackStatus').innerText()).includes('only'), 'audition did not report isolation');
+  assert((await projectState(projectID)).revision === revisionBefore, 'playback or audition mutated the project revision');
+
+  await page.locator('#storyBuilderTimelineDuration').evaluate(input => {
+    input.value = '4';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  assert(!(await page.getByRole('button', { name: 'Undo' }).isDisabled()), 'timeline edit did not create Undo history');
+  await playhead.fill('0');
+  const beforeUndoPlayback = await playbackState();
+  await play.click();
+  await page.waitForFunction(count => window.__storyPlayback.starts.length > count, beforeUndoPlayback.starts.length);
+  const playingBeforeUndo = await playbackState();
+  await page.getByRole('button', { name: 'Undo' }).click();
+  assert((await playbackState()).stops > playingBeforeUndo.stops, 'Undo did not stop playback scheduled against the old arrangement');
+
+  return { project: projectID, starts: auditioned.starts.length };
+}
+'@
+
+$playbackUnavailableCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const projectID = '__PLAYBACK_PROJECT_ID__';
+
+  const stale = await page.evaluate(async id => {
+    const project = await fetch(`/v1/story-builder-projects/${id}`).then(response => response.json());
+    project.tracks[0].clips[0].text = 'This dialogue is now stale.';
+    const response = await fetch(`/v1/story-builder-projects/${id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: project.name, revision: project.revision,
+        timeline_duration_ms: project.timeline_duration_ms, tracks: project.tracks }),
+    });
+    return response.json();
+  }, projectID);
+  assert(stale.tracks[0].clips[0].status === 'stale', 'playback stale-state fixture was not stale');
+  await page.reload();
+  await page.getByRole('button', { name: 'Play timeline' }).click();
+  await page.locator('#storyBuilderPlaybackStatus').filter({ hasText: /unavailable clips:.*stale/i }).waitFor();
+
+  await page.goto(`${page.url().split('/demo/')[0]}/demo/story-builder.html?project=__BROKEN_PROJECT_ID__`);
+  await page.getByRole('button', { name: 'Play timeline' }).click();
+  await page.locator('#storyBuilderPlaybackStatus').filter({ hasText: /unavailable clips:.*missing or unreadable/i }).waitFor();
+
+  return { project: projectID, unavailable: true };
+}
+'@
+
 $libraryAudioCode = @'
 async page => {
   const assert = (condition, message) => {
@@ -790,11 +959,61 @@ try {
   New-Item -ItemType Directory -Force -Path $audioTrimTakesDir | Out-Null
   Write-FixtureWav -Path (Join-Path $audioTrimTakesDir "take_1.wav") -Samples 19200
 
+  $playbackProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects" -Method Post -ContentType "application/json" -Body '{"name":"Timeline playback browser smoke"}'
+  $playbackProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects/$($playbackProject.id)" -Method Put -ContentType "application/json" -Body (@{
+    name = $playbackProject.name
+    revision = $playbackProject.revision
+    timeline_duration_ms = 3000
+    tracks = @(
+      [ordered]@{ id = "playback_dialogue"; name = "Dialogue"; type = "dialogue"; order = 0; muted = $false; character_voice_id = $keeperVoice.id; clips = @(
+        [ordered]@{ id = "playback_line"; type = "dialogue"; label = "Ready line"; text = "Ready line."; status = "stale"; start_ms = 0; duration_ms = 1000 },
+        [ordered]@{ id = "playback_silence"; type = "silence"; label = "Pause"; start_ms = 1500; duration_ms = 500 }
+      ) },
+      [ordered]@{ id = "playback_sfx"; name = "SFX"; type = "sfx"; order = 1; muted = $false; clips = @() },
+      [ordered]@{ id = "playback_music"; name = "Music"; type = "music"; order = 2; muted = $false; clips = @() },
+      [ordered]@{ id = "playback_muted"; name = "Muted SFX"; type = "sfx"; order = 3; muted = $true; clips = @() }
+    )
+  } | ConvertTo-Json -Depth 10)
+  $playbackProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects/$($playbackProject.id)/library-audio" -Method Post -ContentType "application/json" -Body (@{
+    revision = $playbackProject.revision; track_id = "playback_sfx"; library_item_id = $sfxItem.id; start_ms = 250
+  } | ConvertTo-Json)
+  $playbackProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects/$($playbackProject.id)/library-audio" -Method Post -ContentType "application/json" -Body (@{
+    revision = $playbackProject.revision; track_id = "playback_music"; library_item_id = $musicItem.id; start_ms = 250
+  } | ConvertTo-Json)
+  $playbackProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects/$($playbackProject.id)/library-audio" -Method Post -ContentType "application/json" -Body (@{
+    revision = $playbackProject.revision; track_id = "playback_muted"; library_item_id = $sfxItem.id; start_ms = 250
+  } | ConvertTo-Json)
+  $playbackSFXClip = $playbackProject.tracks | Where-Object { $_.id -eq "playback_sfx" } | Select-Object -ExpandProperty clips | Select-Object -First 1
+  $playbackSFXClip | Add-Member -NotePropertyName source_in_ms -NotePropertyValue 200
+  $playbackSFXClip.source_out_ms = 700
+  $playbackSFXClip.duration_ms = 500
+  $playbackProject = Invoke-RestMethod -Uri "$baseURL/v1/story-builder-projects/$($playbackProject.id)" -Method Put -ContentType "application/json" -Body (@{
+    name = $playbackProject.name
+    revision = $playbackProject.revision
+    timeline_duration_ms = $playbackProject.timeline_duration_ms
+    tracks = $playbackProject.tracks
+  } | ConvertTo-Json -Depth 12)
+  $playbackManifestPath = Join-Path $runtimeDir "out\story-builder-projects\$($playbackProject.id)\project.json"
+  $playbackManifest = Get-Content -Raw $playbackManifestPath | ConvertFrom-Json
+  $playbackDialogueClip = $playbackManifest.tracks[0].clips[0]
+  $playbackDialogueClip.status = "ready"
+  $playbackDialogueClip | Add-Member -NotePropertyName source_id -NotePropertyValue "playback_take"
+  $playbackDialogueClip | Add-Member -NotePropertyName source_duration_ms -NotePropertyValue 1000
+  $playbackDialogueClip | Add-Member -NotePropertyName source_in_ms -NotePropertyValue 0
+  $playbackDialogueClip | Add-Member -NotePropertyName source_out_ms -NotePropertyValue 1000
+  $playbackManifest | ConvertTo-Json -Depth 12 | Set-Content -Encoding UTF8 -Path $playbackManifestPath
+  $playbackTakesDir = Join-Path $runtimeDir "out\story-builder-projects\$($playbackProject.id)\takes"
+  New-Item -ItemType Directory -Force -Path $playbackTakesDir | Out-Null
+  Write-FixtureWav -Path (Join-Path $playbackTakesDir "playback_take.wav")
+
   $audioCode = $audioCode.Replace("__AUDIO_TRIM_PROJECT_ID__", $audioTrimProject.id)
   $statusCode = $statusCode.Replace("__STATUS_PROJECT_ID__", $statusProject.id)
   $buildFailureRecoveryCode = $buildFailureRecoveryCode.Replace("__RECOVERY_CHARACTER_VOICE_ID__", $keeperVoice.id)
   $buildCancellationRecoveryCode = $buildCancellationRecoveryCode.Replace("__RECOVERY_CHARACTER_VOICE_ID__", $keeperVoice.id)
   $libraryAudioCode = $libraryAudioCode.Replace("__SFX_ITEM_ID__", $sfxItem.id).Replace("__MUSIC_ITEM_ID__", $musicItem.id).Replace("__BROKEN_PROJECT_ID__", $brokenProject.id)
+  $playbackSetupCode = $playbackSetupCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id)
+  $playbackTimelineCode = $playbackTimelineCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id)
+  $playbackUnavailableCode = $playbackUnavailableCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id).Replace("__BROKEN_PROJECT_ID__", $brokenProject.id)
 
   Invoke-BrowserCLI -Arguments @("open", "$baseURL/demo/story-builder.html")
   Invoke-BrowserCode -Code $arrangementCode
@@ -807,6 +1026,9 @@ try {
   Invoke-BrowserCode -Code $libraryAudioCode
   Invoke-BrowserCode -Code $buildFailureRecoveryCode
   Invoke-BrowserCode -Code $buildCancellationRecoveryCode
+  Invoke-BrowserCode -Code $playbackSetupCode
+  Invoke-BrowserCode -Code $playbackTimelineCode
+  Invoke-BrowserCode -Code $playbackUnavailableCode
   [ordered]@{ status = "ok"; browser = "playwright"; gateway = $baseURL } | ConvertTo-Json
 } finally {
   try {
