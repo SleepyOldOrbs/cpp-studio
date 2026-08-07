@@ -115,10 +115,16 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 		gpuQuery:  defaultGPUQuery,
 		ggufCache: map[string]ggufCacheEntry{},
 	}
-	r.storyBuilderProjects = storybuilder.NewStoreWithOptions("", storybuilder.StoreOptions{
+	storyBuilderStoreOptions := storybuilder.StoreOptions{
 		ResolveCharacterVoice: r.resolveStoryBuilderCharacterVoice,
 		ResolveLibraryAudio:   r.resolveStoryBuilderLibraryAudio,
-	})
+	}
+	if _, ok := cfg.Engines["ffmpeg"]; ok {
+		storyBuilderStoreOptions.MasterRender = func(ctx context.Context, audio []byte) ([]byte, *story.Master, error) {
+			return story.MasterWAV(ctx, audio, r.measureLoudness)
+		}
+	}
+	r.storyBuilderProjects = storybuilder.NewStoreWithOptions("", storyBuilderStoreOptions)
 	r.storyBuilderDialogueBuilds = r.newStoryBuilderDialogueBuildManager()
 	if whisperCfg, ok := cfg.Engines["whisper"]; ok && whisperVADConfigured(whisperCfg) {
 		r.voices = voice.NewStoreWithOptions("", voice.StoreOptions{AnalyzeVAD: func(wavBytes []byte) (time.Duration, error) {
@@ -4102,6 +4108,10 @@ type storyBuilderDialogueBuildRequest struct {
 	Revision int `json:"revision"`
 }
 
+type storyBuilderRenderRequest struct {
+	Revision int `json:"revision"`
+}
+
 func (r *router) handleStoryBuilderProjects(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
@@ -4145,6 +4155,18 @@ func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Requ
 	}
 	if len(parts) == 2 && parts[1] == "builds" {
 		r.handleStoryBuilderDialogueBuilds(w, req, parts[0])
+		return
+	}
+	if len(parts) == 2 && parts[1] == "renders" {
+		r.handleStoryBuilderRenders(w, req, parts[0])
+		return
+	}
+	if len(parts) == 3 && parts[1] == "renders" {
+		r.handleStoryBuilderRender(w, req, parts[0], parts[2])
+		return
+	}
+	if len(parts) == 2 && parts[1] == "master" {
+		r.handleStoryBuilderLatestMaster(w, req, parts[0])
 		return
 	}
 	if len(parts) == 3 && parts[1] == "builds" {
@@ -4332,6 +4354,66 @@ func (r *router) handleStoryBuilderDialogueAudio(w http.ResponseWriter, req *htt
 	http.ServeFile(w, req, path)
 }
 
+func (r *router) handleStoryBuilderRenders(w http.ResponseWriter, req *http.Request, projectID string) {
+	if req.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body storyBuilderRenderRequest
+	if err := decodeStoryBuilderProjectRequest(w, req, &body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Revision < 1 {
+		writeJSONError(w, http.StatusBadRequest, "revision must be positive")
+		return
+	}
+	response, err := r.storyBuilderProjects.Render(req.Context(), projectID, body.Revision)
+	if err != nil {
+		writeStoryBuilderProjectError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func (r *router) handleStoryBuilderRender(w http.ResponseWriter, req *http.Request, projectID, rawRevision string) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	revision, err := strconv.Atoi(rawRevision)
+	if err != nil || revision < 1 || strconv.Itoa(revision) != rawRevision {
+		writeStoryBuilderProjectError(w, storybuilder.ErrRenderNotFound)
+		return
+	}
+	path, render, err := r.storyBuilderProjects.RenderPath(projectID, revision)
+	if err != nil {
+		writeStoryBuilderProjectError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="story-builder-%s-render-%03d.wav"`, projectID, render.Revision))
+	http.ServeFile(w, req, path)
+}
+
+func (r *router) handleStoryBuilderLatestMaster(w http.ResponseWriter, req *http.Request, projectID string) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	render, err := r.storyBuilderProjects.LatestRender(projectID)
+	if err != nil {
+		writeStoryBuilderProjectError(w, err)
+		return
+	}
+	http.Redirect(w, req, render.URL, http.StatusFound)
+}
+
 func decodeStoryBuilderProjectRequest(w http.ResponseWriter, req *http.Request, body any) error {
 	req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
 	decoder := json.NewDecoder(req.Body)
@@ -4353,11 +4435,11 @@ func writeStoryBuilderProjectError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, storybuilder.ErrNotFound), errors.Is(err, storybuilder.ErrStoryNotFound), errors.Is(err, storybuilder.ErrCharacterVoiceNotFound),
 		errors.Is(err, storybuilder.ErrLibraryAudioNotFound), errors.Is(err, storybuilder.ErrProjectMediaNotFound),
-		errors.Is(err, storybuilder.ErrDialogueBuildMissing):
+		errors.Is(err, storybuilder.ErrDialogueBuildMissing), errors.Is(err, storybuilder.ErrRenderNotFound):
 		writeJSONError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, storybuilder.ErrConflict), errors.Is(err, storybuilder.ErrVoiceConflict),
 		errors.Is(err, storybuilder.ErrDialogueBuildBusy), errors.Is(err, storybuilder.ErrNoDialogueToBuild),
-		errors.Is(err, storybuilder.ErrDialogueBuildStopped):
+		errors.Is(err, storybuilder.ErrDialogueBuildStopped), errors.Is(err, storybuilder.ErrRenderNotReady):
 		writeJSONError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, storybuilder.ErrDialogueEngineBusy):
 		writeJSONError(w, http.StatusTooManyRequests, err.Error())

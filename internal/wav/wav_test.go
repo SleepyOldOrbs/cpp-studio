@@ -2,6 +2,7 @@ package wav
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,88 @@ func TestValidateBytes(t *testing.T) {
 		if err := ValidateBytes(data); err == nil {
 			t.Fatalf("%s: expected validation error", name)
 		}
+	}
+}
+
+func TestMixTimelinePlacesTrimsAndOverlapsSources(t *testing.T) {
+	tone := steppedTestWAV()
+	mixed, err := MixTimeline(3000, []TimelinePlacement{
+		{Data: tone, StartMS: 500, SourceInMS: 1000, DurationMS: 1000},
+		{Data: tone, StartMS: 1000, DurationMS: 1000},
+	})
+	if err != nil {
+		t.Fatalf("mix timeline: %v", err)
+	}
+	if duration, err := Duration(mixed); err != nil || duration != 3*time.Second {
+		t.Fatalf("mixed duration = %s, err=%v", duration, err)
+	}
+	_, pcm, err := Decode(mixed)
+	if err != nil {
+		t.Fatalf("decode mix: %v", err)
+	}
+	sampleAt := func(ms int) int16 {
+		offset := ms * ToneSampleRate / 1000 * 2
+		return int16(binary.LittleEndian.Uint16(pcm[offset : offset+2]))
+	}
+	for _, check := range []struct {
+		ms   int
+		want int16
+	}{{0, 0}, {500, 3000}, {1000, 4000}, {1500, 1000}, {2000, 0}} {
+		if got := sampleAt(check.ms); got != check.want {
+			t.Fatalf("sample at %d ms = %d, want %d", check.ms, got, check.want)
+		}
+	}
+}
+
+func steppedTestWAV() []byte {
+	format := Format{Channels: 1, SampleRate: ToneSampleRate, BitsPerSample: 16}
+	pcm := make([]byte, 2*ToneSampleRate*2)
+	for sample := 0; sample < 2*ToneSampleRate; sample++ {
+		value := int16(1000)
+		if sample >= ToneSampleRate {
+			value = 3000
+		}
+		binary.LittleEndian.PutUint16(pcm[sample*2:sample*2+2], uint16(value))
+	}
+	return Encode(format, pcm)
+}
+
+func TestMixTimelineRejectsInvalidSourcesAndTiming(t *testing.T) {
+	tone := SyntheticTone(ToneSampleRate)
+	for name, placements := range map[string][]TimelinePlacement{
+		"trim exceeds source":        {{Data: tone, SourceInMS: 500, DurationMS: 1000}},
+		"placement exceeds timeline": {{Data: tone, StartMS: 500, DurationMS: 1000}},
+	} {
+		durationMS := int64(1000)
+		if name == "placement exceeds timeline" {
+			durationMS = 1000
+		}
+		if _, err := MixTimeline(durationMS, placements); err == nil {
+			t.Fatalf("%s succeeded", name)
+		}
+	}
+}
+
+func TestMixTimelineNormalizesSourceRatesAndChannels(t *testing.T) {
+	format := Format{Channels: 2, SampleRate: 24000, BitsPerSample: 16}
+	pcm := make([]byte, int(format.SampleRate)*int(format.Channels)*2)
+	for frame := 0; frame < int(format.SampleRate); frame++ {
+		binary.LittleEndian.PutUint16(pcm[frame*4:frame*4+2], uint16(int16(1000)))
+		binary.LittleEndian.PutUint16(pcm[frame*4+2:frame*4+4], uint16(int16(3000)))
+	}
+	mixed, err := MixTimeline(1000, []TimelinePlacement{
+		{Data: Encode(format, pcm), DurationMS: 1000},
+		{Data: SyntheticTone(ToneSampleRate), DurationMS: 1000},
+	})
+	if err != nil {
+		t.Fatalf("mix different formats: %v", err)
+	}
+	gotFormat, gotPCM, err := Decode(mixed)
+	if err != nil || gotFormat != TimelineMixFormat() {
+		t.Fatalf("mixed format = %+v, err=%v", gotFormat, err)
+	}
+	if got := int16(binary.LittleEndian.Uint16(gotPCM[:2])); got != 3000 {
+		t.Fatalf("normalized stereo + mono sample = %d, want 3000", got)
 	}
 }
 

@@ -143,6 +143,15 @@ match; otherwise the original line text enters the project as stale dialogue.
 Story, line, and take ids are retained only as server-owned provenance on the
 new clip. The Story manager exposes read-only manifest/take access to this
 orchestration and is never asked to save during import.
+Rendering belongs to the Story Builder Project Store. It first validates every
+audible clip against the saved arrangement, mixes project-owned takes and media
+at their timeline positions with nondestructive trims, mute, silence, and
+cross-track overlap into a fixed 16 kHz mono 16-bit PCM delivery format, then applies the same optional final mastering gain and
+true-peak ceiling used by retained Stories. Each success appends a manifest
+record and one immutable `renders/render-NNN.wav`; the stable latest-master
+action redirects to that newest numbered identity rather than maintaining a
+mutable alias. A failed validation, mix, master, or manifest write leaves all
+previous revisions and the saved project unchanged.
 Whole-project writes use the revision as an
 optimistic-concurrency boundary: a stale client receives a conflict instead of
 silently replacing newer work. Each project lives in its own directory under
@@ -150,7 +159,8 @@ silently replacing newer work. Each project lives in its own directory under
 deletion are owned by the project Store.
 
 The separate browser tool at `/demo/story-builder.html` owns project and typed
-track arrangement and starts/polls asynchronous dialogue builds. Build
+track arrangement, starts/polls asynchronous dialogue builds, and requests
+immutable project renders. Build
 coordination is in memory, while clip status and successful takes are durable in
 the project Store. It also derives read-only timeline playback and isolated clip
 audition from those project-owned WAVs without creating a render or changing the
@@ -194,11 +204,11 @@ source. Cancel preserves durable work; Discard is the only action that deletes i
 
 ## WAV knowledge (`internal/wav`)
 
-The single home for the WAV format invariant: `Validate*` (RIFF/WAVE header)
-and `SyntheticTone` (the deterministic square-wave fixture audio). Gateway,
-story, and the fixture binary all cross this one interface; only the browser
-mic encoder (app.js) keeps its own writer, because it encodes live PCM
-client-side.
+The single home for WAV format and PCM operations: validation and decoding,
+canonical encoding, linear gain, timeline mixing, and the deterministic
+`SyntheticTone` fixture audio. Gateway, Story, Story Builder, and the fixture
+binary all cross this interface; only the browser mic encoder (app.js) keeps
+its own writer, because it encodes live PCM client-side.
 
 ## Fixture engine (`cmd/cpp-studio-fixture`)
 

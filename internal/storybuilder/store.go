@@ -3,6 +3,7 @@ package storybuilder
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"cpp-studio/internal/story"
 	"cpp-studio/internal/wav"
 )
 
@@ -42,6 +44,8 @@ var (
 	ErrProjectMediaNotFound   = errors.New("project media not found")
 	ErrStoryNotFound          = errors.New("retained Story not found")
 	ErrStoryMappingRequired   = errors.New("every Story speaker requires a Character Voice mapping")
+	ErrRenderNotReady         = errors.New("audible dialogue is not ready to render")
+	ErrRenderNotFound         = errors.New("Story Builder render not found")
 )
 
 type TrackType string
@@ -150,21 +154,34 @@ type ProjectUpdate struct {
 	RevoiceTrackIDs    []string `json:"revoice_track_ids,omitempty"`
 }
 
+type RenderRevision struct {
+	Revision   int           `json:"revision"`
+	CreatedAt  time.Time     `json:"created_at"`
+	DurationMS int64         `json:"duration_ms"`
+	Bytes      int           `json:"bytes"`
+	URL        string        `json:"url"`
+	Master     *story.Master `json:"master,omitempty"`
+}
+
+type MasterRenderFunc func(context.Context, []byte) ([]byte, *story.Master, error)
+
 // Project is one separately saved Story Builder production.
 type Project struct {
-	ID                 string    `json:"id"`
-	Name               string    `json:"name"`
-	Revision           int       `json:"revision"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
-	TimelineDurationMS int64     `json:"timeline_duration_ms"`
-	Tracks             []Track   `json:"tracks"`
+	ID                 string           `json:"id"`
+	Name               string           `json:"name"`
+	Revision           int              `json:"revision"`
+	CreatedAt          time.Time        `json:"created_at"`
+	UpdatedAt          time.Time        `json:"updated_at"`
+	TimelineDurationMS int64            `json:"timeline_duration_ms"`
+	Tracks             []Track          `json:"tracks"`
+	Renders            []RenderRevision `json:"renders,omitempty"`
 }
 
 type StoreOptions struct {
 	WriteFileAtomic       func(path string, data []byte) error
 	ResolveCharacterVoice CharacterVoiceResolver
 	ResolveLibraryAudio   LibraryAudioResolver
+	MasterRender          MasterRenderFunc
 }
 
 type Store struct {
@@ -174,6 +191,7 @@ type Store struct {
 	writeFileAtomic       func(path string, data []byte) error
 	resolveCharacterVoice CharacterVoiceResolver
 	resolveLibraryAudio   LibraryAudioResolver
+	masterRender          MasterRenderFunc
 }
 
 func NewStore(rootDir string) *Store {
@@ -194,6 +212,7 @@ func NewStoreWithOptions(rootDir string, options StoreOptions) *Store {
 		writeFileAtomic:       write,
 		resolveCharacterVoice: options.ResolveCharacterVoice,
 		resolveLibraryAudio:   options.ResolveLibraryAudio,
+		masterRender:          options.MasterRender,
 	}
 }
 
@@ -289,6 +308,9 @@ func (s *Store) Get(id string) (Project, bool, error) {
 	}
 	if project.ID != id || project.Revision < 1 {
 		return Project{}, false, fmt.Errorf("decode Story Builder Project: invalid manifest identity")
+	}
+	if err := validateRenderRevisions(project.Renders, id); err != nil {
+		return Project{}, false, err
 	}
 	if project.TimelineDurationMS == 0 {
 		project.TimelineDurationMS = minimumTimelineDurationMS(project.Tracks)
