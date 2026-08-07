@@ -170,6 +170,21 @@ The separate Story Builder tool is served at `/demo/story-builder.html`.
 Project manifests persist under `out/story-builder-projects` and survive a
 Gateway restart.
 
+- `GET /v1/stories/{story-id}/story-builder-import` — preview the retained
+  Story's speakers in cast order. Each entry includes its source Actor Voice
+  provenance and a `suggested_character_voice_id` only when exactly one current
+  Character Voice belongs to that Actor Voice. Ambiguous or missing provenance
+  has no suggestion.
+- `POST /v1/stories/{story-id}/story-builder-import` — create a separate Story
+  Builder Project from `{"mappings":[{"speaker_id":"mara","character_voice_id":"character_..."}]}`.
+  Every Story speaker must be mapped exactly once to an existing Character
+  Voice; there is no default. The response is the new project with `201`.
+  Dialogue Tracks preserve cast order and available line timing. Compatible
+  current takes are validated and copied into project-owned `takes` as ready;
+  missing or mismatched takes become stale with their original text. Project
+  publication is atomic, and the retained Story manifest and take files are
+  read-only throughout.
+
 - `GET /v1/story-builder-projects` — list projects newest-updated first as
   `{"projects":[...]}`.
 - `POST /v1/story-builder-projects` — create a blank project from
@@ -229,6 +244,10 @@ Voice with `409`.
 
 A `dialogue` clip stores editable spoken `text`, the same canonical voice
 provenance, and one of `stale`, `building`, `ready`, or `failed` in `status`.
+An imported clip may also carry server-owned `source_story_id`,
+`source_story_line_id`, and `source_story_take_id` fields. These explain where
+the initial dialogue came from; they do not make the source Story mutable or
+authorize the project to read media from it after import.
 New dialogue is always `stale`. Spoken-text, Character Voice direction, and
 Actor Voice reference/transcript changes make it stale; timing, trimming,
 muting, track renaming, and track reordering preserve its existing status.

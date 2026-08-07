@@ -306,6 +306,119 @@ func TestStoryBuilderTimelineTimingThroughGateway(t *testing.T) {
 	}
 }
 
+func TestRetainedStoryImportsThroughExplicitGatewayMappingWithoutMutatingSource(t *testing.T) {
+	root := t.TempDir()
+	storyRoot := filepath.Join(root, "stories")
+	projectRoot := filepath.Join(root, "projects")
+	cfg := testConfig(nil)
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	r.voices = voice.NewStore(filepath.Join(root, "voices"))
+	r.stories = story.NewManager(story.ManagerOptions{RootDir: storyRoot})
+	r.storyBuilderProjects = storybuilder.NewStoreWithOptions(projectRoot, storybuilder.StoreOptions{
+		ResolveCharacterVoice: r.resolveStoryBuilderCharacterVoice,
+	})
+	takeBytes := wav.SyntheticTone(16000)
+
+	actorMara, err := r.voices.Save("Mara actor", "reference words", takeBytes, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actorJon, err := r.voices.Save("Jon actor", "reference words", takeBytes, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	characterMara, err := r.voices.CreateCharacterVoice(actorMara.ID, "Mara", "steady")
+	if err != nil {
+		t.Fatal(err)
+	}
+	characterJon, err := r.voices.CreateCharacterVoice(actorJon.ID, "Jon", "warm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.voices.CreateCharacterVoice(actorJon.ID, "Jon alternate", "brisk"); err != nil {
+		t.Fatal(err)
+	}
+
+	takeDuration, err := wav.Duration(takeBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := story.Manifest{
+		ID: "story_gateway_import", Title: "Gateway import", Status: story.StatusComplete,
+		Cast: []story.CastMember{
+			{ID: "mara", DisplayName: "Mara", VoiceID: actorMara.ID},
+			{ID: "jon", DisplayName: "Jon", VoiceID: actorJon.ID},
+		},
+		Script: []story.ScriptLine{
+			{ID: "line-001", SpeakerID: "mara", Text: "Compatible.", CurrentTake: "take-001", Takes: []story.Take{{ID: "take-001", VoiceID: actorMara.ID, Text: "Compatible.", DurationMS: int(takeDuration.Milliseconds())}}},
+			{ID: "line-002", SpeakerID: "jon", Text: "Edited after recording.", CurrentTake: "take-001", Takes: []story.Take{{ID: "take-001", VoiceID: actorJon.ID, Text: "Old words.", DurationMS: int(takeDuration.Milliseconds())}}},
+		},
+		Audio: story.AudioRef{Format: "wav", URL: "/v1/stories/story_gateway_import/artifact/story.wav"},
+	}
+	sourceStore := story.NewStore(storyRoot)
+	if err := sourceStore.Save(manifest, takeBytes); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range manifest.Script {
+		if _, err := sourceStore.SaveTake(manifest.ID, line.ID, line.CurrentTake, takeBytes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifestPath := filepath.Join(storyRoot, manifest.ID, "manifest.json")
+	manifestBefore, _ := os.ReadFile(manifestPath)
+	takePath := filepath.Join(storyRoot, manifest.ID, "lines", "line-001", "take-001.wav")
+	takeBefore, _ := os.ReadFile(takePath)
+
+	previewRec := httptest.NewRecorder()
+	r.ServeHTTP(previewRec, httptest.NewRequest(http.MethodGet, "/v1/stories/"+manifest.ID+"/story-builder-import", nil))
+	if previewRec.Code != http.StatusOK {
+		t.Fatalf("preview status = %d: %s", previewRec.Code, previewRec.Body.String())
+	}
+	var preview storybuilder.StoryImportPreview
+	if err := json.NewDecoder(previewRec.Body).Decode(&preview); err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Speakers) != 2 || preview.Speakers[0].SuggestedCharacterVoiceID != characterMara.ID || preview.Speakers[1].SuggestedCharacterVoiceID != "" {
+		t.Fatalf("mapping preview = %+v", preview)
+	}
+
+	incompleteRec := httptest.NewRecorder()
+	r.ServeHTTP(incompleteRec, httptest.NewRequest(http.MethodPost, "/v1/stories/"+manifest.ID+"/story-builder-import",
+		strings.NewReader(fmt.Sprintf(`{"mappings":[{"speaker_id":"mara","character_voice_id":%q}]}`, characterMara.ID))))
+	if incompleteRec.Code != http.StatusBadRequest {
+		t.Fatalf("incomplete mapping status = %d: %s", incompleteRec.Code, incompleteRec.Body.String())
+	}
+
+	body := fmt.Sprintf(`{"mappings":[{"speaker_id":"mara","character_voice_id":%q},{"speaker_id":"jon","character_voice_id":%q}]}`,
+		characterMara.ID, characterJon.ID)
+	importRec := httptest.NewRecorder()
+	r.ServeHTTP(importRec, httptest.NewRequest(http.MethodPost, "/v1/stories/"+manifest.ID+"/story-builder-import", strings.NewReader(body)))
+	if importRec.Code != http.StatusCreated {
+		t.Fatalf("import status = %d: %s", importRec.Code, importRec.Body.String())
+	}
+	var project storybuilder.Project
+	if err := json.NewDecoder(importRec.Body).Decode(&project); err != nil {
+		t.Fatal(err)
+	}
+	if len(project.Tracks) != 2 || project.Tracks[0].Clips[0].Status != storybuilder.DialogueStatusReady ||
+		project.Tracks[1].Clips[0].Status != storybuilder.DialogueStatusStale || project.Tracks[1].Clips[0].SourceID != "" {
+		t.Fatalf("imported project = %+v", project)
+	}
+	ready := project.Tracks[0].Clips[0]
+	audioRec := httptest.NewRecorder()
+	r.ServeHTTP(audioRec, httptest.NewRequest(http.MethodGet,
+		"/v1/story-builder-projects/"+project.ID+"/clips/"+ready.ID+"/audio", nil))
+	if audioRec.Code != http.StatusOK || !bytes.Equal(audioRec.Body.Bytes(), takeBytes) {
+		t.Fatalf("copied take status=%d equal=%v", audioRec.Code, bytes.Equal(audioRec.Body.Bytes(), takeBytes))
+	}
+
+	manifestAfter, _ := os.ReadFile(manifestPath)
+	takeAfter, _ := os.ReadFile(takePath)
+	if !bytes.Equal(manifestBefore, manifestAfter) || !bytes.Equal(takeBefore, takeAfter) {
+		t.Fatal("Gateway import mutated retained Story")
+	}
+}
+
 func TestStoryBuilderBindsCharacterVoiceAndRejectsReplacementOnOccupiedDialogueTrack(t *testing.T) {
 	cfg := testConfig(nil)
 	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)

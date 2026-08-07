@@ -40,6 +40,8 @@ var (
 	ErrLibraryAudioNotFound   = errors.New("Library audio not found")
 	ErrIncompatibleMedia      = errors.New("Library audio is not compatible with the target track")
 	ErrProjectMediaNotFound   = errors.New("project media not found")
+	ErrStoryNotFound          = errors.New("retained Story not found")
+	ErrStoryMappingRequired   = errors.New("every Story speaker requires a Character Voice mapping")
 )
 
 type TrackType string
@@ -98,6 +100,9 @@ type TimelineClip struct {
 	ActorVoiceID        string         `json:"actor_voice_id,omitempty"`
 	VoiceFingerprint    string         `json:"voice_fingerprint,omitempty"`
 	BuildError          string         `json:"build_error,omitempty"`
+	SourceStoryID       string         `json:"source_story_id,omitempty"`
+	SourceStoryLineID   string         `json:"source_story_line_id,omitempty"`
+	SourceStoryTakeID   string         `json:"source_story_take_id,omitempty"`
 }
 
 type Track struct {
@@ -193,11 +198,21 @@ func NewStoreWithOptions(rootDir string, options StoreOptions) *Store {
 }
 
 func (s *Store) Create(name string) (Project, error) {
+	return s.createProject(name, DefaultTimelineDurationMS, []Track{}, nil)
+}
+
+// createProject is the one publication transaction for new projects. Imports
+// add validated project-owned takes to the same staged directory before its
+// manifest and directory become visible together.
+func (s *Store) createProject(name string, timelineDurationMS int64, tracks []Track, readyTakes map[string][]byte) (Project, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	name, err := validateName(name)
 	if err != nil {
+		return Project{}, err
+	}
+	if err := validateTracks(tracks, timelineDurationMS); err != nil {
 		return Project{}, err
 	}
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
@@ -210,7 +225,7 @@ func (s *Store) Create(name string) (Project, error) {
 		if err != nil {
 			return Project{}, err
 		}
-		project := Project{ID: id, Name: name, Revision: 1, CreatedAt: now, UpdatedAt: now, TimelineDurationMS: DefaultTimelineDurationMS, Tracks: []Track{}}
+		project := Project{ID: id, Name: name, Revision: 1, CreatedAt: now, UpdatedAt: now, TimelineDurationMS: timelineDurationMS, Tracks: tracks}
 		finalDir := filepath.Join(s.rootDir, project.ID)
 		if _, err := os.Stat(finalDir); err == nil {
 			continue
@@ -222,23 +237,36 @@ func (s *Store) Create(name string) (Project, error) {
 		if err != nil {
 			return Project{}, fmt.Errorf("stage Story Builder Project: %w", err)
 		}
-		published := false
-		defer func() {
-			if !published {
+		if len(readyTakes) > 0 {
+			takesDir := filepath.Join(stagingDir, "takes")
+			if err := os.MkdirAll(takesDir, 0o755); err != nil {
 				_ = os.RemoveAll(stagingDir)
+				return Project{}, fmt.Errorf("create imported takes directory: %w", err)
 			}
-		}()
+			for sourceID, data := range readyTakes {
+				if !validTimelineID(sourceID) || wav.ValidateBytes(data) != nil {
+					_ = os.RemoveAll(stagingDir)
+					return Project{}, ErrInvalid
+				}
+				if err := os.WriteFile(filepath.Join(takesDir, sourceID+".wav"), data, 0o644); err != nil {
+					_ = os.RemoveAll(stagingDir)
+					return Project{}, fmt.Errorf("copy retained Story take: %w", err)
+				}
+			}
+		}
 		data, err := encodeProject(project)
 		if err != nil {
+			_ = os.RemoveAll(stagingDir)
 			return Project{}, err
 		}
-		if err := os.WriteFile(filepath.Join(stagingDir, manifestName), data, 0o644); err != nil {
+		if err := s.writeFileAtomic(filepath.Join(stagingDir, manifestName), data); err != nil {
+			_ = os.RemoveAll(stagingDir)
 			return Project{}, fmt.Errorf("write Story Builder Project: %w", err)
 		}
 		if err := os.Rename(stagingDir, finalDir); err != nil {
+			_ = os.RemoveAll(stagingDir)
 			return Project{}, fmt.Errorf("publish Story Builder Project: %w", err)
 		}
-		published = true
 		return project, nil
 	}
 	return Project{}, fmt.Errorf("mint unique Story Builder Project id")
@@ -662,6 +690,9 @@ func (s *Store) prepareTracks(existing, incoming []Track, revoiceTrackIDs map[st
 			clip.VoiceFingerprint = track.VoiceFingerprint
 			clip.Status = DialogueStatusStale
 			clip.BuildError = ""
+			clip.SourceStoryID = ""
+			clip.SourceStoryLineID = ""
+			clip.SourceStoryTakeID = ""
 			if missingExistingVoice {
 				clip.Status = DialogueStatusFailed
 				clip.BuildError = ErrCharacterVoiceNotFound.Error()
@@ -677,6 +708,9 @@ func (s *Store) prepareTracks(existing, incoming []Track, revoiceTrackIDs map[st
 				clip.SourceInMS = oldClip.SourceInMS
 				clip.SourceOutMS = oldClip.SourceOutMS
 				clip.MediaError = oldClip.MediaError
+				clip.SourceStoryID = oldClip.SourceStoryID
+				clip.SourceStoryLineID = oldClip.SourceStoryLineID
+				clip.SourceStoryTakeID = oldClip.SourceStoryTakeID
 			}
 		}
 	}
@@ -742,6 +776,7 @@ func validateTracks(tracks []Track, timelineDurationMS int64) error {
 			}
 			clipIDs[clip.ID] = struct{}{}
 			hasSource := clip.SourceID != "" || clip.SourceDurationMS != 0 || clip.SourceInMS != 0 || clip.SourceOutMS != 0
+			hasStoryProvenance := clip.SourceStoryID != "" || clip.SourceStoryLineID != "" || clip.SourceStoryTakeID != ""
 			if hasSource {
 				if clip.Type == ClipTypeSilence || !validTimelineID(clip.SourceID) || clip.SourceDurationMS <= 0 ||
 					clip.SourceInMS < 0 || clip.SourceOutMS <= clip.SourceInMS || clip.SourceOutMS > clip.SourceDurationMS ||
@@ -752,7 +787,7 @@ func validateTracks(tracks []Track, timelineDurationMS int64) error {
 			switch clip.Type {
 			case ClipTypeSilence:
 				if hasSource || clip.SourceLibraryItemID != "" || clip.SourceLibraryName != "" || clip.SourceMediaRole != "" || clip.MediaError != "" ||
-					clip.Text != "" || clip.Status != "" || clip.CharacterVoiceID != "" || clip.ActorVoiceID != "" || clip.VoiceFingerprint != "" || clip.BuildError != "" {
+					clip.Text != "" || clip.Status != "" || clip.CharacterVoiceID != "" || clip.ActorVoiceID != "" || clip.VoiceFingerprint != "" || clip.BuildError != "" || hasStoryProvenance {
 					return ErrInvalid
 				}
 			case ClipTypeDialogue:
@@ -763,14 +798,19 @@ func validateTracks(tracks []Track, timelineDurationMS int64) error {
 					clip.VoiceFingerprint != track.VoiceFingerprint || dialogueStatus(clip) != clip.Status {
 					return ErrInvalid
 				}
+				if hasStoryProvenance && (clip.SourceStoryID == "" || clip.SourceStoryLineID == "" ||
+					!validTimelineID(clip.SourceStoryID) || !validTimelineID(clip.SourceStoryLineID) ||
+					(clip.SourceStoryTakeID != "" && !validTimelineID(clip.SourceStoryTakeID))) {
+					return ErrInvalid
+				}
 			case ClipTypeSFX:
 				if track.Type != TrackTypeSFX || !hasSource || clip.SourceLibraryItemID == "" || clip.SourceLibraryName == "" || clip.SourceMediaRole != MediaRoleSFX ||
-					clip.Text != "" || clip.Status != "" || clip.CharacterVoiceID != "" || clip.ActorVoiceID != "" || clip.VoiceFingerprint != "" || clip.BuildError != "" {
+					clip.Text != "" || clip.Status != "" || clip.CharacterVoiceID != "" || clip.ActorVoiceID != "" || clip.VoiceFingerprint != "" || clip.BuildError != "" || hasStoryProvenance {
 					return ErrInvalid
 				}
 			case ClipTypeMusic:
 				if track.Type != TrackTypeMusic || !hasSource || clip.SourceLibraryItemID == "" || clip.SourceLibraryName == "" || clip.SourceMediaRole != MediaRoleMusic ||
-					clip.Text != "" || clip.Status != "" || clip.CharacterVoiceID != "" || clip.ActorVoiceID != "" || clip.VoiceFingerprint != "" || clip.BuildError != "" {
+					clip.Text != "" || clip.Status != "" || clip.CharacterVoiceID != "" || clip.ActorVoiceID != "" || clip.VoiceFingerprint != "" || clip.BuildError != "" || hasStoryProvenance {
 					return ErrInvalid
 				}
 			default:

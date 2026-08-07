@@ -134,6 +134,15 @@ before the next clip starts, so a later failure does not discard earlier work.
 Generated take identities and source metadata are server-owned. Clips expose a
 derived media error when their project-owned source is missing or unreadable;
 browser-provided paths are never part of the contract.
+Opening a retained Story in Story Builder is an import, never an edit of the
+Story aggregate. The import requires an explicit Character Voice mapping for
+every Story speaker, creates Dialogue Tracks in cast order, and publishes the
+new project and any copied takes atomically. A current Story take is copied into
+project-owned `takes` only when its text, Actor Voice, WAV, and duration still
+match; otherwise the original line text enters the project as stale dialogue.
+Story, line, and take ids are retained only as server-owned provenance on the
+new clip. The Story manager exposes read-only manifest/take access to this
+orchestration and is never asked to save during import.
 Whole-project writes use the revision as an
 optimistic-concurrency boundary: a stale client receives a conflict instead of
 silently replacing newer work. Each project lives in its own directory under

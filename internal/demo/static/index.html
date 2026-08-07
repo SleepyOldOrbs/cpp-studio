@@ -775,6 +775,21 @@
             <small class="hint">Retake a line you don't like, pick the best take, mute it, or nudge the silence after it. Edit the words and the old takes stop counting until you retake. Episodes fold by scene — Play scene auditions its current takes without publishing, and Needs work jumps to the next line waiting on a take. Re-render publishes a new revision; earlier revisions stay on disk.</small>
           </div>
 
+          <div class="story-builder-import" id="storyBuilderImportSection" hidden>
+            <div class="story-library-header">
+              <span class="source-label">Continue editing in Story Builder</span>
+              <button class="secondary compact-button" id="storyBuilderImportOpenButton" type="button">Open in Story Builder</button>
+            </div>
+            <div class="story-builder-import-panel" id="storyBuilderImportPanel" hidden>
+              <p class="hint">Map every Story speaker to a Character Voice. A new project is created; this retained Story and its takes stay unchanged.</p>
+              <div class="story-builder-import-speakers" id="storyBuilderImportSpeakers"></div>
+              <div class="take-room-actions">
+                <button class="plain compact-button" id="storyBuilderImportCancelButton" type="button">Cancel</button>
+                <button class="primary compact-button" id="storyBuilderImportButton" type="button">Create Story Builder Project</button>
+              </div>
+            </div>
+          </div>
+
           <div class="story-library-header">
             <span class="source-label">Retained stories</span>
             <button class="secondary compact-button" id="storyLibraryButton" type="button">Refresh</button>
