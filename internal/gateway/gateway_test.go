@@ -6340,6 +6340,98 @@ func TestLibrarySaveListServeDelete(t *testing.T) {
 	}
 }
 
+func TestLibraryReadModelSearchAndOwningActionsThroughGateway(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(nil)
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	created := time.Date(2026, 8, 7, 8, 0, 0, 0, time.UTC)
+	r.libraryReadModel = library.NewReadModel(library.ReadModelSources{
+		Items: func() ([]library.Item, error) {
+			return []library.Item{{ID: "audio_1", Kind: "audio", Name: "Harbour ambience", MediaRole: library.MediaRoleMusic, CreatedAt: created}}, nil
+		},
+		ActorVoices: func() ([]voice.Clone, error) {
+			return []voice.Clone{{ID: "voice_1", Name: "Morgan", CreatedAt: created}}, nil
+		},
+		CharacterVoices: func(string) ([]voice.CharacterVoice, error) {
+			return []voice.CharacterVoice{{ID: "character_1", ActorVoiceID: "voice_1", Name: "Keeper", Direction: "raspy whisper", CreatedAt: created, UpdatedAt: created}}, nil
+		},
+		Stories: func() ([]story.Summary, error) {
+			return []story.Summary{{ID: "story_1", Title: "The Signal", Status: story.StatusComplete, CreatedAt: created}}, nil
+		},
+		Projects: func() ([]storybuilder.Project, error) {
+			return []storybuilder.Project{{ID: "project_1", Name: "Signal edit", CreatedAt: created, UpdatedAt: created, Renders: []storybuilder.RenderRevision{{Revision: 1, CreatedAt: created, DurationMS: 1000, URL: "/v1/story-builder-projects/project_1/renders/1/artifact.wav", Exports: []storybuilder.RenderExport{{Format: "mp3", Bitrate: "192k", CreatedAt: created, URL: "/v1/story-builder-projects/project_1/renders/1/export.mp3"}}}}}}, nil
+		},
+		Audiobooks: func() ([]audiobook.Manifest, error) {
+			return []audiobook.Manifest{{ID: "book_1", Title: "Harbour Book", CreatedAt: created, Status: audiobook.ProductionStatusComplete}}, nil
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/library", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var response library.ReadResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 1 || len(response.Entries) != 7 {
+		t.Fatalf("read response = %#v", response)
+	}
+	var storyEntry, projectEntry, exportEntry *library.Entry
+	for i := range response.Entries {
+		entry := &response.Entries[i]
+		switch entry.Kind {
+		case library.KindStory:
+			storyEntry = entry
+		case library.KindStoryBuilderProject:
+			projectEntry = entry
+		case library.KindExport:
+			exportEntry = entry
+		}
+	}
+	if storyEntry == nil || storyEntry.DeleteAction.URL != "/v1/stories/story_1" || projectEntry == nil || projectEntry.LaunchAction.URL != "/demo/story-builder.html?project=project_1" || exportEntry == nil || exportEntry.ArtifactAction.ContentType != "audio/mpeg" {
+		t.Fatalf("owning actions: story=%#v project=%#v export=%#v", storyEntry, projectEntry, exportEntry)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/library?q=raspy", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search status = %d: %s", rec.Code, rec.Body.String())
+	}
+	response = library.ReadResponse{}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil || len(response.Entries) != 1 || len(response.Entries[0].Children) != 1 || response.Entries[0].Children[0].ID != "character_1" {
+		t.Fatalf("search response = %#v, err %v", response, err)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/library?q="+url.QueryEscape(strings.Repeat("é", 200)), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("200-character search status = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/library?q="+url.QueryEscape(strings.Repeat("é", 201)), nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("201-character search status = %d", rec.Code)
+	}
+
+	r.libraryReadModel = library.NewReadModel(library.ReadModelSources{
+		Items: func() ([]library.Item, error) { return nil, errors.New(`read H:\private\library: access denied`) },
+	})
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/library", nil))
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "Library unavailable") || strings.Contains(rec.Body.String(), `H:\private`) {
+		t.Fatalf("public Library error = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Aggregated entries are references, not generic Library-owned records.
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/library/story_1", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("generic domain delete status = %d", rec.Code)
+	}
+}
+
 func TestJobsSurfaceTracksStories(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cfg := testConfig(map[string]config.EngineConfig{

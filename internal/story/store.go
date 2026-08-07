@@ -516,8 +516,18 @@ func (s *Store) List() ([]Summary, error) {
 			continue
 		}
 		exports := make([]Export, 0)
+		renders := make([]RenderSummary, 0, len(manifest.Renders))
 		for _, render := range manifest.Renders {
-			exports = append(exports, render.Exports...)
+			renderExports := make([]Export, 0, len(render.Exports))
+			for _, export := range render.Exports {
+				export.RenderRevision = render.Revision
+				exports = append(exports, export)
+				renderExports = append(renderExports, export)
+			}
+			renders = append(renders, RenderSummary{
+				Revision: render.Revision, CreatedAt: render.CreatedAt, DurationSeconds: render.DurationSeconds,
+				Bytes: render.Bytes, URL: render.URL, Exports: renderExports,
+			})
 		}
 		summaries = append(summaries, Summary{
 			ID:              manifest.ID,
@@ -529,6 +539,7 @@ func (s *Store) List() ([]Summary, error) {
 			DurationSeconds: manifest.DurationSeconds,
 			ArtifactURL:     manifest.Audio.URL,
 			Exports:         exports,
+			Renders:         renders,
 		})
 	}
 	sort.Slice(summaries, func(i, j int) bool {

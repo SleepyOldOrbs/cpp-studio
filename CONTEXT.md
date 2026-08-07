@@ -189,6 +189,10 @@ Clips may overlap across tracks but not within the same track.
 The studio-wide browse, search, and launch surface over durable work. Voices,
 Stories, Audiobooks, Story Builder Projects, reusable audio, and exports remain
 owned by their purpose-built stores rather than being copied into one store.
+The Library read model supplies stable kind, identity, relationship, timestamp,
+metadata, preview/artifact, and owning-tool action fields. It is read-only:
+writes and destructive actions always use the purpose-built owner's existing
+route and lifecycle rules.
 
 ## Audiobook production
 

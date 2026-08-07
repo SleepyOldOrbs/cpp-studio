@@ -7949,11 +7949,12 @@
 
   var LIBRARY_SECTIONS = [
     { id: "voices", title: "Voices", description: "Cloned and designed voices ready to reuse.", empty: "No saved voices yet." },
-    { id: "music", title: "Music & SFX", description: "Generated tracks, continuations, covers, edits, and future story sounds.", empty: "No music or sound effects saved yet." },
-    { id: "projects", title: "Story Builder Projects", description: "Saved multi-track timelines ready to reopen.", empty: "No Story Builder Projects yet." },
-    { id: "stories", title: "Stories & audiobooks", description: "Finished productions and recoverable work.", empty: "No stories or audiobooks yet." },
+    { id: "sfx", title: "Sound effects", description: "Reusable effects saved for production timelines.", empty: "No sound effects saved yet." },
+    { id: "music", title: "Music & ambience", description: "Reusable music, ambience, and room tone.", empty: "No music or ambience saved yet." },
+    { id: "utility", title: "Utility audio", description: "Speech, conversions, and extracted recordings.", empty: "No utility audio saved yet." },
+    { id: "productions", title: "Productions", description: "Stories, Story Builder Projects, and Audiobooks.", empty: "No productions yet." },
+    { id: "masters", title: "Masters & exports", description: "Immutable mixed masters and delivery files.", empty: "No masters or exports yet." },
     { id: "imagery", title: "Imagery", description: "Images kept from the image studio.", empty: "No images saved yet." },
-    { id: "audio", title: "Speech & audio clips", description: "Spoken output, conversions, and extracted recordings.", empty: "No speech or audio clips saved yet." }
   ];
 
   // srcToB64 turns an <audio>/<img> src (data: URL or blob: URL) back into
@@ -8097,166 +8098,120 @@
     row.appendChild(audio);
   }
 
-  function appendLibraryReferenceActions(row, artifactURL, filename, toolHref, toolLabel) {
-    var actions = createElement("div", "library-item-actions");
-    if (artifactURL) {
-      var download = createElement("button", "plain compact-button", "Download");
-      download.type = "button";
-      download.addEventListener("click", function () { downloadURL(artifactURL, filename); });
-      actions.appendChild(download);
+  function libraryEntrySearchParts(entry) {
+    var parts = [entry.name, entry.id, entry.kind, entry.subtype];
+    if (entry.relationship) {
+      parts.push(entry.relationship.name, entry.relationship.id, entry.relationship.kind);
     }
-    var openTool = createElement("a", "secondary-button", toolLabel);
-    openTool.href = toolHref;
-    actions.appendChild(openTool);
-    row.appendChild(actions);
-  }
-
-  function appendLibraryDeleteAction(row, url, method, disabledReason) {
-    var actions = row.querySelector(".library-item-actions");
-    if (!actions) {
-      actions = createElement("div", "library-item-actions");
-      row.appendChild(actions);
-    }
-    var remove = createElement("button", "plain compact-button", "Delete");
-    remove.type = "button";
-    if (disabledReason) {
-      remove.disabled = true;
-      remove.title = disabledReason;
-    } else {
-      remove.addEventListener("click", async function () {
-        remove.disabled = true;
-        try {
-          var response = await fetch(url, { method: method });
-          if (!response.ok) {
-            throw new Error(await readErrorBody(response));
-          }
-          refreshLibrary(true);
-        } catch (err) {
-          log("Delete failed: " + err.message, "error");
-          remove.disabled = false;
-        }
-      });
-    }
-    actions.appendChild(remove);
-  }
-
-  function renderSavedLibraryItem(item) {
-      var row = createElement("article", "library-item");
-      var head = createElement("div", "library-item-head");
-      var nameSpan = createElement("span", "library-item-name", item.name);
-      nameSpan.title = (item.meta && item.meta.text) || item.name;
-      head.appendChild(nameSpan);
-      head.appendChild(createElement("span", "library-item-kind", item.kind === "audio" ? (item.mediaRole || "utility") : item.kind));
-      row.appendChild(head);
-      // Items saved with their full words show them all; the name is just
-      // the label.
-      if (item.meta && item.meta.text && item.meta.text.length > item.name.length) {
-        row.appendChild(createElement("div", "library-item-text", item.meta.text));
-      }
-      var mediaDetail = item.kind === "audio" && item.durationMs
-        ? " · " + (Number(item.durationMs) / 1000).toFixed(2) + "s · " + (item.mediaRole === "music" ? "Music / ambience" : (item.mediaRole === "sfx" ? "SFX" : "Utility audio"))
-        : "";
-      row.appendChild(createElement("div", "library-item-meta",
-        new Date(item.createdAt).toLocaleString() + " · " + Math.round(item.bytes / 1024) + " KB" + mediaDetail));
-
-      var artifactURL = "/v1/library/" + encodeURIComponent(item.id) + "/artifact";
-      if (item.kind === "audio") {
-        appendLibraryAudio(row, artifactURL);
-      } else if (item.kind === "image") {
-        var img = document.createElement("img");
-        img.className = "library-item-image";
-        img.loading = "lazy";
-        img.alt = item.name;
-        img.src = artifactURL;
-        row.appendChild(img);
-      }
-
-      var actions = createElement("div", "library-item-actions");
-      var download = createElement("button", "plain compact-button", "Download");
-      download.type = "button";
-      download.addEventListener("click", function () {
-        downloadURL(artifactURL, item.name + (item.kind === "audio" ? ".wav" : ".png"));
-      });
-      actions.appendChild(download);
-      row.appendChild(actions);
-      appendLibraryDeleteAction(row, "/v1/library/" + encodeURIComponent(item.id), "DELETE", "");
-      var metaWords = item.meta ? Object.keys(item.meta).map(function (key) { return key + " " + item.meta[key]; }) : [];
-      return searchableLibraryCard(row, [item.name, item.kind, item.mediaRole, item.durationMs].concat(metaWords));
-  }
-
-  function renderLibraryVoice(voice) {
-    var row = createElement("article", "library-item");
-    var head = createElement("div", "library-item-head");
-    head.appendChild(createElement("span", "library-item-name", voice.name || voice.id || "Saved voice"));
-    head.appendChild(createElement("span", "library-item-kind", "voice"));
-    row.appendChild(head);
-    if (voice.transcript) { row.appendChild(createElement("div", "library-item-text", voice.transcript)); }
-    var analysis = voice.analysis || {};
-    var detail = [voice.created_at ? new Date(voice.created_at).toLocaleString() : "", analysis.duration_seconds ? analysis.duration_seconds.toFixed(1) + "s" : "", analysis.fitness || ""].filter(Boolean).join(" · ");
-    if (detail) { row.appendChild(createElement("div", "library-item-meta", detail)); }
-    appendLibraryAudio(row, voice.audio_url);
-    appendLibraryReferenceActions(row, voice.audio_url, (voice.name || "voice") + ".wav", "#voice-cloning", "Open voice cloning");
-    appendLibraryDeleteAction(row, "/v1/voices/" + encodeURIComponent(voice.id), "DELETE",
-      voice.protected ? "This protected voice cannot be deleted" : "");
-    row.appendChild(renderCharacterVoiceGroup(voice));
-    var characterWords = (voice.character_voices || []).reduce(function (words, character) {
-      return words.concat([character.name, character.direction, character.id]);
-    }, []);
-    return searchableLibraryCard(row, [voice.name, voice.transcript, voice.id, analysis.fitness, voice.source && voice.source.name].concat(characterWords));
-  }
-
-  function appendLibraryExports(row, exports, name) {
-    if (!exports || !exports.length) { return; }
-    var actions = row.querySelector(".library-item-actions");
-    exports.forEach(function (item) {
-      if (!item.url) { return; }
-      var download = createElement("button", "plain compact-button", "Download " + String(item.format || "export").toUpperCase());
-      download.type = "button";
-      download.addEventListener("click", function () {
-        downloadURL(item.url, name + "." + (item.format || "audio"));
-      });
-      actions.appendChild(download);
+    Object.keys(entry.metadata || {}).forEach(function (key) {
+      parts.push(key, entry.metadata[key]);
     });
+    (entry.children || []).forEach(function (child) {
+      parts = parts.concat(libraryEntrySearchParts(child));
+    });
+    return parts;
   }
 
-  function renderLibraryProduction(item, kind) {
-    var isStory = kind === "story";
-    var row = createElement("article", "library-item");
-    var head = createElement("div", "library-item-head");
-    var name = item.title || item.subject || item.id || (isStory ? "Story" : "Audiobook");
-    head.appendChild(createElement("span", "library-item-name", name));
-    head.appendChild(createElement("span", "library-item-kind", kind));
-    row.appendChild(head);
-    var createdAt = item.created_at || item.createdAt;
-    var detail = [createdAt ? new Date(createdAt).toLocaleString() : "", item.status || "complete", item.mode, item.engine, item.duration_seconds ? item.duration_seconds + "s" : (item.durationSeconds ? item.durationSeconds + "s" : "")].filter(Boolean).join(" · ");
-    if (item.subject && item.subject !== name) { row.appendChild(createElement("div", "library-item-text", item.subject)); }
-    if (detail) { row.appendChild(createElement("div", "library-item-meta", detail)); }
-    var artifactURL = item.artifact_url || item.artifactUrl || "";
-    appendLibraryAudio(row, artifactURL);
-    appendLibraryReferenceActions(row, artifactURL, name + ".wav", isStory ? "#story" : "#audiobook", isStory ? "Open Story" : "Open Audiobook");
-    appendLibraryExports(row, item.exports, name);
-    var interrupted = item.status === "interrupted";
-    var productionURL = (isStory ? "/v1/stories/" : "/v1/audiobooks/") + encodeURIComponent(item.id);
-    appendLibraryDeleteAction(row, interrupted ? productionURL + "/discard" : productionURL, interrupted ? "POST" : "DELETE", "");
-    return searchableLibraryCard(row, [name, kind, item.subject, item.status, item.mode, item.engine, item.direction]);
+  function libraryEntrySection(entry) {
+    if (entry.kind === "actor_voice") { return "voices"; }
+    if (entry.kind === "saved_image") { return "imagery"; }
+    if (entry.kind === "render_revision" || entry.kind === "mixed_master" || entry.kind === "export") { return "masters"; }
+    if (entry.kind === "reusable_audio") {
+      return entry.subtype === "sfx" ? "sfx" : (entry.subtype === "music" ? "music" : "utility");
+    }
+    return "productions";
   }
 
-  function renderLibraryProject(project) {
-    var row = createElement("article", "library-item");
-    var head = createElement("div", "library-item-head");
-    head.appendChild(createElement("span", "library-item-name", project.name || project.id || "Story Builder Project"));
-    head.appendChild(createElement("span", "library-item-kind", "project"));
-    row.appendChild(head);
-    var trackCount = (project.tracks || []).length;
-    var updatedAt = project.updated_at || project.created_at;
-    row.appendChild(createElement("div", "library-item-meta",
-      (updatedAt ? new Date(updatedAt).toLocaleString() + " · " : "") + trackCount + (trackCount === 1 ? " track" : " tracks")));
+  function appendLibraryPreview(row, entry) {
+    var preview = entry.preview_action;
+    if (!preview || !preview.url) { return; }
+    if ((preview.content_type || "").indexOf("audio/") === 0) {
+      appendLibraryAudio(row, preview.url);
+    } else if ((preview.content_type || "").indexOf("image/") === 0) {
+      var img = document.createElement("img");
+      img.className = "library-item-image";
+      img.loading = "lazy";
+      img.alt = entry.name;
+      img.src = preview.url;
+      row.appendChild(img);
+    }
+  }
+
+  function appendLibraryEntryActions(row, entry) {
+    var artifact = entry.artifact_action;
+    var launch = entry.launch_action;
+    var remove = entry.delete_action;
+    if (!artifact && !launch && !remove) { return; }
     var actions = createElement("div", "library-item-actions");
-    var open = createElement("a", "secondary-button", "Open Story Builder");
-    open.href = "/demo/story-builder.html?project=" + encodeURIComponent(project.id);
-    actions.appendChild(open);
+    if (artifact && artifact.url) {
+      var download = createElement("button", "plain compact-button", artifact.label || "Download");
+      download.type = "button";
+      download.addEventListener("click", function () {
+        var extensions = { "audio/wav": "wav", "audio/mpeg": "mp3", "audio/flac": "flac", "audio/ogg": "opus", "image/png": "png" };
+        downloadURL(artifact.url, entry.name + "." + (extensions[artifact.content_type] || entry.subtype || "bin"));
+      });
+      actions.appendChild(download);
+    }
+    if (launch && launch.url) {
+      var open = createElement("a", "secondary-button", launch.label || "Open");
+      open.href = launch.url;
+      actions.appendChild(open);
+    }
+    if (remove && remove.url) {
+      var removeButton = createElement("button", "plain compact-button", remove.label || "Delete");
+      removeButton.type = "button";
+      if (remove.disabled_reason) {
+        removeButton.disabled = true;
+        removeButton.title = remove.disabled_reason;
+      } else {
+        removeButton.addEventListener("click", async function () {
+          removeButton.disabled = true;
+          try {
+            var response = await fetch(remove.url, { method: remove.method || "DELETE" });
+            if (!response.ok) { throw new Error(await readErrorBody(response)); }
+            refreshLibrary(true);
+          } catch (err) {
+            log((remove.label || "Delete") + " failed: " + err.message, "error");
+            removeButton.disabled = false;
+          }
+        });
+      }
+      actions.appendChild(removeButton);
+    }
     row.appendChild(actions);
-    return searchableLibraryCard(row, [project.name, project.id, "Story Builder Project"].concat((project.tracks || []).map(function (track) { return track.name; })));
+  }
+
+  function renderLibraryEntry(entry, nested) {
+    var row = createElement("article", nested ? "library-child" : "library-item");
+    var head = createElement("div", "library-item-head");
+    head.appendChild(createElement("span", "library-item-name", entry.name || entry.id));
+    head.appendChild(createElement("span", "library-item-kind", String(entry.subtype || entry.kind).replaceAll("_", " ")));
+    row.appendChild(head);
+
+    var metadata = entry.metadata || {};
+    var text = metadata.transcript || metadata.subject || metadata.direction || metadata.text || metadata.sample_text;
+    if (text && text !== entry.name) { row.appendChild(createElement("div", "library-item-text", text)); }
+    var detail = [];
+    var timestamp = entry.updated_at || entry.created_at;
+    if (timestamp) { detail.push(new Date(timestamp).toLocaleString()); }
+    if (entry.relationship) { detail.push("from " + entry.relationship.name); }
+    ["status", "fitness", "bitrate", "duration_seconds", "duration_ms", "tracks", "revision"].forEach(function (key) {
+      if (metadata[key]) {
+        var suffix = key === "duration_seconds" ? "s" : (key === "duration_ms" ? "ms" : "");
+        detail.push(String(metadata[key]) + suffix);
+      }
+    });
+    if (metadata.bytes) { detail.push(Math.round(Number(metadata.bytes) / 1024) + " KB"); }
+    if (detail.length) { row.appendChild(createElement("div", "library-item-meta", detail.join(" · "))); }
+    appendLibraryPreview(row, entry);
+    appendLibraryEntryActions(row, entry);
+
+    if (entry.children && entry.children.length) {
+      var children = createElement("div", "library-entry-children");
+      entry.children.forEach(function (child) { children.appendChild(renderLibraryEntry(child, true)); });
+      row.appendChild(children);
+    }
+    return nested ? row : searchableLibraryCard(row, libraryEntrySearchParts(entry));
   }
 
   function applyLibraryFilter() {
@@ -8314,15 +8269,9 @@
       sectionLists[section.id] = list;
     });
 
-    (payload.voices || []).forEach(function (voice) { sectionLists.voices.appendChild(renderLibraryVoice(voice)); });
-    (payload.items || []).forEach(function (item) {
-      var section = item.kind === "image" ? "imagery" : ((item.mediaRole === "music" || item.mediaRole === "sfx") ? "music" : "audio");
-      sectionLists[section].appendChild(renderSavedLibraryItem(item));
+    (payload.entries || []).forEach(function (entry) {
+      sectionLists[libraryEntrySection(entry)].appendChild(renderLibraryEntry(entry, false));
     });
-    (payload.projects || []).forEach(function (project) { sectionLists.projects.appendChild(renderLibraryProject(project)); });
-    (payload.stories || []).forEach(function (story) { sectionLists.stories.appendChild(renderLibraryProduction(story, "story")); });
-    (payload.audiobooks || []).forEach(function (book) { sectionLists.stories.appendChild(renderLibraryProduction(book, "audiobook")); });
-    (payload.interruptedAudiobooks || []).forEach(function (book) { sectionLists.stories.appendChild(renderLibraryProduction(book, "audiobook")); });
 
     LIBRARY_SECTIONS.forEach(function (section) {
       if (!sectionLists[section.id].querySelector(".library-item")) {
@@ -8337,11 +8286,7 @@
     try {
       var results = await Promise.all([
         fetch("/v1/jobs", { method: "GET" }),
-        fetch("/v1/library", { method: "GET" }),
-        fetch("/v1/voices", { method: "GET" }),
-        fetch("/v1/stories", { method: "GET" }),
-        fetch("/v1/audiobooks", { method: "GET" }),
-        fetch("/v1/story-builder-projects", { method: "GET" })
+        fetch("/v1/library", { method: "GET" })
       ]);
       if (results.some(function (response) { return !response.ok; })) {
         throw new Error("one or more library collections could not be loaded");
@@ -8349,19 +8294,8 @@
       var payloads = await Promise.all(results.map(function (response) { return response.json(); }));
       var jobsPayload = payloads[0];
       var libraryPayload = payloads[1];
-      var voicesPayload = payloads[2];
-      var storiesPayload = payloads[3];
-      var audiobooksPayload = payloads[4];
-      var projectsPayload = payloads[5];
       var anyActive = renderJobs(jobsPayload.jobs || []);
-      renderLibraryItems({
-        items: libraryPayload.items || [],
-        voices: voicesPayload.voices || [],
-        projects: projectsPayload.projects || [],
-        stories: storiesPayload.stories || [],
-        audiobooks: audiobooksPayload.audiobooks || [],
-        interruptedAudiobooks: audiobooksPayload.interrupted || []
-      });
+      renderLibraryItems({ entries: libraryPayload.entries || [] });
       if (!silent) {
         log("Library refreshed");
       }

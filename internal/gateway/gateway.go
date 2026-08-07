@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"cpp-studio/internal/audiobook"
 	"cpp-studio/internal/config"
@@ -56,6 +57,7 @@ type router struct {
 	installer                  *models.Installer
 	jobs                       *jobs.Registry
 	library                    *library.Store
+	libraryReadModel           *library.ReadModel
 	audiobooks                 audiobook.Service
 
 	// encodersMu guards the one-time probe of what the operator's ffmpeg can
@@ -179,6 +181,14 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 		}
 	}
 	r.audiobooks = audiobook.NewManager(audiobookOptions)
+	r.libraryReadModel = library.NewReadModel(library.ReadModelSources{
+		Items:           func() ([]library.Item, error) { return r.library.List() },
+		ActorVoices:     func() ([]voice.Clone, error) { return r.voices.List() },
+		CharacterVoices: func(actorID string) ([]voice.CharacterVoice, error) { return r.voices.ListCharacterVoices(actorID) },
+		Stories:         func() ([]story.Summary, error) { return r.stories.List() },
+		Projects:        func() ([]storybuilder.Project, error) { return r.storyBuilderProjects.List() },
+		Audiobooks:      func() ([]audiobook.Manifest, error) { return r.audiobooks.List() },
+	})
 
 	// The model manifest is optional: a config without a models block (CI,
 	// fixture setups) simply serves an empty catalog rather than failing.
@@ -1079,21 +1089,25 @@ func (r *router) handleJob(w http.ResponseWriter, req *http.Request) {
 // maxLibraryUploadBytes bounds the JSON body of a library save: the base64
 // payload (~1.34x the raw artifact cap) plus metadata headroom.
 const maxLibraryUploadBytes = 96 * 1024 * 1024
+const maxLibrarySearchCharacters = 200
 
 // handleLibrary serves GET /v1/library (list) and POST /v1/library (save).
 func (r *router) handleLibrary(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
-		items, err := r.library.List()
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		query := strings.TrimSpace(req.URL.Query().Get("q"))
+		if utf8.RuneCountInString(query) > maxLibrarySearchCharacters {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("library search is longer than %d characters", maxLibrarySearchCharacters))
 			return
 		}
-		if items == nil {
-			items = []library.Item{}
+		response, err := r.libraryReadModel.List(query)
+		if err != nil {
+			log.Printf("Library read failed: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "Library unavailable")
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+		_ = json.NewEncoder(w).Encode(response)
 	case http.MethodPost:
 		var body struct {
 			Kind    string            `json:"kind"`

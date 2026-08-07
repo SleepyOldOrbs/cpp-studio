@@ -422,10 +422,25 @@ completed PCM file, and refuses the 32-bit RIFF limit with a narrate-in-parts re
 
 ## Library
 
-The studio's persistent output shelf: audio and images saved from the
-console live in `out/library` on disk and survive restarts.
+The studio's unified browse, search, and launch surface. It aggregates read-only
+summaries from the purpose-built Voice, Story, Story Builder, Audiobook, and
+saved-item stores; it does not copy their manifests or take ownership of their
+mutations. Audio and images explicitly saved from the console still live in
+`out/library` on disk and survive restarts.
 
-- `GET /v1/library` — all saved items, newest first.
+- `GET /v1/library` — return newest-first `entries` across Actor Voices with
+  nested Character Voices, reusable audio, saved images, Stories, Story Builder
+  Projects, Audiobooks, purpose-owned render revisions, mixed-master revisions,
+  and delivery exports. Optional
+  `?q=` searches names, Actor parent names, Character directions, relationships,
+  subtypes, and role metadata (maximum 200 characters). Every entry has stable
+  `kind`, `id`, `name`, and `created_at`; applicable fields include `subtype`,
+  `updated_at`, `relationship`, `metadata`, `children`, `preview_action`,
+  `artifact_action`, `launch_action`, and `delete_action`. Actions identify the
+  owning tool or artifact route and can include `method`, `content_type`, or a
+  `disabled_reason`. The response also retains the original `items` array for
+  saved-audio/image consumers:
+  `{"entries":[{"kind":"story_builder_project","id":"project_...","name":"Episode edit","created_at":"...","launch_action":{"label":"Open Story Builder","url":"/demo/story-builder.html?project=project_..."}}],"items":[...]}`.
 - `POST /v1/library` — save one item:
   `{"kind":"audio"|"image","name":"Door slam","data_b64":"...","meta":{"media_role":"sfx"}}`.
   Audio roles are `sfx`, `music`, or `utility` (the default). Audio records
@@ -438,7 +453,9 @@ console live in `out/library` on disk and survive restarts.
 Cloned voices use `DELETE /v1/voices/{id}` (protected voices remain
 undeletable). Finished stories and audiobooks use `DELETE /v1/stories/{id}`
 and `DELETE /v1/audiobooks/{id}`; interrupted productions retain their
-validated `POST .../discard` lifecycle action.
+validated `POST .../discard` lifecycle action. Story Builder Projects use
+`DELETE /v1/story-builder-projects/{id}`. There is no generic mutation route
+for an aggregated Library entry.
 
 ## GET /v1/gpu
 

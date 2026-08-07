@@ -892,6 +892,9 @@ func TestStoreSaveLoadListAndArtifactPath(t *testing.T) {
 	if len(list[0].Exports) != 1 || list[0].Exports[0].Format != "mp3" {
 		t.Fatalf("expected exports in story summary, got %+v", list[0].Exports)
 	}
+	if list[0].Exports[0].RenderRevision != 1 || len(list[0].Renders) != 1 || list[0].Renders[0].Revision != 1 {
+		t.Fatalf("expected stable render identity in story summary, got %+v", list[0])
+	}
 	artifactPath, err := store.ArtifactPath(manifest.ID, StoryArtifactName)
 	if err != nil {
 		t.Fatalf("ArtifactPath returned error: %v", err)
