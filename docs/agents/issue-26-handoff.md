@@ -57,14 +57,13 @@ workflow**, on branch `codex/story-builder-complete-workflow`, stacked on issue
   `5c5a1676877614d8e8fe1348e860f9e6d21fd566eb88adfa359686a1a63d3935`,
   at ignored path
   `output/native/story-builder-issue26/verified/issue-26-native-mixed-render.wav`.
-- Human listening remains pending: confirm the generated sentence is correct
-  and the dialogue/SFX timing is acceptable. Automated checks can prove WAV
-  validity, duration, persistence, and placement, but cannot make that
-  perceptual judgement.
+- On 2026-08-07, James listened to the configured-native mixed WAV and passed
+  both the generated sentence/content and the dialogue/SFX overlap timing at
+  approximately 1.5 seconds. This human result is recorded separately from the
+  automated WAV, persistence, placement, HTTP, and browser validation above.
 
 ## Exact next step
 
-Have a human listen to the configured-native mixed WAV and record whether the
-sentence/content and dialogue/SFX timing are acceptable. If that perceptual gate
-passes, the green draft stack can be considered for merge in order from PR #35.
-Do not merge without explicit user approval.
+The Story Builder acceptance sequence is complete. The green draft stack can be
+considered for merge in order from PR #35. Do not merge without explicit user
+approval.
