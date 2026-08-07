@@ -152,6 +152,12 @@ record and one immutable `renders/render-NNN.wav`; the stable latest-master
 action redirects to that newest numbered identity rather than maintaining a
 mutable alias. A failed validation, mix, master, or manifest write leaves all
 previous revisions and the saved project unchanged.
+Each render revision also owns its optional derived MP3 and FLAC delivery
+exports. The operator's configured encoders determine availability. Re-exporting
+one format replaces only that derived file; the numbered WAV and every other
+revision or format remain unchanged. Failed or cancelled encoding and failed
+publication preserve any earlier valid export and do not advance the project
+revision.
 Whole-project writes use the revision as an
 optimistic-concurrency boundary: a stale client receives a conflict instead of
 silently replacing newer work. Each project lives in its own directory under
@@ -159,8 +165,9 @@ silently replacing newer work. Each project lives in its own directory under
 deletion are owned by the project Store.
 
 The separate browser tool at `/demo/story-builder.html` owns project and typed
-track arrangement, starts/polls asynchronous dialogue builds, and requests
-immutable project renders. Build
+track arrangement, starts/polls asynchronous dialogue builds, requests
+immutable project renders, and exposes revision-specific WAV, MP3, and FLAC
+delivery actions. Build
 coordination is in memory, while clip status and successful takes are durable in
 the project Store. It also derives read-only timeline playback and isolated clip
 audition from those project-owned WAVs without creating a render or changing the

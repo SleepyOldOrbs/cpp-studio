@@ -193,6 +193,16 @@ func validateRenderRevisions(renders []RenderRevision, projectID string) error {
 			render.URL != fmt.Sprintf("/v1/story-builder-projects/%s/renders/%d", projectID, i+1) {
 			return errors.New("decode Story Builder Project: invalid render revisions")
 		}
+		formats := make(map[string]struct{}, len(render.Exports))
+		for _, export := range render.Exports {
+			_, duplicate := formats[export.Format]
+			if !validExportFormat(export.Format) || duplicate || export.Bytes <= 0 || export.CreatedAt.IsZero() ||
+				export.URL != fmt.Sprintf("/v1/story-builder-projects/%s/renders/%d/exports/%s", projectID, i+1, export.Format) ||
+				(export.Format == "mp3" && export.Bitrate == "") || (export.Format == "flac" && export.Bitrate != "") {
+				return errors.New("decode Story Builder Project: invalid render exports")
+			}
+			formats[export.Format] = struct{}{}
+		}
 	}
 	return nil
 }

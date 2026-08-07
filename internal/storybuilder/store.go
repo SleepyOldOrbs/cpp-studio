@@ -46,6 +46,9 @@ var (
 	ErrStoryMappingRequired   = errors.New("every Story speaker requires a Character Voice mapping")
 	ErrRenderNotReady         = errors.New("audible dialogue is not ready to render")
 	ErrRenderNotFound         = errors.New("Story Builder render not found")
+	ErrExportUnavailable      = errors.New("Story Builder export encoder is unavailable")
+	ErrExportNotFound         = errors.New("Story Builder export not found")
+	ErrUnsupportedExport      = errors.New("unsupported Story Builder export format")
 )
 
 type TrackType string
@@ -155,15 +158,25 @@ type ProjectUpdate struct {
 }
 
 type RenderRevision struct {
-	Revision   int           `json:"revision"`
-	CreatedAt  time.Time     `json:"created_at"`
-	DurationMS int64         `json:"duration_ms"`
-	Bytes      int           `json:"bytes"`
-	URL        string        `json:"url"`
-	Master     *story.Master `json:"master,omitempty"`
+	Revision   int            `json:"revision"`
+	CreatedAt  time.Time      `json:"created_at"`
+	DurationMS int64          `json:"duration_ms"`
+	Bytes      int            `json:"bytes"`
+	URL        string         `json:"url"`
+	Master     *story.Master  `json:"master,omitempty"`
+	Exports    []RenderExport `json:"exports,omitempty"`
+}
+
+type RenderExport struct {
+	Format    string    `json:"format"`
+	Bitrate   string    `json:"bitrate,omitempty"`
+	Bytes     int       `json:"bytes"`
+	CreatedAt time.Time `json:"created_at"`
+	URL       string    `json:"url"`
 }
 
 type MasterRenderFunc func(context.Context, []byte) ([]byte, *story.Master, error)
+type TranscodeRenderFunc func(context.Context, string, string, string, string) error
 
 // Project is one separately saved Story Builder production.
 type Project struct {
@@ -182,6 +195,7 @@ type StoreOptions struct {
 	ResolveCharacterVoice CharacterVoiceResolver
 	ResolveLibraryAudio   LibraryAudioResolver
 	MasterRender          MasterRenderFunc
+	Transcode             TranscodeRenderFunc
 }
 
 type Store struct {
@@ -192,6 +206,7 @@ type Store struct {
 	resolveCharacterVoice CharacterVoiceResolver
 	resolveLibraryAudio   LibraryAudioResolver
 	masterRender          MasterRenderFunc
+	transcode             TranscodeRenderFunc
 }
 
 func NewStore(rootDir string) *Store {
@@ -213,6 +228,7 @@ func NewStoreWithOptions(rootDir string, options StoreOptions) *Store {
 		resolveCharacterVoice: options.ResolveCharacterVoice,
 		resolveLibraryAudio:   options.ResolveLibraryAudio,
 		masterRender:          options.MasterRender,
+		transcode:             options.Transcode,
 	}
 }
 

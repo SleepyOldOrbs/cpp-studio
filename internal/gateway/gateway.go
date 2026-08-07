@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"image/png"
 	"io"
+	"log"
 	"math"
 	mrand "math/rand/v2"
 	"mime/multipart"
@@ -122,6 +123,14 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	if _, ok := cfg.Engines["ffmpeg"]; ok {
 		storyBuilderStoreOptions.MasterRender = func(ctx context.Context, audio []byte) ([]byte, *story.Master, error) {
 			return story.MasterWAV(ctx, audio, r.measureLoudness)
+		}
+		storyBuilderStoreOptions.Transcode = func(ctx context.Context, inPath, outPath, format, bitrate string) error {
+			err := r.transcodeAudio(ctx, inPath, outPath, format, bitrate)
+			var storyErr *story.StoryError
+			if errors.As(err, &storyErr) && storyErr.Code == story.CodeExportUnavailable {
+				return fmt.Errorf("%w: %v", storybuilder.ErrExportUnavailable, err)
+			}
+			return err
 		}
 	}
 	r.storyBuilderProjects = storybuilder.NewStoreWithOptions("", storyBuilderStoreOptions)
@@ -2840,7 +2849,11 @@ func (r *router) transcodeAudio(ctx context.Context, inPath string, outPath stri
 	if !ok {
 		return story.NewError(story.CodeUnsupportedArtifact, fmt.Sprintf("unsupported export format %q", formatID))
 	}
-	if err := engine.ValidateBitrate(bitrate); err != nil {
+	if format.DefaultBitrate == "" {
+		if bitrate != "" {
+			return story.NewError(story.CodeInvalidRequest, fmt.Sprintf("%s does not accept a bitrate", format.Label))
+		}
+	} else if err := engine.ValidateBitrate(bitrate); err != nil {
 		return story.NewError(story.CodeInvalidRequest, err.Error())
 	}
 	// A configured ffmpeg is not necessarily an ffmpeg that can make this
@@ -2854,6 +2867,9 @@ func (r *router) transcodeAudio(ctx context.Context, inPath string, outPath stri
 	}
 	if _, err := r.engines.Run(ctx, engine.TranscodeSpec(inPath, outPath, format, bitrate)); err != nil {
 		return story.NewError(story.CodeStoreFailure, err.Error())
+	}
+	if _, err := r.engines.Run(ctx, engine.ProbeEncodedAudioSpec(outPath)); err != nil {
+		return story.NewError(story.CodeStoreFailure, fmt.Sprintf("encoded %s failed full validation: %v", format.Label, err))
 	}
 	return nil
 }
@@ -2948,7 +2964,7 @@ func (r *router) handleAudioEncode(w http.ResponseWriter, req *http.Request) {
 	defer upload.Close()
 	format, ok := engine.LookupAudioFormat(strings.TrimSpace(req.FormValue("format")))
 	if !ok {
-		writeJSONError(w, http.StatusBadRequest, "format must be mp3 or opus")
+		writeJSONError(w, http.StatusBadRequest, "format must be mp3, opus, or flac")
 		return
 	}
 	bitrate := strings.TrimSpace(req.FormValue("bitrate"))
@@ -2998,7 +3014,7 @@ func (r *router) handleAudioEncode(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", story.ArtifactContentType(outPath))
+	w.Header().Set("Content-Type", format.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, encoded)
@@ -4112,6 +4128,12 @@ type storyBuilderRenderRequest struct {
 	Revision int `json:"revision"`
 }
 
+type storyBuilderExportRequest struct {
+	Revision int    `json:"revision"`
+	Format   string `json:"format"`
+	Bitrate  string `json:"bitrate,omitempty"`
+}
+
 func (r *router) handleStoryBuilderProjects(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
@@ -4163,6 +4185,14 @@ func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Requ
 	}
 	if len(parts) == 3 && parts[1] == "renders" {
 		r.handleStoryBuilderRender(w, req, parts[0], parts[2])
+		return
+	}
+	if len(parts) == 4 && parts[1] == "renders" && parts[3] == "exports" {
+		r.handleStoryBuilderExports(w, req, parts[0], parts[2])
+		return
+	}
+	if len(parts) == 5 && parts[1] == "renders" && parts[3] == "exports" {
+		r.handleStoryBuilderExport(w, req, parts[0], parts[2], parts[4])
 		return
 	}
 	if len(parts) == 2 && parts[1] == "master" {
@@ -4400,6 +4430,82 @@ func (r *router) handleStoryBuilderRender(w http.ResponseWriter, req *http.Reque
 	http.ServeFile(w, req, path)
 }
 
+func (r *router) handleStoryBuilderExports(w http.ResponseWriter, req *http.Request, projectID, rawRenderRevision string) {
+	if req.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	renderRevision, ok := storyBuilderRevision(rawRenderRevision)
+	if !ok {
+		writeStoryBuilderProjectError(w, storybuilder.ErrRenderNotFound)
+		return
+	}
+	var body storyBuilderExportRequest
+	if err := decodeStoryBuilderProjectRequest(w, req, &body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Revision < 1 {
+		writeJSONError(w, http.StatusBadRequest, "revision must be positive")
+		return
+	}
+	body.Format = strings.TrimSpace(body.Format)
+	if body.Format != "mp3" && body.Format != "flac" {
+		writeStoryBuilderProjectError(w, storybuilder.ErrUnsupportedExport)
+		return
+	}
+	format, _ := engine.LookupAudioFormat(body.Format)
+	body.Bitrate = strings.TrimSpace(body.Bitrate)
+	if format.DefaultBitrate == "" {
+		if body.Bitrate != "" {
+			writeJSONError(w, http.StatusBadRequest, format.Label+" does not accept a bitrate")
+			return
+		}
+	} else {
+		if body.Bitrate == "" {
+			body.Bitrate = format.DefaultBitrate
+		}
+		if err := engine.ValidateBitrate(body.Bitrate); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	response, err := r.storyBuilderProjects.ExportRender(req.Context(), projectID, body.Revision, renderRevision, body.Format, body.Bitrate)
+	if err != nil {
+		writeStoryBuilderProjectError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func (r *router) handleStoryBuilderExport(w http.ResponseWriter, req *http.Request, projectID, rawRenderRevision, formatID string) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	renderRevision, ok := storyBuilderRevision(rawRenderRevision)
+	if !ok || (formatID != "mp3" && formatID != "flac") {
+		writeStoryBuilderProjectError(w, storybuilder.ErrExportNotFound)
+		return
+	}
+	path, _, err := r.storyBuilderProjects.ExportPath(projectID, renderRevision, formatID)
+	if err != nil {
+		writeStoryBuilderProjectError(w, err)
+		return
+	}
+	format, _ := engine.LookupAudioFormat(formatID)
+	w.Header().Set("Content-Type", format.ContentType)
+	http.ServeFile(w, req, path)
+}
+
+func storyBuilderRevision(raw string) (int, bool) {
+	revision, err := strconv.Atoi(raw)
+	return revision, err == nil && revision > 0 && strconv.Itoa(revision) == raw
+}
+
 func (r *router) handleStoryBuilderLatestMaster(w http.ResponseWriter, req *http.Request, projectID string) {
 	if req.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -4437,14 +4543,21 @@ func writeStoryBuilderProjectError(w http.ResponseWriter, err error) {
 		errors.Is(err, storybuilder.ErrLibraryAudioNotFound), errors.Is(err, storybuilder.ErrProjectMediaNotFound),
 		errors.Is(err, storybuilder.ErrDialogueBuildMissing), errors.Is(err, storybuilder.ErrRenderNotFound):
 		writeJSONError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, storybuilder.ErrExportNotFound):
+		writeJSONError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, storybuilder.ErrUnsupportedExport):
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, storybuilder.ErrConflict), errors.Is(err, storybuilder.ErrVoiceConflict),
 		errors.Is(err, storybuilder.ErrDialogueBuildBusy), errors.Is(err, storybuilder.ErrNoDialogueToBuild),
 		errors.Is(err, storybuilder.ErrDialogueBuildStopped), errors.Is(err, storybuilder.ErrRenderNotReady):
 		writeJSONError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, storybuilder.ErrDialogueEngineBusy):
 		writeJSONError(w, http.StatusTooManyRequests, err.Error())
+	case errors.Is(err, storybuilder.ErrExportUnavailable):
+		writeJSONError(w, http.StatusServiceUnavailable, storybuilder.ErrExportUnavailable.Error())
 	default:
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		log.Printf("Story Builder request failed: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "Story Builder request failed")
 	}
 }
 
@@ -4719,7 +4832,7 @@ func (r *router) handleStory(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		format, ok := engine.LookupAudioFormat(strings.TrimSpace(body.Format))
-		if !ok {
+		if !ok || (format.ID != "mp3" && format.ID != "opus") {
 			writeStoryError(w, http.StatusBadRequest, story.CodeUnsupportedArtifact, "format must be mp3 or opus")
 			return
 		}

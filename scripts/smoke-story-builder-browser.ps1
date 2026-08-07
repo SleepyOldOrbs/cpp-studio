@@ -90,6 +90,12 @@ $config = [ordered]@{
       mode = "subprocess"
       requestTimeoutSeconds = 10
     }
+    ffmpeg = [ordered]@{
+      command = $fixtureExe
+      args = @("ffmpeg")
+      mode = "subprocess"
+      requestTimeoutSeconds = 10
+    }
     ci = [ordered]@{
       command = "go"
       args = @("version")
@@ -843,6 +849,76 @@ async page => {
 }
 '@
 
+$exportMasterCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const origin = page.url().split('/demo/')[0];
+  const projectID = '__PLAYBACK_PROJECT_ID__';
+  const projectState = () => page.evaluate(id => fetch(`/v1/story-builder-projects/${id}`).then(response => response.json()), projectID);
+  const artifact = url => page.evaluate(async url => {
+    const response = await fetch(url);
+    const bytes = await response.arrayBuffer();
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
+      .map(value => value.toString(16).padStart(2, '0')).join('');
+    const prefix = String.fromCharCode(...new Uint8Array(bytes.slice(0, 4)));
+    return { ok: response.ok, contentType: response.headers.get('content-type'), hash, prefix };
+  }, url);
+
+  await page.route('**/v1/audio/formats', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ formats: [
+      { id: 'mp3', available: true },
+      { id: 'flac', available: false },
+    ] }),
+  }));
+  await page.goto(`${origin}/demo/story-builder.html?project=${projectID}`);
+  const unavailableRevision = page.locator('[data-render-revision="2"]');
+  const unavailableFLAC = unavailableRevision.getByRole('button', { name: 'FLAC unavailable', exact: true });
+  await unavailableFLAC.waitFor();
+  assert(await unavailableFLAC.isDisabled(), 'unavailable FLAC encoder remained actionable');
+  await page.unroute('**/v1/audio/formats');
+  await page.reload();
+  const revision1 = page.locator('[data-render-revision="1"]');
+  const revision2 = page.locator('[data-render-revision="2"]');
+  await revision1.getByRole('button', { name: 'Export MP3', exact: true }).waitFor();
+  await revision2.getByRole('button', { name: 'Export FLAC', exact: true }).waitFor();
+  const before = await projectState();
+  assert(await revision1.getByRole('link', { name: 'Download WAV revision 1' }).getAttribute('href') === before.renders[0].url,
+    'WAV action did not identify its selected render revision');
+  const wav1 = await artifact(before.renders[0].url);
+  const wav2 = await artifact(before.renders[1].url);
+
+  await revision1.getByRole('button', { name: 'Export MP3', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#storyBuilderRenderStatus')?.textContent === 'Revision 1 MP3 is ready');
+  const mp3Link = revision1.getByRole('link', { name: 'Download MP3 revision 1' });
+  await mp3Link.waitFor();
+  const mp3 = await artifact(await mp3Link.getAttribute('href'));
+  assert(mp3.ok && mp3.contentType?.startsWith('audio/mpeg') && mp3.prefix.startsWith('ID3'),
+    `MP3 download was not a served MP3: ${JSON.stringify(mp3)}`);
+
+  await revision2.getByRole('button', { name: 'Export FLAC', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#storyBuilderRenderStatus')?.textContent === 'Revision 2 FLAC is ready');
+  const flacLink = revision2.getByRole('link', { name: 'Download FLAC revision 2' });
+  await flacLink.waitFor();
+  const flac = await artifact(await flacLink.getAttribute('href'));
+  assert(flac.ok && flac.contentType?.startsWith('audio/flac') && flac.prefix === 'fLaC',
+    `FLAC download was not a served FLAC: ${JSON.stringify(flac)}`);
+
+  await revision1.getByRole('button', { name: 'Re-export MP3', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#storyBuilderRenderStatus')?.textContent === 'Revision 1 MP3 is ready');
+  const after = await projectState();
+  assert(after.renders[0].exports?.length === 1 && after.renders[0].exports[0].format === 'mp3',
+    'MP3 re-export accumulated duplicate derived files');
+  assert(after.renders[1].exports?.length === 1 && after.renders[1].exports[0].format === 'flac',
+    'exports crossed render revision boundaries');
+  assert((await artifact(after.renders[0].url)).hash === wav1.hash && (await artifact(after.renders[1].url)).hash === wav2.hash,
+    'delivery export changed an immutable WAV revision');
+  return { project: projectID, exports: ['mp3', 'flac'], replacement: true };
+}
+'@
+
 $storyImportCode = @'
 async page => {
   const assert = (condition, message) => {
@@ -1194,6 +1270,7 @@ try {
   $playbackTimelineCode = $playbackTimelineCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id)
   $playbackUnavailableCode = $playbackUnavailableCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id).Replace("__BROKEN_PROJECT_ID__", $brokenProject.id)
   $renderMasterCode = $renderMasterCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id).Replace("__BROKEN_PROJECT_ID__", $brokenProject.id)
+  $exportMasterCode = $exportMasterCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id)
   $storyImportCode = $storyImportCode.Replace("__IMPORT_STORY_ID__", $storyImportStart.id).Replace("__IMPORT_SUGGESTED_CHARACTER_ID__", $matchedCharacterVoice.id).Replace("__IMPORT_AMBIGUOUS_ACTOR_ID__", $actorVoice.id)
 
   Invoke-BrowserCLI -Arguments @("open", "$baseURL/demo/story-builder.html")
@@ -1210,6 +1287,7 @@ try {
   Invoke-BrowserCode -Code $playbackSetupCode
   Invoke-BrowserCode -Code $playbackTimelineCode
   Invoke-BrowserCode -Code $renderMasterCode
+  Invoke-BrowserCode -Code $exportMasterCode
   Invoke-BrowserCode -Code $playbackUnavailableCode
   Invoke-BrowserCode -Code $storyImportCode
   [ordered]@{ status = "ok"; browser = "playwright"; gateway = $baseURL } | ConvertTo-Json

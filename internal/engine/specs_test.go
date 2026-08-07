@@ -2,7 +2,10 @@ package engine
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +39,35 @@ func TestSniffAudioContentType(t *testing.T) {
 				t.Fatalf("SniffAudioContentType = (%q, %v), want (%q, %v)", got, ok, tt.want, tt.ok)
 			}
 		})
+	}
+}
+
+func TestTranscodeSpecValidatesRequestedContainer(t *testing.T) {
+	mp3, _ := LookupAudioFormat("mp3")
+	flac, _ := LookupAudioFormat("flac")
+	if args := TranscodeSpec("in.wav", "out.flac", flac, "").BuildArgs("in.wav", "out.flac"); slices.Contains(args, "-b:a") {
+		t.Fatalf("lossless FLAC unexpectedly received bitrate args: %v", args)
+	}
+	wantProbe := []string{"-nostdin", "-v", "error", "-xerror", "-i", "encoded.flac", "-map", "0:a:0", "-f", "null", "-"}
+	if args := ProbeEncodedAudioSpec("encoded.flac").BuildArgs("encoded.flac", ""); !reflect.DeepEqual(args, wantProbe) {
+		t.Fatalf("encoded-audio probe args = %v, want %v", args, wantProbe)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "encoded.audio")
+	if err := os.WriteFile(path, []byte("ID3\x03\x00\x00\x00payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := TranscodeSpec("in.wav", path, mp3, "128k").ValidateOutput(path); err != nil {
+		t.Fatalf("valid MP3 rejected: %v", err)
+	}
+	if err := TranscodeSpec("in.wav", path, flac, "").ValidateOutput(path); err == nil {
+		t.Fatal("MP3 bytes were accepted as FLAC")
+	}
+	if err := os.WriteFile(path, []byte("not encoded audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := TranscodeSpec("in.wav", path, mp3, "128k").ValidateOutput(path); err == nil {
+		t.Fatal("corrupt bytes were accepted as MP3")
 	}
 }
 

@@ -22,6 +22,7 @@
   const renderStatus = byID("storyBuilderRenderStatus");
   const renderButton = byID("storyBuilderRenderButton");
   const latestMaster = byID("storyBuilderLatestMaster");
+  const renderHistory = byID("storyBuilderRenderHistory");
   const deleteButton = byID("storyBuilderDeleteButton");
   const refreshButton = byID("storyBuilderRefreshButton");
   const tracksElement = byID("storyBuilderTracks");
@@ -66,6 +67,8 @@
   let mediaPlacementPromise = null;
   let dialogueBuildPromise = null;
   let renderPromise = null;
+  let exportPromise = null;
+  let deliveryFormats = null;
   let activeDialogueBuild = null;
   let dialogueCancelPending = false;
   let audioContext = null;
@@ -101,7 +104,7 @@
   }
 
   function serverMutationPending() {
-    return Boolean(revoicePromise || mediaPlacementPromise || dialogueBuildPromise || renderPromise);
+    return Boolean(revoicePromise || mediaPlacementPromise || dialogueBuildPromise || renderPromise || exportPromise);
   }
 
   function characterVoiceDetails(id) {
@@ -318,11 +321,69 @@
     if (latest) {
       latestMaster.href = `${apiRoot}/${encodeURIComponent(project.id)}/master`;
       latestMaster.textContent = `Latest master (r${latest.revision})`;
-      if (!renderPromise) setRenderStatus(`Rendered revision ${latest.revision}`, "ready");
+      if (!renderPromise && !exportPromise) setRenderStatus(`Rendered revision ${latest.revision}`, "ready");
     } else {
       latestMaster.removeAttribute("href");
       latestMaster.textContent = "Latest master";
-      if (!renderPromise) setRenderStatus("No master rendered");
+      if (!renderPromise && !exportPromise) setRenderStatus("No master rendered");
+    }
+    renderRenderHistory(project);
+  }
+
+  function renderRenderHistory(project = currentProject()) {
+    renderHistory.replaceChildren();
+    const renders = project?.renders || [];
+    if (!renders.length) {
+      const empty = document.createElement("p");
+      empty.className = "render-history-empty";
+      empty.textContent = "Render a master to create delivery files.";
+      renderHistory.append(empty);
+      return;
+    }
+    for (const render of [...renders].reverse()) {
+      const row = document.createElement("div");
+      row.className = "render-revision";
+      row.dataset.renderRevision = String(render.revision);
+      const label = document.createElement("strong");
+      label.textContent = `Revision ${render.revision}`;
+      const wav = document.createElement("a");
+      wav.href = render.url;
+      wav.textContent = "WAV";
+      wav.setAttribute("aria-label", `Download WAV revision ${render.revision}`);
+      row.append(label, wav);
+      for (const formatID of ["mp3", "flac"]) {
+        const format = deliveryFormats?.[formatID];
+        const existing = (render.exports || []).find((item) => item.format === formatID);
+        if (existing) {
+          const link = document.createElement("a");
+          link.href = existing.url;
+          link.textContent = formatID.toUpperCase();
+          link.setAttribute("aria-label", `Download ${formatID.toUpperCase()} revision ${render.revision}`);
+          row.append(link);
+        }
+        const button = document.createElement("button");
+        button.type = "button";
+        const available = format?.available === true;
+        button.textContent = deliveryFormats === null
+          ? `Checking ${formatID.toUpperCase()}…`
+          : available ? `${existing ? "Re-export" : "Export"} ${formatID.toUpperCase()}` : `${formatID.toUpperCase()} unavailable`;
+        button.disabled = serverMutationPending() || !available;
+        if (deliveryFormats !== null && !available) button.title = `${formatID.toUpperCase()} encoder is unavailable on this machine`;
+        button.addEventListener("click", () => exportRender(render.revision, formatID));
+        row.append(button);
+      }
+      renderHistory.append(row);
+    }
+  }
+
+  async function refreshDeliveryFormats() {
+    try {
+      const body = await request("/v1/audio/formats");
+      deliveryFormats = Object.fromEntries((body.formats || []).filter((format) => format.id === "mp3" || format.id === "flac").map((format) => [format.id, format]));
+      renderRenderHistory();
+    } catch (_) {
+      deliveryFormats = {};
+      renderRenderHistory();
     }
   }
 
@@ -1800,6 +1861,38 @@
     }
   }
 
+  async function exportRender(renderRevision, format) {
+    if (serverMutationPending()) return;
+    const project = currentProject();
+    if (!project) return;
+    setRenderStatus(`Encoding revision ${renderRevision} as ${format.toUpperCase()}…`, "running");
+    exportPromise = request(`${apiRoot}/${encodeURIComponent(project.id)}/renders/${renderRevision}/exports`, {
+      method: "POST",
+      body: JSON.stringify({ revision: project.revision, format }),
+    });
+    appShell.inert = true;
+    renderRenderHistory(project);
+    let failure = "";
+    let success = "";
+    try {
+      const response = await exportPromise;
+      if (currentID !== response.project.id) return;
+      Object.assign(project, response.project);
+      projects = [project, ...projects.filter((item) => item.id !== project.id)];
+      setStatus("saved");
+      success = `Revision ${renderRevision} ${format.toUpperCase()} is ready`;
+      renderProjects();
+    } catch (error) {
+      failure = `Export failed — ${error.message}`;
+    } finally {
+      exportPromise = null;
+      appShell.inert = false;
+      updateRenderControls();
+      if (failure) setRenderStatus(failure, "failed");
+      else if (success) setRenderStatus(success, "ready");
+    }
+  }
+
   function clampPanelPosition(position = panelPosition) {
     if (!position) return;
     const width = selectionPanel.offsetWidth;
@@ -1949,4 +2042,5 @@
   updatePlayheadDisplay();
   refreshProjects();
   refreshVoiceLibrary();
+  refreshDeliveryFormats();
 })();

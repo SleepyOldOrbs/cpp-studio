@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	stdpng "image/png"
@@ -197,6 +198,142 @@ func TestStoryBuilderRenderRoutesServeOnlyRecordedImmutableWAVs(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("unsupported artifact %q status = %d", path, rec.Code)
 		}
+	}
+
+}
+
+func TestStoryBuilderExportRoutesUseEncoderAndIsolateRenderRevisions(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"ffmpeg": ffmpegHelperEngine()})
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	root := t.TempDir()
+	r.storyBuilderProjects = storybuilder.NewStoreWithOptions(root, storybuilder.StoreOptions{Transcode: func(ctx context.Context, inPath, outPath, format, bitrate string) error {
+		err := r.transcodeAudio(ctx, inPath, outPath, format, bitrate)
+		var storyErr *story.StoryError
+		if errors.As(err, &storyErr) && storyErr.Code == story.CodeExportUnavailable {
+			return fmt.Errorf("%w: %v", storybuilder.ErrExportUnavailable, err)
+		}
+		return err
+	}})
+	project, _ := r.storyBuilderProjects.Create("Gateway exports")
+	first, err := r.storyBuilderProjects.Render(context.Background(), project.ID, project.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPath, _, _ := r.storyBuilderProjects.RenderPath(project.ID, 1)
+	firstWAV, _ := os.ReadFile(firstPath)
+	second, err := r.storyBuilderProjects.Render(context.Background(), project.ID, first.Project.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	export := func(renderRevision int, projectRevision int, format, bitrate string) storybuilder.ExportResponse {
+		body := fmt.Sprintf(`{"revision":%d,"format":%q`, projectRevision, format)
+		if bitrate != "" {
+			body += fmt.Sprintf(`,"bitrate":%q`, bitrate)
+		}
+		body += "}"
+		rec := httptest.NewRecorder()
+		url := fmt.Sprintf("/v1/story-builder-projects/%s/renders/%d/exports", project.ID, renderRevision)
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, url, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("export %s r%d status = %d: %s", format, renderRevision, rec.Code, rec.Body.String())
+		}
+		var response storybuilder.ExportResponse
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	mp3 := export(1, second.Project.Revision, "mp3", "128k")
+	flac := export(2, mp3.Project.Revision, "flac", "")
+	again := export(1, flac.Project.Revision, "mp3", "64k")
+	if len(again.Project.Renders[0].Exports) != 1 || again.Project.Renders[0].Exports[0].Bitrate != "64k" ||
+		len(again.Project.Renders[1].Exports) != 1 || again.Project.Renders[1].Exports[0].Format != "flac" {
+		t.Fatalf("exports crossed render revisions: %+v", again.Project.Renders)
+	}
+	if unchanged, _ := os.ReadFile(firstPath); !bytes.Equal(unchanged, firstWAV) {
+		t.Fatalf("export changed immutable WAV")
+	}
+	for _, check := range []struct {
+		url, contentType, prefix string
+	}{
+		{again.Export.URL, "audio/mpeg", "ID3"},
+		{flac.Export.URL, "audio/flac", "fLaC"},
+	} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, check.url, nil))
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != check.contentType || !strings.HasPrefix(rec.Body.String(), check.prefix) {
+			t.Fatalf("serve %s = %d %q %q", check.url, rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+		}
+	}
+	for _, path := range []string{
+		fmt.Sprintf("/v1/story-builder-projects/%s/renders/1/exports/wav", project.ID),
+		fmt.Sprintf("/v1/story-builder-projects/%s/renders/01/exports/mp3", project.ID),
+		fmt.Sprintf("/v1/story-builder-projects/%s/renders/1/exports/project.json", project.ID),
+	} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("unsupported export artifact %q status = %d", path, rec.Code)
+		}
+	}
+
+	mp3Path, _, err := r.storyBuilderProjects.ExportPath(project.ID, 1, "mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mp3Before, _ := os.ReadFile(mp3Path)
+	corruptCfg := testConfig(map[string]config.EngineConfig{"ffmpeg": {
+		Command: os.Args[0], Args: []string{"-test.run=TestGatewayHelperProcess", "--", "ffmpeg-corrupt"}, RequestTimeoutSeconds: 20,
+	}})
+	corruptRouter := NewRouter(corruptCfg, lifecycle.NewManager(corruptCfg)).(*router)
+	corruptRouter.storyBuilderProjects = storybuilder.NewStoreWithOptions(root, storybuilder.StoreOptions{Transcode: func(ctx context.Context, inPath, outPath, format, bitrate string) error {
+		return corruptRouter.transcodeAudio(ctx, inPath, outPath, format, bitrate)
+	}})
+	rec := httptest.NewRecorder()
+	url := fmt.Sprintf("/v1/story-builder-projects/%s/renders/1/exports", project.ID)
+	corruptRouter.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, url, strings.NewReader(fmt.Sprintf(`{"revision":%d,"format":"mp3","bitrate":"96k"}`, again.Project.Revision))))
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "Story Builder request failed") || strings.Contains(rec.Body.String(), root) {
+		t.Fatalf("corrupt encoded output response = %d: %s", rec.Code, rec.Body.String())
+	}
+	loaded, _, err := corruptRouter.storyBuilderProjects.Get(project.ID)
+	if err != nil || loaded.Revision != again.Project.Revision || loaded.Renders[0].Exports[0].Bitrate != "64k" {
+		t.Fatalf("corrupt encoded output mutated project: %+v, err=%v", loaded, err)
+	}
+	if mp3After, _ := os.ReadFile(mp3Path); !bytes.Equal(mp3Before, mp3After) {
+		t.Fatal("corrupt encoded output replaced the prior valid MP3")
+	}
+	entries, err := os.ReadDir(filepath.Dir(mp3Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			t.Fatalf("corrupt encoded output leaked temporary file %q", entry.Name())
+		}
+	}
+}
+
+func TestStoryBuilderExportReportsUnavailableEncoder(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"ffmpeg": {
+		Command: os.Args[0], Args: []string{"-test.run=TestGatewayHelperProcess", "--", "ffmpeg-mp3-only"}, RequestTimeoutSeconds: 20,
+	}})
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	r.storyBuilderProjects = storybuilder.NewStoreWithOptions(t.TempDir(), storybuilder.StoreOptions{Transcode: func(ctx context.Context, inPath, outPath, format, bitrate string) error {
+		err := r.transcodeAudio(ctx, inPath, outPath, format, bitrate)
+		var storyErr *story.StoryError
+		if errors.As(err, &storyErr) && storyErr.Code == story.CodeExportUnavailable {
+			return fmt.Errorf("%w: %v", storybuilder.ErrExportUnavailable, err)
+		}
+		return err
+	}})
+	project, _ := r.storyBuilderProjects.Create("Missing encoder")
+	rendered, _ := r.storyBuilderProjects.Render(context.Background(), project.ID, project.Revision)
+	rec := httptest.NewRecorder()
+	url := fmt.Sprintf("/v1/story-builder-projects/%s/renders/1/exports", project.ID)
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, url, strings.NewReader(fmt.Sprintf(`{"revision":%d,"format":"flac"}`, rendered.Project.Revision))))
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), storybuilder.ErrExportUnavailable.Error()) {
+		t.Fatalf("unavailable FLAC = %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -2339,8 +2476,8 @@ func TestStoryExportToDeliveryFormat(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&formats); err != nil {
 		t.Fatalf("decode formats: %v", err)
 	}
-	if len(formats.Formats) != 2 {
-		t.Fatalf("expected mp3 and opus, got %+v", formats.Formats)
+	if len(formats.Formats) != 3 {
+		t.Fatalf("expected mp3, opus, and flac, got %+v", formats.Formats)
 	}
 	for _, format := range formats.Formats {
 		if !format.Available {
@@ -2417,7 +2554,7 @@ func TestStoryExportToDeliveryFormat(t *testing.T) {
 	})
 
 	t.Run("bad requests are refused", func(t *testing.T) {
-		for _, payload := range []string{`{"format":"flac"}`, `{"format":"mp3","bitrate":"9k"}`, `{"format":"mp3","revision":99}`} {
+		for _, payload := range []string{`{"format":"aac"}`, `{"format":"mp3","bitrate":"9k"}`, `{"format":"mp3","revision":99}`} {
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/stories/"+create.ID+"/export", strings.NewReader(payload)))
 			if rec.Code == http.StatusOK {
@@ -2942,8 +3079,11 @@ func TestAudioEncodeSavesDeliveryFormats(t *testing.T) {
 		t.Fatalf("expected encoded bytes back")
 	}
 
-	if rec := encode("flac"); rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected an unknown format to be refused, got %d", rec.Code)
+	if rec := encode("flac"); rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "audio/flac" || !strings.HasPrefix(rec.Body.String(), "fLaC") {
+		t.Fatalf("expected FLAC delivery bytes, got %d %q %q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+	if rec := encode("opus"); rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "audio/ogg" || !strings.HasPrefix(rec.Body.String(), "OggS") {
+		t.Fatalf("expected Opus delivery bytes, got %d %q %q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
 	}
 }
 
@@ -3614,7 +3754,17 @@ func TestGatewayHelperProcess(t *testing.T) {
 			fmt.Fprintln(os.Stdout, "15.877 -- 21.327 speaker_00")
 			os.Exit(0)
 		case "ffmpeg":
-			runFFmpegHelper(helperArgs)
+			runFFmpegHelper(helperArgs, false)
+		case "ffmpeg-corrupt":
+			runFFmpegHelper(helperArgs, true)
+		case "ffmpeg-mp3-only":
+			for _, arg := range helperArgs {
+				if arg == "-encoders" {
+					fmt.Fprint(os.Stdout, " A....D libmp3lame           MP3\n")
+					os.Exit(0)
+				}
+			}
+			runFFmpegHelper(helperArgs, false)
 		case "import":
 			runImportHelper(helperArgs, "ID3\x03")
 		case "import-not-audio":
@@ -3633,14 +3783,34 @@ func TestGatewayHelperProcess(t *testing.T) {
 // runFFmpegHelper stands in for the operator's ffmpeg: it answers the
 // encoder probe and performs a stand-in transcode over the real paths, so
 // the file-path engine mode is exercised rather than the byte seam.
-func runFFmpegHelper(args []string) {
+func runFFmpegHelper(args []string, corrupt bool) {
 	for _, arg := range args {
 		if arg == "-encoders" {
-			fmt.Fprint(os.Stdout, " V..... = Video\n A....D libmp3lame           MP3\n A....D libopus              Opus\n")
+			fmt.Fprint(os.Stdout, " V..... = Video\n A....D libmp3lame           MP3\n A....D libopus              Opus\n A....D flac                 FLAC\n")
 			os.Exit(0)
 		}
 	}
 	in := helperArg(args, "-i")
+	for _, arg := range args {
+		if strings.Contains(arg, "loudnorm=") {
+			fmt.Fprintln(os.Stderr, `{"input_i":"-16.0","input_tp":"-6.0","input_lra":"2.0"}`)
+			os.Exit(0)
+		}
+	}
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-f" && args[i+1] == "null" {
+			data, err := os.ReadFile(in)
+			if err != nil || bytes.Contains(data, []byte("CORRUPT")) {
+				fmt.Fprintf(os.Stderr, "could not decode complete encoded audio at %s\n", in)
+				os.Exit(2)
+			}
+			if contentType, ok := engine.SniffAudioContentType(data); !ok || contentType == "audio/wav" {
+				fmt.Fprintf(os.Stderr, "invalid encoded audio at %s\n", in)
+				os.Exit(2)
+			}
+			os.Exit(0)
+		}
+	}
 	codec := helperArg(args, "-c:a")
 	out := args[len(args)-1]
 	if in == "" || codec == "" || strings.HasPrefix(out, "-") {
@@ -3660,7 +3830,17 @@ func runFFmpegHelper(args []string) {
 		}
 		os.Exit(0)
 	}
-	if err := os.WriteFile(out, append([]byte("ID3\x03\x00\x00\x00"), source[:len(source)/8]...), 0o600); err != nil {
+	header := []byte("ID3\x03\x00\x00\x00")
+	if codec == "libopus" {
+		header = []byte("OggS")
+	} else if codec == "flac" {
+		header = []byte("fLaC")
+	}
+	payload := source[:len(source)/8]
+	if corrupt {
+		payload = []byte("CORRUPT after valid container signature")
+	}
+	if err := os.WriteFile(out, append(header, payload...), 0o600); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}

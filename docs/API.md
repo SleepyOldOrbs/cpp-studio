@@ -242,6 +242,20 @@ Gateway restart.
 - `GET /v1/story-builder-projects/{id}/master` — redirect to the newest recorded
   immutable render URL. This is a stable convenience action, not a mutable
   render identity and not a second copy of the WAV.
+- `POST /v1/story-builder-projects/{id}/renders/{revision}/exports` — create or
+  replace a delivery encoding of one exact immutable render. The JSON body is
+  `{"revision":7,"format":"mp3"}` (optional `bitrate`) or
+  `{"revision":7,"format":"flac"}`. The body revision is the current project
+  revision used for optimistic concurrency; the URL revision selects the WAV.
+  MP3 uses the operator's configured encoder and default bitrate when omitted;
+  FLAC is lossless and rejects a bitrate. A missing encoder returns `503`.
+  Re-exporting the same format replaces only that derived file. Encoder,
+  cancellation, publication, or manifest failure preserves the immutable WAV,
+  every other revision/export, and any earlier valid copy of that export.
+- `GET /v1/story-builder-projects/{id}/renders/{revision}/exports/{format}` —
+  serve only a recorded `mp3` or `flac` export for the exact positive decimal
+  render revision. Paths, filenames, leading-zero aliases, and other formats
+  are rejected. The unencoded WAV remains available from the render route.
 
 Timeline playback is browser-owned and read-only. The Story Builder fetches the
 existing project-owned dialogue, SFX, and Music WAVs and schedules them with the
