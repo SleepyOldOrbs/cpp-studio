@@ -192,6 +192,136 @@ func TestDialogueBuildFailureKeepsCompletedTakeAndRetrySkipsIt(t *testing.T) {
 	}
 }
 
+func TestDialogueBuildCancellationKeepsCompletedTakeAndRetrySkipsIt(t *testing.T) {
+	store, project := buildTestProject(t, []TimelineClip{
+		{ID: "line_one", Type: ClipTypeDialogue, Label: "One", Text: "One.", StartMS: 0, DurationMS: 1000},
+		{ID: "line_two", Type: ClipTypeDialogue, Label: "Two", Text: "Two.", StartMS: 2000, DurationMS: 1000},
+		{ID: "line_three", Type: ClipTypeDialogue, Label: "Three", Text: "Three.", StartMS: 4000, DurationMS: 1000},
+	})
+	enteredSecond := make(chan struct{})
+	var firstPass []string
+	manager := NewDialogueBuildManager(DialogueBuildManagerOptions{
+		Store: store,
+		Synthesize: func(ctx context.Context, input DialogueSynthesisInput) ([]byte, error) {
+			firstPass = append(firstPass, input.Text)
+			if input.Text == "Two." {
+				close(enteredSecond)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return wav.SyntheticTone(16000), nil
+		},
+	})
+	started, err := manager.Start(context.Background(), project.ID, project.Revision)
+	if err != nil {
+		t.Fatalf("start cancellable build: %v", err)
+	}
+	<-enteredSecond
+	if latest, ok := manager.Latest(project.ID); !ok || latest.ID != started.ID {
+		t.Fatalf("latest build = %+v ok=%v", latest, ok)
+	}
+	if _, err := manager.Cancel(project.ID, started.ID); err != nil {
+		t.Fatalf("cancel build: %v", err)
+	}
+	cancelled := waitDialogueBuild(t, manager, project.ID, started.ID, DialogueBuildCancelled)
+	if cancelled.Completed != 1 || !reflect.DeepEqual(firstPass, []string{"One.", "Two."}) {
+		t.Fatalf("cancelled build = %+v calls=%v", cancelled, firstPass)
+	}
+	partial, ok, err := store.Get(project.ID)
+	if err != nil || !ok {
+		t.Fatalf("reload cancelled build: ok=%v err=%v", ok, err)
+	}
+	clips := partial.Tracks[0].Clips
+	if clips[0].Status != DialogueStatusReady || clips[1].Status != DialogueStatusStale || clips[2].Status != DialogueStatusStale {
+		t.Fatalf("cancelled project state = %+v", clips)
+	}
+
+	var retryPass []string
+	retry := NewDialogueBuildManager(DialogueBuildManagerOptions{
+		Store: store,
+		Synthesize: func(_ context.Context, input DialogueSynthesisInput) ([]byte, error) {
+			retryPass = append(retryPass, input.Text)
+			return wav.SyntheticTone(16000), nil
+		},
+	})
+	restarted, err := retry.Start(context.Background(), partial.ID, partial.Revision)
+	if err != nil {
+		t.Fatalf("retry cancelled build: %v", err)
+	}
+	waitDialogueBuild(t, retry, partial.ID, restarted.ID, DialogueBuildComplete)
+	if !reflect.DeepEqual(retryPass, []string{"Two.", "Three."}) {
+		t.Fatalf("retry synthesis = %v, want active then unstarted clips only", retryPass)
+	}
+}
+
+func TestDialogueBuildDoesNotPublishReadyStateWhenManifestSaveFails(t *testing.T) {
+	failManifest := false
+	root := t.TempDir()
+	store := NewStoreWithOptions(root, StoreOptions{
+		ResolveCharacterVoice: func(id string) (VoiceIdentity, bool, error) {
+			return VoiceIdentity{CharacterVoiceID: id, ActorVoiceID: "actor_mara", Fingerprint: "voice-v1"}, true, nil
+		},
+		WriteFileAtomic: func(path string, data []byte) error {
+			if failManifest && filepath.Base(path) == manifestName {
+				return errors.New("fixture manifest write failed")
+			}
+			return writeFileAtomic(path, data)
+		},
+	})
+	project, err := store.Create("Save failure")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	project, err = store.Update(project.ID, ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: []Track{
+		{ID: "dialogue", Name: "Mara", Type: TrackTypeDialogue, Order: 0, CharacterVoiceID: "character_mara", Clips: []TimelineClip{
+			{ID: "line_one", Type: ClipTypeDialogue, Label: "One", Text: "One.", StartMS: 0, DurationMS: 1000},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("save project: %v", err)
+	}
+	input, err := store.BeginDialogueBuild(project.ID, "line_one")
+	if err != nil {
+		t.Fatalf("begin build: %v", err)
+	}
+	failManifest = true
+	if _, err := store.CompleteDialogueBuild(project.ID, input, wav.SyntheticTone(16000)); err == nil {
+		t.Fatal("complete build succeeded despite manifest failure")
+	}
+	failManifest = false
+	reloaded, ok, err := store.Get(project.ID)
+	if err != nil || !ok {
+		t.Fatalf("reload project: ok=%v err=%v", ok, err)
+	}
+	clip := reloaded.Tracks[0].Clips[0]
+	if clip.Status != DialogueStatusBuilding || clip.SourceID != "" {
+		t.Fatalf("failed manifest save published ready take: %+v", clip)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, project.ID, "takes"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read takes: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("orphaned take after failed manifest save: %v", entries)
+	}
+
+	retry := NewDialogueBuildManager(DialogueBuildManagerOptions{
+		Store: store,
+		Synthesize: func(_ context.Context, _ DialogueSynthesisInput) ([]byte, error) {
+			return wav.SyntheticTone(16000), nil
+		},
+	})
+	restarted, err := retry.Start(context.Background(), reloaded.ID, reloaded.Revision)
+	if err != nil {
+		t.Fatalf("retry orphaned building clip: %v", err)
+	}
+	waitDialogueBuild(t, retry, reloaded.ID, restarted.ID, DialogueBuildComplete)
+	recovered, ok, err := store.Get(reloaded.ID)
+	if err != nil || !ok || recovered.Tracks[0].Clips[0].Status != DialogueStatusReady {
+		t.Fatalf("recovered building clip: ok=%v err=%v project=%+v", ok, err, recovered)
+	}
+}
+
 func TestWholeProjectEditsCannotForgeAndSpeechChangesDetachDialogueTake(t *testing.T) {
 	store, project := buildTestProject(t, []TimelineClip{
 		{ID: "line_one", Type: ClipTypeDialogue, Label: "One", Text: "One.", StartMS: 0, DurationMS: 1000},

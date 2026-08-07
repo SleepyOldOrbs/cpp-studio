@@ -504,6 +504,12 @@ func runSpeech(args []string, stdout, stderr io.Writer) error {
 	if *outPath == "" {
 		return errors.New("speech --out <path> is required")
 	}
+	if strings.Contains(*text, "[fixture-fail]") {
+		return errors.New("fixture speech failure requested")
+	}
+	if strings.Contains(*text, "[fixture-wait]") {
+		time.Sleep(30 * time.Second)
+	}
 	if err := writeFixtureWAV(*outPath); err != nil {
 		return err
 	}

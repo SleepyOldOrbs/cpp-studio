@@ -154,6 +154,18 @@ func TestSpeechWritesValidWAV(t *testing.T) {
 	assertFixtureWAV(t, data)
 }
 
+func TestSpeechSupportsDeterministicInjectedFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "failed.wav")
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"speech", "--text", "[fixture-fail] later line", "--out", path}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "fixture speech failure requested") {
+		t.Fatalf("injected failure error = %v", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("injected failure created output: %v", statErr)
+	}
+}
+
 func TestSpeechAcceptsTypedDramaBoxOptions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dramabox.wav")
 	args := []string{

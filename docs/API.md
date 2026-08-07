@@ -192,14 +192,21 @@ Gateway restart.
   are rejected. Returns the incremented project with `201`.
 - `GET /v1/story-builder-projects/{id}/media/{source-id}` — serve a referenced,
   validated project-owned WAV. Arbitrary files and unreferenced media ids are not exposed.
+- `GET /v1/story-builder-projects/{id}/builds` — return the latest in-memory
+  dialogue build for reload recovery, or `204` when this process has no build for
+  the project.
 - `POST /v1/story-builder-projects/{id}/builds` — asynchronously build all stale
   and failed dialogue from `{"revision":3}`. Returns `202` with a build object
-  containing `id`, `status_url`, `status`, `active_clip_id`, `completed`,
+  containing `id`, `status_url`, `cancel_url`, `status`, `active_clip_id`, `completed`,
   `total`, and `progress`. A stale revision or another active Story Builder
   dialogue build returns `409`; a busy shared audio engine returns `429`.
 - `GET /v1/story-builder-projects/{id}/builds/{build-id}` — poll the in-memory
-  build state (`queued`, `running`, `complete`, or `failed`). Successful clips
+  build state (`queued`, `running`, `complete`, `failed`, or `cancelled`). Successful clips
   are already durable in the project when their completed count advances.
+- `POST /v1/story-builder-projects/{id}/builds/{build-id}/cancel` — request
+  cancellation. The active engine invocation receives cancellation, completed
+  clips remain ready, and the active clip returns durably to `stale` before the
+  build reports `cancelled`.
 - `GET /v1/story-builder-projects/{id}/clips/{clip-id}/audio` — audition a ready
   dialogue clip's referenced, validated project-owned WAV. It does not render a
   combined production.
@@ -221,8 +228,10 @@ external voice edit is visible on reload. The browser also authors `silence`
 clips with stable ids, labels, and integer `start_ms` / `duration_ms` timing.
 Silence is manifest metadata and never creates audio bytes.
 
-Dialogue builds process stale and failed clips chronologically and skip ready
-clips. They reserve both the shared `audio` gate and the directed `omnivoice`
+Dialogue builds process stale, failed, and orphaned building clips
+chronologically and skip ready clips. Treating building clips as retryable
+recovers an invocation whose final status could not be saved. Builds reserve
+both the shared `audio` gate and the directed `omnivoice`
 engine once for the entire build, then use the current Character Voice direction
 for synthesis. Every
 successful synthesis is validated and copied to the project's `takes`

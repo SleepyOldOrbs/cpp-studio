@@ -441,6 +441,176 @@ async page => {
 }
 '@
 
+$buildFailureRecoveryCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const origin = page.url().split('/demo/')[0];
+  const voiceID = '__RECOVERY_CHARACTER_VOICE_ID__';
+  const createProject = async (name, lines) => {
+    const created = await page.evaluate(async name => {
+      const response = await fetch('/v1/story-builder-projects', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+      });
+      return response.json();
+    }, name);
+    return page.evaluate(async ({ created, lines, voiceID }) => {
+      const clips = lines.map((text, index) => ({
+        id: `recovery_line_${index + 1}`, type: 'dialogue', label: `Recovery line ${index + 1}`,
+        text, start_ms: index * 2000, duration_ms: 1000,
+      }));
+      const response = await fetch(`/v1/story-builder-projects/${created.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: created.name, revision: created.revision, timeline_duration_ms: 30000,
+          tracks: [{ id: 'recovery_dialogue', name: 'Recovery dialogue', type: 'dialogue', order: 0,
+            muted: false, character_voice_id: voiceID, clips }],
+        }),
+      });
+      return response.json();
+    }, { created, lines, voiceID });
+  };
+  const projectState = id => page.evaluate(id => fetch(`/v1/story-builder-projects/${id}`).then(response => response.json()), id);
+  const replaceClipText = (id, index, text) => page.evaluate(async ({ id, index, text }) => {
+    const project = await fetch(`/v1/story-builder-projects/${id}`).then(response => response.json());
+    project.tracks[0].clips[index].text = text;
+    project.tracks[0].clips[index].label = text;
+    const response = await fetch(`/v1/story-builder-projects/${id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: project.name, revision: project.revision,
+        timeline_duration_ms: project.timeline_duration_ms, tracks: project.tracks }),
+    });
+    return response.json();
+  }, { id, index, text });
+
+  const failedProject = await createProject('Build failure recovery browser smoke', [
+    'First durable line.', '[fixture-fail] Second line fails.', 'Third line must not start.',
+  ]);
+  await page.goto(`${origin}/demo/story-builder.html?project=${failedProject.id}`);
+  await page.getByRole('button', { name: /Build stale/ }).click();
+  await page.waitForFunction(async id => {
+    const build = await fetch(`/v1/story-builder-projects/${id}/builds`).then(response => response.json());
+    return build.status === 'failed';
+  }, failedProject.id);
+  await page.locator('#storyBuilderBuildStatus').filter({ hasText: /failed after 1\/3/i }).waitFor({ timeout: 15000 });
+  const failedBuildID = await page.evaluate(id => fetch(`/v1/story-builder-projects/${id}/builds`).then(response => response.json()).then(build => build.id), failedProject.id);
+  let failedState = await projectState(failedProject.id);
+  let failedClips = failedState.tracks[0].clips;
+  assert(failedClips[0].status === 'ready' && failedClips[1].status === 'failed' && failedClips[2].status === 'stale',
+    'partial failure did not preserve ready/failed/stale states');
+  const failureFirstTake = failedClips[0].source_id;
+
+  await page.reload();
+  await page.locator('#storyBuilderBuildStatus').filter({ hasText: /failed after 1\/3/i }).waitFor();
+  const correctedFailure = await replaceClipText(failedProject.id, 1, 'Recovered second line.');
+  assert(correctedFailure.tracks[0].clips[1].status === 'stale', 'corrected failed clip was not retryable');
+  await page.reload();
+  await page.locator('#storyBuilderBuildStatus').filter({ hasText: /failed after 1\/3/i }).waitFor();
+  await page.waitForFunction(() => {
+    const button = document.querySelector('#storyBuilderBuildButton');
+    return button && !button.disabled;
+  });
+  assert(await page.getByRole('button', { name: /Build stale \(2\)/ }).isEnabled(), 'failed build reload did not offer retry');
+  await page.getByRole('button', { name: /Build stale/ }).click();
+  await page.waitForFunction(async ({ id, previous }) => {
+    const build = await fetch(`/v1/story-builder-projects/${id}/builds`).then(response => response.json());
+    return build.id !== previous && build.status === 'complete';
+  }, { id: failedProject.id, previous: failedBuildID });
+  await page.locator('#storyBuilderBuildStatus').filter({ hasText: /Dialogue ready/ }).waitFor({ timeout: 15000 });
+  failedState = await projectState(failedProject.id);
+  failedClips = failedState.tracks[0].clips;
+  assert(failedClips.every(clip => clip.status === 'ready'), 'failure retry did not finish failed and unstarted clips');
+  assert(failedClips[0].source_id === failureFirstTake, 'failure retry regenerated the ready first take');
+
+  return { failureProject: failedProject.id };
+}
+'@
+
+$buildCancellationRecoveryCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const origin = page.url().split('/demo/')[0];
+  const voiceID = '__RECOVERY_CHARACTER_VOICE_ID__';
+  const created = await page.evaluate(async name => {
+    const response = await fetch('/v1/story-builder-projects', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+    });
+    return response.json();
+  }, 'Build cancellation recovery browser smoke');
+  const lines = ['First durable line.', '[fixture-wait] Second line waits for cancellation.', 'Third line must not start.'];
+  const cancelledProject = await page.evaluate(async ({ created, lines, voiceID }) => {
+    const clips = lines.map((text, index) => ({
+      id: `recovery_line_${index + 1}`, type: 'dialogue', label: `Recovery line ${index + 1}`,
+      text, start_ms: index * 2000, duration_ms: 1000,
+    }));
+    const response = await fetch(`/v1/story-builder-projects/${created.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: created.name, revision: created.revision, timeline_duration_ms: 30000,
+        tracks: [{ id: 'recovery_dialogue', name: 'Recovery dialogue', type: 'dialogue', order: 0,
+          muted: false, character_voice_id: voiceID, clips }],
+      }),
+    });
+    return response.json();
+  }, { created, lines, voiceID });
+  const projectState = id => page.evaluate(id => fetch(`/v1/story-builder-projects/${id}`).then(response => response.json()), id);
+  const replaceClipText = (id, index, text) => page.evaluate(async ({ id, index, text }) => {
+    const project = await fetch(`/v1/story-builder-projects/${id}`).then(response => response.json());
+    project.tracks[0].clips[index].text = text;
+    project.tracks[0].clips[index].label = text;
+    const response = await fetch(`/v1/story-builder-projects/${id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: project.name, revision: project.revision,
+        timeline_duration_ms: project.timeline_duration_ms, tracks: project.tracks }),
+    });
+    return response.json();
+  }, { id, index, text });
+
+  await page.goto(`${origin}/demo/story-builder.html?project=${cancelledProject.id}`);
+  await page.getByRole('button', { name: /Build stale/ }).click();
+  await page.waitForFunction(async id => {
+    const response = await fetch(`/v1/story-builder-projects/${id}/builds`);
+    const build = await response.json();
+    return build.completed === 1 && build.active_clip_id === 'recovery_line_2';
+  }, cancelledProject.id);
+  await page.getByRole('button', { name: 'Cancel build' }).click();
+  await page.locator('#storyBuilderBuildStatus').filter({ hasText: /cancelled.*1\/3 completed takes kept/i }).waitFor({ timeout: 15000 });
+  const cancelledBuildID = await page.evaluate(id => fetch(`/v1/story-builder-projects/${id}/builds`).then(response => response.json()).then(build => build.id), cancelledProject.id);
+  let cancelledState = await projectState(cancelledProject.id);
+  let cancelledClips = cancelledState.tracks[0].clips;
+  assert(cancelledClips[0].status === 'ready' && cancelledClips[1].status === 'stale' && cancelledClips[2].status === 'stale',
+    'cancellation did not preserve ready/stale/stale states');
+  const cancellationFirstTake = cancelledClips[0].source_id;
+
+  await page.reload();
+  await page.locator('#storyBuilderBuildStatus').filter({ hasText: /cancelled.*1\/3 completed takes kept/i }).waitFor();
+  const correctedCancellation = await replaceClipText(cancelledProject.id, 1, 'Recovered cancelled line.');
+  assert(correctedCancellation.tracks[0].clips[1].status === 'stale', 'corrected cancelled clip was not retryable');
+  await page.reload();
+  await page.locator('#storyBuilderBuildStatus').filter({ hasText: /cancelled.*1\/3 completed takes kept/i }).waitFor();
+  await page.waitForFunction(() => {
+    const button = document.querySelector('#storyBuilderBuildButton');
+    return button && !button.disabled;
+  });
+  assert(await page.getByRole('button', { name: /Build stale \(2\)/ }).isEnabled(), 'cancelled build reload did not offer retry');
+  await page.getByRole('button', { name: /Build stale/ }).click();
+  await page.waitForFunction(async ({ id, previous }) => {
+    const build = await fetch(`/v1/story-builder-projects/${id}/builds`).then(response => response.json());
+    return build.id !== previous && build.status === 'complete';
+  }, { id: cancelledProject.id, previous: cancelledBuildID });
+  await page.locator('#storyBuilderBuildStatus').filter({ hasText: /Dialogue ready/ }).waitFor({ timeout: 15000 });
+  cancelledState = await projectState(cancelledProject.id);
+  cancelledClips = cancelledState.tracks[0].clips;
+  assert(cancelledClips.every(clip => clip.status === 'ready'), 'cancelled build retry did not finish active and unstarted clips');
+  assert(cancelledClips[0].source_id === cancellationFirstTake, 'cancelled build retry regenerated the ready first take');
+
+  return { cancelledProject: cancelledProject.id };
+}
+'@
+
 $libraryAudioCode = @'
 async page => {
   const assert = (condition, message) => {
@@ -622,6 +792,8 @@ try {
 
   $audioCode = $audioCode.Replace("__AUDIO_TRIM_PROJECT_ID__", $audioTrimProject.id)
   $statusCode = $statusCode.Replace("__STATUS_PROJECT_ID__", $statusProject.id)
+  $buildFailureRecoveryCode = $buildFailureRecoveryCode.Replace("__RECOVERY_CHARACTER_VOICE_ID__", $keeperVoice.id)
+  $buildCancellationRecoveryCode = $buildCancellationRecoveryCode.Replace("__RECOVERY_CHARACTER_VOICE_ID__", $keeperVoice.id)
   $libraryAudioCode = $libraryAudioCode.Replace("__SFX_ITEM_ID__", $sfxItem.id).Replace("__MUSIC_ITEM_ID__", $musicItem.id).Replace("__BROKEN_PROJECT_ID__", $brokenProject.id)
 
   Invoke-BrowserCLI -Arguments @("open", "$baseURL/demo/story-builder.html")
@@ -633,6 +805,8 @@ try {
   Invoke-BrowserCode -Code $revoiceCode
   Invoke-BrowserCode -Code $buildDialogueCode
   Invoke-BrowserCode -Code $libraryAudioCode
+  Invoke-BrowserCode -Code $buildFailureRecoveryCode
+  Invoke-BrowserCode -Code $buildCancellationRecoveryCode
   [ordered]@{ status = "ok"; browser = "playwright"; gateway = $baseURL } | ConvertTo-Json
 } finally {
   try {

@@ -17,17 +17,19 @@ import (
 var (
 	ErrDialogueBuildBusy    = errors.New("another Story Builder dialogue build is active")
 	ErrDialogueEngineBusy   = errors.New("engine \"audio\" is busy")
-	ErrNoDialogueToBuild    = errors.New("no stale or failed dialogue to build")
+	ErrNoDialogueToBuild    = errors.New("no retryable dialogue to build")
 	ErrDialogueBuildMissing = errors.New("Story Builder dialogue build not found")
+	ErrDialogueBuildStopped = errors.New("Story Builder dialogue build is not active")
 )
 
 type DialogueBuildStatus string
 
 const (
-	DialogueBuildQueued   DialogueBuildStatus = "queued"
-	DialogueBuildRunning  DialogueBuildStatus = "running"
-	DialogueBuildComplete DialogueBuildStatus = "complete"
-	DialogueBuildFailed   DialogueBuildStatus = "failed"
+	DialogueBuildQueued    DialogueBuildStatus = "queued"
+	DialogueBuildRunning   DialogueBuildStatus = "running"
+	DialogueBuildComplete  DialogueBuildStatus = "complete"
+	DialogueBuildFailed    DialogueBuildStatus = "failed"
+	DialogueBuildCancelled DialogueBuildStatus = "cancelled"
 )
 
 type DialogueBuild struct {
@@ -35,6 +37,7 @@ type DialogueBuild struct {
 	ProjectID    string              `json:"project_id"`
 	Status       DialogueBuildStatus `json:"status"`
 	StatusURL    string              `json:"status_url"`
+	CancelURL    string              `json:"cancel_url"`
 	ActiveClipID string              `json:"active_clip_id,omitempty"`
 	Completed    int                 `json:"completed"`
 	Total        int                 `json:"total"`
@@ -60,6 +63,8 @@ type DialogueBuildManager struct {
 	now           func() time.Time
 	activeBuildID string
 	builds        map[string]DialogueBuild
+	latest        map[string]string
+	cancels       map[string]context.CancelFunc
 }
 
 func NewDialogueBuildManager(options DialogueBuildManagerOptions) *DialogueBuildManager {
@@ -69,13 +74,17 @@ func NewDialogueBuildManager(options DialogueBuildManagerOptions) *DialogueBuild
 	}
 	return &DialogueBuildManager{
 		store: options.Store, reserveEngine: options.ReserveEngine, synthesize: options.Synthesize,
-		now: now, builds: make(map[string]DialogueBuild),
+		now: now, builds: make(map[string]DialogueBuild), latest: make(map[string]string),
+		cancels: make(map[string]context.CancelFunc),
 	}
 }
 
 func (m *DialogueBuildManager) Start(ctx context.Context, projectID string, revision int) (DialogueBuild, error) {
 	if m == nil || m.store == nil || m.synthesize == nil {
 		return DialogueBuild{}, ErrInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return DialogueBuild{}, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -89,27 +98,33 @@ func (m *DialogueBuildManager) Start(ctx context.Context, projectID string, revi
 	if len(candidates) == 0 {
 		return DialogueBuild{}, ErrNoDialogueToBuild
 	}
+	buildCtx, cancel := context.WithCancel(context.Background())
 	release := func() {}
 	if m.reserveEngine != nil {
 		var ok bool
-		release, ok = m.reserveEngine(ctx, "audio")
+		release, ok = m.reserveEngine(buildCtx, "audio")
 		if !ok {
+			cancel()
 			return DialogueBuild{}, ErrDialogueEngineBusy
 		}
 	}
 	id, err := newTimelineID("build", m.now())
 	if err != nil {
+		cancel()
 		release()
 		return DialogueBuild{}, err
 	}
 	statusURL := "/v1/story-builder-projects/" + projectID + "/builds/" + id
 	build := DialogueBuild{
 		ID: id, ProjectID: projectID, Status: DialogueBuildQueued, StatusURL: statusURL,
-		Total: len(candidates),
+		CancelURL: statusURL + "/cancel",
+		Total:     len(candidates),
 	}
 	m.builds[id] = build
+	m.latest[projectID] = id
+	m.cancels[id] = cancel
 	m.activeBuildID = id
-	go m.run(context.Background(), build, candidates, release)
+	go m.run(buildCtx, build, candidates, release)
 	return build, nil
 }
 
@@ -126,34 +141,78 @@ func (m *DialogueBuildManager) Status(projectID, buildID string) (DialogueBuild,
 	return build, true
 }
 
+func (m *DialogueBuildManager) Latest(projectID string) (DialogueBuild, bool) {
+	if m == nil {
+		return DialogueBuild{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id := m.latest[projectID]
+	build, ok := m.builds[id]
+	return build, ok
+}
+
+func (m *DialogueBuildManager) Cancel(projectID, buildID string) (DialogueBuild, error) {
+	if m == nil {
+		return DialogueBuild{}, ErrDialogueBuildMissing
+	}
+	m.mu.Lock()
+	build, ok := m.builds[buildID]
+	if !ok || build.ProjectID != projectID {
+		m.mu.Unlock()
+		return DialogueBuild{}, ErrDialogueBuildMissing
+	}
+	cancel, active := m.cancels[buildID]
+	if !active || (build.Status != DialogueBuildQueued && build.Status != DialogueBuildRunning) {
+		m.mu.Unlock()
+		return DialogueBuild{}, ErrDialogueBuildStopped
+	}
+	m.mu.Unlock()
+	cancel()
+	return build, nil
+}
+
 func (m *DialogueBuildManager) run(ctx context.Context, build DialogueBuild, candidates []DialogueBuildClip, release func()) {
+	defer release()
 	for _, selected := range candidates {
+		if ctx.Err() != nil {
+			m.cancelled(build.ID)
+			return
+		}
 		m.update(build.ID, func(status *DialogueBuild) {
 			status.Status = DialogueBuildRunning
 			status.ActiveClipID = selected.ClipID
 		})
 		input, err := m.store.BeginDialogueBuild(build.ProjectID, selected.ClipID)
 		if err != nil {
-			release()
 			m.fail(build.ID, err)
 			return
 		}
 		audio, err := m.synthesize(ctx, input)
+		if ctx.Err() != nil {
+			if _, cancelErr := m.store.CancelDialogueBuild(build.ProjectID, input.ClipID); cancelErr != nil {
+				m.fail(build.ID, cancelErr)
+				return
+			}
+			m.cancelled(build.ID)
+			return
+		}
 		if err == nil {
 			_, err = m.store.CompleteDialogueBuild(build.ProjectID, input, audio)
 		}
 		if err != nil {
-			_, _ = m.store.FailDialogueBuild(build.ProjectID, input.ClipID, err.Error())
-			release()
+			if _, persistErr := m.store.FailDialogueBuild(build.ProjectID, input.ClipID, err.Error()); persistErr != nil {
+				err = persistErr
+			}
 			m.fail(build.ID, err)
 			return
 		}
 		m.update(build.ID, func(status *DialogueBuild) {
 			status.Completed++
 			status.Progress = float64(status.Completed) / float64(status.Total)
+			status.ActiveClipID = ""
 		})
 	}
-	release()
 	m.mu.Lock()
 	status := m.builds[build.ID]
 	status.Status = DialogueBuildComplete
@@ -161,6 +220,7 @@ func (m *DialogueBuildManager) run(ctx context.Context, build DialogueBuild, can
 	status.Progress = 1
 	m.builds[build.ID] = status
 	m.activeBuildID = ""
+	delete(m.cancels, build.ID)
 	m.mu.Unlock()
 }
 
@@ -181,6 +241,19 @@ func (m *DialogueBuildManager) fail(id string, err error) {
 	status.Error = boundedBuildError(err.Error())
 	m.builds[id] = status
 	m.activeBuildID = ""
+	delete(m.cancels, id)
+}
+
+func (m *DialogueBuildManager) cancelled(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	status := m.builds[id]
+	status.Status = DialogueBuildCancelled
+	status.ActiveClipID = ""
+	status.Error = ""
+	m.builds[id] = status
+	m.activeBuildID = ""
+	delete(m.cancels, id)
 }
 
 // DialogueBuildClip identifies one clip selected for a build pass.
@@ -200,7 +273,8 @@ type DialogueSynthesisInput struct {
 	VoiceFingerprint string
 }
 
-// DialogueBuildCandidates returns stale and failed dialogue in timeline order.
+// DialogueBuildCandidates returns retryable dialogue in timeline order. A
+// building clip is retryable because it can remain after a failed status save.
 func (s *Store) DialogueBuildCandidates(id string, revision int) ([]DialogueBuildClip, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -221,7 +295,7 @@ func (s *Store) DialogueBuildCandidates(id string, revision int) ([]DialogueBuil
 			continue
 		}
 		for _, clip := range track.Clips {
-			if clip.Type != ClipTypeDialogue || (clip.Status != DialogueStatusStale && clip.Status != DialogueStatusFailed) {
+			if clip.Type != ClipTypeDialogue || (clip.Status != DialogueStatusStale && clip.Status != DialogueStatusFailed && clip.Status != DialogueStatusBuilding) {
 				continue
 			}
 			candidates = append(candidates, DialogueBuildClip{
@@ -247,7 +321,7 @@ func (s *Store) BeginDialogueBuild(id, clipID string) (DialogueSynthesisInput, e
 	if err != nil {
 		return DialogueSynthesisInput{}, err
 	}
-	if clip.Status != DialogueStatusStale && clip.Status != DialogueStatusFailed {
+	if clip.Status != DialogueStatusStale && clip.Status != DialogueStatusFailed && clip.Status != DialogueStatusBuilding {
 		return DialogueSynthesisInput{}, ErrConflict
 	}
 	direction := ""
@@ -351,6 +425,23 @@ func (s *Store) FailDialogueBuild(id, clipID, detail string) (Project, error) {
 	}
 	clip.Status = DialogueStatusFailed
 	clip.BuildError = boundedBuildError(detail)
+	return s.saveDialogueBuildProject(project)
+}
+
+// CancelDialogueBuild durably returns the active clip to the retryable stale state.
+func (s *Store) CancelDialogueBuild(id, clipID string) (Project, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	project, clip, err := s.dialogueBuildClip(id, clipID)
+	if err != nil {
+		return Project{}, err
+	}
+	if clip.Status != DialogueStatusBuilding {
+		return Project{}, ErrConflict
+	}
+	clip.Status = DialogueStatusStale
+	clip.BuildError = ""
 	return s.saveDialogueBuildProject(project)
 }
 

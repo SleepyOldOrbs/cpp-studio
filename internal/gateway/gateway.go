@@ -4151,6 +4151,10 @@ func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Requ
 		r.handleStoryBuilderDialogueBuild(w, req, parts[0], parts[2])
 		return
 	}
+	if len(parts) == 4 && parts[1] == "builds" && parts[3] == "cancel" {
+		r.handleStoryBuilderDialogueBuildCancel(w, req, parts[0], parts[2])
+		return
+	}
 	if len(parts) == 4 && parts[1] == "clips" && parts[3] == "audio" {
 		r.handleStoryBuilderDialogueAudio(w, req, parts[0], parts[2])
 		return
@@ -4248,8 +4252,18 @@ func (r *router) handleStoryBuilderMedia(w http.ResponseWriter, req *http.Reques
 }
 
 func (r *router) handleStoryBuilderDialogueBuilds(w http.ResponseWriter, req *http.Request, projectID string) {
+	if req.Method == http.MethodGet {
+		build, ok := r.storyBuilderDialogueBuilds.Latest(projectID)
+		if !ok {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(build)
+		return
+	}
 	if req.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
+		w.Header().Set("Allow", "GET, POST")
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
@@ -4263,6 +4277,22 @@ func (r *router) handleStoryBuilderDialogueBuilds(w http.ResponseWriter, req *ht
 		return
 	}
 	build, err := r.storyBuilderDialogueBuilds.Start(req.Context(), projectID, body.Revision)
+	if err != nil {
+		writeStoryBuilderProjectError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(build)
+}
+
+func (r *router) handleStoryBuilderDialogueBuildCancel(w http.ResponseWriter, req *http.Request, projectID, buildID string) {
+	if req.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	build, err := r.storyBuilderDialogueBuilds.Cancel(projectID, buildID)
 	if err != nil {
 		writeStoryBuilderProjectError(w, err)
 		return
@@ -4326,7 +4356,8 @@ func writeStoryBuilderProjectError(w http.ResponseWriter, err error) {
 		errors.Is(err, storybuilder.ErrDialogueBuildMissing):
 		writeJSONError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, storybuilder.ErrConflict), errors.Is(err, storybuilder.ErrVoiceConflict),
-		errors.Is(err, storybuilder.ErrDialogueBuildBusy), errors.Is(err, storybuilder.ErrNoDialogueToBuild):
+		errors.Is(err, storybuilder.ErrDialogueBuildBusy), errors.Is(err, storybuilder.ErrNoDialogueToBuild),
+		errors.Is(err, storybuilder.ErrDialogueBuildStopped):
 		writeJSONError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, storybuilder.ErrDialogueEngineBusy):
 		writeJSONError(w, http.StatusTooManyRequests, err.Error())

@@ -123,8 +123,10 @@ binding. Silence clips are timing-only metadata and do not own media bytes.
 Reusable SFX and Music remain Library-owned until first placement. The project
 Store then validates and copies one immutable WAV into the selected project's
 `media` directory, records source Library provenance on each clip, and reuses
-that copy for later placements. A dialogue build selects stale and failed clips
-in timeline order, holds both the shared `audio` gate and the directed
+that copy for later placements. A dialogue build selects stale, failed, and
+orphaned building clips in timeline order; treating building clips as retryable
+recovers an invocation whose final status could not be saved. The build holds
+both the shared `audio` gate and the directed
 `omnivoice` Engine Reservation for the build, resolves the current Character
 Voice direction into OmniVoice synthesis, and stores each successful result as an immutable project-owned WAV
 under `takes`. Each completed take is attached by an atomic manifest replacement

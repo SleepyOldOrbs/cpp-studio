@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -764,6 +765,109 @@ func TestStoryBuilderBuildsDialogueThroughSharedAudioReservationAndAuditionsRead
 		"/v1/story-builder-projects/"+project.ID+"/clips/line_early/audio", nil))
 	if audition.Code != http.StatusOK || audition.Header().Get("Content-Type") != "audio/wav" || wav.ValidateBytes(audition.Body.Bytes()) != nil {
 		t.Fatalf("ready clip audition = %d %q bytes=%d", audition.Code, audition.Header().Get("Content-Type"), audition.Body.Len())
+	}
+}
+
+func TestStoryBuilderDialogueBuildCanBeFoundCancelledAndRetriedAfterReload(t *testing.T) {
+	r := NewRouter(testConfig(nil), lifecycle.NewManager(testConfig(nil))).(*router)
+	r.storyBuilderProjects = storybuilder.NewStoreWithOptions(t.TempDir(), storybuilder.StoreOptions{
+		ResolveCharacterVoice: func(id string) (storybuilder.VoiceIdentity, bool, error) {
+			return storybuilder.VoiceIdentity{CharacterVoiceID: id, ActorVoiceID: "actor_mara", Fingerprint: "voice-v1"}, true, nil
+		},
+	})
+	project, err := r.storyBuilderProjects.Create("Cancellation Gateway")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	project, err = r.storyBuilderProjects.Update(project.ID, storybuilder.ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: []storybuilder.Track{
+		{ID: "dialogue", Name: "Mara", Type: storybuilder.TrackTypeDialogue, Order: 0, CharacterVoiceID: "character_mara", Clips: []storybuilder.TimelineClip{
+			{ID: "line_one", Type: storybuilder.ClipTypeDialogue, Label: "One", Text: "One.", StartMS: 0, DurationMS: 1000},
+			{ID: "line_two", Type: storybuilder.ClipTypeDialogue, Label: "Two", Text: "Two.", StartMS: 2000, DurationMS: 1000},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("save project: %v", err)
+	}
+	enteredSecond := make(chan struct{})
+	blockSecond := true
+	var buildCalls []string
+	r.storyBuilderDialogueBuilds = storybuilder.NewDialogueBuildManager(storybuilder.DialogueBuildManagerOptions{
+		Store: r.storyBuilderProjects,
+		Synthesize: func(ctx context.Context, input storybuilder.DialogueSynthesisInput) ([]byte, error) {
+			buildCalls = append(buildCalls, input.Text)
+			if blockSecond && input.Text == "Two." {
+				close(enteredSecond)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return wav.SyntheticTone(16000), nil
+		},
+	})
+
+	start := httptest.NewRecorder()
+	r.ServeHTTP(start, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects/"+project.ID+"/builds",
+		strings.NewReader(fmt.Sprintf(`{"revision":%d}`, project.Revision))))
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start build = %d: %s", start.Code, start.Body.String())
+	}
+	var started storybuilder.DialogueBuild
+	if err := json.NewDecoder(start.Body).Decode(&started); err != nil {
+		t.Fatalf("decode started build: %v", err)
+	}
+	<-enteredSecond
+
+	latest := httptest.NewRecorder()
+	r.ServeHTTP(latest, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+project.ID+"/builds", nil))
+	if latest.Code != http.StatusOK || !strings.Contains(latest.Body.String(), started.ID) {
+		t.Fatalf("latest build = %d: %s", latest.Code, latest.Body.String())
+	}
+	cancel := httptest.NewRecorder()
+	r.ServeHTTP(cancel, httptest.NewRequest(http.MethodPost, started.CancelURL, nil))
+	if cancel.Code != http.StatusAccepted {
+		t.Fatalf("cancel build = %d: %s", cancel.Code, cancel.Body.String())
+	}
+	waitGatewayStoryBuilderBuild(t, r, project.ID, started.ID, storybuilder.DialogueBuildCancelled)
+
+	reloaded := httptest.NewRecorder()
+	r.ServeHTTP(reloaded, httptest.NewRequest(http.MethodGet, "/v1/story-builder-projects/"+project.ID, nil))
+	if reloaded.Code != http.StatusOK {
+		t.Fatalf("reload project = %d: %s", reloaded.Code, reloaded.Body.String())
+	}
+	var durable storybuilder.Project
+	if err := json.NewDecoder(reloaded.Body).Decode(&durable); err != nil {
+		t.Fatalf("decode reloaded project: %v", err)
+	}
+	if durable.Tracks[0].Clips[0].Status != storybuilder.DialogueStatusReady || durable.Tracks[0].Clips[1].Status != storybuilder.DialogueStatusStale {
+		t.Fatalf("cancelled clips are not retryable: %+v", durable.Tracks[0].Clips)
+	}
+	firstTake := durable.Tracks[0].Clips[0].SourceID
+	if firstTake == "" || !reflect.DeepEqual(buildCalls, []string{"One.", "Two."}) {
+		t.Fatalf("partial cancellation calls=%v clips=%+v", buildCalls, durable.Tracks[0].Clips)
+	}
+
+	blockSecond = false
+	buildCalls = nil
+	retry := httptest.NewRecorder()
+	r.ServeHTTP(retry, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects/"+project.ID+"/builds",
+		strings.NewReader(fmt.Sprintf(`{"revision":%d}`, durable.Revision))))
+	if retry.Code != http.StatusAccepted {
+		t.Fatalf("retry build = %d: %s", retry.Code, retry.Body.String())
+	}
+	var restarted storybuilder.DialogueBuild
+	if err := json.NewDecoder(retry.Body).Decode(&restarted); err != nil {
+		t.Fatalf("decode retry build: %v", err)
+	}
+	waitGatewayStoryBuilderBuild(t, r, project.ID, restarted.ID, storybuilder.DialogueBuildComplete)
+
+	finished, ok, err := r.storyBuilderProjects.Get(project.ID)
+	if err != nil || !ok {
+		t.Fatalf("reload retried project: ok=%v err=%v", ok, err)
+	}
+	if finished.Tracks[0].Clips[0].SourceID != firstTake ||
+		finished.Tracks[0].Clips[0].Status != storybuilder.DialogueStatusReady ||
+		finished.Tracks[0].Clips[1].Status != storybuilder.DialogueStatusReady ||
+		!reflect.DeepEqual(buildCalls, []string{"Two."}) {
+		t.Fatalf("retry regenerated ready dialogue: calls=%v clips=%+v", buildCalls, finished.Tracks[0].Clips)
 	}
 }
 

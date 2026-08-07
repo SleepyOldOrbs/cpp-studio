@@ -357,6 +357,7 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 				"storyBuilderNameInput",
 				"storyBuilderSaveStatus",
 				"storyBuilderSaveButton",
+				"storyBuilderBuildCancelButton",
 				"storyBuilderDeleteButton",
 				"storyBuilderAddDialogue",
 				"storyBuilderAddSFX",
@@ -378,7 +379,7 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 		{
 			path:        "/story-builder.js",
 			contentType: "javascript",
-			markers:     []string{"/v1/story-builder-projects", "/v1/voices", "/v1/library", "library-audio", "scheduleAutosave", "saveProject", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "acceptTimelineEdit", "bindCharacterVoice", "placeLibraryAudio", "renderVoiceLibrary", "reusable-audio-asset", "beginClipPointerEdit", "clampPanelPosition", "requestedProjectID"},
+			markers:     []string{"/v1/story-builder-projects", "/v1/voices", "/v1/library", "library-audio", "scheduleAutosave", "saveProject", "monitorDialogueBuild", "resumeDialogueBuild", "cancelDialogueBuild", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "acceptTimelineEdit", "bindCharacterVoice", "placeLibraryAudio", "renderVoiceLibrary", "reusable-audio-asset", "beginClipPointerEdit", "clampPanelPosition", "requestedProjectID"},
 		},
 		{
 			path:        "/story-builder.css",
