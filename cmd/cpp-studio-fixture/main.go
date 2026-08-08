@@ -109,6 +109,7 @@ func runServer(args []string, stderr io.Writer) error {
 func newFixtureHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/inference", handleWhisperInference)
 	mux.HandleFunc("/v1/chat/completions", handleChatCompletions)
 	return mux
 }
@@ -122,6 +123,31 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":  "ok",
 		"fixture": true,
 		"model":   fixtureModel,
+	})
+}
+
+func handleWhisperInference(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "fixture WAV is required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+	if r.FormValue("response_format") != "verbose_json" {
+		http.Error(w, "verbose_json response format is required", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"text": "first fixture line second fixture line third fixture note",
+		"segments": []map[string]any{
+			{"start": 0.0, "end": 0.8, "text": "first fixture line"},
+			{"start": 0.9, "end": 1.7, "text": "second fixture line"},
+			{"start": 1.8, "end": 2.6, "text": "third fixture note"},
+		},
 	})
 }
 

@@ -2506,7 +2506,96 @@ pre {
   }
 }
 
-/* --- The Extractor ------------------------------------------------------ */
+/* --- Shared Transcribe / Extract audio workspace ------------------------ */
+
+.audio-workspace-switch {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.transcribe-record-controls,
+.transcribe-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.compact-vu {
+  width: 72px;
+}
+
+.transcribe-desk-tools {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 16px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--well);
+}
+
+.transcribe-tool-row .compact-field {
+  display: grid;
+  gap: 4px;
+  min-width: 180px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.transcribe-search-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 360px;
+}
+
+.transcribe-search-field .text-input {
+  flex: 1;
+}
+
+#transcribeSearchStatus {
+  min-width: 82px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+}
+
+.transcribe-export-row {
+  padding-top: 2px;
+}
+
+.audio-workspace-transcribe .extract-canvas {
+  height: 88px;
+}
+
+.audio-workspace-transcribe .extract-timeline {
+  max-height: 520px;
+}
+
+.audio-workspace-extract .extract-wave-wrap {
+  border-color: rgba(240, 166, 75, 0.55);
+  box-shadow: 0 0 0 1px rgba(240, 166, 75, 0.12);
+}
+
+.audio-workspace-extract .extract-canvas {
+  height: 220px;
+}
+
+.audio-workspace-extract .extract-timeline {
+  max-height: 260px;
+}
+
+.audio-workspace-transcribe .extract-segment.search-match {
+  border-color: rgba(240, 166, 75, 0.55);
+}
+
+.audio-workspace-transcribe .extract-segment.search-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 
 .extract-toolbar {
   display: flex;
@@ -2563,17 +2652,74 @@ pre {
   font-size: 0.72rem;
 }
 
-.extract-region-row {
+.extract-selection-card {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--well);
+}
+
+.extract-selection-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.extract-selection-heading > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.extract-selection-facts {
+  display: flex;
+  gap: 18px;
+  margin: 0;
+}
+
+.extract-selection-facts div {
+  display: grid;
+  gap: 3px;
+}
+
+.extract-selection-facts dt {
+  color: var(--muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.extract-selection-facts dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
+.extract-selection-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
 }
 
 #extractRegionStatus {
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+@media (max-width: 720px) {
+  .extract-selection-heading,
+  .extract-selection-facts {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .extract-selection-facts {
+    gap: 8px;
+  }
 }
 
 #extractTranscribeStatus {

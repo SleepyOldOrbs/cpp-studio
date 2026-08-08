@@ -41,6 +41,8 @@
   var imageSeedClearButton = document.getElementById("imageSeedClearButton");
   var imageModelField = document.getElementById("imageModelField");
   var imageModelSelect = document.getElementById("imageModelSelect");
+  var visionModelSelect = document.getElementById("visionModelSelect");
+  var visionModelHint = document.getElementById("visionModelHint");
   var extractModelSelect = document.getElementById("extractModelSelect");
   // Only the size presets carry data-size; the seed dice button shares
   // their look but must not inherit their click handler.
@@ -771,9 +773,11 @@
     }
     if (usable.length) {
       conversionModelSelect.value = usable[0].id;
-      conversionModelSelect.disabled = usable.length < 2;
+      conversionModelSelect.disabled = false;
       conversionModelReady = true;
-      conversionModelHint.textContent = "Chatterbox preserves the source performance while borrowing the target speaker identity.";
+      conversionModelHint.textContent = usable.length === 1
+        ? "Only configured conversion model. Chatterbox preserves the source performance while borrowing the target speaker identity."
+        : "Chatterbox preserves the source performance while borrowing the target speaker identity.";
       conversionModelInstallLink.hidden = true;
     } else {
       if (compatible.length) {
@@ -786,6 +790,27 @@
       conversionModelInstallLink.hidden = compatible.length === 0;
     }
     syncConversionControls();
+  }
+
+  function renderVisionModel(models) {
+    var usable = (models || []).filter(function (model) {
+      return model.engine === "vision" && model.family === "llama-gguf-vlm" &&
+        model.configured === true && catalogModelIsInstalled(model);
+    });
+    visionModelSelect.textContent = "";
+    if (!usable.length) {
+      visionModelSelect.appendChild(createElement("option", "", "No compatible model configured"));
+      visionModelSelect.disabled = true;
+      visionModelHint.textContent = "No compatible vision model is configured.";
+      return;
+    }
+    var model = usable[0];
+    var option = createElement("option", "", CATALOG_MODEL_LABELS[model.id] || model.id);
+    option.value = model.id;
+    option.title = model.description || "";
+    visionModelSelect.appendChild(option);
+    visionModelSelect.disabled = false;
+    visionModelHint.textContent = "Only configured vision model. Describe image uses this model.";
   }
 
   function renderMusicModels(models) {
@@ -817,9 +842,11 @@
     }
     if (usable.length) {
       musicModelSelect.value = usable[0].id;
-      musicModelSelect.disabled = usable.length < 2;
+      musicModelSelect.disabled = false;
       musicModelReady = true;
-      musicModelHint.textContent = "ACE-Step creates and edits locally. Q8_0 saves space; audition important renders for quantization drift.";
+      musicModelHint.textContent = usable.length === 1
+        ? "Only configured music model. ACE-Step creates and edits locally; Q8_0 saves space."
+        : "ACE-Step creates and edits locally. Q8_0 saves space; audition important renders for quantization drift.";
       musicModelInstallLink.hidden = true;
     } else {
       if (compatible.length) {
@@ -864,7 +891,7 @@
   function initCatalogModels() {
     var displays = Array.prototype.slice.call(document.querySelectorAll(".model-fixed-value[data-model-engines]"));
     var speechSelects = Array.prototype.slice.call(document.querySelectorAll("select[data-speech-models]"));
-    if (displays.length === 0 && speechSelects.length === 0 && !conversionModelSelect && !musicModelSelect) {
+    if (displays.length === 0 && speechSelects.length === 0 && !conversionModelSelect && !visionModelSelect && !musicModelSelect) {
       return;
     }
     fetch("/v1/models/catalog")
@@ -970,6 +997,7 @@
           });
         });
         renderConversionModels(models);
+        renderVisionModel(models);
         renderMusicModels(models);
       })
       .catch(function () {
@@ -984,6 +1012,7 @@
           select.disabled = true;
         });
         renderConversionModels([]);
+        renderVisionModel([]);
         renderMusicModels([]);
       });
   }
@@ -2362,7 +2391,7 @@
       form.append("file", options.file, options.file.name || "input.wav");
     } else {
       form.append("message", options.message);
-      log("Using typed message as transcript");
+      log("Using provided message as transcript");
     }
     if (conversation.length > 0) {
       form.append("history", JSON.stringify(conversation));
@@ -2460,7 +2489,17 @@
   function setCloneWav(file, source, provenance) {
     cloneWavFile = file;
     cloneWavSource = provenance || null;
-    cloneWavStatus.textContent = source + ": " + file.name + " (" + formatBytes(file.size) + ")";
+    var status = source + ": " + file.name + " (" + formatBytes(file.size) + ")";
+    if (provenance && provenance.name) {
+      status += " · from " + provenance.name;
+      if (provenance.speaker) {
+        status += " · speaker " + provenance.speaker;
+      }
+      if (Number.isFinite(provenance.start) && Number.isFinite(provenance.end)) {
+        status += " · " + fmtTime(provenance.start) + "–" + fmtTime(provenance.end);
+      }
+    }
+    cloneWavStatus.textContent = status;
     cloneWavSaveButton.disabled = false;
     log("Reference WAV ready from " + source + ": " + file.name + ", " + formatBytes(file.size));
   }
@@ -5018,12 +5057,31 @@
     hfSubmitUtterance(file);
   }
 
+  async function transcribeHandsFreeTake(file) {
+    var form = new FormData();
+    form.append("file", file, file.name || "utterance.wav");
+    var response = await fetch("/v1/audio/transcriptions", { method: "POST", body: form });
+    await ensureOk(response, "Hands-free transcription");
+    var data = await response.json();
+    var transcript = String(data.text || "").trim();
+    if (!transcript) {
+      throw new Error("Hands-free transcription returned no text");
+    }
+    return transcript;
+  }
+
   async function hfSubmitUtterance(file) {
     var token = hfSessionToken;
-    hfSetState("submitting", "Thinking…");
+    hfSetState("submitting", "Transcribing…");
     try {
       resetOutputs();
-      await performVoiceTurn({ file: file });
+      var transcript = await transcribeHandsFreeTake(file);
+      if (!handsFree || token !== hfSessionToken) {
+        return;
+      }
+      transcriptOutput.value = transcript;
+      hfSetState("submitting", "Thinking…");
+      await performVoiceTurn({ message: transcript });
       if (!handsFree || token !== hfSessionToken) {
         return;
       }
@@ -5587,8 +5645,11 @@
   };
   var pageLinks = document.querySelectorAll("[data-page-link]");
   var pageModules = document.querySelectorAll(".module[data-page], .module[data-pages]");
+  var audioWorkspace = document.getElementById("audioWorkspace");
+  var audioWorkspaceModeSections = document.querySelectorAll("[data-audio-workspace-mode]");
   var extractToolTitle = document.getElementById("extractToolTitle");
   var extractToolNote = document.getElementById("extractToolNote");
+  var audioWorkspaceMode = "transcribe";
 
   function activePageFromHash() {
     var name = (window.location.hash || "").replace(/^#/, "");
@@ -5601,7 +5662,37 @@
     return module.getAttribute("data-page") === name || (pages && pages.split(/\s+/).indexOf(name) >= 0);
   }
 
+  function flushAudioWorkspaceEdit() {
+    var active = document.activeElement;
+    if (active && active.classList && active.classList.contains("extract-segment-text")) {
+      active.blur();
+    }
+  }
+
+  function applyAudioWorkspaceMode(mode) {
+    if (mode !== "transcribe" && mode !== "extract") {
+      return;
+    }
+    flushAudioWorkspaceEdit();
+    audioWorkspaceMode = mode;
+    audioWorkspaceModeSections.forEach(function (section) {
+      section.hidden = section.getAttribute("data-audio-workspace-mode") !== mode;
+    });
+    audioWorkspace.classList.toggle("audio-workspace-transcribe", mode === "transcribe");
+    audioWorkspace.classList.toggle("audio-workspace-extract", mode === "extract");
+    audioWorkspace.setAttribute("aria-label", mode === "transcribe" ? "Transcribe" : "Extract");
+    extractToolTitle.textContent = mode === "transcribe" ? "Transcribe" : "Extract";
+    extractToolNote.innerHTML = mode === "transcribe"
+      ? "load &rarr; transcribe &rarr; correct"
+      : "load &rarr; transcribe &rarr; mark &rarr; keep";
+    renderExtractTimeline();
+    updateExtractRegionUI();
+  }
+
   function applyPage(name) {
+    if (name !== "transcription" && (transcribeRecorder || transcribeRecorderPending)) {
+      stopTranscribeRecording();
+    }
     pageModules.forEach(function (module) {
       module.hidden = !moduleHasPage(module, name);
     });
@@ -5614,14 +5705,8 @@
         link.removeAttribute("aria-current");
       }
     });
-    if (extractToolTitle && extractToolNote) {
-      if (name === "transcription") {
-        extractToolTitle.textContent = "Transcription";
-        extractToolNote.innerHTML = "load &rarr; transcribe &rarr; detect speakers";
-      } else {
-        extractToolTitle.textContent = "Extraction";
-        extractToolNote.innerHTML = "load &rarr; transcribe &rarr; mark &rarr; extract &rarr; clone";
-      }
+    if (name === "transcription" || name === "extract") {
+      applyAudioWorkspaceMode(name === "transcription" ? "transcribe" : "extract");
     }
     if (name === "models") {
       refreshModels(true);
@@ -5644,6 +5729,13 @@
 
   window.addEventListener("hashchange", function () {
     applyPage(activePageFromHash());
+  });
+
+  document.getElementById("openExtractButton").addEventListener("click", function () {
+    window.location.hash = "extract";
+  });
+  document.getElementById("openTranscribeButton").addEventListener("click", function () {
+    window.location.hash = "transcription";
   });
 
   // --- Session log drawer ----------------------------------------------
@@ -6901,6 +6993,9 @@
   var extractViewEnd = document.getElementById("extractViewEnd");
   var extractCursor = document.getElementById("extractCursor");
   var extractRegionStatus = document.getElementById("extractRegionStatus");
+  var extractSelectionDuration = document.getElementById("extractSelectionDuration");
+  var extractSelectionSpeakers = document.getElementById("extractSelectionSpeakers");
+  var extractSelectionSpanCount = document.getElementById("extractSelectionSpanCount");
   var extractPlayButton = document.getElementById("extractPlayButton");
   var extractStopButton = document.getElementById("extractStopButton");
   var extractCloneButton = document.getElementById("extractCloneButton");
@@ -6908,14 +7003,33 @@
   var extractErrorBox = document.getElementById("extractErrorBox");
   var extractTimeline = document.getElementById("extractTimeline");
   var extractFilterRow = document.getElementById("extractFilterRow");
+  var transcribeRecordButton = document.getElementById("transcribeRecordButton");
+  var transcribeStopRecordButton = document.getElementById("transcribeStopRecordButton");
+  var transcribeRecordVu = document.getElementById("transcribeRecordVu");
+  var transcribeRenameFrom = document.getElementById("transcribeRenameFrom");
+  var transcribeRenameTo = document.getElementById("transcribeRenameTo");
+  var transcribeRenameButton = document.getElementById("transcribeRenameButton");
+  var transcribeSearchInput = document.getElementById("transcribeSearchInput");
+  var transcribeSearchStatus = document.getElementById("transcribeSearchStatus");
+  var transcribeSearchPrevious = document.getElementById("transcribeSearchPrevious");
+  var transcribeSearchNext = document.getElementById("transcribeSearchNext");
+  var transcribeSearchClear = document.getElementById("transcribeSearchClear");
+  var transcriptExportButtons = document.querySelectorAll("[data-transcript-format]");
 
   var EXTRACT_MAX_SECONDS = 30 * 60;
   // Whisper end-stamps chronically clip the final phoneme; every
   // segment-derived region gets this much breathing room.
   var EXTRACT_TAIL_PAD = 0.25;
+  var EXTRACT_STITCH_GAP_SECONDS = 0.2;
   // One shared AudioContext for decode and playback: browsers cap live
   // contexts per tab, so creating one per Play dies after a few clicks.
   var extractAudioCtx = null;
+  var transcribeRecorder = null;
+  var transcribeRecorderPending = false;
+  var transcribeStopRequested = false;
+  var transcribeSearchQuery = "";
+  var transcribeSearchMatches = [];
+  var transcribeSearchIndex = -1;
   function extractCtx() {
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!extractAudioCtx || extractAudioCtx.state === "closed") {
@@ -6966,10 +7080,49 @@
     return spans;
   }
 
+  function selectionSpans() {
+    var spans = checkedSpans();
+    if (spans.length > 0) {
+      return spans;
+    }
+    if (ex.region && ex.region.end - ex.region.start > 0.05) {
+      return [{ start: ex.region.start, end: ex.region.end }];
+    }
+    return [];
+  }
+
+  function selectionSegmentIndices() {
+    var indices = checkedIndices();
+    if (indices.length || !ex.region) {
+      return indices;
+    }
+    return ex.segments.map(function (segment, index) {
+      return segment.end > ex.region.start && segment.start < ex.region.end ? index : -1;
+    }).filter(function (index) { return index >= 0; });
+  }
+
+  function selectionSpeakerNames() {
+    var names = [];
+    selectionSegmentIndices().forEach(function (index) {
+      var name = ex.segments[index].speaker || "Untagged";
+      if (names.indexOf(name) < 0) {
+        names.push(name);
+      }
+    });
+    return names;
+  }
+
+  function selectionOutputDuration(spans) {
+    var seconds = spans.reduce(function (sum, span) {
+      return sum + (span.end - span.start);
+    }, 0);
+    return seconds + Math.max(0, spans.length - 1) * EXTRACT_STITCH_GAP_SECONDS;
+  }
+
   // stitchSpans concatenates the spans' samples with a 200ms gap between
   // non-adjacent spans, returning one continuous take.
   function stitchSpans(spans) {
-    var gap = Math.floor(0.2 * ex.rate);
+    var gap = Math.floor(EXTRACT_STITCH_GAP_SECONDS * ex.rate);
     var total = 0;
     spans.forEach(function (span, i) {
       total += Math.floor((span.end - span.start) * ex.rate) + (i > 0 ? gap : 0);
@@ -6999,6 +7152,323 @@
     var s = seconds - m * 60;
     return m + ":" + (s < 10 ? "0" : "") + s.toFixed(1);
   }
+
+  function padTranscriptNumber(value, width) {
+    return String(value).padStart(width, "0");
+  }
+
+  function formatTranscriptTimestamp(seconds, decimalMark) {
+    var total = Math.round(Math.max(0, Number(seconds) || 0) * 1000);
+    var hours = Math.floor(total / 3600000);
+    var minutes = Math.floor((total % 3600000) / 60000);
+    var secs = Math.floor((total % 60000) / 1000);
+    var millis = total % 1000;
+    return padTranscriptNumber(hours, 2) + ":" + padTranscriptNumber(minutes, 2) + ":" +
+      padTranscriptNumber(secs, 2) + (decimalMark || ".") + padTranscriptNumber(millis, 3);
+  }
+
+  function normalizedTranscriptSegment(segment) {
+    var start = Math.max(0, Number(segment.start) || 0);
+    var end = Math.max(start, Number(segment.end) || start);
+    return {
+      start: start,
+      end: end,
+      speaker: String(segment.speaker || "").trim(),
+      text: String(segment.text || "").replace(/\r\n?/g, "\n").trim()
+    };
+  }
+
+  function transcriptCueText(segment) {
+    return (segment.speaker ? segment.speaker + ": " : "") + segment.text;
+  }
+
+  function escapeTranscriptMarkdown(value) {
+    return String(value || "").replace(/([\\`*_[\]<>])/g, "\\$1").replace(/\n+/g, " ");
+  }
+
+  function transcriptExportSegments(segments) {
+    return (segments || []).map(normalizedTranscriptSegment);
+  }
+
+  function buildTranscriptTXT(segments) {
+    return transcriptExportSegments(segments).map(function (segment) {
+      return "[" + formatTranscriptTimestamp(segment.start, ".") + " - " +
+        formatTranscriptTimestamp(segment.end, ".") + "] " + transcriptCueText(segment);
+    }).join("\n") + "\n";
+  }
+
+  function buildTranscriptMarkdown(segments, meta) {
+    var title = escapeTranscriptMarkdown((meta && meta.sourceName) || "Transcript");
+    var lines = transcriptExportSegments(segments).map(function (segment) {
+      var speaker = segment.speaker ? " **" + escapeTranscriptMarkdown(segment.speaker) + ":**" : "";
+      return "- `" + formatTranscriptTimestamp(segment.start, ".") + " – " +
+        formatTranscriptTimestamp(segment.end, ".") + "`" + speaker + " " + escapeTranscriptMarkdown(segment.text);
+    });
+    return "# " + title + "\n\n" + lines.join("\n") + "\n";
+  }
+
+  function buildTranscriptSRT(segments) {
+    return transcriptExportSegments(segments).map(function (segment, index) {
+      return (index + 1) + "\n" + formatTranscriptTimestamp(segment.start, ",") + " --> " +
+        formatTranscriptTimestamp(segment.end, ",") + "\n" + transcriptCueText(segment);
+    }).join("\n\n") + "\n";
+  }
+
+  function buildTranscriptVTT(segments) {
+    var cues = transcriptExportSegments(segments).map(function (segment, index) {
+      return (index + 1) + "\n" + formatTranscriptTimestamp(segment.start, ".") + " --> " +
+        formatTranscriptTimestamp(segment.end, ".") + "\n" + transcriptCueText(segment);
+    }).join("\n\n");
+    return "WEBVTT\n\n" + cues + "\n";
+  }
+
+  function buildTranscriptJSON(segments, meta) {
+    return JSON.stringify({
+      source_name: (meta && meta.sourceName) || "",
+      duration: Number((meta && meta.duration) || 0),
+      sample_rate: Number((meta && meta.sampleRate) || 0),
+      segments: transcriptExportSegments(segments)
+    }, null, 2) + "\n";
+  }
+
+  var transcriptExportBuilders = {
+    txt: { type: "text/plain;charset=utf-8", build: buildTranscriptTXT },
+    md: { type: "text/markdown;charset=utf-8", build: buildTranscriptMarkdown },
+    srt: { type: "application/x-subrip;charset=utf-8", build: buildTranscriptSRT },
+    vtt: { type: "text/vtt;charset=utf-8", build: buildTranscriptVTT },
+    json: { type: "application/json;charset=utf-8", build: buildTranscriptJSON }
+  };
+
+  function findTranscriptMatches(segments, query) {
+    var needle = String(query || "").trim().toLocaleLowerCase();
+    if (!needle) {
+      return [];
+    }
+    var matches = [];
+    (segments || []).forEach(function (segment, index) {
+      var haystack = String(segment.text || "") + "\n" + String(segment.speaker || "");
+      if (haystack.toLocaleLowerCase().indexOf(needle) >= 0) {
+        matches.push(index);
+      }
+    });
+    return matches;
+  }
+
+  function renameTranscriptSpeaker(segments, from, to) {
+    var oldName = String(from || "").trim();
+    var newName = String(to || "").trim();
+    if (!oldName || !newName || oldName === newName) {
+      return 0;
+    }
+    var changed = 0;
+    (segments || []).forEach(function (segment) {
+      if (segment.speaker === oldName) {
+        segment.speaker = newName;
+        changed += 1;
+      }
+    });
+    return changed;
+  }
+
+  window.__cppStudioTranscriptTools = Object.freeze({
+    formatTimestamp: formatTranscriptTimestamp,
+    escapeMarkdown: escapeTranscriptMarkdown,
+    findMatches: findTranscriptMatches,
+    renameSpeaker: renameTranscriptSpeaker,
+    buildTXT: buildTranscriptTXT,
+    buildMarkdown: buildTranscriptMarkdown,
+    buildSRT: buildTranscriptSRT,
+    buildVTT: buildTranscriptVTT,
+    buildJSON: buildTranscriptJSON
+  });
+
+  function transcriptExportMeta() {
+    return { sourceName: ex.sourceName, duration: ex.duration, sampleRate: ex.rate };
+  }
+
+  function transcriptSourceBaseName() {
+    return (ex.sourceName || "transcript").replace(/\.[^.]+$/, "") || "transcript";
+  }
+
+  function resetTranscribeDesk() {
+    transcribeSearchQuery = "";
+    transcribeSearchMatches = [];
+    transcribeSearchIndex = -1;
+    transcribeSearchInput.value = "";
+    transcribeRenameTo.value = "";
+  }
+
+  function syncTranscribeTools() {
+    var hasSegments = ex.segments.length > 0;
+    var previousSpeaker = transcribeRenameFrom.value;
+    var speakers = taggedSpeakers();
+    transcribeRenameFrom.textContent = "";
+    if (!speakers.length) {
+      transcribeRenameFrom.appendChild(createElement("option", "", "No speakers yet"));
+    } else {
+      speakers.forEach(function (speaker) {
+        var option = createElement("option", "", speaker);
+        option.value = speaker;
+        transcribeRenameFrom.appendChild(option);
+      });
+      transcribeRenameFrom.value = speakers.indexOf(previousSpeaker) >= 0 ? previousSpeaker : speakers[0];
+    }
+    transcribeRenameFrom.disabled = !speakers.length;
+    transcribeRenameTo.disabled = !speakers.length;
+    transcribeRenameButton.disabled = !speakers.length || !transcribeRenameTo.value.trim() ||
+      transcribeRenameTo.value.trim() === transcribeRenameFrom.value;
+    transcribeSearchInput.disabled = !hasSegments;
+    transcriptExportButtons.forEach(function (button) { button.disabled = !hasSegments; });
+
+    var hasMatches = transcribeSearchMatches.length > 0;
+    transcribeSearchPrevious.disabled = !hasMatches;
+    transcribeSearchNext.disabled = !hasMatches;
+    transcribeSearchClear.disabled = !transcribeSearchQuery;
+    if (!transcribeSearchQuery) {
+      transcribeSearchStatus.textContent = "No search";
+    } else if (!hasMatches) {
+      transcribeSearchStatus.textContent = "No matches";
+    } else {
+      transcribeSearchStatus.textContent = (transcribeSearchIndex + 1) + " of " + transcribeSearchMatches.length;
+    }
+  }
+
+  function refreshTranscribeSearch(seek) {
+    transcribeSearchQuery = transcribeSearchInput.value.trim();
+    transcribeSearchMatches = findTranscriptMatches(ex.segments, transcribeSearchQuery);
+    if (!transcribeSearchMatches.length) {
+      transcribeSearchIndex = -1;
+    } else if (transcribeSearchIndex < 0 || transcribeSearchIndex >= transcribeSearchMatches.length) {
+      transcribeSearchIndex = 0;
+    }
+    if (seek && transcribeSearchIndex >= 0) {
+      setTranscriptCursor(transcribeSearchMatches[transcribeSearchIndex]);
+      return;
+    }
+    renderExtractTimeline();
+  }
+
+  function selectTranscribeSearchMatch(offset) {
+    if (!transcribeSearchMatches.length) {
+      return;
+    }
+    transcribeSearchIndex = (transcribeSearchIndex + offset + transcribeSearchMatches.length) % transcribeSearchMatches.length;
+    setTranscriptCursor(transcribeSearchMatches[transcribeSearchIndex]);
+    window.setTimeout(function () {
+      var active = extractTimeline.querySelector(".search-active");
+      if (active) {
+        active.scrollIntoView({ block: "nearest" });
+      }
+    }, 0);
+  }
+
+  function downloadTranscript(format) {
+    flushAudioWorkspaceEdit();
+    var exporter = transcriptExportBuilders[format];
+    if (!exporter || !ex.segments.length) {
+      return;
+    }
+    var blob = new Blob([exporter.build(ex.segments, transcriptExportMeta())], { type: exporter.type });
+    var url = URL.createObjectURL(blob);
+    downloadURL(url, transcriptSourceBaseName() + "." + format);
+    window.setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+  }
+
+  function syncTranscribeRecordingControls() {
+    var active = Boolean(transcribeRecorder);
+    transcribeRecordButton.disabled = active || transcribeRecorderPending || !canRecord();
+    transcribeStopRecordButton.disabled = !active && !transcribeRecorderPending;
+    transcribeRecordButton.textContent = transcribeRecorderPending ? "Opening microphone…" : "Record microphone";
+    transcribeStopRecordButton.textContent = active ? "Stop recording" : "Stop";
+  }
+
+  async function startTranscribeRecording() {
+    if (!canRecord()) {
+      extractError("Audio recording is not available in this browser.");
+      return;
+    }
+    if (transcribeRecorder || transcribeRecorderPending) {
+      return;
+    }
+    extractErrorBox.hidden = true;
+    transcribeStopRequested = false;
+    transcribeRecorderPending = true;
+    syncTranscribeRecordingControls();
+    try {
+      var pending = await openToolRecorder(transcribeRecordVu, function (recorder) {
+        return transcribeRecorder === recorder;
+      });
+      transcribeRecorder = pending;
+      transcribeRecorderPending = false;
+      syncTranscribeRecordingControls();
+      log("Transcribe microphone recording started at " + pending.sampleRate + " Hz");
+      if (transcribeStopRequested) {
+        await stopTranscribeRecording();
+      }
+    } catch (error) {
+      transcribeRecorder = null;
+      transcribeRecorderPending = false;
+      transcribeStopRequested = false;
+      syncTranscribeRecordingControls();
+      extractError("Microphone recording failed: " + error.message);
+    }
+  }
+
+  async function stopTranscribeRecording() {
+    if (transcribeRecorderPending && !transcribeRecorder) {
+      transcribeStopRequested = true;
+      return;
+    }
+    if (!transcribeRecorder) {
+      return;
+    }
+    var current = transcribeRecorder;
+    transcribeRecorder = null;
+    transcribeStopRequested = false;
+    syncTranscribeRecordingControls();
+    var file = await finishToolRecording(current, Math.floor(current.sampleRate / 4), "microphone-recording.wav");
+    if (!file) {
+      extractError("Microphone recording is too short; record at least a quarter second.");
+      return;
+    }
+    await extractLoadFile(file);
+    log("Transcribe microphone recording loaded; transcription remains a separate action");
+  }
+
+  transcribeRecordButton.addEventListener("click", startTranscribeRecording);
+  transcribeStopRecordButton.addEventListener("click", stopTranscribeRecording);
+  transcribeRenameFrom.addEventListener("change", syncTranscribeTools);
+  transcribeRenameTo.addEventListener("input", syncTranscribeTools);
+  transcribeRenameButton.addEventListener("click", function () {
+    flushAudioWorkspaceEdit();
+    var from = transcribeRenameFrom.value;
+    var to = transcribeRenameTo.value.trim();
+    var changed = renameTranscriptSpeaker(ex.segments, from, to);
+    if (changed) {
+      if (ex.filter === from) {
+        ex.filter = to;
+      }
+      transcribeRenameTo.value = "";
+      extractTranscribeStatus.textContent = "Renamed " + changed + " segment" + (changed === 1 ? "" : "s");
+      renderExtractFilter();
+      refreshTranscribeSearch(false);
+    }
+  });
+  transcribeSearchInput.addEventListener("input", function () {
+    transcribeSearchIndex = -1;
+    refreshTranscribeSearch(true);
+  });
+  transcribeSearchPrevious.addEventListener("click", function () { selectTranscribeSearchMatch(-1); });
+  transcribeSearchNext.addEventListener("click", function () { selectTranscribeSearchMatch(1); });
+  transcribeSearchClear.addEventListener("click", function () {
+    transcribeSearchInput.value = "";
+    transcribeSearchIndex = -1;
+    refreshTranscribeSearch(false);
+    transcribeSearchInput.focus();
+  });
+  transcriptExportButtons.forEach(function (button) {
+    button.addEventListener("click", function () { downloadTranscript(button.getAttribute("data-transcript-format")); });
+  });
 
   // converted is set when this file is already the output of an ffmpeg
   // conversion, so a second failure is a real failure rather than a loop.
@@ -7033,16 +7503,17 @@
       ex.checked = {};
       ex.filter = "";
       ex.selectedRow = -1;
+      resetTranscribeDesk();
       extractFileStatus.textContent = file.name + " · " + fmtTime(decoded.duration) + " · " + decoded.sampleRate + " Hz";
       extractTranscribeButton.disabled = false;
       extractDiarizeButton.disabled = false;
       extractZoomInButton.disabled = false;
       extractZoomOutButton.disabled = false;
       extractZoomFitButton.disabled = false;
-      extractTimeline.textContent = "No transcript yet — press Transcribe to map the speech.";
       extractFilterRow.hidden = true;
       extractTranscribeStatus.textContent = "";
       updateExtractRegionUI();
+      renderExtractTimeline();
       drawExtractWave();
       log("Extractor loaded " + file.name + " (" + fmtTime(decoded.duration) + ")");
     } catch (err) {
@@ -7159,7 +7630,7 @@
   function drawExtractWave() {
     var dpr = window.devicePixelRatio || 1;
     var cssWidth = extractCanvas.clientWidth || extractCanvas.parentElement.clientWidth || 600;
-    var cssHeight = 140;
+    var cssHeight = audioWorkspaceMode === "transcribe" ? 88 : 140;
     extractCanvas.width = Math.floor(cssWidth * dpr);
     extractCanvas.height = Math.floor(cssHeight * dpr);
     var g = extractCanvas.getContext("2d");
@@ -7252,6 +7723,9 @@
 
     extractViewStart.textContent = fmtTime(viewStart);
     extractViewEnd.textContent = fmtTime(ex.view.end);
+    extractCanvas.setAttribute("aria-valuemax", String(ex.duration || 0));
+    extractCanvas.setAttribute("aria-valuenow", String(Math.min(ex.duration, Math.max(0, ex.cursor || 0))));
+    extractCanvas.setAttribute("aria-valuetext", fmtTime(Math.min(ex.duration, Math.max(0, ex.cursor || 0))));
   }
 
   window.addEventListener("resize", function () {
@@ -7266,9 +7740,30 @@
     return ex.view.start + frac * (ex.view.end - ex.view.start);
   }
 
+  function setAudioCursorTime(time, rowIndex) {
+    ex.cursor = Math.min(ex.duration, Math.max(0, Number(time) || 0));
+    ex.selectedRow = rowIndex === undefined ? -1 : rowIndex;
+    extractCursor.textContent = "cursor " + fmtTime(ex.cursor);
+    renderExtractTimeline();
+    drawExtractWave();
+  }
+
+  function setTranscriptCursor(index) {
+    var segment = ex.segments[index];
+    if (!segment) {
+      return;
+    }
+    setAudioCursorTime(segment.start, index);
+  }
+
   var extractDrag = null;
   extractCanvas.addEventListener("mousedown", function (event) {
     if (!ex.samples) {
+      return;
+    }
+    if (audioWorkspaceMode === "transcribe") {
+      setAudioCursorTime(canvasXToTime(event.clientX), -1);
+      event.preventDefault();
       return;
     }
     extractDrag = { anchor: canvasXToTime(event.clientX), moved: false };
@@ -7302,6 +7797,33 @@
     extractDrag = null;
   });
 
+  extractCanvas.addEventListener("keydown", function (event) {
+    if (audioWorkspaceMode !== "transcribe" || !ex.samples) {
+      return;
+    }
+    var step = event.shiftKey ? 5 : 1;
+    if (event.key === "ArrowLeft") {
+      setAudioCursorTime(ex.cursor - step, -1);
+    } else if (event.key === "ArrowRight") {
+      setAudioCursorTime(ex.cursor + step, -1);
+    } else if (event.key === "Home") {
+      setAudioCursorTime(0, -1);
+    } else if (event.key === "End") {
+      setAudioCursorTime(ex.duration, -1);
+    } else if (event.key === " " || event.key === "Enter") {
+      if (ex.playback) {
+        extractStopPlayback();
+      } else {
+        extractPlayButton.click();
+      }
+    } else if (event.key === "Escape") {
+      extractStopPlayback();
+    } else {
+      return;
+    }
+    event.preventDefault();
+  });
+
   function setExtractRegion(start, end, rowIndex) {
     ex.region = { start: Math.max(0, start), end: Math.min(ex.duration, end) };
     ex.selectedRow = rowIndex;
@@ -7311,18 +7833,21 @@
   }
 
   function updateExtractRegionUI() {
-    var spans = checkedSpans();
-    var hasChecked = spans.length > 0;
+    var checked = audioWorkspaceMode === "extract" ? checkedSpans() : [];
+    var spans = audioWorkspaceMode === "extract" ? selectionSpans() : [];
+    var hasChecked = checked.length > 0;
     var hasRegion = Boolean(ex.region && ex.region.end - ex.region.start > 0.05);
     // Play works from the cursor even without a marked region; extraction
     // needs a region or a ticked selection to know what to cut. A ticked
     // selection wins over the region: it is the more deliberate act.
-    extractPlayButton.disabled = !ex.samples;
+    extractPlayButton.disabled = !ex.samples || (audioWorkspaceMode === "extract" && !spans.length);
     extractCloneButton.disabled = !(hasChecked || hasRegion);
     extractLibraryButton.disabled = !(hasChecked || hasRegion);
+    extractSelectionDuration.textContent = selectionOutputDuration(spans).toFixed(1) + "s";
+    extractSelectionSpanCount.textContent = String(spans.length);
+    extractSelectionSpeakers.textContent = selectionSpeakerNames().join(", ") || "Not tagged";
     if (hasChecked) {
-      var seconds = spans.reduce(function (sum, span) { return sum + (span.end - span.start); }, 0);
-      extractRegionStatus.textContent = checkedIndices().length + " segments ticked · " + spans.length + " span" + (spans.length === 1 ? "" : "s") + " · " + seconds.toFixed(1) + "s as one WAV";
+      extractRegionStatus.textContent = checkedIndices().length + " segments ticked as one WAV";
     } else if (hasRegion) {
       extractRegionStatus.textContent = fmtTime(ex.region.start) + " – " + fmtTime(ex.region.end) + " (" + (ex.region.end - ex.region.start).toFixed(1) + "s)";
     } else {
@@ -7370,24 +7895,26 @@
     if (!ex.samples) {
       return;
     }
-    // Priority: audition the ticked selection (stitched, exactly what would
-    // export), else the marked region, else play from the cursor to the end.
-    var spans = checkedSpans();
+    // Extract auditions its selected result; Transcribe always listens from
+    // the written transcript's cursor without consuming clip-selection state.
+    var spans = audioWorkspaceMode === "extract" ? checkedSpans() : [];
     var stitched = null;
     var start;
     if (spans.length > 0) {
       stitched = stitchSpans(spans);
       start = spans[0].start;
     } else {
-      start = ex.region ? ex.region.start : Math.min(ex.cursor, ex.duration);
-      var end = ex.region ? ex.region.end : ex.duration;
+      var activeRegion = audioWorkspaceMode === "extract" ? ex.region : null;
+      start = activeRegion ? activeRegion.start : Math.min(ex.cursor, ex.duration);
+      var end = activeRegion ? activeRegion.end : ex.duration;
       if (end - start <= 0.01) {
         return;
       }
     }
     extractStopPlayback();
     var ctx = extractCtx();
-    var length = stitched ? stitched.length : Math.floor(((ex.region ? ex.region.end : ex.duration) - start) * ex.rate);
+    var playbackEnd = audioWorkspaceMode === "extract" && ex.region ? ex.region.end : ex.duration;
+    var length = stitched ? stitched.length : Math.floor((playbackEnd - start) * ex.rate);
     var buffer = ctx.createBuffer(1, length, ex.rate);
     buffer.copyToChannel(stitched || ex.samples.subarray(Math.floor(start * ex.rate), Math.floor(start * ex.rate) + length), 0);
     var source = ctx.createBufferSource();
@@ -7423,10 +7950,9 @@
   // selectionSpeaker returns the single speaker every ticked segment shares,
   // or "" when mixed/untagged.
   function selectionSpeaker() {
-    var indices = checkedIndices();
+    var indices = selectionSegmentIndices();
     if (!indices.length) {
-      var row = ex.selectedRow >= 0 && ex.segments[ex.selectedRow];
-      return (row && row.speaker) || "";
+      return "";
     }
     var speaker = ex.segments[indices[0]].speaker;
     for (var i = 1; i < indices.length; i += 1) {
@@ -7454,11 +7980,12 @@
     }
     var blob = extractSelectionWav();
     var file = new File([blob], extractClipName().replace(/[:]/g, ".") + ".wav", { type: "audio/wav" });
+    var spans = selectionSpans();
     setCloneWav(file, "the Extractor", {
       name: ex.sourceName,
-      start: ex.region ? ex.region.start : undefined,
-      end: ex.region ? ex.region.end : undefined,
-      speaker: ex.filter && ex.filter !== "all" ? ex.filter : ""
+      start: spans[0].start,
+      end: spans[spans.length - 1].end,
+      speaker: selectionSpeaker()
     });
     window.location.hash = "#voices";
     cloneNameInput.focus();
@@ -7479,6 +8006,7 @@
       if (indices.length) {
         var spans = checkedSpans();
         meta.segments = String(indices.length);
+        meta.spans = String(spans.length);
         meta.start = spans[0].start.toFixed(2);
         meta.end = spans[spans.length - 1].end.toFixed(2);
       } else {
@@ -7519,6 +8047,10 @@
     extractErrorBox.hidden = true;
     extractTranscribeButton.disabled = true;
     ex.segments = [];
+    ex.checked = {};
+    ex.filter = "";
+    resetTranscribeDesk();
+    renderExtractTimeline();
     try {
       var samples = ex.samples;
       var rate = ex.rate;
@@ -7564,14 +8096,22 @@
   function renderExtractTimeline() {
     extractTimeline.textContent = "";
     if (!ex.segments.length) {
-      extractTimeline.textContent = "No transcript yet — load a file and press Transcribe.";
+      extractTimeline.textContent = audioWorkspaceMode === "transcribe"
+        ? "No transcript yet — load a source and press Transcribe."
+        : "No transcript yet — load a source or import audio, then press Transcribe.";
+      syncTranscribeTools();
       return;
     }
     ex.segments.forEach(function (segment, index) {
-      if (ex.filter && segment.speaker !== ex.filter) {
+      if (audioWorkspaceMode === "extract" && ex.filter && segment.speaker !== ex.filter) {
         return;
       }
-      var row = createElement("div", "extract-segment" + (index === ex.selectedRow ? " selected" : "") + (ex.checked[index] ? " checked" : ""));
+      var searchPosition = transcribeSearchMatches.indexOf(index);
+      var searchClass = audioWorkspaceMode === "transcribe" && searchPosition >= 0
+        ? " search-match" + (searchPosition === transcribeSearchIndex ? " search-active" : "")
+        : "";
+      var row = createElement("div", "extract-segment" + (index === ex.selectedRow ? " selected" : "") +
+        (ex.checked[index] ? " checked" : "") + searchClass);
       row.tabIndex = 0;
       var head = createElement("div", "extract-segment-head");
       var tick = document.createElement("input");
@@ -7592,7 +8132,9 @@
         updateExtractRegionUI();
         drawExtractWave();
       });
-      head.appendChild(tick);
+      if (audioWorkspaceMode === "extract") {
+        head.appendChild(tick);
+      }
       head.appendChild(createElement("span", "extract-segment-time", fmtTime(segment.start)));
       if (segment.speaker) {
         head.appendChild(createElement("span", "extract-segment-speaker", segment.speaker));
@@ -7624,6 +8166,13 @@
       textDiv.spellcheck = false;
       textDiv.addEventListener("blur", function () {
         segment.text = textDiv.textContent.trim();
+        if (transcribeSearchQuery) {
+          transcribeSearchMatches = findTranscriptMatches(ex.segments, transcribeSearchQuery);
+          if (transcribeSearchIndex >= transcribeSearchMatches.length) {
+            transcribeSearchIndex = transcribeSearchMatches.length - 1;
+          }
+        }
+        syncTranscribeTools();
       });
       textDiv.addEventListener("keydown", function (event) {
         if (event.key === "Enter") {
@@ -7633,8 +8182,15 @@
         event.stopPropagation(); // typing digits must not retag the row
       });
       row.appendChild(textDiv);
-      row.addEventListener("click", function () {
-        setExtractRegion(segment.start, Math.min(segment.end + EXTRACT_TAIL_PAD, ex.duration), index);
+      row.addEventListener("click", function (event) {
+        if (event.target.closest("button, input, [contenteditable=true]")) {
+          return;
+        }
+        if (audioWorkspaceMode === "transcribe") {
+          setTranscriptCursor(index);
+        } else {
+          setExtractRegion(segment.start, Math.min(segment.end + EXTRACT_TAIL_PAD, ex.duration), index);
+        }
       });
       row.addEventListener("keydown", function (event) {
         if (event.key === "1" || event.key === "2" || event.key === "3") {
@@ -7647,6 +8203,7 @@
     if (!extractTimeline.childNodes.length) {
       extractTimeline.textContent = "No segments tagged " + ex.filter + " yet.";
     }
+    syncTranscribeTools();
   }
 
   function tagExtractSegment(index, name) {
@@ -7654,6 +8211,7 @@
     segment.speaker = segment.speaker === name ? "" : name;
     renderExtractFilter();
     renderExtractTimeline();
+    updateExtractRegionUI();
     drawExtractWave();
   }
 
@@ -8330,6 +8888,7 @@
   resetSources();
   setStoryMode("grounded", { silent: true });
   renderEngineRack(null);
+  syncTranscribeRecordingControls();
   applyPage(activePageFromHash());
   log("Demo loaded");
   refreshHealth(false);
