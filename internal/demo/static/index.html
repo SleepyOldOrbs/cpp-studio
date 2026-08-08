@@ -19,23 +19,140 @@
         <button class="secondary" id="healthButton" type="button">Refresh health</button>
         <button class="clear-all-button" id="clearAllButton" type="button">Clear all</button>
       </div>
-      <nav class="tab-bar" id="tabBar" aria-label="Studio tools">
-        <a class="tab" href="#text-to-speech" data-page-link="text-to-speech">Talk</a>
-        <a class="tab" href="#transcription" data-page-link="transcription">Transcribe</a>
-        <a class="tab" href="#voice-cloning" data-page-link="voice-cloning">Voices</a>
-        <a class="tab" href="#voice-design" data-page-link="voice-design">Design</a>
-        <a class="tab" href="#voice-convert" data-page-link="voice-convert">Convert</a>
-        <a class="tab" href="#music-generation" data-page-link="music-generation">Music</a>
-        <a class="tab" href="#image-generation" data-page-link="image-generation">Image</a>
-        <a class="tab" href="#story" data-page-link="story">Story</a>
-        <a class="tab" href="/demo/story-builder.html">Story Builder</a>
-        <a class="tab" href="#audiobook" data-page-link="audiobook">Audiobook</a>
-        <a class="tab" href="#extract" data-page-link="extract">Extract</a>
-        <a class="tab" href="#library" data-page-link="library">Library</a>
-        <a class="tab" href="#models" data-page-link="models">Models</a>
-        <a class="tab" href="#engines" data-page-link="engines">Engines</a>
-      </nav>
+      <div class="studio-nav">
+        <nav class="format-nav" id="tabBar" aria-label="Studio formats">
+          <a class="format-tab" href="#talk-voice" data-parent-link="talk-voice">Talk &amp; voice</a>
+          <a class="format-tab" href="#music" data-parent-link="music">Music &amp; SFX</a>
+          <a class="format-tab" href="#imagery" data-parent-link="imagery">Imagery</a>
+          <a class="format-tab" href="#stories-audiobooks" data-parent-link="stories-audiobooks">Stories &amp; audiobooks</a>
+        </nav>
+        <nav class="utility-nav" aria-label="Studio management">
+          <a class="utility-link" href="#library" data-page-link="library">Library</a>
+          <a class="utility-link" href="#models" data-page-link="models">Models</a>
+          <a class="utility-link" href="#engines" data-page-link="engines">Engines</a>
+        </nav>
+        <div class="subnav-deck">
+          <nav class="subnav" data-parent-nav="talk-voice" aria-label="Talk and voice tools">
+            <a class="subnav-link" href="#talk-voice" data-page-link="talk-voice">Overview</a>
+            <a class="subnav-link" href="#text-to-speech" data-page-link="text-to-speech">Text to speech</a>
+            <a class="subnav-link" href="#transcription" data-page-link="transcription">Transcribe</a>
+            <a class="subnav-link" href="#voice-cloning" data-page-link="voice-cloning">Voice cloning</a>
+            <a class="subnav-link" href="#voice-design" data-page-link="voice-design">Voice design</a>
+            <a class="subnav-link" href="#voice-convert" data-page-link="voice-convert">Voice convert</a>
+          </nav>
+          <nav class="subnav" data-parent-nav="music" aria-label="Music and sound effects tools" hidden>
+            <a class="subnav-link" href="#music" data-page-link="music">Overview</a>
+            <a class="subnav-link" href="#music-generation" data-page-link="music-generation">Music &amp; SFX</a>
+          </nav>
+          <nav class="subnav" data-parent-nav="imagery" aria-label="Imagery tools" hidden>
+            <a class="subnav-link" href="#imagery" data-page-link="imagery">Overview</a>
+            <a class="subnav-link" href="#image-generation" data-page-link="image-generation">Image generation</a>
+          </nav>
+          <nav class="subnav" data-parent-nav="stories-audiobooks" aria-label="Story and audiobook tools" hidden>
+            <a class="subnav-link" href="#stories-audiobooks" data-page-link="stories-audiobooks">Overview</a>
+            <a class="subnav-link" href="#story" data-page-link="story">Story</a>
+            <a class="subnav-link" href="/demo/story-builder.html">Story Builder</a>
+            <a class="subnav-link" href="#audiobook" data-page-link="audiobook">Audiobook</a>
+            <a class="subnav-link" href="#extract" data-page-link="extract">Extract</a>
+          </nav>
+        </div>
+      </div>
     </header>
+
+    <section class="module format-home" data-page="talk-voice" aria-label="Talk and voice overview">
+      <header class="format-hero">
+        <span class="format-kicker">Talk &amp; voice</span>
+        <h2>Everything spoken, from first word to finished voice.</h2>
+        <p>Turn text into speech, transcribe recordings, build reusable voices, invent a new voice, or transform a performance.</p>
+      </header>
+      <div class="tool-card-grid">
+        <a class="tool-card" href="#text-to-speech" data-page-link="text-to-speech">
+          <span class="tool-card-type">Speak</span>
+          <strong>Text to speech</strong>
+          <span>Type or record a turn, generate a reply, and hear it spoken in your chosen voice.</span>
+        </a>
+        <a class="tool-card" href="#transcription" data-page-link="transcription">
+          <span class="tool-card-type">Listen</span>
+          <strong>Transcribe</strong>
+          <span>Turn audio or video into editable, searchable, and exportable timed text.</span>
+        </a>
+        <a class="tool-card" href="#voice-cloning" data-page-link="voice-cloning">
+          <span class="tool-card-type">Capture</span>
+          <strong>Voice cloning</strong>
+          <span>Create a reusable voice from a short, clean reference recording.</span>
+        </a>
+        <a class="tool-card" href="#voice-design" data-page-link="voice-design">
+          <span class="tool-card-type">Invent</span>
+          <strong>Voice design</strong>
+          <span>Describe a character or sound and generate a voice without a recording.</span>
+        </a>
+        <a class="tool-card" href="#voice-convert" data-page-link="voice-convert">
+          <span class="tool-card-type">Transform</span>
+          <strong>Voice convert</strong>
+          <span>Change the voice in a performance while keeping its delivery and timing.</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="module format-home" data-page="music" aria-label="Music and sound effects overview">
+      <header class="format-hero">
+        <span class="format-kicker">Music &amp; SFX</span>
+        <h2>A dedicated desk for music and story sound.</h2>
+        <p>Create a track from a written brief, reshape existing audio, or build instrumental and sound-effect material locally.</p>
+      </header>
+      <div class="tool-card-grid">
+        <a class="tool-card" href="#music-generation" data-page-link="music-generation">
+          <span class="tool-card-type">Create sound</span>
+          <strong>Music &amp; SFX</strong>
+          <span>Generate or continue music, transform an audio source, and keep the finished take in your Library.</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="module format-home" data-page="imagery" aria-label="Imagery overview">
+      <header class="format-hero">
+        <span class="format-kicker">Imagery</span>
+        <h2>Make and understand pictures.</h2>
+        <p>Keep visual generation and analysis together in one focused workspace, separate from the audio tools.</p>
+      </header>
+      <div class="tool-card-grid">
+        <a class="tool-card" href="#image-generation" data-page-link="image-generation">
+          <span class="tool-card-type">Create</span>
+          <strong>Image generation</strong>
+          <span>Generate an image from a prompt, refine it with a seed, or ask the vision model to describe an image.</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="module format-home" data-page="stories-audiobooks" aria-label="Stories and audiobooks overview">
+      <header class="format-hero">
+        <span class="format-kicker">Stories &amp; audiobooks</span>
+        <h2>Long-form work, organised from source to performance.</h2>
+        <p>Write and perform a story, build a production scene by scene, narrate a document, or extract reusable audio assets.</p>
+      </header>
+      <div class="tool-card-grid">
+        <a class="tool-card" href="#story" data-page-link="story">
+          <span class="tool-card-type">Produce</span>
+          <strong>Story</strong>
+          <span>Research or invent a script, cast its voices, and produce a finished performance.</span>
+        </a>
+        <a class="tool-card" href="/demo/story-builder.html">
+          <span class="tool-card-type">Build</span>
+          <strong>Story Builder</strong>
+          <span>Develop a structured story production scene by scene in the dedicated builder.</span>
+        </a>
+        <a class="tool-card" href="#audiobook" data-page-link="audiobook">
+          <span class="tool-card-type">Narrate</span>
+          <strong>Audiobook</strong>
+          <span>Turn a document into durable, resumable narration with listening and verification controls.</span>
+        </a>
+        <a class="tool-card" href="#extract" data-page-link="extract">
+          <span class="tool-card-type">Keep</span>
+          <strong>Extract</strong>
+          <span>Select useful passages and save reusable audio clips or voice references to Library and Voices.</span>
+        </a>
+      </div>
+    </section>
 
     <section class="module" data-page="text-to-speech" aria-label="Text to speech">
       <header class="module-head">
@@ -95,7 +212,7 @@
             <span class="source-label">Hands-free</span>
             <span id="handsFreeStateText">Off</span>
           </div>
-          <small class="hint">Live transcribe streams your mic to whisper every few seconds; stop to keep the take as the WAV source. Hands-free keeps the mic open — a pause ends your turn, the reply plays, then it listens again; whisper large-v3-turbo (picker in Extract) keeps turns snappy.</small>
+          <small class="hint">Live transcribe streams your mic to whisper every few seconds; stop to keep the take as the WAV source. Hands-free keeps the mic open — a pause writes your turn into Transcript, the reply plays, then it listens again; whisper large-v3-turbo (picker in Extract) keeps turns snappy.</small>
 
           <div class="source-row">
             <span class="source-label">WAV source</span>
@@ -123,7 +240,8 @@
         <section class="result-panel">
           <label class="field">
             <span>Transcript</span>
-            <textarea id="transcriptOutput" rows="5" readonly placeholder="Whisper transcript appears here"></textarea>
+            <textarea id="transcriptOutput" rows="5" readonly aria-live="polite" placeholder="Whisper transcript appears here"></textarea>
+            <small class="hint">Hands-free updates this Transcript after each pause, before generating the reply.</small>
           </label>
 
           <label class="field">
@@ -557,8 +675,10 @@
           </label>
           <label class="model-choice">
             <span>Vision model</span>
-            <output class="model-fixed-value" id="visionModelSelect" data-model-engines="vision" data-model-families="llama-gguf-vlm" data-model-state="checking">Checking configured models&hellip;</output>
-            <small>The fixed vision model used by Describe image.</small>
+            <select class="text-input" id="visionModelSelect" disabled>
+              <option>Checking configured models&hellip;</option>
+            </select>
+            <small id="visionModelHint">The configured vision model used by Describe image.</small>
           </label>
         </div>
       </div>
@@ -979,11 +1099,11 @@
       </div>
     </section>
 
-    <section class="module" data-pages="transcription extract" aria-label="Transcription and extraction">
+    <section class="module audio-workspace" id="audioWorkspace" data-pages="transcription extract" aria-label="Transcribe">
       <header class="module-head">
-        <h2 id="extractToolTitle">Transcription &amp; extraction</h2>
+        <h2 id="extractToolTitle">Transcribe</h2>
         <span class="module-route">POST /v1/audio/transcriptions?format=segments</span>
-        <span class="module-note" id="extractToolNote">load &rarr; transcribe &rarr; mark &rarr; extract &rarr; clone</span>
+        <span class="module-note" id="extractToolNote">load &rarr; transcribe &rarr; correct</span>
       </header>
       <div class="model-chooser" aria-label="Transcription models">
         <div class="model-chooser-heading">
@@ -1008,43 +1128,99 @@
           </label>
           <span id="extractFileStatus">Nothing loaded</span>
           <button class="secondary compact-button" id="extractTranscribeButton" type="button" disabled>Transcribe</button>
+          <span class="transcribe-record-controls" data-audio-workspace-mode="transcribe">
+            <button class="secondary compact-button" id="transcribeRecordButton" type="button">Record microphone</button>
+            <button class="plain compact-button" id="transcribeStopRecordButton" type="button" disabled>Stop</button>
+            <span class="vu-meter compact-vu" aria-hidden="true"><i id="transcribeRecordVu"></i></span>
+          </span>
           <input class="text-input compact-number" id="extractSpeakersInput" type="number" min="2" max="26" placeholder="auto" title="Number of speakers, if you know it" hidden>
           <button class="secondary compact-button" id="extractDiarizeButton" type="button" disabled hidden>Detect speakers</button>
-          <button class="primary compact-button" id="extractCastButton" type="button" disabled>Clone the cast</button>
-          <span class="extract-zoom">
+          <span class="extract-zoom" data-audio-workspace-mode="extract">
             <button class="plain compact-button" id="extractZoomOutButton" type="button" disabled>&minus;</button>
             <button class="plain compact-button" id="extractZoomInButton" type="button" disabled>+</button>
             <button class="plain compact-button" id="extractZoomFitButton" type="button" disabled>Fit</button>
           </span>
         </div>
-        <div class="extract-import" id="extractImportRow" hidden>
-          <input class="text-input" id="extractURLInput" type="url" placeholder="Paste a URL — yt-dlp fetches the audio">
-          <button class="secondary compact-button" id="extractImportButton" type="button">Import</button>
+        <div data-audio-workspace-mode="extract" hidden>
+          <div class="extract-import" id="extractImportRow" hidden>
+            <input class="text-input" id="extractURLInput" type="url" placeholder="Paste a URL — yt-dlp fetches the audio">
+            <button class="secondary compact-button" id="extractImportButton" type="button">Import</button>
+          </div>
         </div>
-        <small class="hint">Browser-decoded: WAV, MP3, OGG, FLAC, and MP4/WebM audio tracks — and with an ffmpeg engine configured, anything else is converted automatically instead of refused. Drag on the waveform to mark a region; click a transcript line to jump to it.</small>
+        <small class="hint" data-audio-workspace-mode="transcribe">Load audio or video, then transcribe it into editable timestamped lines. The waveform stays available for seeking and listening.</small>
+        <small class="hint" data-audio-workspace-mode="extract" hidden>Browser-decoded: WAV, MP3, OGG, FLAC, and MP4/WebM audio tracks — and with an ffmpeg engine configured, anything else is converted automatically instead of refused. Drag on the waveform to mark a region; click a transcript line to jump to it.</small>
 
         <div class="extract-wave-wrap">
-          <canvas id="extractCanvas" class="extract-canvas"></canvas>
+          <canvas id="extractCanvas" class="extract-canvas" tabindex="0" role="slider" aria-label="Audio waveform. Use Left and Right to seek; Space to play or stop." aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></canvas>
           <div class="extract-timebar"><span id="extractViewStart">0:00</span><span id="extractCursor">&ndash;</span><span id="extractViewEnd">0:00</span></div>
         </div>
 
-        <div class="extract-region-row">
-          <span class="source-label">Region</span>
-          <span id="extractRegionStatus">None &mdash; drag on the waveform or click a transcript line</span>
-          <button class="secondary compact-button" id="extractPlayButton" type="button" disabled>Play</button>
-          <button class="plain compact-button" id="extractStopButton" type="button" disabled>Stop</button>
-          <button class="primary compact-button" id="extractCloneButton" type="button" disabled>Use as clone reference</button>
-          <button class="secondary compact-button" id="extractLibraryButton" type="button" disabled>Save to library</button>
-        </div>
+        <section class="extract-selection-card" data-audio-workspace-mode="extract" aria-label="Selected audio result" hidden>
+          <div class="extract-selection-heading">
+            <div>
+              <span class="source-label">Selected result</span>
+              <span id="extractRegionStatus">None &mdash; drag on the waveform, click a transcript line, or tick segments</span>
+            </div>
+            <dl class="extract-selection-facts">
+              <div><dt>Duration</dt><dd id="extractSelectionDuration">0.0s</dd></div>
+              <div><dt>Speakers</dt><dd id="extractSelectionSpeakers">Not tagged</dd></div>
+              <div><dt>Stitched spans</dt><dd id="extractSelectionSpanCount">0</dd></div>
+            </dl>
+          </div>
+          <div class="extract-selection-actions">
+            <button class="secondary compact-button" id="extractPlayButton" type="button" disabled>Play selection</button>
+            <button class="plain compact-button" id="extractStopButton" type="button" disabled>Stop</button>
+            <button class="primary compact-button" id="extractCloneButton" type="button" disabled>Use as clone reference</button>
+            <button class="secondary compact-button" id="extractLibraryButton" type="button" disabled>Save to library</button>
+            <button class="secondary compact-button" id="extractCastButton" type="button" disabled>Clone the cast</button>
+          </div>
+        </section>
         <p class="error-box" id="extractErrorBox" hidden></p>
+
+        <section class="transcribe-desk-tools" data-audio-workspace-mode="transcribe" aria-label="Transcript tools">
+          <div class="transcribe-tool-row">
+            <label class="compact-field">
+              <span>Rename speaker</span>
+              <select class="text-input" id="transcribeRenameFrom" disabled><option>No speakers yet</option></select>
+            </label>
+            <label class="compact-field">
+              <span>New name</span>
+              <input class="text-input" id="transcribeRenameTo" type="text" maxlength="80" placeholder="Speaker name" disabled>
+            </label>
+            <button class="secondary compact-button" id="transcribeRenameButton" type="button" disabled>Rename throughout</button>
+          </div>
+          <div class="transcribe-tool-row">
+            <label class="transcribe-search-field">
+              <span class="source-label">Search transcript</span>
+              <input class="text-input" id="transcribeSearchInput" type="search" placeholder="Words or speaker" disabled>
+            </label>
+            <span id="transcribeSearchStatus" aria-live="polite">No matches</span>
+            <button class="plain compact-button" id="transcribeSearchPrevious" type="button" disabled>Previous</button>
+            <button class="plain compact-button" id="transcribeSearchNext" type="button" disabled>Next</button>
+            <button class="plain compact-button" id="transcribeSearchClear" type="button" disabled>Clear</button>
+          </div>
+          <div class="transcribe-tool-row transcribe-export-row" aria-label="Transcript downloads">
+            <span class="source-label">Download edited transcript</span>
+            <button class="secondary compact-button" type="button" data-transcript-format="txt" disabled>TXT</button>
+            <button class="secondary compact-button" type="button" data-transcript-format="md" disabled>Markdown</button>
+            <button class="secondary compact-button" type="button" data-transcript-format="srt" disabled>SRT</button>
+            <button class="secondary compact-button" type="button" data-transcript-format="vtt" disabled>WebVTT</button>
+            <button class="secondary compact-button" type="button" data-transcript-format="json" disabled>JSON</button>
+          </div>
+        </section>
 
         <div class="story-library-header">
           <span class="source-label">Transcript</span>
           <span id="extractTranscribeStatus"></span>
-          <span class="extract-filter" id="extractFilterRow" hidden></span>
+          <span data-audio-workspace-mode="extract" hidden><span class="extract-filter" id="extractFilterRow" hidden></span></span>
         </div>
         <div class="extract-timeline" id="extractTimeline">No transcript yet &mdash; load a file and press Transcribe.</div>
-        <small class="hint">Detect speakers tags every line automatically; A / B / C (or keys 1 / 2 / 3 after clicking a line) fix anything it got wrong. Filter to one speaker to hunt their cleanest run.</small>
+        <small class="hint" data-audio-workspace-mode="transcribe">Correct the text directly, and use Detect speakers plus the speaker buttons to fix who said each line.</small>
+        <small class="hint" data-audio-workspace-mode="extract" hidden>Detect speakers tags every line automatically; A / B / C (or keys 1 / 2 / 3 after clicking a line) fix anything it got wrong. Filter to one speaker to hunt their cleanest run.</small>
+        <div class="audio-workspace-switch">
+          <button class="secondary compact-button" id="openExtractButton" data-audio-workspace-mode="transcribe" type="button">Open in Extract</button>
+          <button class="secondary compact-button" id="openTranscribeButton" data-audio-workspace-mode="extract" type="button" hidden>Open in Transcribe</button>
+        </div>
       </div>
     </section>
 

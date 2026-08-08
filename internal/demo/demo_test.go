@@ -59,6 +59,9 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "handsFreeStatus") {
 		t.Fatalf("expected hands-free status chip marker, got %q", body)
 	}
+	if !strings.Contains(body, "Hands-free updates this Transcript") {
+		t.Fatalf("expected Talk-page hands-free transcript hint, got %q", body)
+	}
 	if !strings.Contains(body, "voice-record-row") {
 		t.Fatalf("expected single-row voice transport marker, got %q", body)
 	}
@@ -129,13 +132,22 @@ func TestHandlerServesIndex(t *testing.T) {
 		t.Fatalf("expected tab bar marker, got %q", body)
 	}
 	for _, marker := range []string{
-		`class="tab-bar"`,
-		`href="/demo/story-builder.html">Story Builder</a>`,
+		`class="studio-nav"`,
+		`data-parent-link="talk-voice"`,
+		`data-parent-nav="stories-audiobooks"`,
+		`href="/demo/story-builder.html">`,
+		`data-page="talk-voice"`,
+		`data-page="music"`,
+		`data-page="imagery"`,
+		`data-page="stories-audiobooks"`,
+		`class="tool-card"`,
 		`data-page-link="text-to-speech"`,
 		`data-page-link="voice-cloning"`,
 		`data-page="voice-convert"`,
 		`data-page="music-generation"`,
 		`data-pages="transcription extract"`,
+		`data-audio-workspace-mode="transcribe"`,
+		`data-audio-workspace-mode="extract"`,
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("expected tool navigation marker %q", marker)
@@ -265,6 +277,27 @@ func TestHandlerServesIndex(t *testing.T) {
 	}
 	if !strings.Contains(body, "extractCastButton") {
 		t.Fatalf("expected clone-the-cast marker, got %q", body)
+	}
+	for _, marker := range []string{
+		"audioWorkspace",
+		"openExtractButton",
+		"openTranscribeButton",
+		"transcribeRecordButton",
+		"transcribeStopRecordButton",
+		"transcribeRenameButton",
+		"transcribeSearchInput",
+		"extractSelectionDuration",
+		"extractSelectionSpeakers",
+		"extractSelectionSpanCount",
+		`data-transcript-format="txt"`,
+		`data-transcript-format="md"`,
+		`data-transcript-format="srt"`,
+		`data-transcript-format="vtt"`,
+		`data-transcript-format="json"`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("expected split audio workspace marker %q", marker)
+		}
 	}
 }
 
@@ -471,7 +504,19 @@ func TestHandlerServesAssets(t *testing.T) {
 			name:        "css studio navigation",
 			path:        "/styles.css",
 			contentType: "text/css",
-			needle:      ".tab-bar",
+			needle:      ".studio-nav",
+		},
+		{
+			name:        "css format home cards",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".tool-card-grid",
+		},
+		{
+			name:        "javascript grouped navigation",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "PAGE_PARENT",
 		},
 		{
 			name:        "css universal model chooser",
@@ -612,6 +657,36 @@ func TestHandlerServesAssets(t *testing.T) {
 			needle:      "drawExtractWave",
 		},
 		{
+			name:        "javascript audio workspace mode seam",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "applyAudioWorkspaceMode",
+		},
+		{
+			name:        "javascript Transcribe search",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "findTranscriptMatches",
+		},
+		{
+			name:        "javascript Transcribe speaker rename",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "renameTranscriptSpeaker",
+		},
+		{
+			name:        "javascript Transcribe exports",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "buildTranscriptVTT",
+		},
+		{
+			name:        "javascript Extract selection summary",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "selectionOutputDuration",
+		},
+		{
 			name:        "css extractor",
 			path:        "/styles.css",
 			contentType: "text/css",
@@ -676,6 +751,30 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/app.js",
 			contentType: "javascript",
 			needle:      "startHandsFree",
+		},
+		{
+			name:        "javascript hands-free Talk transcript",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "transcribeHandsFreeTake",
+		},
+		{
+			name:        "javascript single conversion model selector",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "conversionModelSelect.disabled = false",
+		},
+		{
+			name:        "javascript single music model selector",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "musicModelSelect.disabled = false",
+		},
+		{
+			name:        "javascript single vision model selector",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "visionModelSelect.disabled = false",
 		},
 		{
 			name:        "javascript shared voice turn",

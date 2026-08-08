@@ -528,7 +528,8 @@ Behavior:
 ### Segments format
 
 `POST /v1/audio/transcriptions?format=segments` returns timestamped speech
-spans instead of one flat string — the Extractor's transcript timeline:
+spans instead of one flat string. Transcribe uses them as its editable text
+timeline; Extract uses the same segments to navigate and select source audio:
 
 ```json
 {
@@ -568,8 +569,8 @@ identifies which provider ran and returns anonymous, console-ready clusters:
 ```
 
 Without either `diarize` (Sortformer) or `diarize-sherpa` the route returns
-`503`; the Extractor's "Detect speakers" button appears when diarization is
-available and fills transcript `speaker` tags by maximum overlap. A request
+`503`; the shared Transcribe/Extract workspace shows "Detect speakers" when
+diarization is available and fills transcript `speaker` tags by maximum overlap. A request
 that specifically requires sherpa also returns `503` when only Sortformer is
 configured; the gateway does not silently chunk or retry a failed GPU run.
 If a recording may contain more than four speakers, supply `?speakers=N` so it
@@ -605,18 +606,18 @@ the optional user-supplied `ffmpeg` engine. Multipart `file`, up to 1 GiB;
 the response is mono 16-bit PCM in a WAV at the source sample rate, with the
 original filename percent-encoded in `X-Decoded-From`.
 
-Mono is not a compromise: the Extractor mixes to mono the moment it loads
-anything, so a stereo decode would double the transfer for identical
-results. The source sample rate is kept, because a voice cloned from this
-audio deserves the quality that was in the file.
+Mono is not a compromise: the shared audio workspace mixes to mono the moment
+Transcribe or Extract loads anything, so a stereo decode would double the
+transfer for identical results. The source sample rate is kept, because a
+voice cloned from this audio deserves the quality that was in the file.
 
 The upload streams to a temp file and the response streams back — a
 half-hour decode is well over a hundred megabytes and never sits in memory.
-Decoded output is capped at 192 MB (roughly 35 minutes, past the Extractor's
-own 30-minute editor cap). Without the engine the route returns `503`.
+Decoded output is capped at 192 MB (roughly 35 minutes, past the shared
+workspace's 30-minute editor cap). Without the engine the route returns `503`.
 
 The console calls this automatically: when client-side decoding fails and an
-ffmpeg engine is configured, the Extractor converts and retries rather than
+ffmpeg engine is configured, the shared workspace converts and retries rather than
 telling you to go and find a converter.
 
 ## POST /v1/audio/speech

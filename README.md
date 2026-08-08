@@ -15,7 +15,7 @@ audio.cpp Sortformer with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
 as its long-form/exact-speaker-count diarization fallback —
 behind OpenAI-shaped HTTP routes and a browser studio console.
 
-![The Extractor: a 47-second recording as a waveform, transcribed into 18 timestamped segments, every line tagged by speaker automatically](docs/images/extractor.png)
+![The shared audio workspace: a 47-second recording as a waveform, transcribed into 18 timestamped segments, every line tagged by speaker automatically](docs/images/extractor.png)
 
 **The loop that makes it a studio:** drop in a recording, let whisper
 transcribe it and diarization work out who spoke when, press **Clone the
@@ -75,18 +75,18 @@ profiles trade resident models against your card's budget.
   written into the manifest and an honest `target_met: false` when the peak
   ceiling binds first. Any revision then exports to MP3 or Opus (that
   43-second two-hander: 2.0 MB WAV, 687 KB MP3, 348 KB Opus).
-- **The Extractor** — a sampler deck for voices. Drop in a podcast or an old
-  radio show (MP3/OGG/FLAC/WAV/MP4 decode in the browser; with `ffmpeg`
-  configured, anything else converts automatically instead of being
-  refused), get a scrubbable waveform with a whisper transcript timeline, and
-  let **automatic speaker diarization** tag who says what (a 1968 radio
-  episode: 5 speakers, 94% of 651 lines tagged in ~100 s, on CPU). Filter to
-  one speaker, tick their lines, and export them as one WAV — or press
-  **Clone the cast** and mint a library voice per speaker in one click.
-  Transcript lines are editable and mergeable; every clip carries
-  source/time/speaker provenance. Point it at a **URL** instead of a file if
-  you configure your own `yt-dlp` binary — the row is hidden when you
-  haven't.
+- **Transcribe** — a text-first desk for loaded files or microphone recordings.
+  Correct speaker-tagged lines, rename a speaker throughout, search words or
+  speakers, and download the edited result as TXT, Markdown, SRT, WebVTT, or
+  JSON.
+- **Extract** — a waveform-first sampler deck for voices. Filter to one
+  speaker, mark a region or tick multiple lines, audition the result, save one
+  stitched WAV, hand it to voice cloning with source/time/speaker provenance,
+  or press **Clone the cast** to mint a library voice per speaker. A configured
+  `yt-dlp` adds URL import. Transcribe and Extract share the same loaded audio,
+  transcript, diarization, decode path, and
+  `POST /v1/audio/transcriptions?format=segments` route, so switching tools
+  does not reload or retranscribe the source.
 - **Image lab** — Stable Diffusion generation (~2 s per 512×512 resident),
   plus true vision: a VLM describes any image and speaks the description.
 - **Engine rack** — every engine has a power switch, and named VRAM profiles

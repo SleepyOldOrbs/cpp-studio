@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -69,6 +70,48 @@ func TestServerHealthAndChat(t *testing.T) {
 	}
 	if chat.Choices[0].FinishReason != "stop" {
 		t.Fatalf("finish_reason = %q, want stop", chat.Choices[0].FinishReason)
+	}
+}
+
+func TestServerWhisperInference(t *testing.T) {
+	server := httptest.NewServer(newFixtureHandler())
+	defer server.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "input.wav")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("fixture wav bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("response_format", "verbose_json"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Post(server.URL+"/inference", writer.FormDataContentType(), &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var result struct {
+		Text     string `json:"text"`
+		Segments []struct {
+			Text string `json:"text"`
+		} `json:"segments"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "first fixture line second fixture line third fixture note" || len(result.Segments) != 3 || result.Segments[2].Text != "third fixture note" {
+		t.Fatalf("unexpected Whisper fixture response: %+v", result)
 	}
 }
 
