@@ -168,7 +168,22 @@ async page => {
     'Stories homepage did not link to Story Builder');
 
   await page.locator('[data-parent-link="talk-voice"]').click();
-  await page.locator('[data-parent-nav="talk-voice"] [data-page-link="transcription"]').click();
+  await page.locator('[data-parent-nav="talk-voice"] [data-page-link="voice-cloning"]').click();
+  await page.waitForFunction(() => location.hash === '#voice-cloning');
+  await page.getByRole('heading', { name: 'Voice clone', exact: true }).waitFor();
+  const voiceLayout = await page.locator('[data-page="voice-cloning"] .workspace').evaluate(workspace => {
+    const bounds = workspace.getBoundingClientRect();
+    const left = workspace.children[0].getBoundingClientRect();
+    const right = workspace.children[1].getBoundingClientRect();
+    return {
+      widthDifference: Math.abs(left.width - right.width),
+      insetDifference: Math.abs((left.left - bounds.left) - (bounds.right - right.right))
+    };
+  });
+  assert(voiceLayout.widthDifference < 1, 'Voice cloning columns were not equal width');
+  assert(voiceLayout.insetDifference < 1, 'Voice cloning columns were not equally inset');
+
+  await page.evaluate(() => { location.hash = 'transcription'; });
   await page.waitForFunction(() => location.hash === '#transcription');
   await page.getByRole('heading', { name: 'Transcribe', exact: true }).waitFor();
   assert(await page.getByRole('heading', { name: 'Transcribe', exact: true }).isVisible(),
@@ -176,6 +191,62 @@ async page => {
 }
 '@
   $browserCode = $browserCode.Replace("__HOMEPAGE_SCREENSHOT__", ($homepageScreenshotPath | ConvertTo-Json -Compress))
+  Invoke-BrowserCode -Code $browserCode
+
+  $browserCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  await page.route('**/health', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      status: 'ready', updatedAt: new Date().toISOString(),
+      engines: Object.fromEntries([
+        'audio', 'diarize', 'diarize-sherpa', 'ffmpeg', 'llama', 'music', 'omnivoice',
+        'sd', 'vision', 'voiceconvert', 'voicedesign', 'voxcpm2', 'whisper'
+      ].map(name => [name, { status: 'ready', ready: true }]))
+    })
+  }));
+  await page.waitForFunction(() => !document.querySelector('#healthButton').disabled);
+  const mockedHealth = page.waitForResponse(response =>
+    response.request().method() === 'GET' && response.url().endsWith('/health'));
+  await page.locator('#healthButton').click();
+  await mockedHealth;
+  await page.waitForFunction(() => document.querySelectorAll('#engineRack .led-chip').length > 1);
+  const rack = page.locator('#engineRack');
+  const rackNames = await rack.locator('.led-chip').allTextContents();
+  assert(rackNames.filter(name => name.trim() === 'diarize').length === 1,
+    'Engine rack did not combine the two diarization implementations');
+  assert(!rackNames.some(name => name.includes('diarize-sherpa')),
+    'Engine rack exposed the sherpa implementation as a second capability');
+  const rackMetrics = await rack.evaluate(node => ({
+    rowTops: Array.from(node.children, child => Math.round(child.getBoundingClientRect().top)),
+    scrollWidth: node.scrollWidth,
+    clientWidth: node.clientWidth
+  }));
+  assert(new Set(rackMetrics.rowTops).size === 1, 'Engine rack wrapped onto multiple lines');
+  assert(rackMetrics.scrollWidth <= rackMetrics.clientWidth + 1, 'Engine rack did not fit its available width');
+  await page.unroute('**/health');
+
+  const studioPages = [
+    'talk-voice', 'text-to-speech', 'transcription', 'voice-cloning', 'voice-design', 'voice-convert',
+    'music', 'music-generation', 'imagery', 'image-generation', 'stories-audiobooks', 'audiobook',
+    'story', 'extract', 'library', 'models', 'engines'
+  ];
+  for (const studioPage of studioPages) {
+    await page.evaluate(name => { location.hash = name; }, studioPage);
+    await page.waitForFunction(name => location.hash === '#' + name, studioPage);
+    const refreshed = page.waitForResponse(response =>
+      response.request().method() === 'GET' && response.url().endsWith('/health'));
+    await page.locator('#healthButton').click();
+    assert((await refreshed).ok(), 'Refresh health failed from ' + studioPage);
+    await page.waitForFunction(() => !document.querySelector('#healthButton').disabled);
+  }
+  await page.evaluate(() => { location.hash = 'transcription'; });
+  await page.waitForFunction(() => location.hash === '#transcription');
+}
+'@
   Invoke-BrowserCode -Code $browserCode
 
   $browserCode = @'
@@ -209,10 +280,31 @@ async page => {
 
   await page.locator('#extractFileInput').setInputFiles(inputWav);
   await page.waitForFunction(() => document.querySelector('#extractFileStatus').textContent.includes('input.wav'));
+  const playPause = page.locator('#extractPlayButton');
+  assert(await playPause.isVisible(), 'Transcribe did not expose playback beside the loaded source');
+  assert((await playPause.textContent()) === 'Play audio', 'Transcribe playback did not start in Play state');
+  await playPause.click();
+  await page.waitForFunction(() => document.querySelector('#extractPlayButton').textContent === 'Pause audio');
+  assert((await playPause.getAttribute('aria-pressed')) === 'true', 'Transcribe playback did not expose playing state');
+  await page.waitForTimeout(80);
+  await playPause.click();
+  await page.waitForFunction(() => document.querySelector('#extractPlayButton').textContent === 'Play audio');
+  assert((await playPause.getAttribute('aria-pressed')) === 'false', 'Transcribe playback stayed pressed after pause');
   await page.locator('#extractTranscribeButton').click();
   await page.waitForFunction(() => document.querySelectorAll('.extract-segment').length > 0);
 
   assert((await page.locator('.extract-segment').count()) === 3, 'fixture did not produce three transcript segments');
+  const segmentPlay = page.locator('.extract-segment-play');
+  assert((await segmentPlay.count()) === 3, 'every transcript segment did not receive a Play control');
+  await segmentPlay.nth(0).click();
+  await page.waitForFunction(() => document.querySelectorAll('.extract-segment-play')[0].textContent === 'Pause segment');
+  assert((await segmentPlay.nth(0).getAttribute('aria-pressed')) === 'true', 'first segment did not expose playing state');
+  await segmentPlay.nth(1).click();
+  await page.waitForFunction(() => document.querySelectorAll('.extract-segment-play')[1].textContent === 'Pause segment');
+  assert((await segmentPlay.nth(0).textContent()) === 'Play segment', 'starting a second segment did not reset the first');
+  await segmentPlay.nth(1).click();
+  await page.waitForFunction(() => document.querySelectorAll('.extract-segment-play')[1].textContent === 'Play segment');
+  assert((await segmentPlay.nth(1).getAttribute('aria-pressed')) === 'false', 'second segment stayed pressed after pause');
   assert(await page.locator('#extractCastButton').isDisabled(), 'cast cloning was enabled before speaker tagging');
   await page.locator('.extract-segment').nth(0).locator('.extract-segment-tags button').filter({ hasText: /^A$/ }).click();
   await page.locator('.extract-segment').nth(1).locator('.extract-segment-tags button').filter({ hasText: /^A$/ }).click();
@@ -383,8 +475,16 @@ async page => {
   assert((await page.locator('#extractSelectionSpanCount').textContent()) === '2', 'stitched span count was wrong');
 
   await page.locator('#extractPlayButton').click();
-  await page.waitForFunction(() => !document.querySelector('#extractStopButton').disabled);
+  await page.waitForFunction(() => document.querySelector('#extractPlayButton').textContent === 'Pause selection');
+  assert((await page.locator('#extractPlayButton').getAttribute('aria-pressed')) === 'true', 'selection playback did not expose playing state');
+  await page.waitForTimeout(80);
+  await page.locator('#extractPlayButton').click();
+  await page.waitForFunction(() => document.querySelector('#extractPlayButton').textContent === 'Play selection');
+  assert(!(await page.locator('#extractStopButton').isDisabled()), 'paused selection could not be stopped');
+  await page.locator('#extractPlayButton').click();
+  await page.waitForFunction(() => document.querySelector('#extractPlayButton').textContent === 'Pause selection');
   await page.locator('#extractStopButton').click();
+  assert((await page.locator('#extractPlayButton').textContent()) === 'Play selection', 'selection stop did not reset Play state');
   assert(await page.locator('#extractStopButton').isDisabled(), 'selection playback did not stop');
 
   const saveResponsePending = page.waitForResponse(response =>
@@ -479,6 +579,34 @@ async page => {
 '@
   $browserCode = $browserCode.Replace("__TRANSCRIBE_SCREENSHOT_PATH__", ($transcribeScreenshotPath | ConvertTo-Json -Compress))
   $browserCode = $browserCode.Replace("__EXTRACT_SCREENSHOT_PATH__", ($extractScreenshotPath | ConvertTo-Json -Compress))
+  Invoke-BrowserCode -Code $browserCode
+
+  $browserCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  await page.evaluate(() => {
+    document.querySelector('#messageInput').value = 'clear voice loop';
+    document.querySelector('#imagePromptInput').value = 'clear image';
+    document.querySelector('#designDescriptionInput').value = 'clear design';
+    document.querySelector('#musicPromptInput').value = 'clear music';
+    location.hash = 'models';
+  });
+  await page.waitForFunction(() => location.hash === '#models');
+  await Promise.all([
+    page.waitForEvent('load'),
+    page.locator('#clearAllButton').click()
+  ]);
+  await page.waitForLoadState('networkidle');
+  assert((await page.evaluate(() => location.hash)) === '#models', 'Clear all did not preserve the current tool');
+  assert((await page.locator('#messageInput').inputValue()) === '', 'Clear all retained voice-loop text');
+  assert((await page.locator('#imagePromptInput').inputValue()) === '', 'Clear all retained image text');
+  assert((await page.locator('#designDescriptionInput').inputValue()) === '', 'Clear all retained voice-design text');
+  assert((await page.locator('#musicPromptInput').inputValue()) === '', 'Clear all retained music text');
+  assert((await page.locator('#extractFileStatus').textContent()) === 'Nothing loaded', 'Clear all retained Transcribe audio');
+}
+'@
   Invoke-BrowserCode -Code $browserCode
 }
 finally {

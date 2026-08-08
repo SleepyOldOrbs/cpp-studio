@@ -1127,6 +1127,7 @@
             <span>Load audio / video</span>
           </label>
           <span id="extractFileStatus">Nothing loaded</span>
+          <button class="secondary compact-button" id="extractPlayButton" type="button" aria-pressed="false" disabled>Play audio</button>
           <button class="secondary compact-button" id="extractTranscribeButton" type="button" disabled>Transcribe</button>
           <span class="transcribe-record-controls" data-audio-workspace-mode="transcribe">
             <button class="secondary compact-button" id="transcribeRecordButton" type="button">Record microphone</button>
@@ -1168,7 +1169,6 @@
             </dl>
           </div>
           <div class="extract-selection-actions">
-            <button class="secondary compact-button" id="extractPlayButton" type="button" disabled>Play selection</button>
             <button class="plain compact-button" id="extractStopButton" type="button" disabled>Stop</button>
             <button class="primary compact-button" id="extractCloneButton" type="button" disabled>Use as clone reference</button>
             <button class="secondary compact-button" id="extractLibraryButton" type="button" disabled>Save to library</button>
