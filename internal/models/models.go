@@ -24,19 +24,21 @@ import (
 // folders) declare their expected total Bytes and Files count; single files
 // declare Bytes and, for checksum verification, SHA256.
 type Model struct {
-	ID          string `json:"id"`
-	Engine      string `json:"engine"`
-	Family      string `json:"family"`
-	Path        string `json:"path"`
-	Bytes       int64  `json:"bytes,omitempty"`
-	Files       int    `json:"files,omitempty"`
-	SHA256      string `json:"sha256,omitempty"`
-	Source      string `json:"source,omitempty"`
-	License     string `json:"license,omitempty"`
-	Description string `json:"description,omitempty"`
-	PackageID   string `json:"packageId,omitempty"`
-	Revision    string `json:"revision,omitempty"`
-	DownloadURL string `json:"downloadUrl,omitempty"`
+	ID           string   `json:"id"`
+	DisplayName  string   `json:"displayName,omitempty"`
+	Engine       string   `json:"engine"`
+	Family       string   `json:"family"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	Path         string   `json:"path"`
+	Bytes        int64    `json:"bytes,omitempty"`
+	Files        int      `json:"files,omitempty"`
+	SHA256       string   `json:"sha256,omitempty"`
+	Source       string   `json:"source,omitempty"`
+	License      string   `json:"license,omitempty"`
+	Description  string   `json:"description,omitempty"`
+	PackageID    string   `json:"packageId,omitempty"`
+	Revision     string   `json:"revision,omitempty"`
+	DownloadURL  string   `json:"downloadUrl,omitempty"`
 }
 
 // Manifest is the whole registry.

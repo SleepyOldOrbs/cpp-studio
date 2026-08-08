@@ -488,8 +488,8 @@ Behavior:
 
 ## POST /v1/audio/transcriptions
 
-Accepts a WAV upload and transcribes it through the configured `whisper`
-engine. With `mode: "subprocess"` the gateway runs the command per request;
+Accepts a WAV upload and transcribes it through configured Whisper, Qwen3-ASR,
+or VibeVoice ASR. With `mode: "subprocess"` the gateway runs the command per request;
 with `mode: "server"` it posts the WAV to the resident `whisper-server`'s
 `/inference` route (inferred from `healthUrl`, like the chat proxy), which
 keeps the model loaded between requests and is markedly faster for repeated
@@ -499,6 +499,8 @@ Request:
 
 - `Content-Type: multipart/form-data`.
 - Required field: `file`.
+- Optional `model`: a configured Whisper variant or one of
+  `qwen3-asr-0.6b-q8-0`, `qwen3-asr-1.7b-hf`, and `vibevoice-asr-q8-0`.
 - Upload limit: 32 MiB.
 - The uploaded file must include a filename.
 - The file must have a RIFF/WAVE header.
@@ -521,7 +523,7 @@ Response:
 
 Behavior:
 
-- Engine key: `whisper`.
+- Engine key: resolved from the allowlisted model id; blank selects `whisper`.
 - Subprocess mode: only one transcription request can run at a time for this gateway process; concurrent requests return `429`. Command stdout becomes `text` after trimming whitespace. Command failure marks `whisper` crashed and returns `502` with bounded stdout/stderr details.
 - Server mode: segment newlines in the server's `text` are collapsed to single spaces; upstream failures return `502`.
 
@@ -544,8 +546,9 @@ timeline; Extract uses the same segments to navigate and select source audio:
 
 `speaker` is a first-class field, empty today: the console fills it with
 manual tags, and a future diarization engine fills it automatically. Segment
-output requires the `whisper` engine in `server` mode (the resident server's
-`verbose_json`); subprocess whisper returns `503` for this format.
+output from resident Whisper preserves model timestamps. The audio.cpp ASR
+lanes currently return one whole-file segment because their stable CLI output
+is transcript text rather than timestamped spans.
 
 ## POST /v1/audio/diarization
 
@@ -576,6 +579,21 @@ configured; the gateway does not silently chunk or retry a failed GPU run.
 If a recording may contain more than four speakers, supply `?speakers=N` so it
 is routed to sherpa; automatic mode cannot know the true count before running
 the four-speaker model.
+
+## POST /v1/audio/vad
+
+Accepts multipart `file` plus an allowlisted `model` of
+`silero-vad-audiocpp` or `marblenet-vad-audiocpp`. The selected audio.cpp
+engine returns its JSON speech regions unchanged. Invalid JSON is rejected as
+an upstream failure; arbitrary model paths, families, and native options are
+never accepted.
+
+## POST /v1/audio/alignment
+
+Runs Qwen3 Forced Aligner over multipart `file` with required exact
+`transcript` and `language` fields. `model` may be blank or
+`qwen3-forced-aligner-0.6b-q8-0`. The response is the model's validated word
+alignment JSON.
 
 ## POST /v1/audio/import
 
@@ -638,7 +656,9 @@ Supported fields:
 
 - `input` is required and must be non-empty after trimming.
 - `format` may be omitted or `wav`.
-- `voice` is accepted for shape compatibility but is not interpreted by the gateway.
+- `voice` selects a stored Studio voice when supplied.
+- `model` resolves to one fixed configured TTS/clone engine; paths, families,
+  tasks, and arbitrary native options are not accepted.
 
 Gateway subprocess arguments:
 
@@ -654,7 +674,7 @@ Response:
 
 Behavior:
 
-- Engine key: `audio`.
+- Engine key: resolved from the allowlisted model id; blank selects `audio`.
 - Only one speech request can run at a time for this gateway process; concurrent requests return `429`.
 - Command failure or invalid output marks `audio` crashed and returns `502` with bounded stdout/stderr details.
 
@@ -670,8 +690,11 @@ Multipart form fields (combined request limit 129 MiB):
 - `target`: target-voice WAV, at most 64 MiB; required unless `target_voice` is used.
 - `target_voice`: an existing Studio voice id. It reuses that voice's saved
   reference WAV and is mutually substitutable with `target`.
-- `model`: optional; blank, `chatterbox`, and `chatterbox-q8-0` select the
-  configured Chatterbox lane. Other values return `400`.
+- `model`: blank/`chatterbox-q8-0` selects Chatterbox; `vevo2-q8-0` selects
+  the configured VeVo2 lane.
+- `route`: Chatterbox is fixed to `style_preserved_vc`. VeVo2 accepts
+  `style_preserved_vc`, `style_preserved_svc`, or `editing`.
+- `target_text`: required only for VeVo2 `editing`.
 
 Gateway subprocess arguments:
 
@@ -687,11 +710,12 @@ before submitting them.
 
 ## POST /v1/audio/music
 
-Runs the configured `music` audio.cpp subprocess with ACE-Step and returns a
+Runs a catalogue-selected audio.cpp music/SFX subprocess and returns a
 generated WAV. The multipart request is deliberately allowlisted rather than
 accepting arbitrary native JSON options:
 
-- `model`: blank, `ace-step`, or `ace-step-turbo-q8-0`.
+- `model`: blank/`ace-step-turbo-q8-0`, `stable-audio-3-medium-q8-0`,
+  `stable-audio-3-small-sfx-q8-0`, or `heartmula-3b-q8-0`.
 - `route`: `text2music` (default), `complete`, `lego`, `extract`, `cover`,
   `cover-nofsq`, or `repaint`.
 - `prompt`: required music brief or edit instruction, at most 4000 bytes.
@@ -711,10 +735,19 @@ Gateway subprocess shape:
 <configured music args> --task-route <route> --text <prompt> ... [--audio <source-wav>] --out <generated-temp-wav>
 ```
 
-The response is `audio/wav` and includes `X-Music-Model:
-ace-step-turbo-q8-0`. Missing engine configuration returns `503`; a concurrent
+ACE-Step supports every listed route and its detailed edit controls. Stable
+Audio and HeartMuLa are intentionally limited to `text2music` in Studio. The
+response is `audio/wav` and includes the selected id in `X-Music-Model`.
+Missing engine configuration returns `503`; a concurrent
 run returns `429`; invalid fields/source audio return `400`; native command or
 output failure returns `502`.
+
+## POST /v1/audio/separation
+
+Accepts multipart WAV `file` plus one of `htdemucs-q8-0`,
+`bs-roformer-q8-0`, or `mel-band-roformer-q8-0`. The gateway runs the fixed
+configured separation engine, validates every named WAV stem, and returns
+`application/zip` as `separated-stems.zip`.
 
 ## POST /v1/audio/music/analyze
 

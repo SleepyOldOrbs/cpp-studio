@@ -203,6 +203,47 @@ func TestVoiceConversionSpecMapsSourceTargetAndOutput(t *testing.T) {
 	}
 }
 
+func TestVoiceConversionSpecForMapsVeVo2Routes(t *testing.T) {
+	tests := []struct {
+		name  string
+		route string
+		task  string
+		text  string
+		want  []string
+	}{
+		{
+			name:  "voice conversion",
+			route: "style_preserved_vc",
+			task:  "vc",
+			want:  []string{"--task-route", "style_preserved_vc", "--source-audio", `C:\clips\source.wav`, "--target-voice", `C:\voices\target.wav`, "--out", "converted.wav"},
+		},
+		{
+			name:  "singing conversion",
+			route: "style_preserved_svc",
+			task:  "svc",
+			want:  []string{"--task-route", "style_preserved_svc", "--source-audio", `C:\clips\source.wav`, "--target-voice", `C:\voices\target.wav`, "--out", "converted.wav"},
+		},
+		{
+			name:  "speech editing",
+			route: "editing",
+			task:  "s2s",
+			text:  "It’s repaired",
+			want:  []string{"--task-route", "editing", "--source-audio", `C:\clips\source.wav`, "--target-voice", `C:\voices\target.wav`, "--target-text", "It's repaired", "--out", "converted.wav"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := VoiceConversionSpecFor("vevo2", "vevo2", tt.route, tt.text, `C:\clips\source.wav`, `C:\voices\target.wav`)
+			if spec.Engine != "vevo2" || spec.OverrideArgs["--task"] != tt.task {
+				t.Fatalf("unexpected VeVo2 spec: engine=%q overrides=%v", spec.Engine, spec.OverrideArgs)
+			}
+			if got := spec.BuildArgs(spec.InputPath, "converted.wav"); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("VeVo2 args = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMusicGenerationSpecMapsCuratedACEControls(t *testing.T) {
 	request := MusicGenerationRequest{
 		Route:           "repaint",
@@ -264,6 +305,56 @@ func TestMusicGenerationSpecOmitsRandomSeedSentinel(t *testing.T) {
 		if arg == "--seed" || (i > 0 && args[i-1] == "--seed" && arg == "-1") {
 			t.Fatalf("random seed sentinel leaked into audio.cpp CLI args: %v", args)
 		}
+	}
+}
+
+func TestMusicGenerationSpecForMapsCommonTextToAudioControls(t *testing.T) {
+	request := MusicGenerationRequest{
+		Prompt:          "a short thunder crack",
+		Lyrics:          "ignored only when blank",
+		DurationSeconds: 6.5,
+		Seed:            17,
+	}
+	spec := MusicGenerationSpecFor("stable-audio-sfx", "stable_audio", "", request)
+	want := []string{
+		"--text", "a short thunder crack",
+		"--duration-seconds", "6.5",
+		"--lyrics", "ignored only when blank",
+		"--seed", "17",
+		"--out", "effect.wav",
+	}
+	if spec.Engine != "stable-audio-sfx" {
+		t.Fatalf("expected stable-audio-sfx engine, got %q", spec.Engine)
+	}
+	if got := spec.BuildArgs("", "effect.wav"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("text-to-audio args = %v, want %v", got, want)
+	}
+}
+
+func TestAudioCPPAnalysisSpecsUseFixedOutputContracts(t *testing.T) {
+	if got := TranscriptionSpecFor("qwen3-asr-0.6b", nil).BuildArgs("input.wav", ""); !reflect.DeepEqual(got, []string{"--audio", "input.wav"}) {
+		t.Fatalf("ASR args = %v", got)
+	}
+	if got := SeparationSpec("htdemucs", nil, `C:\stems`).BuildArgs("input.wav", `C:\stems`); !reflect.DeepEqual(got, []string{"--audio", "input.wav", "--out-dir", `C:\stems`}) {
+		t.Fatalf("separation args = %v", got)
+	}
+	if got := VADSpec("silero-vad", nil).BuildArgs("input.wav", "segments.json"); !reflect.DeepEqual(got, []string{"--audio", "input.wav", "--segments-out", "segments.json"}) {
+		t.Fatalf("VAD args = %v", got)
+	}
+	align := ForcedAlignmentSpec(nil, "It’s exact", "en")
+	wantAlign := []string{"--audio", "input.wav", "--text", "It's exact", "--language", "en", "--words-out", "words.json"}
+	if got := align.BuildArgs("input.wav", "words.json"); !reflect.DeepEqual(got, wantAlign) {
+		t.Fatalf("alignment args = %v, want %v", got, wantAlign)
+	}
+}
+
+func TestParseAudioCPPTextOutput(t *testing.T) {
+	got, err := ParseAudioCPPTextOutput([]byte("loader ready\r\ntext_output=  Purple monkey dishwasher.  \r\ntiming=12ms\r\n"))
+	if err != nil || got != "Purple monkey dishwasher." {
+		t.Fatalf("parsed transcript = %q, %v", got, err)
+	}
+	if _, err := ParseAudioCPPTextOutput([]byte("loader ready\n")); err == nil {
+		t.Fatal("expected missing text_output to fail")
 	}
 }
 

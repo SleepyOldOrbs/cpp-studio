@@ -149,14 +149,16 @@ OpenAI-shaped where a shape exists, plain JSON where it doesn't. Highlights
 | Route | What it does |
 | --- | --- |
 | `POST /v1/chat/completions` | proxy to the resident llama-server |
-| `POST /v1/audio/transcriptions` | whisper transcription (resident or per-run) |
-| `POST /v1/audio/speech` | TTS, default or any stored voice |
-| `POST /v1/audio/conversions` | preserve a performance while changing its speaker identity |
+| `POST /v1/audio/transcriptions` | Whisper, Qwen3-ASR, or VibeVoice ASR transcription |
+| `POST /v1/audio/speech` | catalog-selected TTS, default or any stored voice |
+| `POST /v1/audio/conversions` | Chatterbox or VeVo2 voice/singing conversion and speech editing |
 | `POST /v1/voice` | the whole voice loop in one call |
 | `POST /v1/voices` · `/v1/voices/design` | clone / design voices |
 | `POST /v1/audio/transcriptions?format=segments` | timestamped transcript segments |
 | `POST /v1/audio/diarization` | who-spoke-when clusters (CUDA Sortformer, sherpa fallback) |
-| `POST /v1/audio/music` · `/v1/audio/music/analyze` | ACE-Step music creation, editing, and source analysis |
+| `POST /v1/audio/music` · `/v1/audio/music/analyze` | ACE-Step, Stable Audio, or HeartMuLa generation; ACE-Step editing/analysis |
+| `POST /v1/audio/separation` | HTDemucs or RoFormer named stems in a ZIP |
+| `POST /v1/audio/vad` · `/v1/audio/alignment` | speech regions and exact word alignment |
 | `POST /v1/audio/import` | fetch a URL's audio through your own yt-dlp |
 | `POST /v1/audio/decode` | convert what the browser can't read, via your own ffmpeg |
 | `POST /v1/stories/{id}/export` | encode a render revision to MP3/Opus via your own ffmpeg |

@@ -19,7 +19,14 @@
     }
   },
   "profiles": {
-    "everything": ["llama", "whisper", "audio", "voiceconvert", "music", "sd"],
+    "everything": [
+      "llama", "whisper", "audio", "voiceconvert", "music", "sd",
+      "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-customvoice", "vibevoice", "fish-audio", "chatterbox-clone",
+      "qwen3-asr-0.6b", "qwen3-asr-1.7b", "vibevoice-asr",
+      "vevo2", "stable-audio-medium", "stable-audio-sfx", "heartmula",
+      "htdemucs", "bs-roformer", "mel-band-roformer",
+      "silero-vad", "marblenet-vad", "forced-aligner"
+    ],
     "chat": ["llama", "whisper", "audio"],
     "art": ["sd"]
   },
@@ -71,6 +78,98 @@
       "requestTimeoutSeconds": 180,
       "gpu": true
     },
+    "qwen3-tts-1.7b-base": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "tts", "--family", "qwen3_tts",
+        "--model", "${root}\\models\\speech\\synthesis\\Qwen3-TTS-12Hz-1.7B-Base-GGUF\\qwen3-tts-12hz-1.7b-base-q8_0_v2.gguf",
+        "--backend", "cuda",
+        "--voice-ref", "${root}\\..\\audio.cpp\\assets\\resources\\b.wav",
+        "--reference-text", "Reference voice transcript."
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 600,
+      "gpu": true
+    },
+    "qwen3-tts-1.7b-customvoice": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "tts", "--family", "qwen3_tts",
+        "--model", "${root}\\models\\speech\\synthesis\\Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF\\qwen3-tts-12hz-1.7b-customvoice-q8_0.gguf",
+        "--backend", "cuda", "--speaker", "Vivian"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 600,
+      "gpu": true
+    },
+    "vibevoice": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "tts", "--family", "vibevoice",
+        "--model", "${root}\\models\\speech\\synthesis\\VibeVoice-1.5B-GGUF\\vibevoice-1.5b-q8_0.gguf",
+        "--backend", "cuda",
+        "--request-option", "voice_samples=${root}\\..\\audio.cpp\\assets\\resources\\b.wav"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 1800,
+      "gpu": true
+    },
+    "fish-audio": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "tts", "--family", "fish_audio",
+        "--model", "${root}\\models\\speech\\synthesis\\Fish-Audio-S2-Pro-GGUF\\fish-audio-s2-pro-q8_0.gguf",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 900,
+      "gpu": true
+    },
+    "chatterbox-clone": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "clon", "--family", "chatterbox",
+        "--model", "${root}\\models\\speech\\conversion\\Chatterbox-GGUF\\chatterbox-q8_0.gguf",
+        "--backend", "cuda",
+        "--voice-ref", "${root}\\..\\audio.cpp\\assets\\resources\\b.wav"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 900,
+      "gpu": true
+    },
+    "qwen3-asr-0.6b": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "asr", "--family", "qwen3_asr",
+        "--model", "${root}\\models\\transcription\\Qwen3-ASR-0.6B-GGUF\\qwen3-asr-0.6b-q8_0.gguf",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 900,
+      "gpu": true
+    },
+    "qwen3-asr-1.7b": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "asr", "--family", "qwen3_asr",
+        "--model", "${root}\\models\\transcription\\Qwen3-ASR-1.7B-hf",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 1200,
+      "gpu": true
+    },
+    "vibevoice-asr": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "asr", "--family", "vibevoice_asr",
+        "--model", "${root}\\models\\transcription\\VibeVoice-ASR-GGUF\\vibevoice-asr-q8_0.gguf",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 1200,
+      "gpu": true
+    },
     "voiceconvert": {
       "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
       "args": [
@@ -81,6 +180,17 @@
       ],
       "mode": "subprocess",
       "requestTimeoutSeconds": 900,
+      "gpu": true
+    },
+    "vevo2": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "vc", "--family", "vevo2",
+        "--model", "${root}\\models\\speech\\conversion\\Vevo2-GGUF\\vevo2-q8_0.gguf",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 1200,
       "gpu": true
     },
     "music": {
@@ -94,6 +204,105 @@
       ],
       "mode": "subprocess",
       "requestTimeoutSeconds": 1800,
+      "gpu": true
+    },
+    "stable-audio-medium": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "gen", "--family", "stable_audio",
+        "--model", "${root}\\models\\music\\generation\\Stable-Audio-3-Medium-GGUF\\stable-audio-3-medium-q8_0.gguf",
+        "--backend", "cuda", "--session-option", "stable_audio.mem_saver=true"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 1800,
+      "gpu": true
+    },
+    "stable-audio-sfx": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "gen", "--family", "stable_audio",
+        "--model", "${root}\\models\\sound\\generation\\Stable-Audio-3-Small-SFX-GGUF\\stable-audio-3-small-sfx-q8_0.gguf",
+        "--backend", "cuda", "--session-option", "stable_audio.mem_saver=true"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 1200,
+      "gpu": true
+    },
+    "heartmula": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "gen", "--family", "heartmula",
+        "--model", "${root}\\models\\music\\generation\\HeartMuLa-GGUF\\heartmula-q8_0.gguf",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 1800,
+      "gpu": true
+    },
+    "htdemucs": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "sep", "--family", "htdemucs",
+        "--model", "${root}\\models\\music\\separation\\HTDemucs-GGUF\\htdemucs-q8_0.gguf",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 1800,
+      "gpu": true
+    },
+    "bs-roformer": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "sep", "--family", "bs_roformer",
+        "--model", "${root}\\models\\music\\separation\\BS-RoFormer-ep368_Q8\\BS-RoFormer-ep368_Q8.gguf",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 1800,
+      "gpu": true
+    },
+    "mel-band-roformer": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "sep", "--family", "mel_band_roformer",
+        "--model", "${root}\\models\\music\\separation\\Mel-Band-RoFormer-GGUF\\mel-band-roformer-q8_0.gguf",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 1800,
+      "gpu": true
+    },
+    "silero-vad": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "vad", "--family", "silero_vad",
+        "--model", "${root}\\models\\speech\\analysis\\VAD\\audio.cpp\\silero_vad",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 300,
+      "gpu": true
+    },
+    "marblenet-vad": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "vad", "--family", "marblenet_vad",
+        "--model", "${root}\\models\\speech\\analysis\\VAD\\audio.cpp\\marblenet_vad",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 300,
+      "gpu": true
+    },
+    "forced-aligner": {
+      "command": "${root}\\engines\\audio-engines\\audiocpp_cli.exe",
+      "args": [
+        "--task", "align", "--family", "qwen3_forced_aligner",
+        "--model", "${root}\\models\\speech\\analysis\\alignment\\Qwen3-ForcedAligner-0.6B-GGUF\\qwen3-forced-aligner-0.6b-q8_0.gguf",
+        "--backend", "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 900,
       "gpu": true
     },
     "diarize": {

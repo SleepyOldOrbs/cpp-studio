@@ -76,16 +76,41 @@ type Voice struct {
 // The gateway owns and validates the two WAV paths; the engine module owns
 // their CLI mapping and the converted-output contract.
 func VoiceConversionSpec(sourcePath string, targetVoicePath string) Spec {
+	return VoiceConversionSpecFor(VoiceConversionEngineID, "chatterbox", "style_preserved_vc", "", sourcePath, targetVoicePath)
+}
+
+// VoiceConversionSpecFor maps the curated conversion routes exposed by the
+// Studio. The caller resolves the model id; browser input never supplies a
+// native family, task, model path, or arbitrary option.
+func VoiceConversionSpecFor(engineName, family, route, targetText, sourcePath, targetVoicePath string) Spec {
+	task := "vc"
+	build := func(inPath, outPath string) []string {
+		return []string{"--audio", inPath, "--voice-ref", targetVoicePath, "--out", outPath}
+	}
+	if family == "vevo2" {
+		switch route {
+		case "style_preserved_svc":
+			task = "svc"
+		case "editing":
+			task = "s2s"
+		}
+		build = func(inPath, outPath string) []string {
+			args := []string{"--task-route", route, "--source-audio", inPath, "--target-voice", targetVoicePath}
+			if strings.TrimSpace(targetText) != "" {
+				args = append(args, "--target-text", sanitizeSpeechText(targetText))
+			}
+			return append(args, "--out", outPath)
+		}
+	}
 	return Spec{
-		Engine:        VoiceConversionEngineID,
+		Engine:        engineName,
 		Label:         "audio.cpp voice conversion command",
 		Timeout:       DefaultVoiceConversionTimeout,
 		InputPath:     sourcePath,
 		OutputPattern: "cpp-studio-voice-conversion-*.wav",
 		OutputLabel:   "converted voice wav",
-		BuildArgs: func(inPath, outPath string) []string {
-			return []string{"--audio", inPath, "--voice-ref", targetVoicePath, "--out", outPath}
-		},
+		BuildArgs:     build,
+		OverrideArgs:  map[string]string{"--task": task},
 		ValidateOutput: func(path string) error {
 			if err := wav.ValidateFile(path); err != nil {
 				return fmt.Errorf("produced invalid WAV: %v", err)
@@ -120,14 +145,33 @@ type MusicGenerationRequest struct {
 // sourcePath is blank for text-to-music and may be present for complete; the
 // gateway enforces which edit routes require source audio.
 func MusicGenerationSpec(sourcePath string, request MusicGenerationRequest) Spec {
+	return MusicGenerationSpecFor(MusicEngineID, "ace_step", sourcePath, request)
+}
+
+// MusicGenerationSpecFor keeps ACE-Step's editing contract and adds the
+// common text-to-audio subset shared by Stable Audio and HeartMuLa.
+func MusicGenerationSpecFor(engineName, family, sourcePath string, request MusicGenerationRequest) Spec {
 	return Spec{
-		Engine:        MusicEngineID,
+		Engine:        engineName,
 		Label:         "audio.cpp music generation command",
 		Timeout:       DefaultMusicTimeout,
 		InputPath:     sourcePath,
 		OutputPattern: "cpp-studio-music-*.wav",
 		OutputLabel:   "generated music wav",
 		BuildArgs: func(inPath, outPath string) []string {
+			if family != "ace_step" {
+				args := []string{
+					"--text", request.Prompt,
+					"--duration-seconds", strconv.FormatFloat(request.DurationSeconds, 'f', -1, 64),
+				}
+				if request.Lyrics != "" {
+					args = append(args, "--lyrics", request.Lyrics)
+				}
+				if request.Seed >= 0 {
+					args = append(args, "--seed", strconv.Itoa(request.Seed))
+				}
+				return append(args, "--out", outPath)
+			}
 			args := []string{
 				"--task-route", request.Route,
 				"--text", request.Prompt,
@@ -300,18 +344,98 @@ func designSpecShell(engineName string) Spec {
 // TranscriptionSpec invokes the "whisper" engine: -f <wav path>. The input
 // must be a valid WAV; the transcript is returned on stdout.
 func TranscriptionSpec(wavBytes []byte) Spec {
+	return TranscriptionSpecFor("whisper", wavBytes)
+}
+
+// TranscriptionSpecFor invokes either whisper.cpp's subprocess contract or
+// an audio.cpp ASR lane selected from the server catalogue.
+func TranscriptionSpecFor(engineName string, wavBytes []byte) Spec {
 	if wavBytes == nil {
 		wavBytes = []byte{}
 	}
 	return Spec{
-		Engine:        "whisper",
-		Label:         "whisper transcription command",
+		Engine:        engineName,
+		Label:         engineName + " transcription command",
 		Timeout:       DefaultTranscriptionTimeout,
 		Input:         wavBytes,
 		InputPattern:  "cpp-studio-transcription-*",
 		ValidateInput: wav.ValidateFile,
 		BuildArgs: func(inPath, _ string) []string {
+			if engineName != "whisper" {
+				return []string{"--audio", inPath}
+			}
 			return []string{"-f", inPath}
+		},
+	}
+}
+
+// ParseAudioCPPTextOutput extracts the stable text_output line written by
+// audiocpp_cli's file sink while ignoring loader/timing diagnostics.
+func ParseAudioCPPTextOutput(stdout []byte) (string, error) {
+	for _, line := range strings.Split(string(stdout), "\n") {
+		if strings.HasPrefix(line, "text_output=") {
+			text := strings.TrimSpace(strings.TrimPrefix(line, "text_output="))
+			if text == "" {
+				return "", fmt.Errorf("audio.cpp ASR returned an empty transcript")
+			}
+			return text, nil
+		}
+	}
+	return "", fmt.Errorf("audio.cpp ASR returned no text_output")
+}
+
+// SeparationSpec runs one catalogue-selected source-separation engine. The
+// caller owns outDir so it can package all named WAV stems after the run.
+func SeparationSpec(engineName string, wavBytes []byte, outDir string) Spec {
+	return Spec{
+		Engine:        engineName,
+		Label:         engineName + " source separation command",
+		Timeout:       DefaultMusicTimeout,
+		Input:         wavBytes,
+		InputPattern:  "cpp-studio-separation-*.wav",
+		OutputPath:    outDir,
+		ValidateInput: wav.ValidateFile,
+		BuildArgs: func(inPath, outPath string) []string {
+			return []string{"--audio", inPath, "--out-dir", outPath}
+		},
+	}
+}
+
+// VADSpec returns audio.cpp's JSON speech regions as Result.Output.
+func VADSpec(engineName string, wavBytes []byte) Spec {
+	return Spec{
+		Engine:        engineName,
+		Label:         engineName + " voice activity command",
+		Timeout:       DefaultDiarizationTimeout,
+		Input:         wavBytes,
+		InputPattern:  "cpp-studio-vad-*.wav",
+		OutputPattern: "cpp-studio-vad-*.json",
+		OutputLabel:   "voice activity json",
+		ValidateInput: wav.ValidateFile,
+		BuildArgs: func(inPath, outPath string) []string {
+			return []string{"--audio", inPath, "--segments-out", outPath}
+		},
+	}
+}
+
+// ForcedAlignmentSpec maps an exact transcript and language to word JSON.
+func ForcedAlignmentSpec(wavBytes []byte, transcript, language string) Spec {
+	return Spec{
+		Engine:        "forced-aligner",
+		Label:         "Qwen3 forced alignment command",
+		Timeout:       DefaultDiarizationTimeout,
+		Input:         wavBytes,
+		InputPattern:  "cpp-studio-alignment-*.wav",
+		OutputPattern: "cpp-studio-alignment-*.json",
+		OutputLabel:   "word alignment json",
+		ValidateInput: wav.ValidateFile,
+		BuildArgs: func(inPath, outPath string) []string {
+			return []string{
+				"--audio", inPath,
+				"--text", sanitizeSpeechText(transcript),
+				"--language", sanitizeSpeechText(language),
+				"--words-out", outPath,
+			}
 		},
 	}
 }
