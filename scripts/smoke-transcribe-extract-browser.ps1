@@ -52,6 +52,7 @@ $gatewayExe = Join-Path $runtimeDir "cpp-studio-transcribe-extract-smoke.exe"
 $fixtureExe = Join-Path $runtimeDir "cpp-studio-fixture.exe"
 $configPath = Join-Path $runtimeDir "config.json"
 $inputWav = Join-Path $runtimeDir "input.wav"
+$homepageScreenshotPath = Join-Path $playwrightDir "talk-voice-home.png"
 $transcribeScreenshotPath = Join-Path $playwrightDir "transcribe.png"
 $extractScreenshotPath = Join-Path $playwrightDir "extract.png"
 
@@ -126,6 +127,56 @@ try {
 
   Invoke-BrowserCLI -Arguments @("open", "$baseURL/demo/#transcription")
   Invoke-BrowserCLI -Arguments @("snapshot")
+
+  $browserCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const screenshotPath = __HOMEPAGE_SCREENSHOT__;
+
+  await page.waitForLoadState('networkidle');
+  assert(await page.locator('[data-parent-link="talk-voice"]').evaluate(element => element.classList.contains('active')),
+    'direct Transcribe link did not activate Talk & voice');
+  assert(await page.locator('[data-parent-nav="talk-voice"]').isVisible(),
+    'direct Transcribe link did not show its sub-navigation');
+  assert(await page.locator('[data-page-link="transcription"]').first().evaluate(element => element.classList.contains('active')),
+    'direct Transcribe link was not marked active');
+
+  await page.locator('[data-parent-link="talk-voice"]').click();
+  await page.waitForFunction(() => location.hash === '#talk-voice');
+  const talkHome = page.locator('[data-page="talk-voice"]');
+  assert(await talkHome.isVisible(), 'Talk & voice homepage did not open');
+  assert((await talkHome.locator('.tool-card').count()) === 5, 'Talk & voice homepage tool count was wrong');
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+
+  const homes = [
+    ['music', 1],
+    ['imagery', 1],
+    ['stories-audiobooks', 4]
+  ];
+  for (const [name, count] of homes) {
+    await page.locator('[data-parent-link="' + name + '"]').click();
+    await page.waitForFunction(expected => location.hash === '#' + expected, name);
+    const home = page.locator('[data-page="' + name + '"]');
+    await home.waitFor({ state: 'visible' });
+    assert(await home.isVisible(), name + ' homepage did not open');
+    assert((await home.locator('.tool-card').count()) === count, name + ' homepage tool count was wrong');
+    assert(await page.locator('[data-parent-nav="' + name + '"]').isVisible(), name + ' sub-navigation was hidden');
+  }
+  assert((await page.locator('[data-page="stories-audiobooks"] a[href="/demo/story-builder.html"]').count()) === 1,
+    'Stories homepage did not link to Story Builder');
+
+  await page.locator('[data-parent-link="talk-voice"]').click();
+  await page.locator('[data-parent-nav="talk-voice"] [data-page-link="transcription"]').click();
+  await page.waitForFunction(() => location.hash === '#transcription');
+  await page.getByRole('heading', { name: 'Transcribe', exact: true }).waitFor();
+  assert(await page.getByRole('heading', { name: 'Transcribe', exact: true }).isVisible(),
+    'Transcribe did not reopen from grouped navigation');
+}
+'@
+  $browserCode = $browserCode.Replace("__HOMEPAGE_SCREENSHOT__", ($homepageScreenshotPath | ConvertTo-Json -Compress))
+  Invoke-BrowserCode -Code $browserCode
 
   $browserCode = @'
 async page => {
@@ -357,7 +408,8 @@ async page => {
   const cloneStatus = await page.locator('#cloneWavStatus').textContent();
   assert(cloneStatus.includes('from input.wav') && cloneStatus.includes('speaker Narrator') && cloneStatus.includes('0:00.0–0:01.1'),
     'clone-reference handoff lost provenance: ' + cloneStatus);
-  await page.locator('[data-page-link="extract"]').click();
+  await page.locator('[data-parent-link="stories-audiobooks"]').click();
+  await page.locator('[data-parent-nav="stories-audiobooks"] [data-page-link="extract"]').click();
   await page.waitForFunction(() => location.hash === '#extract');
 }
 '@

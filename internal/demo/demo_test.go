@@ -132,8 +132,15 @@ func TestHandlerServesIndex(t *testing.T) {
 		t.Fatalf("expected tab bar marker, got %q", body)
 	}
 	for _, marker := range []string{
-		`class="tab-bar"`,
-		`href="/demo/story-builder.html">Story Builder</a>`,
+		`class="studio-nav"`,
+		`data-parent-link="talk-voice"`,
+		`data-parent-nav="stories-audiobooks"`,
+		`href="/demo/story-builder.html">`,
+		`data-page="talk-voice"`,
+		`data-page="music"`,
+		`data-page="imagery"`,
+		`data-page="stories-audiobooks"`,
+		`class="tool-card"`,
 		`data-page-link="text-to-speech"`,
 		`data-page-link="voice-cloning"`,
 		`data-page="voice-convert"`,
@@ -497,7 +504,19 @@ func TestHandlerServesAssets(t *testing.T) {
 			name:        "css studio navigation",
 			path:        "/styles.css",
 			contentType: "text/css",
-			needle:      ".tab-bar",
+			needle:      ".studio-nav",
+		},
+		{
+			name:        "css format home cards",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".tool-card-grid",
+		},
+		{
+			name:        "javascript grouped navigation",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "PAGE_PARENT",
 		},
 		{
 			name:        "css universal model chooser",

@@ -5634,8 +5634,9 @@
 
   // --- Studio navigation ------------------------------------------------
   var PAGES = [
-    "text-to-speech", "transcription", "voice-cloning", "voice-design", "voice-convert",
-    "music-generation", "image-generation", "audiobook", "story", "extract",
+    "talk-voice", "text-to-speech", "transcription", "voice-cloning", "voice-design", "voice-convert",
+    "music", "music-generation", "imagery", "image-generation",
+    "stories-audiobooks", "audiobook", "story", "extract",
     "library", "models", "engines"
   ];
   var LEGACY_PAGES = {
@@ -5643,7 +5644,25 @@
     voices: "voice-cloning",
     image: "image-generation"
   };
+  var PAGE_PARENT = {
+    "talk-voice": "talk-voice",
+    "text-to-speech": "talk-voice",
+    transcription: "talk-voice",
+    "voice-cloning": "talk-voice",
+    "voice-design": "talk-voice",
+    "voice-convert": "talk-voice",
+    music: "music",
+    "music-generation": "music",
+    imagery: "imagery",
+    "image-generation": "imagery",
+    "stories-audiobooks": "stories-audiobooks",
+    audiobook: "stories-audiobooks",
+    story: "stories-audiobooks",
+    extract: "stories-audiobooks"
+  };
+  var parentLinks = document.querySelectorAll("[data-parent-link]");
   var pageLinks = document.querySelectorAll("[data-page-link]");
+  var parentNavs = document.querySelectorAll("[data-parent-nav]");
   var pageModules = document.querySelectorAll(".module[data-page], .module[data-pages]");
   var audioWorkspace = document.getElementById("audioWorkspace");
   var audioWorkspaceModeSections = document.querySelectorAll("[data-audio-workspace-mode]");
@@ -5654,7 +5673,7 @@
   function activePageFromHash() {
     var name = (window.location.hash || "").replace(/^#/, "");
     name = LEGACY_PAGES[name] || name;
-    return PAGES.indexOf(name) >= 0 ? name : "text-to-speech";
+    return PAGES.indexOf(name) >= 0 ? name : "talk-voice";
   }
 
   function moduleHasPage(module, name) {
@@ -5690,11 +5709,24 @@
   }
 
   function applyPage(name) {
+    var parent = PAGE_PARENT[name] || "";
     if (name !== "transcription" && (transcribeRecorder || transcribeRecorderPending)) {
       stopTranscribeRecording();
     }
     pageModules.forEach(function (module) {
       module.hidden = !moduleHasPage(module, name);
+    });
+    parentLinks.forEach(function (link) {
+      var active = link.getAttribute("data-parent-link") === parent;
+      link.classList.toggle("active", active);
+      if (active) {
+        link.setAttribute("aria-current", "page");
+      } else {
+        link.removeAttribute("aria-current");
+      }
+    });
+    parentNavs.forEach(function (nav) {
+      nav.hidden = nav.getAttribute("data-parent-nav") !== parent;
     });
     pageLinks.forEach(function (link) {
       var active = link.getAttribute("data-page-link") === name;
@@ -5705,6 +5737,7 @@
         link.removeAttribute("aria-current");
       }
     });
+    document.documentElement.setAttribute("data-studio-format", parent || "management");
     if (name === "transcription" || name === "extract") {
       applyAudioWorkspaceMode(name === "transcription" ? "transcribe" : "extract");
     }

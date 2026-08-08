@@ -19,23 +19,140 @@
         <button class="secondary" id="healthButton" type="button">Refresh health</button>
         <button class="clear-all-button" id="clearAllButton" type="button">Clear all</button>
       </div>
-      <nav class="tab-bar" id="tabBar" aria-label="Studio tools">
-        <a class="tab" href="#text-to-speech" data-page-link="text-to-speech">Talk</a>
-        <a class="tab" href="#transcription" data-page-link="transcription">Transcribe</a>
-        <a class="tab" href="#voice-cloning" data-page-link="voice-cloning">Voices</a>
-        <a class="tab" href="#voice-design" data-page-link="voice-design">Design</a>
-        <a class="tab" href="#voice-convert" data-page-link="voice-convert">Convert</a>
-        <a class="tab" href="#music-generation" data-page-link="music-generation">Music</a>
-        <a class="tab" href="#image-generation" data-page-link="image-generation">Image</a>
-        <a class="tab" href="#story" data-page-link="story">Story</a>
-        <a class="tab" href="/demo/story-builder.html">Story Builder</a>
-        <a class="tab" href="#audiobook" data-page-link="audiobook">Audiobook</a>
-        <a class="tab" href="#extract" data-page-link="extract">Extract</a>
-        <a class="tab" href="#library" data-page-link="library">Library</a>
-        <a class="tab" href="#models" data-page-link="models">Models</a>
-        <a class="tab" href="#engines" data-page-link="engines">Engines</a>
-      </nav>
+      <div class="studio-nav">
+        <nav class="format-nav" id="tabBar" aria-label="Studio formats">
+          <a class="format-tab" href="#talk-voice" data-parent-link="talk-voice">Talk &amp; voice</a>
+          <a class="format-tab" href="#music" data-parent-link="music">Music &amp; SFX</a>
+          <a class="format-tab" href="#imagery" data-parent-link="imagery">Imagery</a>
+          <a class="format-tab" href="#stories-audiobooks" data-parent-link="stories-audiobooks">Stories &amp; audiobooks</a>
+        </nav>
+        <nav class="utility-nav" aria-label="Studio management">
+          <a class="utility-link" href="#library" data-page-link="library">Library</a>
+          <a class="utility-link" href="#models" data-page-link="models">Models</a>
+          <a class="utility-link" href="#engines" data-page-link="engines">Engines</a>
+        </nav>
+        <div class="subnav-deck">
+          <nav class="subnav" data-parent-nav="talk-voice" aria-label="Talk and voice tools">
+            <a class="subnav-link" href="#talk-voice" data-page-link="talk-voice">Overview</a>
+            <a class="subnav-link" href="#text-to-speech" data-page-link="text-to-speech">Text to speech</a>
+            <a class="subnav-link" href="#transcription" data-page-link="transcription">Transcribe</a>
+            <a class="subnav-link" href="#voice-cloning" data-page-link="voice-cloning">Voice cloning</a>
+            <a class="subnav-link" href="#voice-design" data-page-link="voice-design">Voice design</a>
+            <a class="subnav-link" href="#voice-convert" data-page-link="voice-convert">Voice convert</a>
+          </nav>
+          <nav class="subnav" data-parent-nav="music" aria-label="Music and sound effects tools" hidden>
+            <a class="subnav-link" href="#music" data-page-link="music">Overview</a>
+            <a class="subnav-link" href="#music-generation" data-page-link="music-generation">Music &amp; SFX</a>
+          </nav>
+          <nav class="subnav" data-parent-nav="imagery" aria-label="Imagery tools" hidden>
+            <a class="subnav-link" href="#imagery" data-page-link="imagery">Overview</a>
+            <a class="subnav-link" href="#image-generation" data-page-link="image-generation">Image generation</a>
+          </nav>
+          <nav class="subnav" data-parent-nav="stories-audiobooks" aria-label="Story and audiobook tools" hidden>
+            <a class="subnav-link" href="#stories-audiobooks" data-page-link="stories-audiobooks">Overview</a>
+            <a class="subnav-link" href="#story" data-page-link="story">Story</a>
+            <a class="subnav-link" href="/demo/story-builder.html">Story Builder</a>
+            <a class="subnav-link" href="#audiobook" data-page-link="audiobook">Audiobook</a>
+            <a class="subnav-link" href="#extract" data-page-link="extract">Extract</a>
+          </nav>
+        </div>
+      </div>
     </header>
+
+    <section class="module format-home" data-page="talk-voice" aria-label="Talk and voice overview">
+      <header class="format-hero">
+        <span class="format-kicker">Talk &amp; voice</span>
+        <h2>Everything spoken, from first word to finished voice.</h2>
+        <p>Turn text into speech, transcribe recordings, build reusable voices, invent a new voice, or transform a performance.</p>
+      </header>
+      <div class="tool-card-grid">
+        <a class="tool-card" href="#text-to-speech" data-page-link="text-to-speech">
+          <span class="tool-card-type">Speak</span>
+          <strong>Text to speech</strong>
+          <span>Type or record a turn, generate a reply, and hear it spoken in your chosen voice.</span>
+        </a>
+        <a class="tool-card" href="#transcription" data-page-link="transcription">
+          <span class="tool-card-type">Listen</span>
+          <strong>Transcribe</strong>
+          <span>Turn audio or video into editable, searchable, and exportable timed text.</span>
+        </a>
+        <a class="tool-card" href="#voice-cloning" data-page-link="voice-cloning">
+          <span class="tool-card-type">Capture</span>
+          <strong>Voice cloning</strong>
+          <span>Create a reusable voice from a short, clean reference recording.</span>
+        </a>
+        <a class="tool-card" href="#voice-design" data-page-link="voice-design">
+          <span class="tool-card-type">Invent</span>
+          <strong>Voice design</strong>
+          <span>Describe a character or sound and generate a voice without a recording.</span>
+        </a>
+        <a class="tool-card" href="#voice-convert" data-page-link="voice-convert">
+          <span class="tool-card-type">Transform</span>
+          <strong>Voice convert</strong>
+          <span>Change the voice in a performance while keeping its delivery and timing.</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="module format-home" data-page="music" aria-label="Music and sound effects overview">
+      <header class="format-hero">
+        <span class="format-kicker">Music &amp; SFX</span>
+        <h2>A dedicated desk for music and story sound.</h2>
+        <p>Create a track from a written brief, reshape existing audio, or build instrumental and sound-effect material locally.</p>
+      </header>
+      <div class="tool-card-grid">
+        <a class="tool-card" href="#music-generation" data-page-link="music-generation">
+          <span class="tool-card-type">Create sound</span>
+          <strong>Music &amp; SFX</strong>
+          <span>Generate or continue music, transform an audio source, and keep the finished take in your Library.</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="module format-home" data-page="imagery" aria-label="Imagery overview">
+      <header class="format-hero">
+        <span class="format-kicker">Imagery</span>
+        <h2>Make and understand pictures.</h2>
+        <p>Keep visual generation and analysis together in one focused workspace, separate from the audio tools.</p>
+      </header>
+      <div class="tool-card-grid">
+        <a class="tool-card" href="#image-generation" data-page-link="image-generation">
+          <span class="tool-card-type">Create</span>
+          <strong>Image generation</strong>
+          <span>Generate an image from a prompt, refine it with a seed, or ask the vision model to describe an image.</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="module format-home" data-page="stories-audiobooks" aria-label="Stories and audiobooks overview">
+      <header class="format-hero">
+        <span class="format-kicker">Stories &amp; audiobooks</span>
+        <h2>Long-form work, organised from source to performance.</h2>
+        <p>Write and perform a story, build a production scene by scene, narrate a document, or extract reusable audio assets.</p>
+      </header>
+      <div class="tool-card-grid">
+        <a class="tool-card" href="#story" data-page-link="story">
+          <span class="tool-card-type">Produce</span>
+          <strong>Story</strong>
+          <span>Research or invent a script, cast its voices, and produce a finished performance.</span>
+        </a>
+        <a class="tool-card" href="/demo/story-builder.html">
+          <span class="tool-card-type">Build</span>
+          <strong>Story Builder</strong>
+          <span>Develop a structured story production scene by scene in the dedicated builder.</span>
+        </a>
+        <a class="tool-card" href="#audiobook" data-page-link="audiobook">
+          <span class="tool-card-type">Narrate</span>
+          <strong>Audiobook</strong>
+          <span>Turn a document into durable, resumable narration with listening and verification controls.</span>
+        </a>
+        <a class="tool-card" href="#extract" data-page-link="extract">
+          <span class="tool-card-type">Keep</span>
+          <strong>Extract</strong>
+          <span>Select useful passages and save reusable audio clips or voice references to Library and Voices.</span>
+        </a>
+      </div>
+    </section>
 
     <section class="module" data-page="text-to-speech" aria-label="Text to speech">
       <header class="module-head">
