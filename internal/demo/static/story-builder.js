@@ -36,7 +36,6 @@
   const timelineContent = byID("storyBuilderTimelineContent");
   const timelineRuler = byID("storyBuilderTimelineRuler");
   const playButton = byID("storyBuilderPlay");
-  const pauseButton = byID("storyBuilderPause");
   const playheadInput = byID("storyBuilderPlayhead");
   const playheadValue = byID("storyBuilderPlayheadValue");
   const playheadLine = byID("storyBuilderPlayheadLine");
@@ -203,7 +202,8 @@
       playheadLine.style.left = `${trackHeaderWidth}px`;
     }
     playButton.disabled = !project || duration <= 0;
-    pauseButton.disabled = !playbackPlaying;
+    playButton.textContent = playbackPlaying ? "Pause timeline" : "Play timeline";
+    playButton.setAttribute("aria-pressed", playbackPlaying ? "true" : "false");
   }
 
   function setStatus(state, detail = "") {
@@ -1988,8 +1988,10 @@
     timelineViewport.scrollLeft = scrollRatio * (timelineViewport.scrollWidth - timelineViewport.clientWidth);
   });
   selectionHandle.addEventListener("pointerdown", beginPanelPointerEdit);
-  playButton.addEventListener("click", () => playTimeline());
-  pauseButton.addEventListener("click", () => pauseTimeline());
+  playButton.addEventListener("click", () => {
+    if (playbackPlaying) pauseTimeline();
+    else void playTimeline();
+  });
   playheadInput.addEventListener("change", () => seekTimeline(Number(playheadInput.value)));
   buildButton.addEventListener("click", () => buildStaleDialogue());
   buildCancelButton.addEventListener("click", () => cancelDialogueBuild());

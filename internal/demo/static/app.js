@@ -327,7 +327,6 @@
     cloneSaveButton,
     speakTextInput,
     speakButton,
-    clearAllButton,
     imageFileInput,
     designDescriptionInput,
     designModelSelect,
@@ -688,6 +687,53 @@
     return element;
   }
 
+  function syncAudioToggleButtons(audio) {
+    var source = audio.getAttribute("src") || "";
+    document.querySelectorAll('[data-audio-toggle-target="' + audio.id + '"]').forEach(function (button) {
+      var active = !audio.paused && !audio.ended && button.dataset.audioSource === source;
+      button.textContent = active ? button.dataset.pauseLabel : button.dataset.playLabel;
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  function bindAudioToggleButton(audio, button, sourceProvider, playLabel, pauseLabel) {
+    button.dataset.audioToggleTarget = audio.id;
+    button.dataset.playLabel = playLabel;
+    button.dataset.pauseLabel = pauseLabel;
+    button.setAttribute("aria-pressed", "false");
+    button.addEventListener("click", function () {
+      var currentSource = audio.getAttribute("src") || "";
+      if (button.dataset.audioSource && button.dataset.audioSource === currentSource && !audio.paused) {
+        audio.pause();
+        return;
+      }
+      var canResume = button.dataset.audioSource && button.dataset.audioSource === currentSource && !audio.ended;
+      var source = canResume
+        ? button.dataset.audioSource
+        : (typeof sourceProvider === "function" ? sourceProvider() : sourceProvider);
+      if (!source) {
+        return;
+      }
+      button.dataset.audioSource = source;
+      if (source !== currentSource) {
+        audio.src = source;
+        audio.load();
+      }
+      if (audio.ended) {
+        audio.currentTime = 0;
+      }
+      audio.play().catch(function () {
+        syncAudioToggleButtons(audio);
+      });
+    });
+  }
+
+  [storyAudio, clonePreviewAudio].forEach(function (audio) {
+    ["play", "pause", "ended", "emptied"].forEach(function (eventName) {
+      audio.addEventListener(eventName, function () { syncAudioToggleButtons(audio); });
+    });
+  });
+
   function renderStatus(status) {
     var normalized = status || "unknown";
     gatewayStatus.textContent = normalized;
@@ -696,12 +742,21 @@
 
   function renderEngineRack(engines) {
     engineRack.textContent = "";
-    var names = Object.keys(engines || {}).sort();
+    var rackEngines = {};
+    Object.keys(engines || {}).forEach(function (name) {
+      var displayName = name === "diarize-sherpa" ? "diarize" : name;
+      var candidate = engines[name] || {};
+      var current = rackEngines[displayName];
+      if (!current || (!current.ready && candidate.ready)) {
+        rackEngines[displayName] = candidate;
+      }
+    });
+    var names = Object.keys(rackEngines).sort();
     if (names.length === 0) {
       names = ENGINE_NAMES;
     }
     names.forEach(function (name) {
-      var engine = (engines || {})[name] || {};
+      var engine = rackEngines[name] || {};
       var chip = createElement("span", "led-chip");
       var state = engine.status || "unknown";
       if (engine.ready) {
@@ -1391,14 +1446,8 @@
     var playButton = createElement("button", "plain compact-button", "Play");
     playButton.type = "button";
     playButton.disabled = takes.length === 0;
-    playButton.addEventListener("click", function () {
-      var current = takes.filter(function (take) { return take.id === line.current_take; })[0] || takes[0];
-      if (current) {
-        storyAudio.src = current.url;
-        storyAudio.load();
-        storyAudio.play().catch(function () { /* autoplay policy: the controls still work */ });
-      }
-    });
+    var current = takes.filter(function (take) { return take.id === line.current_take; })[0] || takes[0];
+    bindAudioToggleButton(storyAudio, playButton, current ? current.url : "", "Play", "Pause");
     head.appendChild(playButton);
 
     var retakeButton = createElement("button", "secondary compact-button", "Retake");
@@ -1585,11 +1634,11 @@
       // A button inside <summary> must not also toggle the fold.
       event.preventDefault();
       event.stopPropagation();
-      log("GET /v1/stories/" + storyID + "/scenes/" + sceneID + "/audition.wav");
-      storyAudio.src = "/v1/stories/" + encodeURIComponent(storyID) + "/scenes/" + encodeURIComponent(sceneID) + "/audition.wav?v=" + Date.now();
-      storyAudio.load();
-      storyAudio.play().catch(function () { /* autoplay policy: the controls still work */ });
     });
+    bindAudioToggleButton(storyAudio, playScene, function () {
+      log("GET /v1/stories/" + storyID + "/scenes/" + sceneID + "/audition.wav");
+      return "/v1/stories/" + encodeURIComponent(storyID) + "/scenes/" + encodeURIComponent(sceneID) + "/audition.wav?v=" + Date.now();
+    }, "Play scene", "Pause scene");
     summary.appendChild(playScene);
     section.appendChild(summary);
     section.addEventListener("toggle", function () {
@@ -2674,13 +2723,7 @@
       });
       var playButton = createElement("button", "secondary compact-button", "Play");
       playButton.type = "button";
-      playButton.addEventListener("click", function () {
-        clonePreviewAudio.src = clone.audio_url;
-        clonePreviewAudio.load();
-        clonePreviewAudio.play().catch(function () {
-          log("Reference playback is ready");
-        });
-      });
+      bindAudioToggleButton(clonePreviewAudio, playButton, clone.audio_url, "Play", "Pause");
       actions.appendChild(useButton);
       actions.appendChild(playButton);
       if (clone.protected) {
@@ -5258,51 +5301,11 @@
     log("Cleared workspace");
   }
 
-  // clearEverything resets every panel to a fresh page: inputs, outputs,
-  // conversation, and the session log. Stored voices and retained stories
-  // are library data, not page state, so they stay; a story mid-generation
-  // keeps running.
+  // The header action is deliberately a page-level reset so every current
+  // and future tool is covered. Durable Library data and server-side jobs
+  // are not page state, so reloading cannot delete or cancel them.
   function clearEverything() {
-    clearActiveWav();
-    messageInput.value = "";
-    resetOutputs();
-    conversation = [];
-    renderConversation();
-
-    clearCloneWav();
-    cloneNameInput.value = "";
-    clearCloneError();
-    speakTextInput.value = "";
-    clearSpeakAudio();
-    clonePreviewAudio.removeAttribute("src");
-    clonePreviewAudio.load();
-
-    designDescriptionInput.value = "";
-    designNameInput.value = "";
-    clearDesignError();
-    clearDesignCandidate();
-
-    clearConversionFile("source");
-    clearConversionFile("target");
-    clearConversionError();
-
-    imagePromptInput.value = "";
-    clearImageOutput();
-
-    if (!activeStoryID) {
-      setStoryStatus("Idle", 0);
-      storyAudio.removeAttribute("src");
-      storyAudio.load();
-      saveStoryButton.disabled = true;
-      storyFacts.textContent = "";
-      clearStoryError();
-      discardDraft();
-      resetCast();
-      resetSources();
-    }
-
-    logOutput.textContent = "";
-    log("Cleared the workspace");
+    window.location.reload();
   }
 
   function syncSizePresets() {
@@ -7084,7 +7087,8 @@
     segments: [],       // {start, end, text, speaker}
     checked: {},        // segment index -> true: multi-segment selection
     filter: "",
-    playback: null,     // {ctx, source, anchor, offset, raf}
+    playback: null,     // active {ctx, source, anchor, offset, sampleOffset, samples, key, mode, raf}
+    pausedPlayback: null,
     selectedRow: -1
   };
 
@@ -7732,8 +7736,8 @@
       g.fillRect(sx, 0, 2, segment.speaker ? 14 : 8);
     });
 
-    // Playhead while playing; parked cursor otherwise.
-    if (ex.playback) {
+    // Playhead while playing or paused; parked cursor otherwise.
+    if (ex.playback || ex.pausedPlayback) {
       var t = extractPlayheadTime();
       if (t >= viewStart && t <= ex.view.end) {
         var px = ((t - viewStart) / viewLen) * cssWidth;
@@ -7844,11 +7848,7 @@
     } else if (event.key === "End") {
       setAudioCursorTime(ex.duration, -1);
     } else if (event.key === " " || event.key === "Enter") {
-      if (ex.playback) {
-        extractStopPlayback();
-      } else {
-        extractPlayButton.click();
-      }
+      extractPlayButton.click();
     } else if (event.key === "Escape") {
       extractStopPlayback();
     } else {
@@ -7886,6 +7886,7 @@
     } else {
       extractRegionStatus.textContent = "None — drag on the waveform, click a transcript line, or tick segments";
     }
+    syncExtractPlaybackControls();
   }
 
   // --- zoom --------------------------------------------------------------
@@ -7906,57 +7907,119 @@
 
   // --- playback ----------------------------------------------------------
   function extractPlayheadTime() {
-    if (!ex.playback) {
-      return 0;
+    if (ex.playback) {
+      return ex.playback.offset + ex.playback.sampleOffset / ex.rate + (ex.playback.ctx.currentTime - ex.playback.anchor);
     }
-    return ex.playback.offset + (ex.playback.ctx.currentTime - ex.playback.anchor);
+    if (ex.pausedPlayback) {
+      return ex.pausedPlayback.offset + ex.pausedPlayback.sampleOffset / ex.rate;
+    }
+    return 0;
+  }
+
+  function syncExtractPlaybackControls() {
+    var mode = ex.playback ? ex.playback.mode : audioWorkspaceMode;
+    extractPlayButton.textContent = ex.playback
+      ? (mode === "segment" ? "Pause segment" : mode === "extract" ? "Pause selection" : "Pause audio")
+      : (audioWorkspaceMode === "extract" ? "Play selection" : "Play audio");
+    extractPlayButton.setAttribute("aria-pressed", ex.playback ? "true" : "false");
+    extractStopButton.disabled = !ex.playback && !ex.pausedPlayback;
+    document.querySelectorAll(".extract-segment-play").forEach(function (button) {
+      var active = Boolean(ex.playback && ex.playback.key === button.dataset.playbackKey);
+      button.textContent = active ? "Pause segment" : "Play segment";
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  function releaseExtractPlayback() {
+    var current = ex.playback;
+    if (!current) {
+      return null;
+    }
+    current.source.onended = null;
+    try { current.source.stop(); } catch (err) { /* already stopped */ }
+    window.cancelAnimationFrame(current.raf);
+    // The shared context stays open for the next play.
+    ex.playback = null;
+    return current;
   }
 
   function extractStopPlayback() {
-    if (!ex.playback) {
-      return;
-    }
-    try { ex.playback.source.stop(); } catch (err) { /* already stopped */ }
-    window.cancelAnimationFrame(ex.playback.raf);
-    // The shared context stays open for the next play.
-    ex.playback = null;
-    extractStopButton.disabled = true;
+    releaseExtractPlayback();
+    ex.pausedPlayback = null;
+    syncExtractPlaybackControls();
     drawExtractWave();
   }
 
-  extractPlayButton.addEventListener("click", function () {
-    if (!ex.samples) {
+  function extractPausePlayback() {
+    var current = ex.playback;
+    if (!current) {
       return;
     }
+    var elapsedSamples = Math.max(0, Math.floor((current.ctx.currentTime - current.anchor) * ex.rate));
+    current.sampleOffset = Math.min(current.samples.length, current.sampleOffset + elapsedSamples);
+    releaseExtractPlayback();
+    ex.pausedPlayback = current.sampleOffset < current.samples.length ? current : null;
+    syncExtractPlaybackControls();
+    drawExtractWave();
+  }
+
+  function extractPlaybackPlan() {
     // Extract auditions its selected result; Transcribe always listens from
     // the written transcript's cursor without consuming clip-selection state.
     var spans = audioWorkspaceMode === "extract" ? checkedSpans() : [];
-    var stitched = null;
     var start;
+    var end;
+    var samples;
+    var key;
     if (spans.length > 0) {
-      stitched = stitchSpans(spans);
+      samples = stitchSpans(spans);
       start = spans[0].start;
+      key = "extract:spans:" + spans.map(function (span) {
+        return span.start.toFixed(3) + "-" + span.end.toFixed(3);
+      }).join(",");
     } else {
       var activeRegion = audioWorkspaceMode === "extract" ? ex.region : null;
       start = activeRegion ? activeRegion.start : Math.min(ex.cursor, ex.duration);
-      var end = activeRegion ? activeRegion.end : ex.duration;
+      end = activeRegion ? activeRegion.end : ex.duration;
       if (end - start <= 0.01) {
-        return;
+        return null;
       }
+      samples = ex.samples.subarray(Math.floor(start * ex.rate), Math.floor(end * ex.rate));
+      key = audioWorkspaceMode + ":" + start.toFixed(3) + "-" + end.toFixed(3);
     }
+    return { samples: samples, offset: start, sampleOffset: 0, key: key, mode: audioWorkspaceMode };
+  }
+
+  function startExtractPlayback(plan) {
     extractStopPlayback();
     var ctx = extractCtx();
-    var playbackEnd = audioWorkspaceMode === "extract" && ex.region ? ex.region.end : ex.duration;
-    var length = stitched ? stitched.length : Math.floor((playbackEnd - start) * ex.rate);
-    var buffer = ctx.createBuffer(1, length, ex.rate);
-    buffer.copyToChannel(stitched || ex.samples.subarray(Math.floor(start * ex.rate), Math.floor(start * ex.rate) + length), 0);
+    var remaining = plan.samples.subarray(plan.sampleOffset);
+    if (!remaining.length) {
+      return;
+    }
+    var buffer = ctx.createBuffer(1, remaining.length, ex.rate);
+    buffer.copyToChannel(remaining, 0);
     var source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
-    ex.playback = { ctx: ctx, source: source, anchor: ctx.currentTime, offset: start, raf: 0 };
-    source.onended = extractStopPlayback;
+    ex.playback = {
+      ctx: ctx,
+      source: source,
+      anchor: ctx.currentTime,
+      offset: plan.offset,
+      sampleOffset: plan.sampleOffset,
+      samples: plan.samples,
+      key: plan.key,
+      mode: plan.mode,
+      raf: 0
+    };
+    source.onended = function () {
+      if (ex.playback && ex.playback.source === source) {
+        extractStopPlayback();
+      }
+    };
     source.start();
-    extractStopButton.disabled = false;
+    syncExtractPlaybackControls();
     (function tick() {
       if (!ex.playback) {
         return;
@@ -7964,6 +8027,24 @@
       drawExtractWave();
       ex.playback.raf = window.requestAnimationFrame(tick);
     }());
+  }
+
+  extractPlayButton.addEventListener("click", function () {
+    if (!ex.samples) {
+      return;
+    }
+    if (ex.playback) {
+      extractPausePlayback();
+      return;
+    }
+    var plan = extractPlaybackPlan();
+    if (!plan) {
+      return;
+    }
+    if (ex.pausedPlayback && ex.pausedPlayback.key === plan.key) {
+      plan = ex.pausedPlayback;
+    }
+    startExtractPlayback(plan);
   });
   extractStopButton.addEventListener("click", extractStopPlayback);
 
@@ -8172,6 +8253,29 @@
       if (segment.speaker) {
         head.appendChild(createElement("span", "extract-segment-speaker", segment.speaker));
       }
+      var segmentPlan = {
+        samples: ex.samples.subarray(Math.floor(segment.start * ex.rate), Math.floor(segment.end * ex.rate)),
+        offset: segment.start,
+        sampleOffset: 0,
+        key: "segment:" + index + ":" + segment.start.toFixed(3) + "-" + segment.end.toFixed(3),
+        mode: "segment"
+      };
+      var segmentPlay = createElement("button", "secondary compact-button extract-segment-play", "Play segment");
+      segmentPlay.type = "button";
+      segmentPlay.dataset.playbackKey = segmentPlan.key;
+      segmentPlay.setAttribute("aria-pressed", "false");
+      segmentPlay.addEventListener("click", function (event) {
+        event.stopPropagation();
+        if (ex.playback && ex.playback.key === segmentPlan.key) {
+          extractPausePlayback();
+          return;
+        }
+        var plan = ex.pausedPlayback && ex.pausedPlayback.key === segmentPlan.key
+          ? ex.pausedPlayback
+          : segmentPlan;
+        startExtractPlayback(plan);
+      });
+      head.appendChild(segmentPlay);
       var tags = createElement("span", "extract-segment-tags");
       // Offer every speaker present plus the manual defaults, so detected
       // clusters (D, E, ...) can be corrected by hand too.
@@ -8236,6 +8340,7 @@
     if (!extractTimeline.childNodes.length) {
       extractTimeline.textContent = "No segments tagged " + ex.filter + " yet.";
     }
+    syncExtractPlaybackControls();
     syncTranscribeTools();
   }
 

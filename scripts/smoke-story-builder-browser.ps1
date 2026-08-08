@@ -133,6 +133,8 @@ async page => {
   const assert = (condition, message) => {
     if (!condition) throw new Error(message);
   };
+  await page.locator('[data-parent-link="stories-audiobooks"]').click();
+  await page.waitForFunction(() => location.hash === '#stories-audiobooks');
   const launch = page.getByRole('link', { name: 'Story Builder', exact: true });
   await launch.waitFor();
   await page.keyboard.press('Tab');
@@ -767,15 +769,17 @@ async page => {
   const projectID = '__PLAYBACK_PROJECT_ID__';
   const playbackState = () => page.evaluate(() => structuredClone(window.__storyPlayback));
   await page.goto(`${page.url().split('/demo/')[0]}/demo/story-builder.html?project=${projectID}`);
-  const play = page.getByRole('button', { name: 'Play timeline' });
-  const pause = page.getByRole('button', { name: 'Pause timeline' });
+  const playPause = page.locator('#storyBuilderPlay');
   const playhead = page.getByRole('slider', { name: 'Playhead' });
-  await play.waitFor();
-  assert(await play.isEnabled(), 'Play timeline was not available');
-  assert(await pause.isDisabled(), 'Pause timeline was enabled before playback');
+  await playPause.waitFor();
+  assert(await playPause.isEnabled(), 'Play/pause timeline was not available');
+  assert((await playPause.innerText()) === 'Play timeline', 'timeline transport did not start in Play state');
+  assert((await playPause.getAttribute('aria-pressed')) === 'false', 'timeline transport started pressed');
 
   await page.keyboard.press('Space');
   await page.locator('#storyBuilderPlaybackStatus').filter({ hasText: /Playing from/ }).waitFor();
+  assert((await playPause.innerText()) === 'Pause timeline', 'timeline transport did not switch to Pause');
+  assert((await playPause.getAttribute('aria-pressed')) === 'true', 'timeline transport did not expose playing state');
   await page.waitForFunction(() => window.__storyPlayback.starts.length === 3);
   let state = await playbackState();
   assert(state.decoded.length === 3 && state.decoded.every(size => size > 44), 'timeline did not decode all fixture WAVs');
@@ -789,6 +793,8 @@ async page => {
   await page.waitForTimeout(140);
   await page.keyboard.press('Space');
   await page.locator('#storyBuilderPlaybackStatus').filter({ hasText: /Paused at/ }).waitFor();
+  assert((await playPause.innerText()) === 'Play timeline', 'timeline transport did not return to Play');
+  assert((await playPause.getAttribute('aria-pressed')) === 'false', 'timeline transport stayed pressed after pause');
   const pausedAt = Number(await playhead.inputValue());
   assert(pausedAt >= 50 && pausedAt < 700, 'Pause did not retain the current playhead');
 
@@ -804,14 +810,13 @@ async page => {
   const projectID = '__PLAYBACK_PROJECT_ID__';
   const projectState = id => page.evaluate(id => fetch(`/v1/story-builder-projects/${id}`).then(response => response.json()), id);
   const playbackState = () => page.evaluate(() => structuredClone(window.__storyPlayback));
-  const play = page.getByRole('button', { name: 'Play timeline' });
-  const pause = page.getByRole('button', { name: 'Pause timeline' });
+  const playPause = page.locator('#storyBuilderPlay');
   const playhead = page.getByRole('slider', { name: 'Playhead' });
   const revisionBefore = (await projectState(projectID)).revision;
 
   await playhead.fill('500');
   await page.locator('#storyBuilderPlaybackStatus').filter({ hasText: /00:00\.500/ }).waitFor();
-  await play.click();
+  await playPause.click();
   await page.waitForFunction(() => window.__storyPlayback.starts.length === 6);
   const state = await playbackState();
   const sought = state.starts.slice(-3);
@@ -833,16 +838,20 @@ async page => {
   await page.locator('#storyBuilderTimelineViewport').evaluate(node => { node.scrollLeft = 300; });
   await page.waitForTimeout(80);
   assert((await playbackState()).starts.length === startsBeforeViewChange, 'zoom or horizontal scroll changed playback scheduling');
-  await pause.click();
+  await playPause.click();
+  await page.locator('#storyBuilderPlaybackStatus').filter({ hasText: /Paused at/ }).waitFor();
 
   await playhead.fill('0');
-  await play.click();
+  await playPause.click();
   await page.waitForFunction(count => window.__storyPlayback.starts.length === count + 3, startsBeforeViewChange);
-  const beforeRestart = await playbackState();
-  await play.click();
-  await page.waitForFunction(count => window.__storyPlayback.starts.length === count + 3, beforeRestart.starts.length);
-  const restarted = await playbackState();
-  assert(restarted.stops >= 3, 'new Play did not stop conflicting browser sources');
+  const beforePause = await playbackState();
+  await playPause.click();
+  await page.locator('#storyBuilderPlaybackStatus').filter({ hasText: /Paused at/ }).waitFor();
+  const paused = await playbackState();
+  assert(paused.stops > beforePause.stops, 'Pause did not stop scheduled browser sources');
+  await playPause.click();
+  await page.waitForFunction(count => window.__storyPlayback.starts.length === count + 3, paused.starts.length);
+  const resumed = await playbackState();
 
   await page.locator('.timeline-clip.clip-sfx').first().click();
   const beforeAudition = await playbackState();
@@ -863,7 +872,7 @@ async page => {
   assert(!(await page.getByRole('button', { name: 'Undo' }).isDisabled()), 'timeline edit did not create Undo history');
   await playhead.fill('0');
   const beforeUndoPlayback = await playbackState();
-  await play.click();
+  await playPause.click();
   await page.waitForFunction(count => window.__storyPlayback.starts.length > count, beforeUndoPlayback.starts.length);
   const playingBeforeUndo = await playbackState();
   await page.getByRole('button', { name: 'Undo' }).click();

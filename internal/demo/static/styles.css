@@ -135,8 +135,9 @@ summary:focus-visible,
 .engine-rack {
   display: flex;
   align-items: center;
-  gap: 4px;
-  flex-wrap: wrap;
+  gap: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   padding: 6px 8px;
@@ -146,9 +147,10 @@ summary:focus-visible,
 
 .led-chip {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 7px;
-  padding: 4px 9px;
+  gap: 6px;
+  padding: 4px 7px;
   color: var(--muted);
   font-family: var(--mono);
   font-size: 0.68rem;
@@ -455,6 +457,10 @@ summary:focus-visible,
 .workspace > .control-panel,
 .workspace > .result-panel {
   min-width: 0;
+}
+
+.module[data-page="voice-cloning"] .workspace {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .field {
