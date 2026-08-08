@@ -2295,6 +2295,43 @@ html[data-studio-format="stories-audiobooks"] {
   justify-content: flex-end;
 }
 
+.conversion-route-controls,
+.audio-service-workspace,
+.audio-service-form {
+  display: grid;
+  gap: 14px;
+}
+
+.conversion-route-controls {
+  grid-template-columns: minmax(220px, 0.45fr) minmax(280px, 1fr);
+  margin-top: 16px;
+}
+
+.audio-service-workspace {
+  grid-template-columns: minmax(280px, 0.8fr) minmax(320px, 1.2fr);
+  align-items: start;
+}
+
+.audio-analysis-output {
+  min-height: 180px;
+  max-height: 420px;
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--well);
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+@media (max-width: 760px) {
+  .conversion-route-controls,
+  .audio-service-workspace {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 820px) {
   .music-desk {
     grid-template-columns: 1fr;

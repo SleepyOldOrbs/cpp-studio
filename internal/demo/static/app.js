@@ -140,6 +140,9 @@
   var conversionModelSelect = document.getElementById("conversionModelSelect");
   var conversionModelHint = document.getElementById("conversionModelHint");
   var conversionModelInstallLink = document.getElementById("conversionModelInstallLink");
+  var conversionRouteSelect = document.getElementById("conversionRouteSelect");
+  var conversionTargetTextField = document.getElementById("conversionTargetTextField");
+  var conversionTargetTextInput = document.getElementById("conversionTargetTextInput");
   var conversionSourceAudio = document.getElementById("conversionSourceAudio");
   var conversionSourceInput = document.getElementById("conversionSourceInput");
   var conversionSourceRecordButton = document.getElementById("conversionSourceRecordButton");
@@ -197,6 +200,23 @@
   var musicSaveWavButton = document.getElementById("musicSaveWavButton");
   var musicReuseButton = document.getElementById("musicReuseButton");
   var musicLibraryButton = document.getElementById("musicLibraryButton");
+
+  var separationForm = document.getElementById("separationForm");
+  var separationModelSelect = document.getElementById("separationModelSelect");
+  var separationModelHint = document.getElementById("separationModelHint");
+  var separationFileInput = document.getElementById("separationFileInput");
+  var separationSubmitButton = document.getElementById("separationSubmitButton");
+  var separationStatus = document.getElementById("separationStatus");
+  var analysisForm = document.getElementById("analysisForm");
+  var analysisModelSelect = document.getElementById("analysisModelSelect");
+  var analysisModelHint = document.getElementById("analysisModelHint");
+  var analysisFileInput = document.getElementById("analysisFileInput");
+  var analysisTranscriptField = document.getElementById("analysisTranscriptField");
+  var analysisTranscriptInput = document.getElementById("analysisTranscriptInput");
+  var analysisLanguageField = document.getElementById("analysisLanguageField");
+  var analysisLanguageInput = document.getElementById("analysisLanguageInput");
+  var analysisSubmitButton = document.getElementById("analysisSubmitButton");
+  var analysisOutput = document.getElementById("analysisOutput");
 
   var ENGINE_NAMES = ["llama", "whisper", "audio", "voiceconvert", "music", "dramabox", "sd", "vision", "voicedesign"];
   var HEALTH_POLL_MS = 20000;
@@ -533,6 +553,7 @@
     storyDraftButton.disabled = busy || Boolean(activeStoryID);
     syncConversionControls();
     syncMusicControls();
+    syncAudioServiceControls();
   }
 
   function setRunning(value) {
@@ -787,6 +808,14 @@
     "qwen3-vl-4b-instruct": "Qwen3-VL 4B Instruct"
   };
 
+  function catalogModelLabel(model) {
+    return model.displayName || CATALOG_MODEL_LABELS[model.id] || model.id;
+  }
+
+  function catalogModelHasCapability(model, capability) {
+    return (model.capabilities || []).indexOf(capability) >= 0;
+  }
+
   // A deep verification promotes an installed model's state from "present"
   // to "verified"; models without declared checks remain "unverified".
   // All three states mean the artifact is on disk and may be offered by a
@@ -801,7 +830,9 @@
 
   function renderConversionModels(models) {
     var compatible = (models || []).filter(function (model) {
-      return model.engine === "voiceconvert" && model.family === "chatterbox";
+      return catalogModelHasCapability(model, "voice_conversion") ||
+        catalogModelHasCapability(model, "singing_voice_conversion") ||
+        catalogModelHasCapability(model, "speech_editing");
     });
     conversionModelSelect.textContent = "";
     conversionModelReady = false;
@@ -809,7 +840,7 @@
       return model.configured === true && catalogModelIsInstalled(model);
     });
     compatible.forEach(function (model) {
-      var label = CATALOG_MODEL_LABELS[model.id] || model.id;
+      var label = catalogModelLabel(model);
       if (!catalogModelIsInstalled(model)) {
         label += " · not installed";
       } else if (!model.configured) {
@@ -817,6 +848,8 @@
       }
       var option = createElement("option", "", label);
       option.value = model.id;
+      option.dataset.family = model.family || "";
+      option.dataset.capabilities = (model.capabilities || []).join(" ");
       option.disabled = model.configured !== true || !catalogModelIsInstalled(model);
       option.title = model.description || "";
       conversionModelSelect.appendChild(option);
@@ -870,7 +903,7 @@
 
   function renderMusicModels(models) {
     var compatible = (models || []).filter(function (model) {
-      return model.engine === "music" && model.family === "ace_step";
+      return catalogModelHasCapability(model, "music") || catalogModelHasCapability(model, "sfx");
     });
     musicModelSelect.textContent = "";
     musicModelReady = false;
@@ -878,7 +911,7 @@
       return model.configured === true && catalogModelIsInstalled(model);
     });
     compatible.forEach(function (model) {
-      var label = CATALOG_MODEL_LABELS[model.id] || model.id;
+      var label = catalogModelLabel(model);
       if (!catalogModelIsInstalled(model)) {
         label += " · not installed";
       } else if (!model.configured) {
@@ -886,6 +919,8 @@
       }
       var option = createElement("option", "", label);
       option.value = model.id;
+      option.dataset.family = model.family || "";
+      option.dataset.capabilities = (model.capabilities || []).join(" ");
       option.disabled = model.configured !== true || !catalogModelIsInstalled(model);
       option.title = model.description || "";
       musicModelSelect.appendChild(option);
@@ -900,8 +935,8 @@
       musicModelSelect.disabled = false;
       musicModelReady = true;
       musicModelHint.textContent = usable.length === 1
-        ? "Only configured music model. ACE-Step creates and edits locally; Q8_0 saves space."
-        : "ACE-Step creates and edits locally. Q8_0 saves space; audition important renders for quantization drift.";
+        ? "One compatible model is installed and ready."
+        : "Installed compatible models are ready; choose music or SFX for the current job.";
       musicModelInstallLink.hidden = true;
     } else {
       if (compatible.length) {
@@ -913,7 +948,38 @@
         : "No compatible music model is configured.";
       musicModelInstallLink.hidden = compatible.length === 0;
     }
-    syncMusicControls();
+    syncMusicMode();
+  }
+
+  function renderCapabilityModels(select, hint, models, capabilities) {
+    var compatible = (models || []).filter(function (model) {
+      return capabilities.some(function (capability) { return catalogModelHasCapability(model, capability); });
+    });
+    select.textContent = "";
+    compatible.forEach(function (model) {
+      var usable = model.configured === true && catalogModelIsInstalled(model);
+      var label = catalogModelLabel(model);
+      if (!catalogModelIsInstalled(model)) label += " · not installed";
+      else if (!model.configured) label += " · not configured";
+      var option = createElement("option", "", label);
+      option.value = model.id;
+      option.dataset.family = model.family || "";
+      option.dataset.capabilities = (model.capabilities || []).join(" ");
+      option.disabled = !usable;
+      select.appendChild(option);
+    });
+    var first = compatible.filter(function (model) {
+      return model.configured === true && catalogModelIsInstalled(model);
+    })[0];
+    if (first) {
+      select.value = first.id;
+      select.disabled = false;
+      hint.textContent = first.description || "Ready.";
+    } else {
+      if (!compatible.length) select.appendChild(createElement("option", "", "No compatible model listed"));
+      select.disabled = true;
+      hint.textContent = compatible.length ? "Install a listed model from Models first." : "No compatible model is configured.";
+    }
   }
 
   function updateDesignModels(engines) {
@@ -946,7 +1012,7 @@
   function initCatalogModels() {
     var displays = Array.prototype.slice.call(document.querySelectorAll(".model-fixed-value[data-model-engines]"));
     var speechSelects = Array.prototype.slice.call(document.querySelectorAll("select[data-speech-models]"));
-    if (displays.length === 0 && speechSelects.length === 0 && !conversionModelSelect && !visionModelSelect && !musicModelSelect) {
+    if (displays.length === 0 && speechSelects.length === 0 && !conversionModelSelect && !visionModelSelect && !musicModelSelect && !separationModelSelect && !analysisModelSelect) {
       return;
     }
     fetch("/v1/models/catalog")
@@ -988,15 +1054,19 @@
         speechSelects.forEach(function (select) {
           var engines = (select.getAttribute("data-model-engines") || "").split(/\s+/).filter(Boolean);
           var families = (select.getAttribute("data-model-families") || "").split(/\s+/).filter(Boolean);
+          var capabilities = (select.getAttribute("data-model-capabilities") || "").split(/\s+/).filter(Boolean);
           var compatible = models.filter(function (model) {
             return engines.indexOf(model.engine) >= 0 &&
-              (families.length === 0 || families.indexOf(model.family) >= 0);
+              (families.length === 0 || families.indexOf(model.family) >= 0) &&
+              (capabilities.length === 0 || capabilities.some(function (capability) {
+                return catalogModelHasCapability(model, capability);
+              }));
           });
           select.textContent = "";
           var firstUsable = "";
           compatible.forEach(function (model) {
             var usable = model.configured === true && catalogModelIsInstalled(model);
-            var label = CATALOG_MODEL_LABELS[model.id] || model.id;
+            var label = catalogModelLabel(model);
             if (!catalogModelIsInstalled(model)) {
               label += " · not installed";
             } else if (!model.configured) {
@@ -1054,6 +1124,10 @@
         renderConversionModels(models);
         renderVisionModel(models);
         renderMusicModels(models);
+        renderCapabilityModels(separationModelSelect, separationModelHint, models, ["separation"]);
+        renderCapabilityModels(analysisModelSelect, analysisModelHint, models, ["vad", "diarization", "forced_alignment"]);
+        initTranscriptionModelSelect(extractModelSelect, models);
+        syncAudioServiceControls();
       })
       .catch(function () {
         displays.forEach(function (display) {
@@ -3995,6 +4069,17 @@
     var capturingSource = conversionCapture && conversionCapture.kind === "source";
     var capturingTarget = conversionCapture && conversionCapture.kind === "target";
     var captureBusy = Boolean(conversionCapture || conversionCapturePending);
+    var modelOption = conversionModelSelect.options[conversionModelSelect.selectedIndex];
+    var isVevo = modelOption && modelOption.dataset.family === "vevo2";
+    if (!isVevo && conversionRouteSelect.value !== "style_preserved_vc") {
+      conversionRouteSelect.value = "style_preserved_vc";
+    }
+    Array.prototype.forEach.call(conversionRouteSelect.options, function (option) {
+      option.disabled = !isVevo && option.value !== "style_preserved_vc";
+    });
+    var editing = isVevo && conversionRouteSelect.value === "editing";
+    conversionTargetTextField.hidden = !editing;
+    conversionTargetTextInput.required = editing;
     conversionSourceInput.disabled = studioBusy || captureBusy;
     conversionTargetInput.disabled = studioBusy || captureBusy || Boolean(conversionTargetVoiceSelect.value);
     conversionTargetVoiceSelect.disabled = studioBusy || captureBusy;
@@ -4002,7 +4087,9 @@
     conversionTargetRecordButton.disabled = studioBusy || capturingSource || Boolean(conversionTargetVoiceSelect.value) || (conversionCapturePending && !capturingTarget) || (!captureBusy && !canRecord());
     conversionSourceClearButton.disabled = studioBusy || captureBusy || !conversionSourceFile;
     conversionTargetClearButton.disabled = studioBusy || captureBusy || (!conversionTargetFile && !conversionTargetVoiceSelect.value);
-    conversionSubmitButton.disabled = studioBusy || captureBusy || !conversionModelReady || !conversionSourceFile || (!conversionTargetFile && !conversionTargetVoiceSelect.value);
+    conversionRouteSelect.disabled = studioBusy || captureBusy || !isVevo;
+    conversionTargetTextInput.disabled = studioBusy || captureBusy || !editing;
+    conversionSubmitButton.disabled = studioBusy || captureBusy || !conversionModelReady || !conversionSourceFile || (!conversionTargetFile && !conversionTargetVoiceSelect.value) || (editing && !conversionTargetTextInput.value.trim());
     conversionSaveWavButton.disabled = studioBusy || !conversionOutputBlob;
     conversionLibraryButton.disabled = studioBusy || !conversionOutputBlob;
   }
@@ -4093,6 +4180,10 @@
     try {
       var form = new FormData();
       form.append("model", conversionModelSelect.value);
+      form.append("route", conversionRouteSelect.value);
+      if (conversionTargetTextInput.value.trim()) {
+        form.append("target_text", conversionTargetTextInput.value.trim());
+      }
       form.append("source", conversionSourceFile, conversionSourceFile.name || "source.wav");
       if (conversionTargetFile) {
         form.append("target", conversionTargetFile, conversionTargetFile.name || "target.wav");
@@ -4202,6 +4293,11 @@
   }
 
   function syncMusicMode() {
+    var modelOption = musicModelSelect.options[musicModelSelect.selectedIndex];
+    var isACE = !modelOption || modelOption.dataset.family === "ace_step";
+    if (!isACE) {
+      musicModeSelect.value = "text2music";
+    }
     var route = musicModeSelect.value;
     var required = musicRouteNeedsSource(route);
     var messages = {
@@ -4213,7 +4309,7 @@
       extract: "Extracts a named stem from a required source.",
       "cover-nofsq": "Makes a cover through the alternative no-FSQ path."
     };
-    musicModeHint.textContent = messages[route] || "Choose a supported ACE-Step operation.";
+    musicModeHint.textContent = isACE ? (messages[route] || "Choose a supported ACE-Step operation.") : "This model generates from a written brief; ACE-Step-only editing controls are disabled.";
     musicSourceRequirement.textContent = required ? "This operation requires source audio." : (route === "complete" ? "Source audio is optional." : "No source audio is needed.");
     musicTrackField.hidden = route !== "lego" && route !== "extract";
     musicRepaintControls.hidden = route !== "repaint";
@@ -4228,19 +4324,24 @@
     }
     var studioBusy = running || recording || recordSetupPending || live || cloneRecording || cloneSetupPending || conversionCapture || conversionCapturePending || handsFree || handsFreeSetupPending;
     var captureBusy = Boolean(musicCapture || musicCapturePending);
-    var sourceAllowed = musicModeSelect.value !== "text2music";
-    var required = musicRouteNeedsSource(musicModeSelect.value);
-    musicModeSelect.disabled = studioBusy || captureBusy;
+    var modelOption = musicModelSelect.options[musicModelSelect.selectedIndex];
+    var isACE = !modelOption || modelOption.dataset.family === "ace_step";
+    var sourceAllowed = isACE && musicModeSelect.value !== "text2music";
+    var required = isACE && musicRouteNeedsSource(musicModeSelect.value);
+    musicModeSelect.disabled = studioBusy || captureBusy || !isACE;
     musicPromptInput.disabled = studioBusy || captureBusy;
     musicLyricsInput.disabled = studioBusy || captureBusy;
     musicSourceInput.disabled = studioBusy || captureBusy || !sourceAllowed;
     musicSourceRecordButton.disabled = studioBusy || !sourceAllowed || (musicCapturePending && !musicCapture) || (!captureBusy && !canRecord());
     musicSourceClearButton.disabled = studioBusy || captureBusy || !musicSourceFile;
-    musicAnalyzeButton.disabled = studioBusy || captureBusy || !musicModelReady || !musicSourceFile;
+    musicAnalyzeButton.disabled = studioBusy || captureBusy || !musicModelReady || !musicSourceFile || !isACE;
     [musicDurationInput, musicSeedInput, musicStepsInput, musicGuidanceInput, musicTrackInput,
       musicRepaintStartInput, musicRepaintEndInput, musicRepaintModeSelect, musicRepaintStrengthInput].forEach(function (control) {
       control.disabled = studioBusy || captureBusy;
     });
+    musicStepsInput.disabled = studioBusy || captureBusy || !isACE;
+    musicGuidanceInput.disabled = studioBusy || captureBusy || !isACE;
+    musicGenerateButton.textContent = modelOption && (modelOption.dataset.capabilities || "").split(" ").indexOf("sfx") >= 0 && (modelOption.dataset.capabilities || "").split(" ").indexOf("music") < 0 ? "Generate SFX" : "Generate music";
     musicGenerateButton.disabled = studioBusy || captureBusy || !musicModelReady || !musicPromptInput.value.trim() || (required && !musicSourceFile);
     musicSaveWavButton.disabled = studioBusy || !musicOutputBlob;
     musicReuseButton.disabled = studioBusy || !musicOutputBlob;
@@ -4406,6 +4507,84 @@
     }
   }
 
+  function syncAudioServiceControls() {
+    if (separationForm) {
+      separationSubmitButton.disabled = running || separationModelSelect.disabled || !separationFileInput.files.length;
+    }
+    if (analysisForm) {
+      var option = analysisModelSelect.options[analysisModelSelect.selectedIndex];
+      var forced = option && (option.dataset.capabilities || "").split(" ").indexOf("forced_alignment") >= 0;
+      analysisTranscriptField.hidden = !forced;
+      analysisLanguageField.hidden = !forced;
+      analysisTranscriptInput.required = forced;
+      analysisLanguageInput.required = forced;
+      analysisSubmitButton.disabled = running || analysisModelSelect.disabled || !analysisFileInput.files.length || (forced && (!analysisTranscriptInput.value.trim() || !analysisLanguageInput.value.trim()));
+    }
+  }
+
+  async function runSeparation(event) {
+    event.preventDefault();
+    if (!separationFileInput.files.length || separationModelSelect.disabled) return;
+    setRunning(true);
+    setBusy(separationSubmitButton, "Separating…");
+    separationStatus.textContent = "Running the selected source-separation model…";
+    try {
+      var form = new FormData();
+      var file = separationFileInput.files[0];
+      form.append("file", file, file.name || "mixture.wav");
+      form.append("model", separationModelSelect.value);
+      var response = await fetch("/v1/audio/separation", { method: "POST", body: form });
+      await ensureOk(response, "Source separation");
+      var archive = await response.blob();
+      var url = URL.createObjectURL(archive);
+      downloadURL(url, "separated-stems.zip");
+      window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      separationStatus.textContent = "Complete · downloaded separated-stems.zip";
+      log("Source separation complete: " + formatBytes(archive.size));
+    } catch (error) {
+      separationStatus.textContent = "Separation failed: " + (error.message || error);
+      log(separationStatus.textContent, "error");
+    } finally {
+      clearBusy(separationSubmitButton);
+      setRunning(false);
+      syncAudioServiceControls();
+    }
+  }
+
+  async function runAudioAnalysis(event) {
+    event.preventDefault();
+    var option = analysisModelSelect.options[analysisModelSelect.selectedIndex];
+    if (!option || !analysisFileInput.files.length) return;
+    var capabilities = (option.dataset.capabilities || "").split(" ");
+    var endpoint = capabilities.indexOf("forced_alignment") >= 0 ? "/v1/audio/alignment" :
+      (capabilities.indexOf("diarization") >= 0 ? "/v1/audio/diarization" : "/v1/audio/vad");
+    setRunning(true);
+    setBusy(analysisSubmitButton, "Analyzing…");
+    analysisOutput.textContent = "Analyzing…";
+    try {
+      var form = new FormData();
+      var file = analysisFileInput.files[0];
+      form.append("file", file, file.name || "analysis.wav");
+      form.append("model", analysisModelSelect.value);
+      if (endpoint === "/v1/audio/alignment") {
+        form.append("transcript", analysisTranscriptInput.value.trim());
+        form.append("language", analysisLanguageInput.value.trim());
+      }
+      var response = await fetch(endpoint, { method: "POST", body: form });
+      await ensureOk(response, "Audio analysis");
+      var result = await response.json();
+      analysisOutput.textContent = JSON.stringify(result, null, 2);
+      log("Audio analysis complete with " + catalogModelLabel({ id: analysisModelSelect.value, displayName: option.textContent }));
+    } catch (error) {
+      analysisOutput.textContent = "Analysis failed: " + (error.message || error);
+      log(analysisOutput.textContent, "error");
+    } finally {
+      clearBusy(analysisSubmitButton);
+      setRunning(false);
+      syncAudioServiceControls();
+    }
+  }
+
   // ---------- engine variant pickers ----------
   // Some engines are one binary that can serve different models: whisper's
   // large-v3 against its turbo, sd-server's SD 1.5 against FLUX.2. The
@@ -4423,6 +4602,73 @@
     (variantPickerRenderers[engineName] || []).forEach(function (render) {
       render(variants);
     });
+  }
+
+  function initTranscriptionModelSelect(select, models) {
+    var audioModels = (models || []).filter(function (model) {
+      return catalogModelHasCapability(model, "transcription") && model.engine !== "whisper";
+    });
+    function render(variants) {
+      select.textContent = "";
+      (variants || []).forEach(function (variant) {
+        var option = createElement("option", "", "Whisper " + variant.label);
+        option.value = "whisper:" + variant.id;
+        option.dataset.requestModel = variant.id;
+        option.dataset.kind = "whisper";
+        if (variant.active) option.selected = true;
+        select.appendChild(option);
+      });
+      audioModels.forEach(function (model) {
+        var usable = model.configured === true && catalogModelIsInstalled(model);
+        var label = catalogModelLabel(model);
+        if (!catalogModelIsInstalled(model)) label += " · not installed";
+        else if (!model.configured) label += " · not configured";
+        var option = createElement("option", "", label);
+        option.value = "audio:" + model.id;
+        option.dataset.requestModel = model.id;
+        option.dataset.kind = "audio";
+        option.disabled = !usable;
+        select.appendChild(option);
+      });
+      select.disabled = select.options.length < 2;
+      var chosen = select.options[select.selectedIndex];
+      select.dataset.requestModel = chosen ? chosen.dataset.requestModel || "" : "";
+    }
+    fetch("/v1/engines/whisper/variants")
+      .then(function (response) { return response.ok ? response.json() : { variants: [] }; })
+      .then(function (data) { render(data.variants || []); })
+      .catch(function () { render([]); });
+    select.addEventListener("change", async function () {
+      var option = select.options[select.selectedIndex];
+      if (!option) return;
+      select.dataset.requestModel = option.dataset.requestModel || "";
+      if (option.dataset.kind !== "whisper") {
+        log("Transcription model selected: " + option.textContent);
+        return;
+      }
+      select.disabled = true;
+      try {
+        var response = await fetch("/v1/engines/whisper/variant", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: option.dataset.requestModel })
+        });
+        await ensureOk(response, "Transcription model switch");
+        var data = await response.json();
+        render(data.variants || []);
+        refreshHealth(true);
+      } catch (error) {
+        log("Transcription model switch failed: " + (error.message || error), "error");
+      } finally {
+        select.disabled = select.options.length < 2;
+      }
+    });
+  }
+
+  function appendTranscriptionModel(form) {
+    if (extractModelSelect && extractModelSelect.dataset.requestModel) {
+      form.append("model", extractModelSelect.dataset.requestModel);
+    }
   }
 
   function initVariantSelect(select, engineName, wrapper, hooks) {
@@ -4771,6 +5017,7 @@
       var blob = encodeWav(samples, rate);
       var form = new FormData();
       form.append("file", new File([blob], "live.wav", { type: "audio/wav" }));
+      appendTranscriptionModel(form);
       var response = await fetch("/v1/audio/transcriptions", { method: "POST", body: form });
       if (response.status === 429 && !finalPass) {
         return;
@@ -5103,6 +5350,7 @@
   async function transcribeHandsFreeTake(file) {
     var form = new FormData();
     form.append("file", file, file.name || "utterance.wav");
+    appendTranscriptionModel(form);
     var response = await fetch("/v1/audio/transcriptions", { method: "POST", body: form });
     await ensureOk(response, "Hands-free transcription");
     var data = await response.json();
@@ -5339,7 +5587,6 @@
   // configured models without pretending they are switchable.
   initCatalogModels();
   initVariantSelect(imageModelSelect, "sd", imageModelField);
-  initVariantSelect(extractModelSelect, "whisper", null);
   initVariantSelect(document.getElementById("chatModelSelect"), "llama", document.getElementById("chatModelField"), chatModelHooks("chatModel"));
   initVariantSelect(document.getElementById("storyModelSelect"), "llama", document.getElementById("storyModelField"), chatModelHooks("storyModel"));
 
@@ -5555,8 +5802,11 @@
   });
   conversionModelSelect.addEventListener("change", function () {
     clearConversionOutput();
+    syncConversionControls();
     log("Voice conversion model selected: " + (conversionModelSelect.options[conversionModelSelect.selectedIndex] || {}).textContent);
   });
+  conversionRouteSelect.addEventListener("change", syncConversionControls);
+  conversionTargetTextInput.addEventListener("input", syncConversionControls);
   conversionSaveWavButton.addEventListener("click", function () {
     if (conversionOutputUrl) {
       downloadURL(conversionOutputUrl, "voice-conversion.wav");
@@ -5577,6 +5827,7 @@
   musicPromptInput.addEventListener("input", syncMusicControls);
   musicModelSelect.addEventListener("change", function () {
     clearMusicOutput();
+    syncMusicMode();
     log("Music model selected: " + (musicModelSelect.options[musicModelSelect.selectedIndex] || {}).textContent);
   });
   musicSourceInput.addEventListener("change", function () {
@@ -5620,6 +5871,15 @@
     }
   });
   syncMusicMode();
+  separationForm.addEventListener("submit", runSeparation);
+  separationFileInput.addEventListener("change", syncAudioServiceControls);
+  separationModelSelect.addEventListener("change", syncAudioServiceControls);
+  analysisForm.addEventListener("submit", runAudioAnalysis);
+  analysisFileInput.addEventListener("change", syncAudioServiceControls);
+  analysisModelSelect.addEventListener("change", syncAudioServiceControls);
+  analysisTranscriptInput.addEventListener("input", syncAudioServiceControls);
+  analysisLanguageInput.addEventListener("input", syncAudioServiceControls);
+  syncAudioServiceControls();
 
   if (!canRecord()) {
     recordButton.disabled = true;
@@ -5637,8 +5897,8 @@
 
   // --- Studio navigation ------------------------------------------------
   var PAGES = [
-    "talk-voice", "text-to-speech", "transcription", "voice-cloning", "voice-design", "voice-convert",
-    "music", "music-generation", "imagery", "image-generation",
+    "talk-voice", "text-to-speech", "transcription", "voice-cloning", "voice-design", "voice-convert", "audio-analysis",
+    "music", "music-generation", "voice-separation", "imagery", "image-generation",
     "stories-audiobooks", "audiobook", "story", "extract",
     "library", "models", "engines"
   ];
@@ -5654,8 +5914,10 @@
     "voice-cloning": "talk-voice",
     "voice-design": "talk-voice",
     "voice-convert": "talk-voice",
+    "audio-analysis": "talk-voice",
     music: "music",
     "music-generation": "music",
+    "voice-separation": "music",
     imagery: "imagery",
     "image-generation": "imagery",
     "stories-audiobooks": "stories-audiobooks",
@@ -5790,12 +6052,12 @@
   var modelsList = document.getElementById("modelsList");
 
   var MODEL_CATEGORIES = [
-    { id: "speech", title: "Text to speech & cloning", description: "Speak written text and reuse a recorded voice.", engines: ["audio", "dramabox"] },
+    { id: "speech", title: "Text to speech & cloning", description: "Speak written text and reuse a recorded voice.", engines: ["audio", "dramabox", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-customvoice", "vibevoice", "fish-audio", "chatterbox-clone"] },
     { id: "voice-design", title: "Voice design", description: "Create a new voice from a written description.", engines: ["voicedesign", "omnivoice", "voxcpm2"] },
-    { id: "voice-conversion", title: "Voice conversion", description: "Change the speaker while preserving the performance.", engines: ["voiceconvert"] },
-    { id: "transcription", title: "Transcription", description: "Turn speech into text and ignore unwanted silence.", engines: ["whisper"] },
-    { id: "diarization", title: "Speaker diarization", description: "Detect who spoke and when.", engines: ["diarize", "diarize-sherpa"] },
-    { id: "music", title: "Music & SFX", description: "Create and reshape music now, with story sound joining later.", engines: ["music"] },
+    { id: "voice-conversion", title: "Voice conversion", description: "Change the speaker while preserving the performance.", engines: ["voiceconvert", "vevo2"] },
+    { id: "transcription", title: "Transcription", description: "Turn speech into text and ignore unwanted silence.", engines: ["whisper", "qwen3-asr-0.6b", "qwen3-asr-1.7b", "vibevoice-asr"] },
+    { id: "diarization", title: "Audio analysis", description: "Find speech, speakers, and aligned words.", engines: ["diarize", "diarize-sherpa", "silero-vad", "marblenet-vad", "forced-aligner"] },
+    { id: "music", title: "Music, SFX & separation", description: "Create, reshape, and separate music and sound.", engines: ["music", "stable-audio-medium", "stable-audio-sfx", "heartmula", "htdemucs", "bs-roformer", "mel-band-roformer"] },
     { id: "imagery", title: "Imagery", description: "Generate images and understand their contents.", engines: ["sd", "vision"] },
     { id: "language", title: "Language & writing", description: "Power conversations, stories, and writing assistance.", engines: ["llama"] },
     { id: "other", title: "Other models", description: "Models without a studio task grouping yet.", engines: [] }
@@ -8180,6 +8442,7 @@
         var blob = encodeWav(samples.subarray(c * chunkSamples, Math.min((c + 1) * chunkSamples, samples.length)), rate);
         var form = new FormData();
         form.append("file", new File([blob], "extract.wav", { type: "audio/wav" }));
+        appendTranscriptionModel(form);
         var response = await fetch("/v1/audio/transcriptions?format=segments", { method: "POST", body: form });
         if (!response.ok) {
           throw new Error(await readErrorBody(response));

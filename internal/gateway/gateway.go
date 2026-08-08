@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -251,6 +252,9 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/audio/music/analyze", r.handleMusicAnalysis)
 	mux.HandleFunc("/v1/audio/transcriptions", r.handleTranscriptions)
 	mux.HandleFunc("/v1/audio/diarization", r.handleDiarization)
+	mux.HandleFunc("/v1/audio/separation", r.handleSeparation)
+	mux.HandleFunc("/v1/audio/vad", r.handleVAD)
+	mux.HandleFunc("/v1/audio/alignment", r.handleForcedAlignment)
 	mux.HandleFunc("/v1/audio/import", r.handleAudioImport)
 	mux.HandleFunc("/v1/audio/formats", r.handleAudioFormats)
 	mux.HandleFunc("/v1/audio/decode", r.handleAudioDecode)
@@ -1770,15 +1774,38 @@ func (r *router) handleVoiceConversion(w http.ResponseWriter, req *http.Request)
 	if !requireMethod(w, req, http.MethodPost) {
 		return
 	}
-	if _, ok := r.engine(engine.VoiceConversionEngineID); !ok {
-		writeJSONError(w, http.StatusServiceUnavailable, `engine "voiceconvert" is not configured`)
-		return
-	}
 	req.Body = http.MaxBytesReader(w, req.Body, maxVoiceConversionBodyBytes)
 
 	model := strings.TrimSpace(req.FormValue("model"))
-	if model != "" && model != "chatterbox" && model != "chatterbox-q8-0" {
-		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("voice conversion model %q is not supported", model))
+	selected, err := resolveAudioModel(conversionModelRoutes, model, "voice conversion")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, ok := r.engine(selected.Engine); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("engine %q is not configured", selected.Engine))
+		return
+	}
+	route := strings.TrimSpace(req.FormValue("route"))
+	if selected.Family == "chatterbox" {
+		if route != "" && route != "style_preserved_vc" {
+			writeJSONError(w, http.StatusBadRequest, "Chatterbox supports voice conversion only")
+			return
+		}
+		route = "style_preserved_vc"
+	} else {
+		switch route {
+		case "", "style_preserved_vc":
+			route = "style_preserved_vc"
+		case "style_preserved_svc", "editing":
+		default:
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("VeVo2 route %q is not supported", route))
+			return
+		}
+	}
+	targetText := strings.TrimSpace(req.FormValue("target_text"))
+	if route == "editing" && targetText == "" {
+		writeJSONError(w, http.StatusBadRequest, "target_text is required for VeVo2 speech editing")
 		return
 	}
 
@@ -1830,13 +1857,16 @@ func (r *router) handleVoiceConversion(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	result, err := r.engines.Run(req.Context(), engine.VoiceConversionSpec(sourcePath, targetPath))
+	result, err := r.engines.Run(req.Context(), engine.VoiceConversionSpecFor(selected.Engine, selected.Family, route, targetText, sourcePath, targetPath))
 	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "audio/wav")
-	w.Header().Set("X-Conversion-Model", "chatterbox-q8-0")
+	if model == "" {
+		model = "chatterbox-q8-0"
+	}
+	w.Header().Set("X-Conversion-Model", model)
 	w.Header().Set("Access-Control-Expose-Headers", "X-Conversion-Model")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(result.Output)
@@ -2006,14 +2036,11 @@ func (r *router) musicSource(req *http.Request, allowed bool, required bool) (st
 	return path, cleanup, nil
 }
 
-// handleMusicGeneration exposes ACE-Step through a small, allowlisted form.
+// handleMusicGeneration exposes catalogue-selected music/SFX engines through
+// a small, allowlisted form.
 // Browser-selected source media is normalized to WAV by /v1/audio/decode.
 func (r *router) handleMusicGeneration(w http.ResponseWriter, req *http.Request) {
 	if !requireMethod(w, req, http.MethodPost) {
-		return
-	}
-	if _, ok := r.engine(engine.MusicEngineID); !ok {
-		writeJSONError(w, http.StatusServiceUnavailable, `engine "music" is not configured`)
 		return
 	}
 	req.Body = http.MaxBytesReader(w, req.Body, maxMusicBodyBytes)
@@ -2022,8 +2049,16 @@ func (r *router) handleMusicGeneration(w http.ResponseWriter, req *http.Request)
 		return
 	}
 	model := strings.TrimSpace(req.FormValue("model"))
-	if model != "" && model != "ace-step" && model != "ace-step-turbo-q8-0" {
-		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("music model %q is not supported", model))
+	if model == "ace-step" {
+		model = "ace-step-turbo-q8-0"
+	}
+	selected, err := resolveAudioModel(musicModelRoutes, model, "music")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, ok := r.engine(selected.Engine); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("engine %q is not configured", selected.Engine))
 		return
 	}
 	musicRequest, err := parseMusicGenerationRequest(req)
@@ -2031,20 +2066,30 @@ func (r *router) handleMusicGeneration(w http.ResponseWriter, req *http.Request)
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if selected.Family != "ace_step" && musicRequest.Route != "text2music" {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("model %q supports text generation only in this Studio", model))
+		return
+	}
 	policy := musicRoutePolicies[musicRequest.Route]
+	if selected.Family != "ace_step" {
+		policy = musicRoutePolicy{}
+	}
 	sourcePath, cleanup, err := r.musicSource(req, policy.sourceAllowed, policy.sourceRequired)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	defer cleanup()
-	result, err := r.engines.Run(req.Context(), engine.MusicGenerationSpec(sourcePath, musicRequest))
+	result, err := r.engines.Run(req.Context(), engine.MusicGenerationSpecFor(selected.Engine, selected.Family, sourcePath, musicRequest))
 	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "audio/wav")
-	w.Header().Set("X-Music-Model", "ace-step-turbo-q8-0")
+	if model == "" {
+		model = "ace-step-turbo-q8-0"
+	}
+	w.Header().Set("X-Music-Model", model)
 	w.Header().Set("Access-Control-Expose-Headers", "X-Music-Model")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(result.Output)
@@ -2113,14 +2158,84 @@ func resolveSpeechModelEngine(value string) (string, error) {
 	switch value = strings.TrimSpace(value); value {
 	case "", "audio", "qwen3-tts-0.6b-base":
 		return engine.DefaultSpeechEngineID, nil
-	case "omnivoice", "voxcpm2", engine.DramaBoxSpeechEngineID, "dramabox-q8-0":
+	case "omnivoice", "voxcpm2", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-base-q8-0",
+		"qwen3-tts-1.7b-customvoice", "qwen3-tts-1.7b-customvoice-q8-0",
+		"vibevoice", "vibevoice-1.5b-q8-0", "fish-audio", "fish-audio-s2-pro-q8-0",
+		"chatterbox-clone", "chatterbox-clone-q8-0", engine.DramaBoxSpeechEngineID, "dramabox-q8-0":
 		if value == "dramabox-q8-0" {
 			return engine.DramaBoxSpeechEngineID, nil
+		}
+		switch value {
+		case "qwen3-tts-1.7b-base-q8-0":
+			return "qwen3-tts-1.7b-base", nil
+		case "qwen3-tts-1.7b-customvoice-q8-0":
+			return "qwen3-tts-1.7b-customvoice", nil
+		case "vibevoice-1.5b-q8-0":
+			return "vibevoice", nil
+		case "fish-audio-s2-pro-q8-0":
+			return "fish-audio", nil
+		case "chatterbox-clone-q8-0":
+			return "chatterbox-clone", nil
 		}
 		return value, nil
 	default:
 		return "", fmt.Errorf("speech model %q is not supported", value)
 	}
+}
+
+func resolveTranscriptionModelEngine(value string) (string, error) {
+	switch strings.TrimSpace(value) {
+	case "", "whisper", "large-v3", "large-v3-turbo", "base-en", "whisper-large-v3", "whisper-large-v3-turbo", "whisper-base-en":
+		return "whisper", nil
+	case "qwen3-asr-0.6b", "qwen3-asr-0.6b-q8-0":
+		return "qwen3-asr-0.6b", nil
+	case "qwen3-asr-1.7b", "qwen3-asr-1.7b-hf":
+		return "qwen3-asr-1.7b", nil
+	case "vibevoice-asr", "vibevoice-asr-q8-0":
+		return "vibevoice-asr", nil
+	default:
+		return "", fmt.Errorf("transcription model %q is not supported", value)
+	}
+}
+
+type audioModelRoute struct {
+	Engine string
+	Family string
+}
+
+var musicModelRoutes = map[string]audioModelRoute{
+	"":                              {Engine: engine.MusicEngineID, Family: "ace_step"},
+	"ace-step-turbo-q8-0":           {Engine: engine.MusicEngineID, Family: "ace_step"},
+	"stable-audio-3-medium-q8-0":    {Engine: "stable-audio-medium", Family: "stable_audio"},
+	"stable-audio-3-small-sfx-q8-0": {Engine: "stable-audio-sfx", Family: "stable_audio"},
+	"heartmula-3b-q8-0":             {Engine: "heartmula", Family: "heartmula"},
+}
+
+var conversionModelRoutes = map[string]audioModelRoute{
+	"":                {Engine: engine.VoiceConversionEngineID, Family: "chatterbox"},
+	"chatterbox":      {Engine: engine.VoiceConversionEngineID, Family: "chatterbox"},
+	"chatterbox-q8-0": {Engine: engine.VoiceConversionEngineID, Family: "chatterbox"},
+	"vevo2":           {Engine: "vevo2", Family: "vevo2"},
+	"vevo2-q8-0":      {Engine: "vevo2", Family: "vevo2"},
+}
+
+var separationModelRoutes = map[string]audioModelRoute{
+	"htdemucs-q8-0":          {Engine: "htdemucs", Family: "htdemucs"},
+	"bs-roformer-q8-0":       {Engine: "bs-roformer", Family: "bs_roformer"},
+	"mel-band-roformer-q8-0": {Engine: "mel-band-roformer", Family: "mel_band_roformer"},
+}
+
+var vadModelRoutes = map[string]audioModelRoute{
+	"silero-vad-audiocpp":    {Engine: "silero-vad", Family: "silero_vad"},
+	"marblenet-vad-audiocpp": {Engine: "marblenet-vad", Family: "marblenet_vad"},
+}
+
+func resolveAudioModel(routes map[string]audioModelRoute, value, capability string) (audioModelRoute, error) {
+	resolved, ok := routes[strings.TrimSpace(value)]
+	if !ok {
+		return audioModelRoute{}, fmt.Errorf("%s model %q is not supported", capability, value)
+	}
+	return resolved, nil
 }
 
 // audioServerModelID is the model id a server-mode audio engine must expose
@@ -2630,10 +2745,33 @@ func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) 
 	if !ok {
 		return
 	}
+	selectedEngine, err := resolveTranscriptionModelEngine(req.FormValue("model"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, ok := r.engine(selectedEngine); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("engine %q is not configured", selectedEngine))
+		return
+	}
 
 	started := time.Now()
 	if req.URL.Query().Get("format") == "segments" {
-		segments, err := r.transcribeSegments(req.Context(), data)
+		var segments []transcriptSegment
+		if selectedEngine == "whisper" {
+			segments, err = r.transcribeSegments(req.Context(), data)
+		} else {
+			var text string
+			text, err = r.transcribeWithEngine(req.Context(), selectedEngine, data)
+			if err == nil {
+				duration, durationErr := wav.Duration(data)
+				if durationErr != nil {
+					err = durationErr
+				} else {
+					segments = []transcriptSegment{{Start: 0, End: duration.Seconds(), Text: strings.TrimSpace(text)}}
+				}
+			}
+		}
 		if err != nil {
 			writeEngineError(w, err)
 			return
@@ -2654,7 +2792,7 @@ func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	text, err := r.transcribe(req.Context(), data)
+	text, err := r.transcribeWithEngine(req.Context(), selectedEngine, data)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -2760,6 +2898,168 @@ func (r *router) handleDiarization(w http.ResponseWriter, req *http.Request) {
 		"provider":    provider,
 		"spans":       out,
 	})
+}
+
+// handleSeparation returns every named WAV stem in one ZIP. The selected
+// catalogue id resolves to a fixed engine; paths and native flags are never
+// accepted from the browser.
+func (r *router) handleSeparation(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxMusicBodyBytes)
+	data, ok := readUploadedWAV(w, req)
+	if !ok {
+		return
+	}
+	model := strings.TrimSpace(req.FormValue("model"))
+	selected, err := resolveAudioModel(separationModelRoutes, model, "separation")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, ok := r.engine(selected.Engine); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("engine %q is not configured", selected.Engine))
+		return
+	}
+	outDir, err := os.MkdirTemp("", "cpp-studio-stems-*")
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create stem directory: %v", err))
+		return
+	}
+	defer os.RemoveAll(outDir)
+	if _, err := r.engines.Run(req.Context(), engine.SeparationSpec(selected.Engine, data, outDir)); err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	stems, err := filepath.Glob(filepath.Join(outDir, "*.wav"))
+	if err != nil || len(stems) == 0 {
+		writeJSONError(w, http.StatusBadGateway, "source separation produced no WAV stems")
+		return
+	}
+	sort.Strings(stems)
+	archive, err := os.CreateTemp("", "cpp-studio-stems-*.zip")
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create stem archive: %v", err))
+		return
+	}
+	archivePath := archive.Name()
+	defer os.Remove(archivePath)
+	zipWriter := zip.NewWriter(archive)
+	for _, stem := range stems {
+		if err := validateUploadedWAV(stem, "stem", engine.MaxDecodedAudioBytes); err != nil {
+			_ = zipWriter.Close()
+			_ = archive.Close()
+			writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("invalid separated stem %s: %v", filepath.Base(stem), err))
+			return
+		}
+		entry, err := zipWriter.Create(filepath.Base(stem))
+		if err != nil {
+			_ = zipWriter.Close()
+			_ = archive.Close()
+			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create stem archive entry: %v", err))
+			return
+		}
+		input, err := os.Open(stem)
+		if err != nil {
+			_ = zipWriter.Close()
+			_ = archive.Close()
+			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("open separated stem: %v", err))
+			return
+		}
+		_, copyErr := io.Copy(entry, input)
+		_ = input.Close()
+		if copyErr != nil {
+			_ = zipWriter.Close()
+			_ = archive.Close()
+			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("archive separated stem: %v", copyErr))
+			return
+		}
+	}
+	if err := zipWriter.Close(); err != nil {
+		_ = archive.Close()
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("finish stem archive: %v", err))
+		return
+	}
+	if _, err := archive.Seek(0, io.SeekStart); err != nil {
+		_ = archive.Close()
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("rewind stem archive: %v", err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="separated-stems.zip"`)
+	w.Header().Set("X-Separation-Model", model)
+	w.Header().Set("Access-Control-Expose-Headers", "X-Separation-Model")
+	_, _ = io.Copy(w, archive)
+	_ = archive.Close()
+}
+
+func (r *router) handleVAD(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxDiarizationUploadBytes)
+	data, ok := readUploadedWAV(w, req)
+	if !ok {
+		return
+	}
+	selected, err := resolveAudioModel(vadModelRoutes, req.FormValue("model"), "VAD")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, ok := r.engine(selected.Engine); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("engine %q is not configured", selected.Engine))
+		return
+	}
+	result, err := r.engines.Run(req.Context(), engine.VADSpec(selected.Engine, data))
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	if !json.Valid(result.Output) {
+		writeJSONError(w, http.StatusBadGateway, "voice activity engine produced invalid JSON")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(result.Output)
+}
+
+func (r *router) handleForcedAlignment(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	if _, ok := r.engine("forced-aligner"); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, `engine "forced-aligner" is not configured`)
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxDiarizationUploadBytes)
+	data, ok := readUploadedWAV(w, req)
+	if !ok {
+		return
+	}
+	model := strings.TrimSpace(req.FormValue("model"))
+	if model != "" && model != "qwen3-forced-aligner-0.6b-q8-0" {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("forced alignment model %q is not supported", model))
+		return
+	}
+	transcript := strings.TrimSpace(req.FormValue("transcript"))
+	language := strings.TrimSpace(req.FormValue("language"))
+	if transcript == "" || language == "" {
+		writeJSONError(w, http.StatusBadRequest, "transcript and language are required")
+		return
+	}
+	result, err := r.engines.Run(req.Context(), engine.ForcedAlignmentSpec(data, transcript, language))
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	if !json.Valid(result.Output) {
+		writeJSONError(w, http.StatusBadGateway, "forced aligner produced invalid JSON")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(result.Output)
 }
 
 // maxImportRequestBytes bounds the import request itself — a JSON object
@@ -3355,6 +3655,24 @@ func (r *router) transcribe(ctx context.Context, wavBytes []byte) (string, error
 	// whisper-server joins segments with newlines; collapse to one line to
 	// match the subprocess -nt output shape.
 	return strings.Join(strings.Fields(parsed.Text), " "), nil
+}
+
+func (r *router) transcribeWithEngine(ctx context.Context, engineName string, wavBytes []byte) (string, error) {
+	if engineName == "whisper" {
+		return r.transcribe(ctx, wavBytes)
+	}
+	if _, ok := r.engine(engineName); !ok {
+		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("engine %q is not configured", engineName)}
+	}
+	result, err := r.engines.Run(ctx, engine.TranscriptionSpecFor(engineName, wavBytes))
+	if err != nil {
+		return "", err
+	}
+	text, err := engine.ParseAudioCPPTextOutput(result.Stdout)
+	if err != nil {
+		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: err.Error()}
+	}
+	return text, nil
 }
 
 func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {

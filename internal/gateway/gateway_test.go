@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -6018,6 +6019,150 @@ func TestVoiceCloneCreateRejectsInvalidWAV(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "reference wav") {
 		t.Fatalf("expected reference wav detail, got %s", rec.Body.String())
+	}
+}
+
+func TestRequestedAudioModelRoutesResolveToFixedEngines(t *testing.T) {
+	tests := []struct {
+		name   string
+		model  string
+		engine string
+		family string
+	}{
+		{name: "stable medium", model: "stable-audio-3-medium-q8-0", engine: "stable-audio-medium", family: "stable_audio"},
+		{name: "stable sfx", model: "stable-audio-3-small-sfx-q8-0", engine: "stable-audio-sfx", family: "stable_audio"},
+		{name: "heartmula", model: "heartmula-3b-q8-0", engine: "heartmula", family: "heartmula"},
+		{name: "vevo2", model: "vevo2-q8-0", engine: "vevo2", family: "vevo2"},
+		{name: "htdemucs", model: "htdemucs-q8-0", engine: "htdemucs", family: "htdemucs"},
+		{name: "bs roformer", model: "bs-roformer-q8-0", engine: "bs-roformer", family: "bs_roformer"},
+		{name: "mel band roformer", model: "mel-band-roformer-q8-0", engine: "mel-band-roformer", family: "mel_band_roformer"},
+		{name: "silero", model: "silero-vad-audiocpp", engine: "silero-vad", family: "silero_vad"},
+		{name: "marblenet", model: "marblenet-vad-audiocpp", engine: "marblenet-vad", family: "marblenet_vad"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			routes := musicModelRoutes
+			switch tt.family {
+			case "vevo2":
+				routes = conversionModelRoutes
+			case "htdemucs", "bs_roformer", "mel_band_roformer":
+				routes = separationModelRoutes
+			case "silero_vad", "marblenet_vad":
+				routes = vadModelRoutes
+			}
+			got, err := resolveAudioModel(routes, tt.model, "test")
+			if err != nil || got.Engine != tt.engine || got.Family != tt.family {
+				t.Fatalf("resolved %q to %+v, %v", tt.model, got, err)
+			}
+		})
+	}
+	if _, err := resolveAudioModel(musicModelRoutes, "--model=C:\\arbitrary.gguf", "music"); err == nil {
+		t.Fatal("expected arbitrary model input to be rejected")
+	}
+}
+
+func TestAudioCPPTranscriptionUsesSelectedEngine(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"qwen3-asr-0.6b": {Command: "audiocpp-cli"}})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	fake := engine.NewFake()
+	fake.Handle("qwen3-asr-0.6b", func(spec engine.Spec) (engine.Result, error) {
+		if got := spec.BuildArgs("input.wav", ""); !reflect.DeepEqual(got, []string{"--audio", "input.wav"}) {
+			t.Fatalf("ASR args = %v", got)
+		}
+		return engine.Result{Stdout: []byte("loader ready\ntext_output=Purple monkey dishwasher.\n")}, nil
+	})
+	router.engines = fake
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "sample.wav")
+	_, _ = part.Write(validWAVBytes())
+	_ = writer.WriteField("model", "qwen3-asr-0.6b-q8-0")
+	_ = writer.Close()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Purple monkey dishwasher.") {
+		t.Fatalf("unexpected ASR response: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAudioAnalysisRoutesReturnEngineJSON(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"silero-vad":     {Command: "audiocpp-cli"},
+		"forced-aligner": {Command: "audiocpp-cli"},
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	fake := engine.NewFake()
+	fake.Handle("silero-vad", func(spec engine.Spec) (engine.Result, error) {
+		return engine.Result{Output: []byte(`{"segments":[{"start":0.1,"end":0.8}]}`)}, nil
+	})
+	fake.Handle("forced-aligner", func(spec engine.Spec) (engine.Result, error) {
+		args := strings.Join(spec.BuildArgs("input.wav", "words.json"), " ")
+		if !strings.Contains(args, "--text exact words") || !strings.Contains(args, "--language en") {
+			t.Fatalf("unexpected alignment args: %s", args)
+		}
+		return engine.Result{Output: []byte(`{"words":[{"word":"exact","start":0.1,"end":0.3}]}`)}, nil
+	})
+	router.engines = fake
+
+	for _, test := range []struct {
+		path   string
+		fields map[string]string
+		want   string
+	}{
+		{path: "/v1/audio/vad", fields: map[string]string{"model": "silero-vad-audiocpp"}, want: `"segments"`},
+		{path: "/v1/audio/alignment", fields: map[string]string{"model": "qwen3-forced-aligner-0.6b-q8-0", "transcript": "exact words", "language": "en"}, want: `"words"`},
+	} {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, _ := writer.CreateFormFile("file", "sample.wav")
+		_, _ = part.Write(validWAVBytes())
+		for key, value := range test.fields {
+			_ = writer.WriteField(key, value)
+		}
+		_ = writer.Close()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, test.path, &body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), test.want) {
+			t.Fatalf("%s response: %d %s", test.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestSeparationReturnsNamedWAVStemsAsZIP(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"htdemucs": {Command: "audiocpp-cli"}})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	fake := engine.NewFake()
+	fake.Handle("htdemucs", func(spec engine.Spec) (engine.Result, error) {
+		for _, name := range []string{"vocals.wav", "drums.wav"} {
+			if err := os.WriteFile(filepath.Join(spec.OutputPath, name), validWAVBytes(), 0o600); err != nil {
+				t.Fatalf("write fake stem: %v", err)
+			}
+		}
+		return engine.Result{}, nil
+	})
+	router.engines = fake
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "song.wav")
+	_, _ = part.Write(validWAVBytes())
+	_ = writer.WriteField("model", "htdemucs-q8-0")
+	_ = writer.Close()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/separation", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/zip" {
+		t.Fatalf("separation response: %d %s", rec.Code, rec.Body.String())
+	}
+	archive, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil || len(archive.File) != 2 {
+		t.Fatalf("invalid stem archive: files=%d err=%v", len(archive.File), err)
 	}
 }
 

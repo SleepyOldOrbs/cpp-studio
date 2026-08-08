@@ -39,10 +39,12 @@
             <a class="subnav-link" href="#voice-cloning" data-page-link="voice-cloning">Voice cloning</a>
             <a class="subnav-link" href="#voice-design" data-page-link="voice-design">Voice design</a>
             <a class="subnav-link" href="#voice-convert" data-page-link="voice-convert">Voice convert</a>
+            <a class="subnav-link" href="#audio-analysis" data-page-link="audio-analysis">Audio analysis</a>
           </nav>
           <nav class="subnav" data-parent-nav="music" aria-label="Music and sound effects tools" hidden>
             <a class="subnav-link" href="#music" data-page-link="music">Overview</a>
             <a class="subnav-link" href="#music-generation" data-page-link="music-generation">Music &amp; SFX</a>
+            <a class="subnav-link" href="#voice-separation" data-page-link="voice-separation">Separate stems</a>
           </nav>
           <nav class="subnav" data-parent-nav="imagery" aria-label="Imagery tools" hidden>
             <a class="subnav-link" href="#imagery" data-page-link="imagery">Overview</a>
@@ -91,6 +93,11 @@
           <strong>Voice convert</strong>
           <span>Change the voice in a performance while keeping its delivery and timing.</span>
         </a>
+        <a class="tool-card" href="#audio-analysis" data-page-link="audio-analysis">
+          <span class="tool-card-type">Measure</span>
+          <strong>Audio analysis</strong>
+          <span>Find speech regions, identify speakers, or align exact words to a recording.</span>
+        </a>
       </div>
     </section>
 
@@ -105,6 +112,11 @@
           <span class="tool-card-type">Create sound</span>
           <strong>Music &amp; SFX</strong>
           <span>Generate or continue music, transform an audio source, and keep the finished take in your Library.</span>
+        </a>
+        <a class="tool-card" href="#voice-separation" data-page-link="voice-separation">
+          <span class="tool-card-type">Separate</span>
+          <strong>Voice &amp; stem separation</strong>
+          <span>Split a finished mix into vocals, instruments, or named stems.</span>
         </a>
       </div>
     </section>
@@ -168,7 +180,7 @@
         <div class="model-chooser-fields">
           <label class="model-choice">
             <span>Speech model</span>
-            <select class="text-input" id="ttsSpeechModelSelect" data-speech-models data-model-engines="audio omnivoice voxcpm2 dramabox">
+            <select class="text-input" id="ttsSpeechModelSelect" data-speech-models data-model-capabilities="speech" data-model-engines="audio omnivoice voxcpm2 dramabox qwen3-tts-1.7b-base qwen3-tts-1.7b-customvoice vibevoice fish-audio">
               <option>Checking compatible models&hellip;</option>
             </select>
             <small>Switches the audio.cpp model that speaks the assistant reply.</small>
@@ -282,7 +294,7 @@
         <div class="model-chooser-fields">
           <label class="model-choice">
             <span>Cloning model</span>
-            <select class="text-input" id="cloneModelSelect" data-speech-models data-model-engines="audio omnivoice voxcpm2 dramabox">
+            <select class="text-input" id="cloneModelSelect" data-speech-models data-model-capabilities="voice_clone" data-model-engines="audio omnivoice dramabox qwen3-tts-1.7b-base fish-audio chatterbox-clone">
               <option>Checking compatible models&hellip;</option>
             </select>
             <small>Only models capable of using the recorded voice reference are listed.</small>
@@ -493,6 +505,21 @@
             </section>
           </div>
 
+          <div class="conversion-route-controls">
+            <label class="field">
+              <span>Operation</span>
+              <select class="text-input" id="conversionRouteSelect">
+                <option value="style_preserved_vc">Voice conversion</option>
+                <option value="style_preserved_svc">Singing voice conversion</option>
+                <option value="editing">Speech editing</option>
+              </select>
+            </label>
+            <label class="field" id="conversionTargetTextField" hidden>
+              <span>Replacement text</span>
+              <textarea id="conversionTargetTextInput" rows="2" maxlength="4000" placeholder="The exact new words for the edited performance"></textarea>
+            </label>
+          </div>
+
           <div class="error-box" id="conversionErrorBox" role="alert" hidden></div>
           <button class="primary conversion-submit" id="conversionSubmitButton" type="submit" disabled>Convert voice</button>
         </form>
@@ -652,6 +679,50 @@
             <button class="secondary" id="musicLibraryButton" type="button" disabled>Save to library</button>
           </div>
         </section>
+      </div>
+    </section>
+
+    <section class="module" data-page="voice-separation" aria-label="Voice and stem separation">
+      <header class="module-head">
+        <h2>Voice &amp; stem separation</h2>
+        <span class="module-route">POST /v1/audio/separation</span>
+        <span class="module-note">mix &rarr; named WAV stems</span>
+      </header>
+      <div class="model-chooser" aria-label="Source separation models">
+        <div class="model-chooser-heading"><span>Model chooser</span><small>Source-separation models only</small></div>
+        <div class="model-chooser-fields">
+          <label class="model-choice"><span>Separation model</span><select class="text-input" id="separationModelSelect" disabled><option>Checking available models&hellip;</option></select><small id="separationModelHint">Installed models become selectable here.</small></label>
+        </div>
+      </div>
+      <div class="module-body audio-service-workspace">
+        <form id="separationForm" class="audio-service-form">
+          <label class="field"><span>44.1 kHz WAV mixture</span><input id="separationFileInput" type="file" accept=".wav,audio/wav" required></label>
+          <button class="primary" id="separationSubmitButton" type="submit" disabled>Separate and download ZIP</button>
+          <small class="hint" id="separationStatus">The ZIP contains every named WAV stem produced by the selected model.</small>
+        </form>
+      </div>
+    </section>
+
+    <section class="module" data-page="audio-analysis" aria-label="Audio analysis">
+      <header class="module-head">
+        <h2>Audio analysis</h2>
+        <span class="module-route">POST /v1/audio/vad &middot; /diarization &middot; /alignment</span>
+        <span class="module-note">speech regions &middot; speakers &middot; words</span>
+      </header>
+      <div class="model-chooser" aria-label="Audio analysis models">
+        <div class="model-chooser-heading"><span>Model chooser</span><small>VAD, diarization, and forced alignment</small></div>
+        <div class="model-chooser-fields">
+          <label class="model-choice"><span>Analysis model</span><select class="text-input" id="analysisModelSelect" disabled><option>Checking available models&hellip;</option></select><small id="analysisModelHint">Choose the result you need.</small></label>
+        </div>
+      </div>
+      <div class="module-body audio-service-workspace">
+        <form id="analysisForm" class="audio-service-form">
+          <label class="field"><span>16 kHz PCM WAV</span><input id="analysisFileInput" type="file" accept=".wav,audio/wav" required></label>
+          <label class="field" id="analysisTranscriptField" hidden><span>Exact transcript</span><textarea id="analysisTranscriptInput" rows="4" maxlength="32768" placeholder="The exact words spoken in the recording"></textarea></label>
+          <label class="field" id="analysisLanguageField" hidden><span>Language</span><input class="text-input" id="analysisLanguageInput" type="text" maxlength="40" value="English"></label>
+          <button class="primary" id="analysisSubmitButton" type="submit" disabled>Analyze audio</button>
+        </form>
+        <pre class="audio-analysis-output" id="analysisOutput">No analysis yet.</pre>
       </div>
     </section>
 
