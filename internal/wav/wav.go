@@ -257,7 +257,10 @@ func Duration(data []byte) (time.Duration, error) {
 	if bytesPerSecond <= 0 {
 		return 0, fmt.Errorf("invalid WAV: zero byte rate")
 	}
-	return time.Duration(float64(len(pcm)) / float64(bytesPerSecond) * float64(time.Second)), nil
+	wholeSeconds := len(pcm) / bytesPerSecond
+	remainder := len(pcm) % bytesPerSecond
+	return time.Duration(wholeSeconds)*time.Second +
+		time.Duration(remainder)*time.Second/time.Duration(bytesPerSecond), nil
 }
 
 // Concatenate joins clips into one WAV, inserting gap of silence between

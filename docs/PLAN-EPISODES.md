@@ -25,10 +25,14 @@ The smallest missing convergence slice is now complete:
   save boundary, while dialogue build recovery and render publication remain
   unchanged.
 
-M10's remaining acceptance gate is Stage 2: produce and listen to one real
-episode through the current native engines. That is live technical and human
-audio acceptance, not another persistence feature. The reference-pack work is
-still the separate stranger-runnability half of Stage 2.
+M10's live technical and human audio gate passed on 2026-08-14. “The Ministry of
+Small Emergencies” produced 12 lines across three scenes with two stored voices,
+retained and auditioned the takes, imported them into Story Builder with scene
+navigation, rendered a 68.6-second mastered revision, and exported WAV, MP3, and
+FLAC. The acceptance run exposed and fixed exact-duration rounding in the shared
+WAV helper; the full Go suite passed afterward. James listened to the finished
+master and gave it an explicit pass. The reference-pack work remains the separate
+stranger-runnability half of Stage 2.
 
 ## Where the project is
 
