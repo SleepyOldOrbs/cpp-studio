@@ -102,6 +102,12 @@ func (i *StoryImporter) Import(storyID string, request StoryImportRequest) (Proj
 	}
 
 	readyTakes := make(map[string][]byte)
+	projectScenes := make([]ProjectScene, 0, len(manifest.Scenes))
+	sceneByID := make(map[string]story.Scene, len(manifest.Scenes))
+	for _, scene := range manifest.Scenes {
+		sceneByID[scene.ID] = scene
+	}
+	lastSceneID := ""
 	var cursorMS int64
 	for lineIndex, line := range manifest.Script {
 		trackIndex, exists := trackBySpeaker[line.SpeakerID]
@@ -116,6 +122,16 @@ func (i *StoryImporter) Import(storyID string, request StoryImportRequest) (Proj
 			gapMS = 0
 		}
 		cursorMS += gapMS
+		if line.SceneID != "" && line.SceneID != lastSceneID {
+			scene, exists := sceneByID[line.SceneID]
+			if !exists {
+				return Project{}, ErrInvalid
+			}
+			projectScenes = append(projectScenes, ProjectScene{
+				ID: scene.ID, Title: scene.Title, Premise: scene.Premise, StartMS: cursorMS,
+			})
+			lastSceneID = line.SceneID
+		}
 
 		member := manifest.Cast[trackIndex]
 		identity := mappings[member.ID]
@@ -160,7 +176,7 @@ func (i *StoryImporter) Import(storyID string, request StoryImportRequest) (Proj
 	if cursorMS > timelineDurationMS {
 		timelineDurationMS = cursorMS
 	}
-	return i.projects.createProject(importProjectName(manifest), timelineDurationMS, tracks, readyTakes)
+	return i.projects.createProject(importProjectName(manifest), timelineDurationMS, projectScenes, tracks, readyTakes)
 }
 
 func (i *StoryImporter) resolveMappings(manifest story.Manifest, requested []StorySpeakerMapping) (map[string]VoiceIdentity, error) {

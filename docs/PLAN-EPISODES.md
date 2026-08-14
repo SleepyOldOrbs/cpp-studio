@@ -3,6 +3,33 @@
 Written 2026-07-25 at the end of a long session, to be picked up cold in a
 new one. `main` is at `2fa643f`, pushed, CI green on Windows and Ubuntu.
 
+## Refresh — 2026-08-14
+
+The original Stage 1 below has shipped. Retained Stories now support up to 45
+minutes, 600 lines, and 40 ordered scenes; production writes every take as it is
+made, fingerprints synthesis identity, resumes interrupted work, treats cancel
+as a recoverable pause once a take exists, and exposes folded scene take-room
+navigation and scene audition. The old cap and buffering descriptions below are
+kept as the decision record, not as current-state claims.
+
+Story Builder subsequently became the durable arrangement owner for Dialogue,
+SFX, Music, builds, playback, immutable renders, and exports. M10 therefore does
+not add a second Episode store or move those responsibilities back into Story.
+The smallest missing convergence slice is now complete:
+
+- importing a retained multi-scene Story preserves ordered scene ids, titles,
+  premises, and first-line positions as Story Builder Project Scene markers;
+- the Story Builder scene navigator jumps the existing playhead to a scene;
+- empty scene lists keep blank projects and old manifests compatible;
+- scene markers participate in the existing whole-project revision and atomic
+  save boundary, while dialogue build recovery and render publication remain
+  unchanged.
+
+M10's remaining acceptance gate is Stage 2: produce and listen to one real
+episode through the current native engines. That is live technical and human
+audio acceptance, not another persistence feature. The reference-pack work is
+still the separate stranger-runnability half of Stage 2.
+
 ## Where the project is
 
 cpp-studio is a Go gateway fronting native `.cpp` engines behind OpenAI-shaped
@@ -43,7 +70,7 @@ material, and then cannot produce the thing it exists to produce.
 
 ---
 
-## Stage 1 — Make an episode a first-class thing
+## Stage 1 — Make an episode a first-class thing  ·  *complete*
 
 ### Shape: scenes inside one episode  ·  *decided*
 

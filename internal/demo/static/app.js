@@ -200,6 +200,10 @@
   var separationFileInput = document.getElementById("separationFileInput");
   var separationSubmitButton = document.getElementById("separationSubmitButton");
   var separationStatus = document.getElementById("separationStatus");
+  var separationResults = document.getElementById("separationResults");
+  var separationResultsCount = document.getElementById("separationResultsCount");
+  var separationStemList = document.getElementById("separationStemList");
+  var separationStemURLs = [];
   var analysisForm = document.getElementById("analysisForm");
   var analysisModelSelect = document.getElementById("analysisModelSelect");
   var analysisModelHint = document.getElementById("analysisModelHint");
@@ -4385,9 +4389,52 @@
     }
   }
 
+  function clearSeparationResults() {
+    separationStemURLs.forEach(function (url) { URL.revokeObjectURL(url); });
+    separationStemURLs = [];
+    separationStemList.replaceChildren();
+    separationResultsCount.textContent = "";
+    separationResults.hidden = true;
+  }
+
+  function separationStemLabel(filename) {
+    var label = (filename || "").replace(/\.wav$/i, "").replace(/[_-]+/g, " ").trim();
+    return label || "Stem";
+  }
+
+  function renderSeparationResults(stems) {
+    clearSeparationResults();
+    stems.forEach(function (stem, index) {
+      var filename = stem.name || ("stem-" + (index + 1) + ".wav");
+      var url = URL.createObjectURL(stem);
+      separationStemURLs.push(url);
+
+      var card = document.createElement("article");
+      card.className = "separation-stem";
+      var heading = document.createElement("div");
+      heading.className = "separation-stem-head";
+      var label = document.createElement("strong");
+      label.textContent = separationStemLabel(filename);
+      var detail = document.createElement("small");
+      detail.textContent = filename;
+      heading.append(label, detail);
+
+      var player = document.createElement("audio");
+      player.controls = true;
+      player.preload = "metadata";
+      player.src = url;
+      player.setAttribute("aria-label", "Play " + separationStemLabel(filename));
+      card.append(heading, player);
+      separationStemList.appendChild(card);
+    });
+    separationResultsCount.textContent = stems.length + (stems.length === 1 ? " track" : " tracks");
+    separationResults.hidden = false;
+  }
+
   async function runSeparation(event) {
     event.preventDefault();
     if (!separationFileInput.files.length || separationModelSelect.disabled) return;
+    clearSeparationResults();
     setRunning(true);
     setBusy(separationSubmitButton, "Separating…");
     separationStatus.textContent = "Running the selected source-separation model…";
@@ -4396,14 +4443,19 @@
       var file = separationFileInput.files[0];
       form.append("file", file, file.name || "mixture.wav");
       form.append("model", separationModelSelect.value);
+      form.append("response_format", "browser");
       var response = await fetch("/v1/audio/separation", { method: "POST", body: form });
       await ensureOk(response, "Source separation");
-      var archive = await response.blob();
+      var payload = await response.formData();
+      var archive = payload.get("archive");
+      var stems = payload.getAll("stem").filter(function (part) { return part instanceof Blob; });
+      if (!(archive instanceof Blob) || !stems.length) throw new Error("The separation response did not contain playable stems");
       var url = URL.createObjectURL(archive);
       downloadURL(url, "separated-stems.zip");
       window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-      separationStatus.textContent = "Complete · downloaded separated-stems.zip";
-      log("Source separation complete: " + formatBytes(archive.size));
+      renderSeparationResults(stems);
+      separationStatus.textContent = "Complete · " + stems.length + " separated " + (stems.length === 1 ? "track" : "tracks") + " · downloaded separated-stems.zip";
+      log("Source separation complete: " + stems.length + " stems, " + formatBytes(archive.size) + " archive");
     } catch (error) {
       separationStatus.textContent = "Separation failed: " + (error.message || error);
       log(separationStatus.textContent, "error");
@@ -5733,7 +5785,10 @@
   });
   syncMusicMode();
   separationForm.addEventListener("submit", runSeparation);
-  separationFileInput.addEventListener("change", syncAudioServiceControls);
+  separationFileInput.addEventListener("change", function () {
+    clearSeparationResults();
+    syncAudioServiceControls();
+  });
   separationModelSelect.addEventListener("change", syncAudioServiceControls);
   analysisForm.addEventListener("submit", runAudioAnalysis);
   analysisFileInput.addEventListener("change", syncAudioServiceControls);

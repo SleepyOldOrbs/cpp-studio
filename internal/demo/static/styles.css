@@ -2354,6 +2354,48 @@ html[data-studio-format="stories-audiobooks"] {
   align-items: start;
 }
 
+.separation-results {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--well);
+}
+
+.separation-results-head,
+.separation-stem-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.separation-results-head h3 {
+  margin: 3px 0 0;
+}
+
+.separation-results-head > span,
+.separation-stem-head small {
+  color: var(--muted);
+}
+
+.separation-stem-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.separation-stem {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+}
+
+.separation-stem audio {
+  width: 100%;
+  margin-top: 10px;
+}
+
 .audio-analysis-output {
   min-height: 180px;
   max-height: 420px;

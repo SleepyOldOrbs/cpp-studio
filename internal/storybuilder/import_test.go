@@ -21,14 +21,18 @@ func TestStoryImporterPreviewsMappingsAndPublishesIndependentProject(t *testing.
 			{ID: "mara", DisplayName: "Mara", VoiceID: "actor_mara"},
 			{ID: "jon", DisplayName: "Jon", VoiceID: "actor_jon"},
 		},
+		Scenes: []story.Scene{
+			{ID: "cold-open", Title: "Cold open", Premise: "The warning arrives."},
+			{ID: "crossing", Title: "The crossing", Premise: "They choose whether to leave."},
+		},
 		Script: []story.ScriptLine{
-			{ID: "line-001", SpeakerID: "mara", Text: "First line.", GapBeforeMS: 100, GapAfterMS: 25, CurrentTake: "take-001", Takes: []story.Take{
+			{ID: "line-001", SpeakerID: "mara", Text: "First line.", SceneID: "cold-open", GapBeforeMS: 100, GapAfterMS: 25, CurrentTake: "take-001", Takes: []story.Take{
 				{ID: "take-001", VoiceID: "actor_mara", Text: "First line.", DurationMS: 1000},
 			}},
-			{ID: "line-002", SpeakerID: "jon", Text: "Second line.", GapBeforeMS: -50, CurrentTake: "take-001", Takes: []story.Take{
+			{ID: "line-002", SpeakerID: "jon", Text: "Second line.", SceneID: "crossing", GapBeforeMS: -50, CurrentTake: "take-001", Takes: []story.Take{
 				{ID: "take-001", VoiceID: "different_actor", Text: "Second line.", DurationMS: 500},
 			}},
-			{ID: "line-003", SpeakerID: "mara", Text: "Needs a take."},
+			{ID: "line-003", SpeakerID: "mara", Text: "Needs a take.", SceneID: "crossing"},
 		},
 		Audio: story.AudioRef{Format: "wav", URL: "/v1/stories/story_import/artifact/story.wav"},
 	}
@@ -97,6 +101,10 @@ func TestStoryImporterPreviewsMappingsAndPublishesIndependentProject(t *testing.
 		project.Tracks[0].Name != "Mara" || project.Tracks[1].Name != "Jon" {
 		t.Fatalf("project identity/tracks = %+v", project)
 	}
+	if len(project.Scenes) != 2 || project.Scenes[0].ID != "cold-open" || project.Scenes[0].StartMS != 450 ||
+		project.Scenes[1].ID != "crossing" || project.Scenes[1].StartMS != 1775 || project.Scenes[1].Premise != "They choose whether to leave." {
+		t.Fatalf("project scenes = %+v", project.Scenes)
+	}
 	mara := project.Tracks[0].Clips
 	jon := project.Tracks[1].Clips
 	if len(mara) != 2 || len(jon) != 1 {
@@ -131,6 +139,9 @@ func TestStoryImporterPreviewsMappingsAndPublishesIndependentProject(t *testing.
 	}
 	if updated.Tracks[0].Clips[0].SourceStoryID != manifest.ID {
 		t.Fatalf("client changed source provenance: %+v", updated.Tracks[0].Clips[0])
+	}
+	if len(updated.Scenes) != 2 || updated.Scenes[1].ID != "crossing" {
+		t.Fatalf("track-only update dropped imported scenes: %+v", updated.Scenes)
 	}
 }
 

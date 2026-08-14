@@ -142,6 +142,12 @@ button { padding: .55rem .75rem; }
 .canvas-heading { min-height: 4.7rem; padding: .85rem 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); background: var(--panel); }
 .canvas-heading h2, .canvas-heading p { margin-bottom: 0; }
 .canvas-tools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .65rem 1rem; }
+.scene-navigator { padding: .55rem 1rem; display: flex; align-items: stretch; gap: .45rem; overflow-x: auto; border-bottom: 1px solid var(--line); background: #0f1721; }
+.scene-navigator[hidden] { display: none; }
+.scene-navigator > strong { padding: .45rem .25rem .45rem 0; align-self: center; color: var(--muted); font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; }
+.scene-jump { min-width: 9rem; padding: .4rem .55rem; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .6rem; text-align: left; background: #172435; }
+.scene-jump span { overflow: hidden; font-size: .72rem; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.scene-jump small { color: var(--muted); font-size: .62rem; font-variant-numeric: tabular-nums; }
 .timeline-transport { padding: .55rem 1rem; display: grid; grid-template-columns: auto auto auto minmax(8rem, 1fr) 5.5rem minmax(10rem, auto); align-items: center; gap: .55rem; border-bottom: 1px solid var(--line); background: #121a25; color: var(--muted); font-size: .72rem; }
 .timeline-transport input[type="range"] { width: 100%; padding: 0; accent-color: var(--accent); }
 .shortcut-help { margin: .45rem 0 .7rem; color: var(--muted); font-size: .7rem; }

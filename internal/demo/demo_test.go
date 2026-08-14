@@ -189,6 +189,8 @@ func TestHandlerServesIndex(t *testing.T) {
 		"musicLyricsInput",
 		"musicOutputAudio",
 		"/v1/audio/music",
+		"separationResults",
+		"separationStemList",
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("expected tool model chooser marker %q", marker)
@@ -313,6 +315,28 @@ func TestHandlerServesIndex(t *testing.T) {
 	}
 }
 
+func TestSeparationBrowserRendersPlayableStemResults(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+
+	Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, marker := range []string{
+		`form.append("response_format", "browser")`,
+		`response.formData()`,
+		`renderSeparationResults(stems)`,
+		`player.controls = true`,
+		`URL.createObjectURL(stem)`,
+	} {
+		if !strings.Contains(rec.Body.String(), marker) {
+			t.Fatalf("expected playable separation result marker %q", marker)
+		}
+	}
+}
+
 func TestSpeechModelDropdownsAreInteractive(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -412,6 +436,7 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 				"storyBuilderRedo",
 				"storyBuilderSnap",
 				"storyBuilderTimelineDuration",
+				"storyBuilderScenes",
 				"storyBuilderZoom",
 				"storyBuilderPlay",
 				`aria-pressed="false">Play timeline</button>`,
@@ -432,12 +457,12 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 		{
 			path:        "/story-builder.js",
 			contentType: "javascript",
-			markers:     []string{"/v1/story-builder-projects", "/v1/voices", "/v1/library", "library-audio", "scheduleAutosave", "saveProject", "monitorDialogueBuild", "resumeDialogueBuild", "cancelDialogueBuild", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "acceptTimelineEdit", "bindCharacterVoice", "placeLibraryAudio", "renderVoiceLibrary", "reusable-audio-asset", "beginClipPointerEdit", "clampPanelPosition", "requestedProjectID", "playbackPlan", "playTimeline", "pauseTimeline", "Pause timeline", "auditionClip", "stopBrowserPlayback", "persistDiagnosticError"},
+			markers:     []string{"/v1/story-builder-projects", "/v1/voices", "/v1/library", "library-audio", "scheduleAutosave", "saveProject", "renderScenes", "scene-jump", "monitorDialogueBuild", "resumeDialogueBuild", "cancelDialogueBuild", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "acceptTimelineEdit", "bindCharacterVoice", "placeLibraryAudio", "renderVoiceLibrary", "reusable-audio-asset", "beginClipPointerEdit", "clampPanelPosition", "requestedProjectID", "playbackPlan", "playTimeline", "pauseTimeline", "Pause timeline", "auditionClip", "stopBrowserPlayback", "persistDiagnosticError"},
 		},
 		{
 			path:        "/story-builder.css",
 			contentType: "text/css",
-			markers:     []string{".project-list", ".save-status", ".story-canvas", ".timeline-transport", ".timeline-playhead", ".playback-status", ".timeline-viewport", ".track-row", ".silence-clip", ".silence-block", ".trim-handle", ".selection-panel", ".voice-library", ".actor-voice-group", ".character-voice-asset", ".reusable-audio-group", ".reusable-audio-asset", ".clip-media-error", ".dialogue-text-inline", ".clip-status-badge", ".audition-clip"},
+			markers:     []string{".project-list", ".save-status", ".story-canvas", ".scene-navigator", ".scene-jump", ".timeline-transport", ".timeline-playhead", ".playback-status", ".timeline-viewport", ".track-row", ".silence-clip", ".silence-block", ".trim-handle", ".selection-panel", ".voice-library", ".actor-voice-group", ".character-voice-asset", ".reusable-audio-group", ".reusable-audio-asset", ".clip-media-error", ".dialogue-text-inline", ".clip-status-badge", ".audition-clip"},
 		},
 	}
 
