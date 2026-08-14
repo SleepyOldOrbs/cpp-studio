@@ -8,6 +8,7 @@ package jobs
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -96,6 +97,7 @@ func (r *Registry) TrackCancellable(id, kind string, cancel func() error) {
 		},
 		cancel: cancel,
 	}
+	log.Printf("job event=tracked id=%q kind=%q cancellable=%t", id, kind, cancel != nil)
 	r.evictLocked()
 }
 
@@ -140,6 +142,7 @@ func (r *Registry) mutate(id string, apply func(*Job)) {
 	}
 	apply(&t.job)
 	t.job.UpdatedAt = r.now()
+	log.Printf("job event=updated id=%q kind=%q status=%q progress=%.3f detail=%q error=%q", t.job.ID, t.job.Kind, t.job.Status, t.job.Progress, t.job.Detail, t.job.Error)
 }
 
 // Cancel asks a job's pipeline to stop. The cancel delegate runs outside the
@@ -157,10 +160,14 @@ func (r *Registry) Cancel(id string) (Job, error) {
 		return job, fmt.Errorf("job %q is already %s", id, job.Status)
 	}
 	cancel := t.cancel
+	kind := t.job.Kind
+	status := t.job.Status
 	r.mu.Unlock()
 
 	if cancel != nil {
+		log.Printf("job event=cancel_requested id=%q kind=%q status=%q", id, kind, status)
 		if err := cancel(); err != nil {
+			log.Printf("job event=cancel_refused id=%q error=%q", id, err)
 			job, _ := r.Get(id)
 			return job, err
 		}

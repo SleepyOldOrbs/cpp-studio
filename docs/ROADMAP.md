@@ -330,12 +330,13 @@ mattered was that none of them should come first:
   identity-strict, Restart forks, and Discard is explicit. Story keeps its separate
   take-room lifecycle; shared persistence concepts do not merge the domain models.
   See [`PLAN-DRAMABOX-HARDENING.md`](PLAN-DRAMABOX-HARDENING.md).
-- **DramaBox guided setup and factual prompt correctness — code complete
-  2026-08-03; interactive browser acceptance pending.** Bounded audio.cpp discovery,
+- **DramaBox guided setup and factual prompt correctness — complete
+  2026-08-13.** Bounded audio.cpp discovery,
   immutable confirmed installation, GGUF/readiness evidence, structured prompt lint,
   exact full-document section preview, and export provenance now use existing gateway,
-  jobs, and lifecycle seams. Fixture/API/security suites pass; the remaining human UI
-  gate is kept explicit when no browser is connected.
+  jobs, and lifecycle seams. Fixture/API/security suites pass, and isolated in-app
+  browser acceptance covers preview/confirmation, progress/cancellation, GGUF evidence,
+  lifecycle navigation, and error remedies without downloading a real model.
 
 ### M10 — Episodes  ·  *the wall between here and the destination*
 
@@ -365,7 +366,8 @@ two stages after it — is written up in
 
 ## Sequence & rationale
 
-`M1 → M2 → M3 → M4`, with README/CI folded into M1 (initial) and M4 (polish).
-Tabs make it coherent; the manifest makes it runnable by others; VRAM control
-removes the contention tax; the job system + library are the spine the audiobook
-needs; the audiobook is the payoff that proves the foundation.
+M1–M9 established the Studio foundation and production workflows. The current
+product frontier is M10: refresh the Episodes plan against the shipped Story Builder
+and then implement the smallest scene-based, resumable long-form production slice.
+Do not raise Story caps before durable incremental production and its ownership seam
+are settled.

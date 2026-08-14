@@ -1297,10 +1297,14 @@ Names may adjust during implementation, but responsibilities must remain separat
 - [x] P2-10: Extend manifest/sidecar provenance without watermark assumptions.
 - [x] P2-11: Update setup, API, model, installation, lifecycle, and prompt documentation.
 - [x] P2-12: Run command-injection, traversal, disk, partial-download, licence, concurrency, and confirmation-replay security tests.
-- [ ] P2-13: Run browser acceptance for install preview/confirm, progress/cancel, GGUF inspection, lifecycle links, and error remedies.
-  Attempted 2026-08-03 after live API/static acceptance, but this agent session has
-  no connected browser. Keep this human-visible interaction gate open rather than
-  representing server or DOM tests as browser acceptance.
+- [x] P2-13: Run browser acceptance for install preview/confirm, progress/cancel, GGUF inspection, lifecycle links, and error remedies.
+  Completed 2026-08-13 in the in-app browser against an isolated local response
+  fixture. The visible flow showed immutable source, revision, destination, licence,
+  size, checksum, free-space and VRAM warnings; required explicit acknowledgement;
+  reported tracked progress; cancelled to a terminal state; displayed GGUF version,
+  architecture, size and expert count; and opened the configured Engine remedy.
+  No real model download or model-root mutation occurred. The existing API and
+  security suites remain the proof of installer-side download and filesystem safety.
 - [x] P2-14: Run compatibility and full verification suites.
   Completed 2026-08-03: `scripts/verify.ps1` passed every Go package, both checked
   configurations, the benchmark harness self-tests, and the full fixture smoke flow.

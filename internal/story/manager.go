@@ -643,9 +643,13 @@ func (m *Manager) writeScript(ctx context.Context, req NormalizedRequest, scaffo
 		return title, req.Script, nil
 	}
 	if m.script == nil {
-		return titleForRequest(req), FixtureScript(req, scaffold), nil
+		title := req.Title
+		if title == "" {
+			title = titleForRequest(req)
+		}
+		return title, FixtureScript(req, scaffold), nil
 	}
-	return m.script(ctx, ScriptRequest{
+	title, script, err := m.script(ctx, ScriptRequest{
 		Subject:       req.Subject,
 		Mode:          req.Mode,
 		Premise:       req.Premise,
@@ -654,6 +658,10 @@ func (m *Manager) writeScript(ctx context.Context, req NormalizedRequest, scaffo
 		Facts:         scaffold.Facts,
 		Cast:          scaffold.Cast,
 	})
+	if err == nil && req.Title != "" {
+		title = req.Title
+	}
+	return title, script, err
 }
 
 // Draft writes a story without producing it: validate, scaffold, script —

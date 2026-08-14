@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -340,6 +341,7 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	}
 
 	engine.setStatusLocked(StatusStarting, "")
+	log.Printf("engine_lifecycle event=start name=%q mode=%q command=%q", engine.name, engine.cfg.Mode, engine.cfg.Command)
 	// The child's lifetime belongs to the manager, never to the caller: a
 	// request-scoped ctx is canceled when its HTTP handler returns, which
 	// would silently kill the engine moments after a successful start. The
@@ -379,16 +381,19 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	engine.health.PID = cmd.Process.Pid
 	engine.health.StartedAt = time.Now().UTC()
 	engine.setStatusLocked(StatusRunning, "")
+	log.Printf("engine_lifecycle event=started name=%q pid=%d", engine.name, cmd.Process.Pid)
 	m.mu.Unlock()
 
-	go engine.captureLogs(stdout)
-	go engine.captureLogs(stderr)
+	go engine.captureLogs("stdout", stdout)
+	go engine.captureLogs("stderr", stderr)
 	go m.watchExit(engine, cmd, engine.done)
 
 	if engine.cfg.HealthURL == "" {
+		log.Printf("engine_lifecycle event=ready name=%q pid=%d probe=none", engine.name, cmd.Process.Pid)
 		return nil
 	}
 	if err := m.waitReady(ctx, engine); err != nil {
+		log.Printf("engine_lifecycle event=ready_failed name=%q pid=%d error=%q", engine.name, cmd.Process.Pid, err)
 		rollbackCtx, cancel := context.WithTimeout(context.Background(), durationSeconds(engine.cfg.ShutdownTimeoutSeconds, defaultShutdownTimeout))
 		stopErr := m.Stop(rollbackCtx, name)
 		cancel()
@@ -397,6 +402,7 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 		}
 		return err
 	}
+	log.Printf("engine_lifecycle event=ready name=%q pid=%d probe=%q", engine.name, cmd.Process.Pid, engine.cfg.HealthURL)
 	return nil
 }
 
@@ -503,6 +509,7 @@ func (m *Manager) MarkSuccess(name string) {
 		engine.health.LastError = ""
 	}
 	engine.health.UpdatedAt = now
+	log.Printf("engine_status event=success name=%q", name)
 }
 
 func (m *Manager) MarkFailure(name string, status Status, lastErr string) {
@@ -513,6 +520,7 @@ func (m *Manager) MarkFailure(name string, status Status, lastErr string) {
 		return
 	}
 	engine.setStatusLocked(status, lastErr)
+	log.Printf("engine_status event=failure name=%q status=%q error=%q", name, status, lastErr)
 }
 
 func (m *Manager) waitReady(ctx context.Context, engine *engineProcess) error {
@@ -554,6 +562,7 @@ func (m *Manager) waitReady(ctx context.Context, engine *engineProcess) error {
 
 func (m *Manager) watchExit(engine *engineProcess, cmd *exec.Cmd, done chan error) {
 	err := cmd.Wait()
+	log.Printf("engine_lifecycle event=exit name=%q pid=%d error=%q", engine.name, cmd.Process.Pid, err)
 	done <- err
 	close(done)
 
@@ -577,14 +586,18 @@ func (m *Manager) watchExit(engine *engineProcess, cmd *exec.Cmd, done chan erro
 	engine.setStatusLocked(StatusExited, "")
 }
 
-func (e *engineProcess) captureLogs(r io.Reader) {
+func (e *engineProcess) captureLogs(stream string, r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		e.logs.add(scanner.Text())
+		line := scanner.Text()
+		e.logs.add(line)
+		log.Printf("engine_output name=%q stream=%q message=%q", e.name, stream, line)
 	}
 	if err := scanner.Err(); err != nil {
-		e.logs.add("log capture error: " + err.Error())
+		line := "log capture error: " + err.Error()
+		e.logs.add(line)
+		log.Printf("engine_output name=%q stream=%q message=%q", e.name, stream, line)
 	}
 }
 

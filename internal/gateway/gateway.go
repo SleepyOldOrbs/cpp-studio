@@ -15,7 +15,6 @@ import (
 	"log"
 	"math"
 	mrand "math/rand/v2"
-	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -45,9 +45,9 @@ import (
 
 type router struct {
 	mux                        *http.ServeMux
+	requestSequence            atomic.Uint64
 	cfg                        config.Config
 	manager                    *lifecycle.Manager
-	client                     *http.Client
 	engines                    engine.Invoker
 	stories                    *story.Manager
 	storyBuilderProjects       *storybuilder.Store
@@ -104,6 +104,8 @@ const (
 	maxMusicSourceWAVBytes      = 192 * 1024 * 1024
 	maxMusicBodyBytes           = maxMusicSourceWAVBytes + 1024*1024
 	maxChatReplyBytes           = 1024 * 1024
+	maxBrowserEventBytes        = 8 * 1024
+	maxBrowserEventMessageBytes = 4 * 1024
 )
 
 // NewRouter builds the cpp-studio gateway HTTP routes.
@@ -111,7 +113,6 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	r := &router{
 		cfg:       cfg,
 		manager:   manager,
-		client:    http.DefaultClient,
 		engines:   engine.NewRunner(cfg.Engines, manager),
 		voices:    voice.NewStore(""),
 		jobs:      jobs.NewRegistry(),
@@ -229,6 +230,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/gpu", r.handleGPU)
 	mux.HandleFunc("/v1/jobs", r.handleJobs)
 	mux.HandleFunc("/v1/jobs/", r.handleJob)
+	mux.HandleFunc("/v1/logs/events", r.handleBrowserLogEvent)
 	mux.HandleFunc("/v1/library", r.handleLibrary)
 	mux.HandleFunc("/v1/library/", r.handleLibraryItem)
 	mux.HandleFunc("/v1/audiobooks", r.handleAudiobooks)
@@ -269,7 +271,87 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 }
 
 func (r *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	r.mux.ServeHTTP(w, req)
+	requestID := r.requestSequence.Add(1)
+	started := time.Now()
+	w.Header().Set("X-Cpp-Studio-Request-ID", strconv.FormatUint(requestID, 10))
+	logged := &diagnosticResponseWriter{ResponseWriter: w}
+	completed := false
+	defer func() {
+		status := logged.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if !completed && status < http.StatusInternalServerError {
+			status = http.StatusInternalServerError
+		}
+		log.Printf("request id=%d method=%q path=%q status=%d response_bytes=%d request_bytes=%d content_type=%q duration=%s completed=%t", requestID, req.Method, req.URL.Path, status, logged.bytes, req.ContentLength, req.Header.Get("Content-Type"), time.Since(started).Round(time.Microsecond), completed)
+	}()
+	r.mux.ServeHTTP(logged, req)
+	completed = true
+}
+
+type diagnosticResponseWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+func (w *diagnosticResponseWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *diagnosticResponseWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := w.ResponseWriter.Write(data)
+	w.bytes += int64(n)
+	return n, err
+}
+
+func (w *diagnosticResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (r *router) handleBrowserLogEvent(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodPost) {
+		return
+	}
+	var event struct {
+		Level   string `json:"level"`
+		Page    string `json:"page"`
+		Message string `json:"message"`
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, maxBrowserEventBytes)
+	decoder := json.NewDecoder(req.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&event); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid browser log event")
+		return
+	}
+	event.Level = strings.TrimSpace(event.Level)
+	if event.Level == "" {
+		event.Level = "info"
+	}
+	if event.Level != "info" && event.Level != "warning" && event.Level != "error" {
+		writeJSONError(w, http.StatusBadRequest, "browser log level must be info, warning, or error")
+		return
+	}
+	event.Page = strings.TrimSpace(event.Page)
+	if len(event.Page) > 256 {
+		event.Page = event.Page[:256]
+	}
+	event.Message = strings.TrimSpace(event.Message)
+	if event.Message == "" || len(event.Message) > maxBrowserEventMessageBytes {
+		writeJSONError(w, http.StatusBadRequest, "browser log message must be between 1 and 4096 bytes")
+		return
+	}
+	log.Printf("browser_event level=%q page=%q message=%q", event.Level, event.Page, event.Message)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (r *router) handleRoot(w http.ResponseWriter, req *http.Request) {
@@ -1686,43 +1768,33 @@ func (r *router) handleChatCompletions(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	engineCfg, ok := r.engine("llama")
-	if !ok {
+	if _, ok := r.engine("llama"); !ok {
 		writeJSONError(w, http.StatusServiceUnavailable, `engine "llama" is not configured`)
 		return
 	}
-	upstreamURL, ok := inferChatCompletionsURL(engineCfg.HealthURL)
-	if !ok {
-		writeJSONError(w, http.StatusServiceUnavailable, `engine "llama" healthUrl must end in /health to infer /v1/chat/completions`)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(req.Context(), engine.RequestTimeout(engineCfg, defaultChatTimeout))
-	defer cancel()
-
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, req.Body)
+	payload, err := io.ReadAll(io.LimitReader(req.Body, maxJSONBodyBytes+1))
 	if err != nil {
-		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("read chat request: %v", err))
 		return
 	}
-	upstreamReq.ContentLength = req.ContentLength
-	upstreamReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := r.client.Do(upstreamReq)
+	if len(payload) > maxJSONBodyBytes {
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "chat request is too large")
+		return
+	}
+	result, err := r.engines.Run(req.Context(), engine.ChatProxySpec(payload))
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("llama upstream request failed: %v", err))
+		writeEngineError(w, err)
 		return
 	}
-	defer resp.Body.Close()
-
-	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+	if contentType := result.ContentType; contentType != "" {
 		w.Header().Set("Content-Type", contentType)
 	}
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		r.manager.MarkSuccess("llama")
+	status := result.StatusCode
+	if status == 0 {
+		status = http.StatusOK
 	}
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	w.WriteHeader(status)
+	_, _ = w.Write(result.Output)
 }
 
 func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
@@ -1749,13 +1821,13 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	speechEngine, err := resolveSpeechModelEngine(body.Model)
+	selected, err := r.resolveCatalogModel(body.Model, "speech", "speech", engine.DefaultSpeechEngineID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	audio, err := r.speakWithEngine(req.Context(), speechEngine, body.Input, clonedVoice, false)
+	audio, err := r.speakWithEngine(req.Context(), selected.Engine, body.Input, clonedVoice, false)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -1777,7 +1849,7 @@ func (r *router) handleVoiceConversion(w http.ResponseWriter, req *http.Request)
 	req.Body = http.MaxBytesReader(w, req.Body, maxVoiceConversionBodyBytes)
 
 	model := strings.TrimSpace(req.FormValue("model"))
-	selected, err := resolveAudioModel(conversionModelRoutes, model, "voice conversion")
+	selected, err := r.resolveCatalogModel(model, "voice_conversion", "voice conversion", engine.VoiceConversionEngineID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -2049,10 +2121,7 @@ func (r *router) handleMusicGeneration(w http.ResponseWriter, req *http.Request)
 		return
 	}
 	model := strings.TrimSpace(req.FormValue("model"))
-	if model == "ace-step" {
-		model = "ace-step-turbo-q8-0"
-	}
-	selected, err := resolveAudioModel(musicModelRoutes, model, "music")
+	selected, err := r.resolveCatalogModel(model, "music", "music", engine.MusicEngineID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -2150,92 +2219,21 @@ func (r *router) handleMusicAnalysis(w http.ResponseWriter, req *http.Request) {
 	_ = json.NewEncoder(w).Encode(analysis)
 }
 
-// resolveSpeechModelEngine is the public speech-model allowlist. The UI uses
-// engine ids as stable model values because each configured audio.cpp model
-// has its own resident or subprocess lane. Catalogue ids are accepted too so
-// direct API callers can use the model name they see in /v1/models/catalog.
-func resolveSpeechModelEngine(value string) (string, error) {
-	switch value = strings.TrimSpace(value); value {
-	case "", "audio", "qwen3-tts-0.6b-base":
-		return engine.DefaultSpeechEngineID, nil
-	case "omnivoice", "voxcpm2", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-base-q8-0",
-		"qwen3-tts-1.7b-customvoice", "qwen3-tts-1.7b-customvoice-q8-0",
-		"vibevoice", "vibevoice-1.5b-q8-0", "fish-audio", "fish-audio-s2-pro-q8-0",
-		"chatterbox-clone", "chatterbox-clone-q8-0", engine.DramaBoxSpeechEngineID, "dramabox-q8-0":
-		if value == "dramabox-q8-0" {
-			return engine.DramaBoxSpeechEngineID, nil
+// resolveCatalogModel is the single model-selection interface crossed by
+// Gateway handlers. Identity, aliases, capability, family, and engine route
+// all come from models.json through the models module.
+func (r *router) resolveCatalogModel(value, capability, label, defaultEngine string) (models.Selection, error) {
+	selected, err := r.catalog.Resolve(value, capability, defaultEngine)
+	if err != nil {
+		trimmed := strings.TrimSpace(value)
+		if len(r.catalog.Models) == 0 && defaultEngine != "" && (trimmed == "" || trimmed == defaultEngine) {
+			if _, configured := r.cfg.Engines[defaultEngine]; configured {
+				return models.Selection{ID: defaultEngine, Engine: defaultEngine}, nil
+			}
 		}
-		switch value {
-		case "qwen3-tts-1.7b-base-q8-0":
-			return "qwen3-tts-1.7b-base", nil
-		case "qwen3-tts-1.7b-customvoice-q8-0":
-			return "qwen3-tts-1.7b-customvoice", nil
-		case "vibevoice-1.5b-q8-0":
-			return "vibevoice", nil
-		case "fish-audio-s2-pro-q8-0":
-			return "fish-audio", nil
-		case "chatterbox-clone-q8-0":
-			return "chatterbox-clone", nil
-		}
-		return value, nil
-	default:
-		return "", fmt.Errorf("speech model %q is not supported", value)
+		return models.Selection{}, fmt.Errorf("%s model %q is not supported", label, strings.TrimSpace(value))
 	}
-}
-
-func resolveTranscriptionModelEngine(value string) (string, error) {
-	switch strings.TrimSpace(value) {
-	case "", "whisper", "large-v3", "large-v3-turbo", "base-en", "whisper-large-v3", "whisper-large-v3-turbo", "whisper-base-en":
-		return "whisper", nil
-	case "qwen3-asr-0.6b", "qwen3-asr-0.6b-q8-0":
-		return "qwen3-asr-0.6b", nil
-	case "qwen3-asr-1.7b", "qwen3-asr-1.7b-hf":
-		return "qwen3-asr-1.7b", nil
-	case "vibevoice-asr", "vibevoice-asr-q8-0":
-		return "vibevoice-asr", nil
-	default:
-		return "", fmt.Errorf("transcription model %q is not supported", value)
-	}
-}
-
-type audioModelRoute struct {
-	Engine string
-	Family string
-}
-
-var musicModelRoutes = map[string]audioModelRoute{
-	"":                              {Engine: engine.MusicEngineID, Family: "ace_step"},
-	"ace-step-turbo-q8-0":           {Engine: engine.MusicEngineID, Family: "ace_step"},
-	"stable-audio-3-medium-q8-0":    {Engine: "stable-audio-medium", Family: "stable_audio"},
-	"stable-audio-3-small-sfx-q8-0": {Engine: "stable-audio-sfx", Family: "stable_audio"},
-	"heartmula-3b-q8-0":             {Engine: "heartmula", Family: "heartmula"},
-}
-
-var conversionModelRoutes = map[string]audioModelRoute{
-	"":                {Engine: engine.VoiceConversionEngineID, Family: "chatterbox"},
-	"chatterbox":      {Engine: engine.VoiceConversionEngineID, Family: "chatterbox"},
-	"chatterbox-q8-0": {Engine: engine.VoiceConversionEngineID, Family: "chatterbox"},
-	"vevo2":           {Engine: "vevo2", Family: "vevo2"},
-	"vevo2-q8-0":      {Engine: "vevo2", Family: "vevo2"},
-}
-
-var separationModelRoutes = map[string]audioModelRoute{
-	"htdemucs-q8-0":          {Engine: "htdemucs", Family: "htdemucs"},
-	"bs-roformer-q8-0":       {Engine: "bs-roformer", Family: "bs_roformer"},
-	"mel-band-roformer-q8-0": {Engine: "mel-band-roformer", Family: "mel_band_roformer"},
-}
-
-var vadModelRoutes = map[string]audioModelRoute{
-	"silero-vad-audiocpp":    {Engine: "silero-vad", Family: "silero_vad"},
-	"marblenet-vad-audiocpp": {Engine: "marblenet-vad", Family: "marblenet_vad"},
-}
-
-func resolveAudioModel(routes map[string]audioModelRoute, value, capability string) (audioModelRoute, error) {
-	resolved, ok := routes[strings.TrimSpace(value)]
-	if !ok {
-		return audioModelRoute{}, fmt.Errorf("%s model %q is not supported", capability, value)
-	}
-	return resolved, nil
+	return selected, nil
 }
 
 // audioServerModelID is the model id a server-mode audio engine must expose
@@ -2263,106 +2261,18 @@ func (r *router) speakWithEngine(ctx context.Context, engineName string, text st
 }
 
 func (r *router) speakSynthesis(ctx context.Context, request engine.SynthesisRequest, clonedVoice *engine.Voice, reserved bool) ([]byte, error) {
-	engineName := request.EngineID
-	engineCfg, ok := r.engine(engineName)
-	if !ok {
-		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("engine %q is not configured", engineName)}
+	spec := engine.SpeechVoiceSpecForRequest(request, clonedVoice)
+	var result engine.Result
+	var err error
+	if reserved {
+		result, err = r.engines.RunReserved(ctx, spec)
+	} else {
+		result, err = r.engines.Run(ctx, spec)
 	}
-	effectiveVoice := clonedVoice
-	if effectiveVoice == nil {
-		effectiveVoice = r.defaultSpeechVoice(engineName)
-	}
-	if engineCfg.Mode != "server" {
-		spec := engine.SpeechVoiceSpecForRequest(request, effectiveVoice)
-		var res engine.Result
-		var err error
-		if reserved {
-			res, err = r.engines.RunReserved(ctx, spec)
-		} else {
-			res, err = r.engines.Run(ctx, spec)
-		}
-		if err != nil {
-			return nil, err
-		}
-		return res.Output, nil
-	}
-
-	if !reserved {
-		release, ok := r.engines.Reserve(engineName)
-		if !ok {
-			return nil, &engine.Error{Kind: engine.KindBusy, Message: fmt.Sprintf("engine %q is busy", engineName)}
-		}
-		defer release()
-	}
-	upstreamURL, ok := inferEngineURL(engineCfg.HealthURL, "/v1/audio/speech")
-	if !ok {
-		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("engine %q healthUrl must end in /health to infer /v1/audio/speech", engineName)}
-	}
-	refPath := ""
-	if effectiveVoice != nil {
-		refPath = effectiveVoice.RefWAVPath
-	}
-	if refPath == "" && !engine.SpeechEngineAllowsTextOnly(engineName) {
-		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: fmt.Sprintf("server-mode engine %q needs defaultVoiceRef configured", engineName)}
-	}
-	defaultVoice := r.defaultSpeechVoice(engineName)
-	payload, err := engine.MarshalSpeechServerRequest(audioServerModelID, request, clonedVoice, defaultVoice)
 	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode speech request: %v", err)}
+		return nil, err
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, engine.RequestTimeout(engineCfg, engine.DefaultSpeechTimeout))
-	defer cancel()
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(payload))
-	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
-	}
-	upstreamReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := r.client.Do(upstreamReq)
-	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("%s upstream request failed: %v", engineName, err)}
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, engine.MaxSpeechOutputBytes+1))
-	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read %s upstream response: %v", engineName, err)}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("%s upstream returned status %d: %s", engineName, resp.StatusCode, strings.TrimSpace(string(data)))}
-	}
-	if int64(len(data)) > engine.MaxSpeechOutputBytes {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("%s upstream produced an oversized WAV", engineName)}
-	}
-	if err := wav.ValidateBytes(data); err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("%s upstream produced an invalid WAV: %v", engineName, err)}
-	}
-	r.manager.MarkSuccess(engineName)
-	return data, nil
-}
-
-// defaultSpeechVoice gives every selectable speech engine the same studio
-// default reference unless that engine declares its own. This matters for the
-// subprocess TTS models: selecting OmniVoice or VoxCPM2 without first choosing
-// a stored clone should still speak with the studio default voice.
-func (r *router) defaultSpeechVoice(engineName string) *engine.Voice {
-	voiceFrom := func(cfg config.EngineConfig) *engine.Voice {
-		if cfg.DefaultVoiceRef == "" && cfg.DefaultVoiceText == "" {
-			return nil
-		}
-		return &engine.Voice{RefWAVPath: cfg.DefaultVoiceRef, RefText: cfg.DefaultVoiceText}
-	}
-	if cfg, ok := r.engine(engineName); ok {
-		if voice := voiceFrom(cfg); voice != nil {
-			return voice
-		}
-	}
-	if engineName != engine.DefaultSpeechEngineID {
-		if cfg, ok := r.engine(engine.DefaultSpeechEngineID); ok {
-			return voiceFrom(cfg)
-		}
-	}
-	return nil
+	return result.Output, nil
 }
 
 type audioServerSpeechRequest struct {
@@ -2461,151 +2371,17 @@ func rollImageSeed() int64 {
 // the same purpose-built-body discipline applies (the OpenAI route once
 // crashed on a stray "n":null; only send fields the server defines).
 func (r *router) generateImage(ctx context.Context, prompt string, width, height int, seed int64) ([]byte, error) {
-	engineCfg, ok := r.engine("sd")
-	if !ok {
-		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "sd" is not configured`}
-	}
-	if engineCfg.Mode != "server" {
-		res, err := r.engines.Run(ctx, engine.ImageSpec(prompt, width, height, seed))
-		if err != nil {
-			return nil, err
-		}
-		return res.Output, nil
-	}
-
-	upstreamURL, ok := inferSDURL(engineCfg.HealthURL, "/sdcpp/v1/img_gen")
-	if !ok {
-		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "sd" healthUrl must be an absolute http(s) URL to infer /sdcpp/v1/img_gen`}
-	}
-
-	upstreamBody := struct {
-		Prompt       string `json:"prompt"`
-		Width        int    `json:"width,omitempty"`
-		Height       int    `json:"height,omitempty"`
-		Seed         int64  `json:"seed"`
-		OutputFormat string `json:"output_format"`
-	}{Prompt: prompt, Seed: seed, OutputFormat: "png"}
-	if width > 0 && height > 0 {
-		upstreamBody.Width = width
-		upstreamBody.Height = height
-	}
-	payload, err := json.Marshal(upstreamBody)
-	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode image request: %v", err)}
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, engine.RequestTimeout(engineCfg, engine.DefaultImageTimeout))
-	defer cancel()
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(payload))
-	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
-	}
-	upstreamReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := r.client.Do(upstreamReq)
-	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream request failed: %v", err)}
-	}
-	submitted, err := readBoundedJSON(resp, maxImageUpstreamBytes)
+	result, err := r.engines.Run(ctx, engine.ImageSpec(prompt, width, height, seed))
 	if err != nil {
 		return nil, err
 	}
-	var job struct {
-		PollURL string `json:"poll_url"`
-	}
-	if err := json.Unmarshal(submitted, &job); err != nil || job.PollURL == "" {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream returned no job to poll: %s", strings.TrimSpace(string(submitted)))}
-	}
-	pollURL, ok := inferSDURL(engineCfg.HealthURL, job.PollURL)
-	if !ok {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: "sd upstream returned an unusable poll url"}
-	}
-
-	// Poll until the job lands somewhere terminal; the request context
-	// bounds the whole wait, so a wedged job becomes a timeout rather than
-	// a stuck request.
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: "sd generation timed out"}
-		case <-time.After(250 * time.Millisecond):
-		}
-		pollReq, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
-		if err != nil {
-			return nil, &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
-		}
-		pollResp, err := r.client.Do(pollReq)
-		if err != nil {
-			return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd job poll failed: %v", err)}
-		}
-		pollBody, err := readBoundedJSON(pollResp, maxImageUpstreamBytes)
-		if err != nil {
-			return nil, err
-		}
-		var status struct {
-			Status string `json:"status"`
-			Result *struct {
-				Images []struct {
-					B64JSON string `json:"b64_json"`
-				} `json:"images"`
-			} `json:"result"`
-			Error *struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(pollBody, &status); err != nil {
-			return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("decode sd job status: %v", err)}
-		}
-		switch status.Status {
-		case "queued", "generating":
-			continue
-		case "completed":
-			if status.Result == nil || len(status.Result.Images) == 0 || status.Result.Images[0].B64JSON == "" {
-				return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: "sd job completed with no image data"}
-			}
-			pngBytes, err := base64.StdEncoding.DecodeString(status.Result.Images[0].B64JSON)
-			if err != nil {
-				return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("decode sd upstream image: %v", err)}
-			}
-			if err := engine.ValidatePNGBytes(pngBytes); err != nil {
-				return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream produced invalid PNG: %v", err)}
-			}
-			r.manager.MarkSuccess("sd")
-			return pngBytes, nil
-		default:
-			message := "sd job " + status.Status
-			if status.Error != nil && status.Error.Message != "" {
-				message += ": " + status.Error.Message
-			}
-			return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: message}
-		}
-	}
-}
-
-// readBoundedJSON drains a bounded upstream response and hands back its
-// bytes, treating non-2xx statuses as engine failures with the body as the
-// explanation.
-func readBoundedJSON(resp *http.Response, limit int64) ([]byte, error) {
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
-	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read sd upstream response: %v", err)}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("sd upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
-	}
-	return body, nil
+	return result.Output, nil
 }
 
 const (
 	// maxImageDescriptionBodyBytes bounds the JSON body carrying a base64
 	// PNG for description.
 	maxImageDescriptionBodyBytes = 24 * 1024 * 1024
-	// maxImageUpstreamBytes bounds the sd-server response we read: a base64
-	// PNG (~1.34x the raw cap) wrapped in JSON, so it must exceed
-	// engine.MaxImageOutputBytes with room for the encoding overhead.
-	maxImageUpstreamBytes = 64 * 1024 * 1024
 	// maxDescribeImageDimension caps described images. Unlike generation,
 	// description accepts photos and screenshots, so the cap is looser than
 	// the SD limit; the browser additionally downscales before uploading.
@@ -2678,61 +2454,11 @@ func (r *router) handleImageDescriptions(w http.ResponseWriter, req *http.Reques
 // describeImage asks the resident vision server what the PNG shows. The
 // request carries the image and visionInstruction only.
 func (r *router) describeImage(ctx context.Context, imageBytes []byte) (string, error) {
-	engineCfg, ok := r.engine("vision")
-	if !ok {
-		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "vision" is not configured`}
-	}
-	upstreamURL, ok := inferChatCompletionsURL(engineCfg.HealthURL)
-	if !ok {
-		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "vision" healthUrl must end in /health to infer /v1/chat/completions`}
-	}
-
-	payload, err := json.Marshal(visionChatRequest{
-		Model: "default",
-		Messages: []visionChatMessage{
-			{
-				Role: "user",
-				Content: []visionContentPart{
-					{Type: "text", Text: visionInstruction},
-					{Type: "image_url", ImageURL: &visionImageURL{URL: "data:image/png;base64," + base64.StdEncoding.EncodeToString(imageBytes)}},
-				},
-			},
-		},
-	})
+	result, err := r.engines.Run(ctx, engine.VisionSpec(imageBytes, visionInstruction))
 	if err != nil {
-		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode vision request: %v", err)}
+		return "", err
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, engine.RequestTimeout(engineCfg, defaultChatTimeout))
-	defer cancel()
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(payload))
-	if err != nil {
-		return "", &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
-	}
-	upstreamReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := r.client.Do(upstreamReq)
-	if err != nil {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("vision upstream request failed: %v", err)}
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxChatReplyBytes))
-	if err != nil {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read vision upstream response: %v", err)}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("vision upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))}
-	}
-
-	description, err := extractChatReply(respBody)
-	if err != nil {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: err.Error()}
-	}
-	if description == "" {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: "vision engine returned no description"}
-	}
-	r.manager.MarkSuccess("vision")
-	return description, nil
+	return string(result.Stdout), nil
 }
 
 func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) {
@@ -2745,24 +2471,24 @@ func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) 
 	if !ok {
 		return
 	}
-	selectedEngine, err := resolveTranscriptionModelEngine(req.FormValue("model"))
+	selected, err := r.resolveCatalogModel(req.FormValue("model"), "transcription", "transcription", "whisper")
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if _, ok := r.engine(selectedEngine); !ok {
-		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("engine %q is not configured", selectedEngine))
+	if _, ok := r.engine(selected.Engine); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("engine %q is not configured", selected.Engine))
 		return
 	}
 
 	started := time.Now()
 	if req.URL.Query().Get("format") == "segments" {
 		var segments []transcriptSegment
-		if selectedEngine == "whisper" {
+		if selected.Engine == "whisper" {
 			segments, err = r.transcribeSegments(req.Context(), data)
 		} else {
 			var text string
-			text, err = r.transcribeWithEngine(req.Context(), selectedEngine, data)
+			text, err = r.transcribeWithEngine(req.Context(), selected.Engine, data)
 			if err == nil {
 				duration, durationErr := wav.Duration(data)
 				if durationErr != nil {
@@ -2792,7 +2518,7 @@ func (r *router) handleTranscriptions(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	text, err := r.transcribeWithEngine(req.Context(), selectedEngine, data)
+	text, err := r.transcribeWithEngine(req.Context(), selected.Engine, data)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -2825,6 +2551,16 @@ func speakerLabel(cluster int) string {
 func (r *router) handleDiarization(w http.ResponseWriter, req *http.Request) {
 	if !requireMethod(w, req, http.MethodPost) {
 		return
+	}
+	requestedModel := strings.TrimSpace(req.FormValue("model"))
+	var selectedModel models.Selection
+	if requestedModel != "" {
+		var err error
+		selectedModel, err = r.resolveCatalogModel(requestedModel, "diarization", "diarization", "")
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	_, sortformerConfigured := r.engine("diarize")
 	_, sherpaConfigured := r.engine("diarize-sherpa")
@@ -2861,7 +2597,18 @@ func (r *router) handleDiarization(w http.ResponseWriter, req *http.Request) {
 	sortformerCompatible := engine.CanUseSortformer(format, duration, numSpeakers)
 	provider := engine.DiarizationProviderSherpa
 	var spec engine.Spec
-	if sortformerCompatible && sortformerConfigured {
+	if requestedModel != "" {
+		if selectedModel.Engine != "diarize" || !sortformerConfigured {
+			writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("engine %q is not configured for the selected diarization model", selectedModel.Engine))
+			return
+		}
+		if !sortformerCompatible {
+			writeJSONError(w, http.StatusBadRequest, "the selected Sortformer model accepts 16 kHz mono PCM WAV, at most 120 seconds, without an explicit speaker count")
+			return
+		}
+		provider = engine.DiarizationProviderSortformer
+		spec = engine.SortformerDiarizationSpec(data, duration)
+	} else if sortformerCompatible && sortformerConfigured {
 		provider = engine.DiarizationProviderSortformer
 		spec = engine.SortformerDiarizationSpec(data, duration)
 	} else {
@@ -2913,7 +2660,7 @@ func (r *router) handleSeparation(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	model := strings.TrimSpace(req.FormValue("model"))
-	selected, err := resolveAudioModel(separationModelRoutes, model, "separation")
+	selected, err := r.resolveCatalogModel(model, "separation", "separation", "")
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -3003,7 +2750,7 @@ func (r *router) handleVAD(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
-	selected, err := resolveAudioModel(vadModelRoutes, req.FormValue("model"), "VAD")
+	selected, err := r.resolveCatalogModel(req.FormValue("model"), "vad", "VAD", "")
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -3029,18 +2776,18 @@ func (r *router) handleForcedAlignment(w http.ResponseWriter, req *http.Request)
 	if !requireMethod(w, req, http.MethodPost) {
 		return
 	}
-	if _, ok := r.engine("forced-aligner"); !ok {
-		writeJSONError(w, http.StatusServiceUnavailable, `engine "forced-aligner" is not configured`)
-		return
-	}
 	req.Body = http.MaxBytesReader(w, req.Body, maxDiarizationUploadBytes)
 	data, ok := readUploadedWAV(w, req)
 	if !ok {
 		return
 	}
-	model := strings.TrimSpace(req.FormValue("model"))
-	if model != "" && model != "qwen3-forced-aligner-0.6b-q8-0" {
-		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("forced alignment model %q is not supported", model))
+	selected, err := r.resolveCatalogModel(req.FormValue("model"), "forced_alignment", "forced alignment", "forced-aligner")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, ok := r.engine(selected.Engine); !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("engine %q is not configured", selected.Engine))
 		return
 	}
 	transcript := strings.TrimSpace(req.FormValue("transcript"))
@@ -3049,7 +2796,7 @@ func (r *router) handleForcedAlignment(w http.ResponseWriter, req *http.Request)
 		writeJSONError(w, http.StatusBadRequest, "transcript and language are required")
 		return
 	}
-	result, err := r.engines.Run(req.Context(), engine.ForcedAlignmentSpec(data, transcript, language))
+	result, err := r.engines.Run(req.Context(), engine.ForcedAlignmentSpecFor(selected.Engine, data, transcript, language))
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -3446,10 +3193,8 @@ func firstLine(out string) string {
 	return ""
 }
 
-// transcriptSegment is one timestamped span of speech. Speaker is first-class
-// from day one: the Extractor's manual tagging fills it now, and automatic
-// diarization (a future config-gated engine) fills it later — same field,
-// same UI, less manual labour.
+// transcriptSegment is the Gateway response shape. Native timestamps are
+// owned and normalized by Engine invocation; Speaker remains product metadata.
 type transcriptSegment struct {
 	Start   float64 `json:"start"`
 	End     float64 `json:"end"`
@@ -3461,77 +3206,18 @@ type transcriptSegment struct {
 // returns clean timestamped segments. Timestamped output needs the resident
 // server; subprocess whisper (-nt) deliberately strips timestamps.
 func (r *router) transcribeSegments(ctx context.Context, wavBytes []byte) ([]transcriptSegment, error) {
-	engineCfg, ok := r.engine("whisper")
-	if !ok {
-		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "whisper" is not configured`}
-	}
-	if engineCfg.Mode != "server" {
-		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `segment transcription needs the "whisper" engine in server mode`}
-	}
-	if err := wav.ValidateBytes(wavBytes); err != nil {
-		return nil, &engine.Error{Kind: engine.KindInvalidInput, Message: err.Error()}
-	}
-	upstreamURL, ok := inferEngineURL(engineCfg.HealthURL, "/inference")
-	if !ok {
-		return nil, &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "whisper" healthUrl must end in /health to infer /inference`}
-	}
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", "input.wav")
+	result, err := r.engines.Run(ctx, engine.TranscriptionSegmentsSpec(wavBytes))
 	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
+		return nil, err
 	}
-	if _, err := part.Write(wavBytes); err != nil {
-		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
-	}
-	if err := writer.WriteField("response_format", "verbose_json"); err != nil {
-		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
-	}
-	if err := writer.Close(); err != nil {
-		return nil, &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, engine.RequestTimeout(engineCfg, engine.DefaultTranscriptionTimeout))
-	defer cancel()
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, &body)
+	native, err := engine.ParseTranscriptSegments(result.Stdout)
 	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
+		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: err.Error()}
 	}
-	upstreamReq.Header.Set("Content-Type", writer.FormDataContentType())
-
-	resp, err := r.client.Do(upstreamReq)
-	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("whisper upstream request failed: %v", err)}
+	segments := make([]transcriptSegment, 0, len(native))
+	for _, segment := range native {
+		segments = append(segments, transcriptSegment{Start: segment.Start, End: segment.End, Text: segment.Text})
 	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxChatReplyBytes))
-	if err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read whisper upstream response: %v", err)}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("whisper upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))}
-	}
-
-	var parsed struct {
-		Segments []struct {
-			Start float64 `json:"start"`
-			End   float64 `json:"end"`
-			Text  string  `json:"text"`
-		} `json:"segments"`
-	}
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("decode whisper upstream response: %v", err)}
-	}
-	segments := make([]transcriptSegment, 0, len(parsed.Segments))
-	for _, s := range parsed.Segments {
-		text := strings.TrimSpace(s.Text)
-		if text == "" {
-			continue
-		}
-		segments = append(segments, transcriptSegment{Start: s.Start, End: s.End, Text: text})
-	}
-	r.manager.MarkSuccess("whisper")
 	return segments, nil
 }
 
@@ -3588,73 +3274,11 @@ func spokenSegmentDuration(segments []transcriptSegment) time.Duration {
 // whisper-server's /inference route so the model stays loaded between
 // requests (which is what makes live transcription passes fast).
 func (r *router) transcribe(ctx context.Context, wavBytes []byte) (string, error) {
-	engineCfg, ok := r.engine("whisper")
-	if !ok {
-		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "whisper" is not configured`}
-	}
-	if engineCfg.Mode != "server" {
-		res, err := r.engines.Run(ctx, engine.TranscriptionSpec(wavBytes))
-		if err != nil {
-			return "", err
-		}
-		return string(res.Stdout), nil
-	}
-
-	if err := wav.ValidateBytes(wavBytes); err != nil {
-		return "", &engine.Error{Kind: engine.KindInvalidInput, Message: err.Error()}
-	}
-	upstreamURL, ok := inferEngineURL(engineCfg.HealthURL, "/inference")
-	if !ok {
-		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "whisper" healthUrl must end in /health to infer /inference`}
-	}
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", "input.wav")
+	result, err := r.engines.Run(ctx, engine.TranscriptionSpec(wavBytes))
 	if err != nil {
-		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
+		return "", err
 	}
-	if _, err := part.Write(wavBytes); err != nil {
-		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
-	}
-	if err := writer.WriteField("response_format", "json"); err != nil {
-		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
-	}
-	if err := writer.Close(); err != nil {
-		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode transcription request: %v", err)}
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, engine.RequestTimeout(engineCfg, engine.DefaultTranscriptionTimeout))
-	defer cancel()
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, &body)
-	if err != nil {
-		return "", &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
-	}
-	upstreamReq.Header.Set("Content-Type", writer.FormDataContentType())
-
-	resp, err := r.client.Do(upstreamReq)
-	if err != nil {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("whisper upstream request failed: %v", err)}
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxChatReplyBytes))
-	if err != nil {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read whisper upstream response: %v", err)}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("whisper upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))}
-	}
-
-	var parsed struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("decode whisper upstream response: %v", err)}
-	}
-	r.manager.MarkSuccess("whisper")
-	// whisper-server joins segments with newlines; collapse to one line to
-	// match the subprocess -nt output shape.
-	return strings.Join(strings.Fields(parsed.Text), " "), nil
+	return string(result.Stdout), nil
 }
 
 func (r *router) transcribeWithEngine(ctx context.Context, engineName string, wavBytes []byte) (string, error) {
@@ -3706,7 +3330,7 @@ func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	speechEngine, err := resolveSpeechModelEngine(req.FormValue("speech_model"))
+	selectedSpeech, err := r.resolveCatalogModel(req.FormValue("speech_model"), "speech", "speech", engine.DefaultSpeechEngineID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -3717,7 +3341,7 @@ func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
 		Chat:       r.chatOnce,
 		Transcribe: r.transcribe,
 		Speak: func(ctx context.Context, text string, v *engine.Voice) ([]byte, error) {
-			return r.speakWithEngine(ctx, speechEngine, text, v, false)
+			return r.speakWithEngine(ctx, selectedSpeech.Engine, text, v, false)
 		},
 	}
 	result, err := loop.Run(req.Context(), voice.Request{
@@ -4394,103 +4018,21 @@ const warmupTimeout = 5 * time.Minute
 // connection, a mid-warmup restart severs it, and both are fine — the
 // next real request simply pays the cost the warmup would have.
 func (r *router) warmupLlama() {
-	engineCfg, ok := r.engine("llama")
-	if !ok {
-		return
-	}
-	upstreamURL, ok := inferChatCompletionsURL(engineCfg.HealthURL)
-	if !ok {
-		return
-	}
-	payload, err := json.Marshal(chatCompletionRequest{
-		Model:     "default",
-		Messages:  []chatMessage{{Role: "user", Content: "hi"}},
-		MaxTokens: 1,
-	})
-	if err != nil {
-		return
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), warmupTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(payload))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxChatReplyBytes))
+	_, _ = r.engines.Run(ctx, engine.ChatWarmupSpec("llama"))
 }
 
 func (r *router) llamaChat(ctx context.Context, messages []chatMessage) (string, error) {
-	engineCfg, ok := r.engine("llama")
-	if !ok {
-		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "llama" is not configured`}
+	native := make([]engine.ChatMessage, 0, len(messages))
+	for _, message := range messages {
+		native = append(native, engine.ChatMessage{Role: message.Role, Content: message.Content})
 	}
-	upstreamURL, ok := inferChatCompletionsURL(engineCfg.HealthURL)
-	if !ok {
-		return "", &engine.Error{Kind: engine.KindNotConfigured, Message: `engine "llama" healthUrl must end in /health to infer /v1/chat/completions`}
-	}
-
-	payload, err := json.Marshal(chatCompletionRequest{
-		Model:    "default",
-		Messages: messages,
-	})
+	result, err := r.engines.Run(ctx, engine.ChatSpec("llama", native))
 	if err != nil {
-		return "", &engine.Error{Kind: engine.KindInternal, Message: fmt.Sprintf("encode chat request: %v", err)}
+		return "", err
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, engine.RequestTimeout(engineCfg, defaultChatTimeout))
-	defer cancel()
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(payload))
-	if err != nil {
-		return "", &engine.Error{Kind: engine.KindInternal, Message: err.Error()}
-	}
-	upstreamReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := r.client.Do(upstreamReq)
-	if err != nil {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("llama upstream request failed: %v", err)}
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxChatReplyBytes))
-	if err != nil {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("read llama upstream response: %v", err)}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: fmt.Sprintf("llama upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
-	}
-
-	reply, err := extractChatReply(body)
-	if err != nil {
-		return "", &engine.Error{Kind: engine.KindEngineFailure, Message: err.Error()}
-	}
-	r.manager.MarkSuccess("llama")
-	return reply, nil
-}
-
-func extractChatReply(body []byte) (string, error) {
-	var parsed struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-			Text string `json:"text"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("decode llama chat response: %v", err)
-	}
-	if len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("llama chat response has no choices")
-	}
-	if content := strings.TrimSpace(parsed.Choices[0].Message.Content); content != "" {
-		return content, nil
-	}
-	return strings.TrimSpace(parsed.Choices[0].Text), nil
+	return string(result.Stdout), nil
 }
 
 type storyBuilderProjectCreateRequest struct {
@@ -5706,45 +5248,6 @@ func readUploadedWAV(w http.ResponseWriter, req *http.Request) ([]byte, bool) {
 // platform, so the conversion has to be too.
 func slashPath(path string) string {
 	return strings.ReplaceAll(path, `\`, "/")
-}
-
-// inferEngineURL derives a server engine's request route from its healthUrl,
-// e.g. http://127.0.0.1:8733/health -> http://127.0.0.1:8733<path>.
-func inferEngineURL(healthURL string, path string) (string, bool) {
-	if healthURL == "" {
-		return "", false
-	}
-	parsed, err := url.Parse(healthURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "", false
-	}
-	if !strings.HasSuffix(parsed.Path, "/health") {
-		return "", false
-	}
-
-	parsed.Path = strings.TrimSuffix(parsed.Path, "/health") + path
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String(), true
-}
-
-func inferChatCompletionsURL(healthURL string) (string, bool) {
-	return inferEngineURL(healthURL, "/v1/chat/completions")
-}
-
-// inferSDURL derives an sd-server route from its healthUrl's origin. Unlike
-// the /health-suffixed engines, sd-server has no /health route (readiness is
-// polled at /v1/models), so the path is taken from the origin rather than by
-// stripping a /health suffix.
-func inferSDURL(healthURL string, path string) (string, bool) {
-	if healthURL == "" {
-		return "", false
-	}
-	parsed, err := url.Parse(healthURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "", false
-	}
-	return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: path}).String(), true
 }
 
 func parseImageSize(size string) (int, int, error) {

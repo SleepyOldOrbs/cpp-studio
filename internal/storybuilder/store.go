@@ -641,31 +641,52 @@ func (s *Store) PlaceLibraryAudio(id string, placement LibraryAudioPlacement) (P
 		return Project{}, fmt.Errorf("create project media directory: %w", err)
 	}
 	mediaPath := filepath.Join(mediaDir, sourceID+".wav")
-	createdMedia := false
+	mediaExists := false
 	if existing, readErr := os.ReadFile(mediaPath); readErr == nil {
 		if !bytes.Equal(existing, asset.Data) {
 			return Project{}, fmt.Errorf("project media identity conflict")
 		}
+		mediaExists = true
 	} else if !os.IsNotExist(readErr) {
 		return Project{}, fmt.Errorf("read project media: %w", readErr)
-	} else {
-		if err := s.writeFileAtomic(mediaPath, asset.Data); err != nil {
-			return Project{}, fmt.Errorf("copy project media: %w", err)
-		}
-		createdMedia = true
 	}
 
 	project.Revision++
 	project.UpdatedAt = s.now()
 	data, err := encodeProject(project)
-	if err == nil {
-		err = s.writeFileAtomic(filepath.Join(s.rootDir, id, manifestName), data)
-	}
 	if err != nil {
-		if createdMedia {
-			_ = os.Remove(mediaPath)
-		}
 		return Project{}, fmt.Errorf("save Story Builder Project: %w", err)
+	}
+	record := func() error {
+		if err := s.writeFileAtomic(filepath.Join(s.rootDir, id, manifestName), data); err != nil {
+			return fmt.Errorf("save Story Builder Project: %w", err)
+		}
+		return nil
+	}
+	if mediaExists {
+		if err := record(); err != nil {
+			return Project{}, err
+		}
+		return project, nil
+	}
+	_, err = publishArtifact(artifactPublication{
+		FinalPath: mediaPath,
+		Stage: func(path string) error {
+			if err := s.writeFileAtomic(path, asset.Data); err != nil {
+				return fmt.Errorf("copy project media: %w", err)
+			}
+			return nil
+		},
+		Validate: func(path string) error {
+			if err := wav.ValidateFile(path); err != nil {
+				return fmt.Errorf("validate staged project media: %w", err)
+			}
+			return nil
+		},
+		Record: record,
+	})
+	if err != nil {
+		return Project{}, err
 	}
 	return project, nil
 }

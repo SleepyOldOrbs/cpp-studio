@@ -10,11 +10,15 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"cpp-studio/internal/config"
@@ -22,6 +26,8 @@ import (
 )
 
 const maxSubprocessLogBytes = 1024 * 1024
+
+var invocationSequence atomic.Uint64
 
 // FailureKind classifies a failed run so the HTTP layer can map it to a
 // status code without knowing how the run failed internally.
@@ -86,14 +92,23 @@ type Spec struct {
 	// This is how a per-run value beats a config default even for engines
 	// whose parsers take the first occurrence of a flag (audiocpp_cli).
 	OverrideArgs map[string]string
+	// resident owns the equivalent long-lived server transport. It is set
+	// only by this package's constructors, keeping mode and protocol details
+	// behind the Engine invocation interface.
+	resident      func(context.Context, *Runner, config.EngineConfig) (Result, error)
+	residentOnly  bool
+	speechRequest *SynthesisRequest
+	speechVoice   *Voice
 }
 
 // Result is the outcome of a successful run.
 type Result struct {
-	Stdout  []byte
-	Stderr  []byte
-	Output  []byte
-	Elapsed time.Duration
+	Stdout      []byte
+	Stderr      []byte
+	Output      []byte
+	Elapsed     time.Duration
+	StatusCode  int
+	ContentType string
 }
 
 // Invoker is the seam callers cross to run an engine once or reserve it.
@@ -118,6 +133,7 @@ type Runner struct {
 	recorder StatusRecorder
 	busy     map[string]chan struct{}
 	gpu      chan struct{}
+	client   *http.Client
 }
 
 func NewRunner(engines map[string]config.EngineConfig, recorder StatusRecorder) *Runner {
@@ -125,7 +141,7 @@ func NewRunner(engines map[string]config.EngineConfig, recorder StatusRecorder) 
 	for name := range engines {
 		busy[name] = make(chan struct{}, 1)
 	}
-	return &Runner{engines: engines, recorder: recorder, busy: busy, gpu: make(chan struct{}, 1)}
+	return &Runner{engines: engines, recorder: recorder, busy: busy, gpu: make(chan struct{}, 1), client: http.DefaultClient}
 }
 
 // acquireGPU serializes runs of engines marked gpu: true across engine
@@ -159,6 +175,7 @@ func (r *Runner) Reserve(name string) (func(), bool) {
 func (r *Runner) Run(ctx context.Context, spec Spec) (Result, error) {
 	release, ok := r.Reserve(spec.Engine)
 	if !ok {
+		log.Printf("engine_run event=busy engine=%q label=%q", spec.Engine, spec.Label)
 		return Result{}, &Error{Kind: KindBusy, Message: fmt.Sprintf("engine %q is busy", spec.Engine)}
 	}
 	defer release()
@@ -169,10 +186,46 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (Result, error) {
 // already holds it via Reserve (the story pipeline reserves audio for the
 // whole job, then synthesizes line by line through this path). GPU-marked
 // engines still take the shared GPU slot per run.
-func (r *Runner) RunReserved(ctx context.Context, spec Spec) (Result, error) {
+func (r *Runner) RunReserved(ctx context.Context, spec Spec) (result Result, runErr error) {
+	runID := invocationSequence.Add(1)
+	started := time.Now()
+	log.Printf("engine_run event=start id=%d engine=%q label=%q input_bytes=%d input_file=%t output_file=%t", runID, spec.Engine, spec.Label, len(spec.Input), spec.InputPath != "", spec.OutputPath != "")
+	defer func() {
+		if runErr != nil {
+			log.Printf("engine_run event=failure id=%d engine=%q label=%q duration=%s error=%q", runID, spec.Engine, spec.Label, time.Since(started), runErr)
+			return
+		}
+		log.Printf("engine_run event=success id=%d engine=%q label=%q duration=%s native_duration=%s stdout_bytes=%d stderr_bytes=%d output_bytes=%d", runID, spec.Engine, spec.Label, time.Since(started), result.Elapsed, len(result.Stdout), len(result.Stderr), len(result.Output))
+	}()
+
 	engineCfg, ok := r.engines[spec.Engine]
 	if !ok {
 		return Result{}, &Error{Kind: KindNotConfigured, Message: fmt.Sprintf("engine %q is not configured", spec.Engine)}
+	}
+	if engineCfg.Mode == "server" || (spec.residentOnly && engineCfg.Mode == "") {
+		if spec.resident == nil {
+			return Result{}, &Error{Kind: KindNotConfigured, Message: fmt.Sprintf("engine %q does not support resident invocation for %s", spec.Engine, spec.Label)}
+		}
+		result, err := spec.resident(ctx, r, engineCfg)
+		if err != nil {
+			var engineErr *Error
+			if errors.As(err, &engineErr) && engineErr.Kind == KindEngineFailure {
+				r.recorder.MarkFailure(spec.Engine, lifecycle.StatusCrashed, engineErr.Message)
+			}
+			return Result{}, err
+		}
+		if result.StatusCode == 0 || (result.StatusCode >= 200 && result.StatusCode < 300) {
+			r.recorder.MarkSuccess(spec.Engine)
+		}
+		return result, nil
+	}
+	if spec.residentOnly {
+		return Result{}, &Error{Kind: KindNotConfigured, Message: fmt.Sprintf("engine %q must run in server mode for %s", spec.Engine, spec.Label)}
+	}
+	if spec.speechRequest != nil && spec.speechVoice == nil {
+		if voice := r.defaultSpeechVoice(spec.Engine); voice != nil {
+			spec = SpeechVoiceSpecForRequest(*spec.speechRequest, voice)
+		}
 	}
 
 	// A spec that names its own files skips the byte seam entirely. Every
@@ -234,7 +287,7 @@ func (r *Runner) RunReserved(ctx context.Context, spec Spec) (Result, error) {
 		}
 	}
 
-	result := Result{Stdout: stdout, Stderr: stderr, Elapsed: elapsed}
+	result = Result{Stdout: stdout, Stderr: stderr, Elapsed: elapsed}
 	// A spec that named its own OutputPath wanted the file, not the bytes.
 	if outPath != "" && spec.OutputPath == "" {
 		data, err := os.ReadFile(outPath)

@@ -376,16 +376,6 @@ func (s *Store) CompleteDialogueBuild(id string, input DialogueSynthesisInput, a
 		return Project{}, fmt.Errorf("create project takes directory: %w", err)
 	}
 	takePath := filepath.Join(takesDir, sourceID+".wav")
-	if err := s.writeFileAtomic(takePath, audio); err != nil {
-		return Project{}, fmt.Errorf("write generated dialogue take: %w", err)
-	}
-	published := false
-	defer func() {
-		if !published {
-			_ = os.Remove(takePath)
-		}
-	}()
-
 	durationMS := duration.Milliseconds()
 	clip.SourceID = sourceID
 	clip.SourceDurationMS = durationMS
@@ -403,11 +393,36 @@ func (s *Store) CompleteDialogueBuild(id string, input DialogueSynthesisInput, a
 	if err := validateTracks(project.Tracks, project.TimelineDurationMS); err != nil {
 		return Project{}, err
 	}
-	project, err = s.saveDialogueBuildProject(project)
+	project.Revision++
+	project.UpdatedAt = s.now()
+	data, err := encodeProject(project)
 	if err != nil {
 		return Project{}, err
 	}
-	published = true
+	_, err = publishArtifact(artifactPublication{
+		FinalPath: takePath,
+		Stage: func(path string) error {
+			if err := s.writeFileAtomic(path, audio); err != nil {
+				return fmt.Errorf("write generated dialogue take: %w", err)
+			}
+			return nil
+		},
+		Validate: func(path string) error {
+			if err := wav.ValidateFile(path); err != nil {
+				return fmt.Errorf("validate staged dialogue take: %w", err)
+			}
+			return nil
+		},
+		Record: func() error {
+			if err := s.writeFileAtomic(filepath.Join(s.rootDir, project.ID, manifestName), data); err != nil {
+				return fmt.Errorf("save Story Builder dialogue build: %w", err)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return Project{}, err
+	}
 	return project, nil
 }
 

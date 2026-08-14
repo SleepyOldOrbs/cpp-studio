@@ -115,21 +115,6 @@ func (s *Store) Render(ctx context.Context, id string, expectedRevision int) (Re
 		return RenderResponse{}, fmt.Errorf("create Story Builder renders directory: %w", err)
 	}
 	path := filepath.Join(rendersDir, renderFilename(number))
-	if _, err := os.Stat(path); err == nil {
-		return RenderResponse{}, ErrConflict
-	} else if !os.IsNotExist(err) {
-		return RenderResponse{}, fmt.Errorf("inspect Story Builder render: %w", err)
-	}
-	if err := s.writeFileAtomic(path, mastered); err != nil {
-		return RenderResponse{}, fmt.Errorf("write Story Builder render: %w", err)
-	}
-	published := false
-	defer func() {
-		if !published {
-			_ = os.Remove(path)
-		}
-	}()
-
 	now := s.now()
 	revision := RenderRevision{
 		Revision: number, CreatedAt: now, DurationMS: project.TimelineDurationMS, Bytes: len(mastered),
@@ -142,10 +127,30 @@ func (s *Store) Render(ctx context.Context, id string, expectedRevision int) (Re
 	if err != nil {
 		return RenderResponse{}, err
 	}
-	if err := s.writeFileAtomic(filepath.Join(s.rootDir, id, manifestName), data); err != nil {
-		return RenderResponse{}, fmt.Errorf("record Story Builder render: %w", err)
+	_, err = publishArtifact(artifactPublication{
+		FinalPath: path,
+		Stage: func(path string) error {
+			if err := s.writeFileAtomic(path, mastered); err != nil {
+				return fmt.Errorf("write Story Builder render: %w", err)
+			}
+			return nil
+		},
+		Validate: func(path string) error {
+			if err := wav.ValidateFile(path); err != nil {
+				return fmt.Errorf("validate staged Story Builder render: %w", err)
+			}
+			return nil
+		},
+		Record: func() error {
+			if err := s.writeFileAtomic(filepath.Join(s.rootDir, id, manifestName), data); err != nil {
+				return fmt.Errorf("record Story Builder render: %w", err)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return RenderResponse{}, err
 	}
-	published = true
 	return RenderResponse{Project: project, Render: revision}, nil
 }
 

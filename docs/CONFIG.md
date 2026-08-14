@@ -2,6 +2,20 @@
 
 `cpp-studio` reads one JSON file. The gateway starts `mode: "server"` engines when it boots and treats `mode: "subprocess"` engines as request-time commands.
 
+## Diagnostic logs
+
+Every gateway launch creates a timestamped session log under `out/logs` beside
+the selected config file. The log records gateway requests and response status,
+request ids, timings and byte counts, engine lifecycle and native output,
+one-shot engine results, asynchronous job transitions, and browser UI events.
+Request bodies are not logged. Browser informational events redact quoted text,
+voice descriptions, and imported source URLs before they are persisted.
+
+Logs are local, append-only session files named
+`cpp-studio-YYYYMMDDTHHMMSSZ-pidNNNN.log`. They survive browser reloads and
+gateway restarts and can be deleted normally when their history is no longer
+needed.
+
 ## Portable Configs: `vars`
 
 Configs support `${name}` substitution across engine `command`, `args`,
@@ -574,11 +588,11 @@ stays loaded between requests (~2s per 512x512 on the reference machine vs
 
 `sd-server` has no `/health` route, so `healthUrl` points at `/v1/models`
 (returns 200 once listening); the gateway takes the URL's origin and posts to
+the native asynchronous `/sdcpp/v1/img_gen` route, then polls the returned job.
+That route preserves the caller's concrete seed; the public Studio route remains
 `/v1/images/generations`. `--type f16` halves resident VRAM with no visible
-quality loss on SD 1.5, and `--vae-tiling` bounds the decode spike so the
-model coexists with the other engines on a 16 GB card. One sharp edge: the
-gateway deliberately omits the `n` field from upstream requests — sd-server's
-JSON parser fatally rejects `"n":null`.
+quality loss on SD 1.5, and `--vae-tiling` bounds the decode spike so the model
+coexists with the other engines on a 16 GB card.
 
 ## Health Behavior
 

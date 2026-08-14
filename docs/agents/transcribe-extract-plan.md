@@ -219,11 +219,15 @@ Acceptance:
   test removes its isolated Library artifact through the owning API route.
 - `node --check internal/demo/static/app.js`, focused Go tests, `go test ./...`,
   `go vet ./...`, and `git diff --check` are green on 2026-08-08.
+- A fresh full browser run passed again on 2026-08-13 after the Audio Workspace and
+  Browser Recorder deepening. It covered mode/source/edit preservation, all transcript
+  downloads, playback and selection provenance, Library and clone handoffs, pending
+  microphone cancellation, active capture, cleanup, and explicit transcription.
 - Browser captures are written to
   `output/playwright/transcribe-extract/transcribe.png` and
   `output/playwright/transcribe-extract/extract.png`. Agent visual inspection
-  confirms the intended text-first and waveform-first hierarchy; the plan's
-  separate human judgement remains an owner acceptance gate.
+  confirms the intended text-first and waveform-first hierarchy. The owner
+  reviewed and accepted both captures on 2026-08-14.
 
 ## Non-goals
 
@@ -266,5 +270,6 @@ Acceptance:
 
 ## Current handoff
 
-Review the two browser captures and perform the owner visual-acceptance check.
-Do not commit, push, open an issue/PR, or merge without explicit authorization.
+Implementation, automated verification, real-browser coverage, and owner visual
+acceptance are complete. Transcribe reads as text-first and Extract as waveform-first,
+while both continue to share one in-memory audio-analysis session.

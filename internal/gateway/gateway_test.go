@@ -14,6 +14,7 @@ import (
 	"image"
 	stdpng "image/png"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +37,41 @@ import (
 	"cpp-studio/internal/voice"
 	"cpp-studio/internal/wav"
 )
+
+func TestDiagnosticRequestAndBrowserEventLogging(t *testing.T) {
+	previousOutput := log.Writer()
+	previousFlags := log.Flags()
+	var diagnostic bytes.Buffer
+	log.SetOutput(&diagnostic)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	}()
+
+	cfg := config.Config{Engines: map[string]config.EngineConfig{}}
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/logs/events", strings.NewReader(`{"level":"error","page":"#voice-convert","message":"conversion failed"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected status 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Cpp-Studio-Request-ID") == "" {
+		t.Fatal("expected diagnostic request id header")
+	}
+	got := diagnostic.String()
+	for _, want := range []string{
+		`browser_event level="error" page="#voice-convert" message="conversion failed"`,
+		`method="POST" path="/v1/logs/events" status=204`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected diagnostic log to contain %q, got %q", want, got)
+		}
+	}
+}
 
 func TestStoryBuilderProjectLifecycleThroughGateway(t *testing.T) {
 	root := t.TempDir()
@@ -4592,6 +4628,7 @@ func TestDiarizationRoute(t *testing.T) {
 	writer := multipart.NewWriter(&body)
 	part, _ := writer.CreateFormFile("file", "sample.wav")
 	_, _ = part.Write(wav.SyntheticTone(28 * wav.ToneSampleRate))
+	_ = writer.WriteField("model", "sortformer-diar-4spk-v1-q8-0")
 	_ = writer.Close()
 
 	rec := httptest.NewRecorder()
@@ -4623,6 +4660,29 @@ func TestDiarizationRoute(t *testing.T) {
 	}
 	if resp.Spans[1].Start != 8.48 || resp.Spans[1].End != 14.24 {
 		t.Fatalf("span timing wrong: %+v", resp.Spans[1])
+	}
+}
+
+func TestSelectedSortformerDoesNotSilentlyFallBack(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{
+		"diarize":        helperEngine("diarize-sortformer"),
+		"diarize-sherpa": helperEngine("diarize-sherpa"),
+	})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "sample.wav")
+	_, _ = part.Write(wav.SyntheticTone(28 * wav.ToneSampleRate))
+	_ = writer.WriteField("model", "sortformer-diar-4spk-v1-q8-0")
+	_ = writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/diarization?speakers=5", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "selected Sortformer") {
+		t.Fatalf("expected selected-model compatibility error, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -6022,45 +6082,6 @@ func TestVoiceCloneCreateRejectsInvalidWAV(t *testing.T) {
 	}
 }
 
-func TestRequestedAudioModelRoutesResolveToFixedEngines(t *testing.T) {
-	tests := []struct {
-		name   string
-		model  string
-		engine string
-		family string
-	}{
-		{name: "stable medium", model: "stable-audio-3-medium-q8-0", engine: "stable-audio-medium", family: "stable_audio"},
-		{name: "stable sfx", model: "stable-audio-3-small-sfx-q8-0", engine: "stable-audio-sfx", family: "stable_audio"},
-		{name: "heartmula", model: "heartmula-3b-q8-0", engine: "heartmula", family: "heartmula"},
-		{name: "vevo2", model: "vevo2-q8-0", engine: "vevo2", family: "vevo2"},
-		{name: "htdemucs", model: "htdemucs-q8-0", engine: "htdemucs", family: "htdemucs"},
-		{name: "bs roformer", model: "bs-roformer-q8-0", engine: "bs-roformer", family: "bs_roformer"},
-		{name: "mel band roformer", model: "mel-band-roformer-q8-0", engine: "mel-band-roformer", family: "mel_band_roformer"},
-		{name: "silero", model: "silero-vad-audiocpp", engine: "silero-vad", family: "silero_vad"},
-		{name: "marblenet", model: "marblenet-vad-audiocpp", engine: "marblenet-vad", family: "marblenet_vad"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			routes := musicModelRoutes
-			switch tt.family {
-			case "vevo2":
-				routes = conversionModelRoutes
-			case "htdemucs", "bs_roformer", "mel_band_roformer":
-				routes = separationModelRoutes
-			case "silero_vad", "marblenet_vad":
-				routes = vadModelRoutes
-			}
-			got, err := resolveAudioModel(routes, tt.model, "test")
-			if err != nil || got.Engine != tt.engine || got.Family != tt.family {
-				t.Fatalf("resolved %q to %+v, %v", tt.model, got, err)
-			}
-		})
-	}
-	if _, err := resolveAudioModel(musicModelRoutes, "--model=C:\\arbitrary.gguf", "music"); err == nil {
-		t.Fatal("expected arbitrary model input to be rejected")
-	}
-}
-
 func TestAudioCPPTranscriptionUsesSelectedEngine(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{"qwen3-asr-0.6b": {Command: "audiocpp-cli"}})
 	router := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
@@ -6317,6 +6338,7 @@ func testConfig(engines map[string]config.EngineConfig) config.Config {
 	return config.Config{
 		Gateway: config.GatewayConfig{Host: "127.0.0.1", Port: 8765},
 		Engines: engines,
+		Models:  &config.ModelsConfig{Manifest: filepath.Join("..", "..", "models.json"), Root: filepath.Join("..", "..", "models")},
 	}
 }
 
@@ -7584,6 +7606,7 @@ func TestModelsVerifyAllRunsAsJobAndOverlaysCatalog(t *testing.T) {
 
 func TestModelsCatalogEmptyWithoutManifest(t *testing.T) {
 	cfg := testConfig(map[string]config.EngineConfig{"llama": {Command: "llama-server"}})
+	cfg.Models = nil
 	router := NewRouter(cfg, lifecycle.NewManager(cfg))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models/catalog", nil))

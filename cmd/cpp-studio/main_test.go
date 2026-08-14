@@ -40,6 +40,32 @@ func TestRunReturnsServerBindError(t *testing.T) {
 	}
 }
 
+func TestOpenSessionLogCreatesPrivateTimestampedFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "logs")
+	now := time.Date(2026, time.August, 9, 7, 30, 45, 0, time.UTC)
+	file, path, err := openSessionLog(dir, now, 1234)
+	if err != nil {
+		t.Fatalf("open session log: %v", err)
+	}
+	if _, err := file.WriteString("diagnostic line\n"); err != nil {
+		_ = file.Close()
+		t.Fatalf("write session log: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close session log: %v", err)
+	}
+	if filepath.Base(path) != "cpp-studio-20260809T073045Z-pid1234.log" {
+		t.Fatalf("unexpected log name %q", filepath.Base(path))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read session log: %v", err)
+	}
+	if string(data) != "diagnostic line\n" {
+		t.Fatalf("unexpected log contents %q", data)
+	}
+}
+
 func TestHelperProcess(t *testing.T) {
 	args := os.Args
 	for i, arg := range args {

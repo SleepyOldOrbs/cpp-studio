@@ -257,7 +257,7 @@ func SpeechVoiceSpecFor(engineName string, input string, voice *Voice) Spec {
 			"--reference-text": sanitizeSpeechText(voice.RefText),
 		}
 	}
-	return Spec{
+	spec := Spec{
 		Engine:        engineName,
 		Label:         engineName + " speech command",
 		Timeout:       DefaultSpeechTimeout,
@@ -277,6 +277,7 @@ func SpeechVoiceSpecFor(engineName string, input string, voice *Voice) Spec {
 			return nil
 		},
 	}
+	return withResidentSpeech(spec, SynthesisRequest{Text: input, EngineID: engineName}, voice)
 }
 
 // VoiceDesignSpec invokes the "voicedesign" engine (Qwen3-TTS VoiceDesign):
@@ -353,7 +354,7 @@ func TranscriptionSpecFor(engineName string, wavBytes []byte) Spec {
 	if wavBytes == nil {
 		wavBytes = []byte{}
 	}
-	return Spec{
+	spec := Spec{
 		Engine:        engineName,
 		Label:         engineName + " transcription command",
 		Timeout:       DefaultTranscriptionTimeout,
@@ -367,6 +368,10 @@ func TranscriptionSpecFor(engineName string, wavBytes []byte) Spec {
 			return []string{"-f", inPath}
 		},
 	}
+	if engineName == "whisper" {
+		return withResidentTranscription(spec, false)
+	}
+	return spec
 }
 
 // ParseAudioCPPTextOutput extracts the stable text_output line written by
@@ -418,10 +423,17 @@ func VADSpec(engineName string, wavBytes []byte) Spec {
 	}
 }
 
-// ForcedAlignmentSpec maps an exact transcript and language to word JSON.
+// ForcedAlignmentSpec maps an exact transcript and language to word JSON
+// through the default configured engine.
 func ForcedAlignmentSpec(wavBytes []byte, transcript, language string) Spec {
+	return ForcedAlignmentSpecFor("forced-aligner", wavBytes, transcript, language)
+}
+
+// ForcedAlignmentSpecFor maps an exact transcript and language to word JSON
+// through the engine selected by the model catalogue.
+func ForcedAlignmentSpecFor(engineName string, wavBytes []byte, transcript, language string) Spec {
 	return Spec{
-		Engine:        "forced-aligner",
+		Engine:        engineName,
 		Label:         "Qwen3 forced alignment command",
 		Timeout:       DefaultDiarizationTimeout,
 		Input:         wavBytes,
@@ -962,7 +974,7 @@ func (provider DiarizationProvider) ParseDiarization(stdout []byte) ([]Diarizati
 // plus --width/--height when both are positive. The engine must produce a
 // decodable PNG within MaxImageDimension and MaxImageOutputBytes.
 func ImageSpec(prompt string, width, height int, seed int64) Spec {
-	return Spec{
+	spec := Spec{
 		Engine:        "sd",
 		Label:         "sd image generation command",
 		Timeout:       DefaultImageTimeout,
@@ -989,6 +1001,7 @@ func ImageSpec(prompt string, width, height int, seed int64) Spec {
 			return nil
 		},
 	}
+	return withResidentImage(spec, prompt, width, height, seed)
 }
 
 // speechTextReplacements maps typography and common accented letters that

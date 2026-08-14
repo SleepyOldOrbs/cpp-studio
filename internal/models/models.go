@@ -29,6 +29,7 @@ type Model struct {
 	Engine       string   `json:"engine"`
 	Family       string   `json:"family"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	Aliases      []string `json:"aliases,omitempty"`
 	Path         string   `json:"path"`
 	Bytes        int64    `json:"bytes,omitempty"`
 	Files        int      `json:"files,omitempty"`
@@ -98,6 +99,7 @@ func Load(path string) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("parse model manifest: %w", err)
 	}
 	seen := make(map[string]bool, len(m.Models))
+	aliases := make(map[string]string)
 	for i, mod := range m.Models {
 		if mod.ID == "" {
 			return Manifest{}, fmt.Errorf("model %d: id is required", i)
@@ -106,8 +108,24 @@ func Load(path string) (Manifest, error) {
 			return Manifest{}, fmt.Errorf("duplicate model id %q", mod.ID)
 		}
 		seen[mod.ID] = true
+		for _, alias := range mod.Aliases {
+			if alias == "" {
+				return Manifest{}, fmt.Errorf("model %q: aliases cannot be empty", mod.ID)
+			}
+			if owner, exists := aliases[alias]; exists {
+				return Manifest{}, fmt.Errorf("model alias %q is shared by %q and %q", alias, owner, mod.ID)
+			}
+			aliases[alias] = mod.ID
+		}
 		if mod.Path == "" {
 			return Manifest{}, fmt.Errorf("model %q: path is required", mod.ID)
+		}
+	}
+	for _, mod := range m.Models {
+		for _, alias := range mod.Aliases {
+			if seen[alias] {
+				return Manifest{}, fmt.Errorf("model %q: alias %q collides with a model id", mod.ID, alias)
+			}
 		}
 	}
 	return m, nil

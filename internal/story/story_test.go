@@ -1205,11 +1205,13 @@ func TestManagerDraftWritesWithoutProducing(t *testing.T) {
 		Now: fixedNow,
 	})
 
-	draft, err := manager.Draft(context.Background(), validCreateRequest())
+	req := validCreateRequest()
+	req.Title = "Requested Podcast"
+	draft, err := manager.Draft(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Draft returned error: %v", err)
 	}
-	if draft.Title != "Drafted Tale" || len(draft.Script) != 4 {
+	if draft.Title != "Requested Podcast" || len(draft.Script) != 4 {
 		t.Fatalf("unexpected draft %+v", draft)
 	}
 	if len(draft.FactCards) < 8 || len(draft.Cast) != 3 {

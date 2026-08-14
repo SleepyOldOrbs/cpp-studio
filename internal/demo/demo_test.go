@@ -119,11 +119,14 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "extractImportRow") {
 		t.Fatalf("expected URL importer marker, got %q", body)
 	}
-	if !strings.Contains(body, "storyModeSwitch") {
-		t.Fatalf("expected story mode switch marker, got %q", body)
+	if !strings.Contains(body, `<section class="transcribe-desk-tools" aria-label="Transcript tools">`) {
+		t.Fatalf("expected speaker rename tools to be shared by Transcribe and Extract")
 	}
-	if !strings.Contains(body, "storyPremiseInput") {
-		t.Fatalf("expected sketch premise marker, got %q", body)
+	if !strings.Contains(body, `<div class="transcribe-tool-row" data-audio-workspace-mode="transcribe">`) {
+		t.Fatalf("expected transcript search controls to remain Transcribe-only")
+	}
+	if strings.Contains(body, "storyModeSketch") || strings.Contains(body, "storyPremiseInput") {
+		t.Fatalf("expected Podcast Generator to expose only the grounded workflow")
 	}
 	if !strings.Contains(body, "scriptEditor") {
 		t.Fatalf("expected script editor marker, got %q", body)
@@ -148,6 +151,8 @@ func TestHandlerServesIndex(t *testing.T) {
 		`data-pages="transcription extract"`,
 		`data-audio-workspace-mode="transcribe"`,
 		`data-audio-workspace-mode="extract"`,
+		`class="workflow-step"`,
+		`id="storyNameInput"`,
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("expected tool navigation marker %q", marker)
@@ -155,6 +160,11 @@ func TestHandlerServesIndex(t *testing.T) {
 	}
 	if !strings.Contains(body, "Music &amp; SFX") {
 		t.Fatalf("expected Music and SFX navigation label")
+	}
+	for _, label := range []string{"Audio Seperation", "Podcast Generator", "Audiobook Builder"} {
+		if !strings.Contains(body, label) {
+			t.Fatalf("expected updated navigation label %q", label)
+		}
 	}
 	for _, marker := range []string{
 		"ttsSpeechModelSelect",
@@ -422,7 +432,7 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 		{
 			path:        "/story-builder.js",
 			contentType: "javascript",
-			markers:     []string{"/v1/story-builder-projects", "/v1/voices", "/v1/library", "library-audio", "scheduleAutosave", "saveProject", "monitorDialogueBuild", "resumeDialogueBuild", "cancelDialogueBuild", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "acceptTimelineEdit", "bindCharacterVoice", "placeLibraryAudio", "renderVoiceLibrary", "reusable-audio-asset", "beginClipPointerEdit", "clampPanelPosition", "requestedProjectID", "playbackPlan", "playTimeline", "pauseTimeline", "Pause timeline", "auditionClip", "stopBrowserPlayback"},
+			markers:     []string{"/v1/story-builder-projects", "/v1/voices", "/v1/library", "library-audio", "scheduleAutosave", "saveProject", "monitorDialogueBuild", "resumeDialogueBuild", "cancelDialogueBuild", "addSilenceClip", "moveTrack", "removeTrack", "timelineDurationMS", "acceptTimelineEdit", "bindCharacterVoice", "placeLibraryAudio", "renderVoiceLibrary", "reusable-audio-asset", "beginClipPointerEdit", "clampPanelPosition", "requestedProjectID", "playbackPlan", "playTimeline", "pauseTimeline", "Pause timeline", "auditionClip", "stopBrowserPlayback", "persistDiagnosticError"},
 		},
 		{
 			path:        "/story-builder.css",
@@ -473,6 +483,12 @@ func TestHandlerServesAssets(t *testing.T) {
 			needle:      "refreshVoices",
 		},
 		{
+			name:        "javascript friendly audio analysis error",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "This WAV file is incompatible with the selected model",
+		},
+		{
 			name:        "javascript character voices",
 			path:        "/app.js",
 			contentType: "javascript",
@@ -507,6 +523,12 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/styles.css",
 			contentType: "text/css",
 			needle:      ".studio-nav",
+		},
+		{
+			name:        "css guided workflow steps",
+			path:        "/styles.css",
+			contentType: "text/css",
+			needle:      ".workflow-step",
 		},
 		{
 			name:        "css format home cards",
@@ -701,10 +723,28 @@ func TestHandlerServesAssets(t *testing.T) {
 			needle:      `.module[data-page="voice-cloning"] .workspace`,
 		},
 		{
-			name:        "javascript audio workspace mode seam",
+			name:        "javascript deep audio workspace module",
 			path:        "/app.js",
 			contentType: "javascript",
-			needle:      "applyAudioWorkspaceMode",
+			needle:      "createAudioWorkspaceModule",
+		},
+		{
+			name:        "javascript audio workspace interface test surface",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "__cppStudioAudioWorkspace",
+		},
+		{
+			name:        "javascript deep recorder lifecycle",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "createRecorder",
+		},
+		{
+			name:        "javascript recorder interface test surface",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "__cppStudioRecorders",
 		},
 		{
 			name:        "javascript Transcribe search",
@@ -771,6 +811,12 @@ func TestHandlerServesAssets(t *testing.T) {
 			path:        "/app.js",
 			contentType: "javascript",
 			needle:      "busyMessageFor",
+		},
+		{
+			name:        "javascript persistent diagnostics",
+			path:        "/app.js",
+			contentType: "javascript",
+			needle:      "/v1/logs/events",
 		},
 		{
 			name:        "javascript unified audio save",
@@ -875,5 +921,17 @@ func TestHandlerServesAssets(t *testing.T) {
 				t.Fatalf("expected asset marker %q, got %q", tt.needle, body)
 			}
 		})
+	}
+}
+
+func TestBrowserRecorderLifecycleWiresEveryMicrophoneTool(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/app.js", nil))
+	body := rec.Body.String()
+
+	for _, recorder := range []string{"voiceRecorder", "cloneRecorder", "conversionRecorder", "musicRecorder", "transcribeRecorder"} {
+		if !strings.Contains(body, recorder+" = createRecorder(") {
+			t.Fatalf("expected %s to use the shared Recorder lifecycle", recorder)
+		}
 	}
 }

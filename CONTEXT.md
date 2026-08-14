@@ -19,12 +19,21 @@ Manager; `subprocess` engines are launched once per request.
 
 ## Engine invocation (`internal/engine`)
 
-The single home for "how do you call engine X": per-engine CLI flags, temp
-file staging, output validation, reservation, and success/failure recording,
-all behind `Invoker.Run(ctx, Spec)`. Specs are built only by the constructors
-(`SpeechSpec`, `TranscriptionSpec`, `ImageSpec`) so the CLI contract never
-leaks into handlers. Two adapters sit at this seam: `Runner` (subprocess, for
-production) and `Fake` (in-memory, for tests).
+The single home for "how do you call engine X": mode selection, resident HTTP
+protocols, per-engine CLI flags, temp file staging, output validation,
+reservation, and success/failure recording, all behind `Invoker.Run(ctx,
+Spec)`. Specs are built only by constructors such as `SpeechSpec`,
+`TranscriptionSpec`, `ImageSpec`, `ChatSpec`, and `VisionSpec`, so native
+transport contracts never leak into handlers. `Runner` is the production
+adapter for both subprocess and resident modes; `Fake` is the in-memory test
+adapter.
+
+## Catalogued model selection (`internal/models`)
+
+The tracked model manifest is the single source of model identity, aliases,
+family, capabilities, and configured Engine route. Gateway handlers resolve a
+public model value through `Manifest.Resolve`; browser selectors render the
+same catalogue data. Neither owns a parallel model allowlist.
 
 ## Reservation
 
@@ -68,6 +77,21 @@ The flagship pipeline: transcription -> chat -> speech as one server-side
 unit behind `POST /v1/voice`. Takes the engine seam and a `ChatFunc` as
 injected dependencies, so the whole loop is testable without native binaries.
 The browser demo only records, uploads, and plays.
+
+## Browser Recorder (`internal/demo/static/app.js`)
+
+Owns microphone permission and setup, stop-during-setup cancellation, sample
+capture, cleanup, minimum-duration validation, and WAV construction for Voice
+Loop, Actor Voice references, voice conversion, music sources, and Transcribe.
+Each tool owns only its recording presentation and what it does with an
+accepted WAV.
+
+## Audio Workspace (`internal/demo/static/app.js`)
+
+The shared in-browser workspace behind Transcribe and Extract. It owns the
+decoded source, edited transcript, cursor and selection, playback state,
+transcript exports, and extracted-audio provenance across tool switches.
+Transcribe produces words; Extract produces audio assets.
 
 The Voice Library uses two related terms. An **Actor Voice** is an existing
 recorded or designed reusable voice with its own reference WAV and transcript.

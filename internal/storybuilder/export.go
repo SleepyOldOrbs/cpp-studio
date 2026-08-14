@@ -2,7 +2,6 @@ package storybuilder
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +18,7 @@ type ExportResponse struct {
 // ExportRender creates or replaces one derived encoding of an immutable WAV
 // revision. Encoding happens in a temporary file; publication and manifest
 // update preserve the previous valid export if either later step fails.
-func (s *Store) ExportRender(ctx context.Context, id string, expectedRevision, renderRevision int, format, bitrate string) (response ExportResponse, returnErr error) {
+func (s *Store) ExportRender(ctx context.Context, id string, expectedRevision, renderRevision int, format, bitrate string) (ExportResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -52,100 +51,65 @@ func (s *Store) ExportRender(ctx context.Context, id string, expectedRevision, r
 		return ExportResponse{}, ErrRenderNotFound
 	}
 
-	rendersDir := filepath.Dir(sourcePath)
-	tmp, err := os.CreateTemp(rendersDir, "."+exportFilename(renderRevision, format)+".tmp-*."+format)
-	if err != nil {
-		return ExportResponse{}, fmt.Errorf("stage Story Builder export: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer func() {
-		if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
-			returnErr = errors.Join(returnErr, fmt.Errorf("remove Story Builder export temporary output %q: %w", tmpPath, err))
-		}
-	}()
-	if closeErr := tmp.Close(); closeErr != nil {
-		return ExportResponse{}, fmt.Errorf("stage Story Builder export: %w", closeErr)
-	}
-	if err := s.transcode(ctx, sourcePath, tmpPath, format, bitrate); err != nil {
-		return ExportResponse{}, err
-	}
-	if err := ctx.Err(); err != nil {
-		return ExportResponse{}, err
-	}
-	audioFormat, _ := engine.LookupAudioFormat(format)
-	if err := engine.ValidateEncodedAudio(tmpPath, audioFormat); err != nil {
-		return ExportResponse{}, fmt.Errorf("validate Story Builder export: %w", err)
-	}
-	info, err := os.Stat(tmpPath)
-	if err != nil {
-		return ExportResponse{}, fmt.Errorf("inspect Story Builder export: %w", err)
-	}
-
 	now := s.now()
-	export := RenderExport{
-		Format: format, Bitrate: bitrate, Bytes: int(info.Size()), CreatedAt: now,
-		URL: fmt.Sprintf("/v1/story-builder-projects/%s/renders/%d/exports/%s", id, renderRevision, format),
-	}
-	replaced := false
-	for i, existing := range render.Exports {
-		if existing.Format == format {
-			render.Exports[i] = export
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		render.Exports = append(render.Exports, export)
-	}
-	project.Revision++
-	project.UpdatedAt = now
-	manifest, err := encodeProject(project)
+	rendersDir := filepath.Dir(sourcePath)
+	finalPath := filepath.Join(rendersDir, exportFilename(renderRevision, format))
+	var export RenderExport
+	var manifest []byte
+	published, err := publishArtifact(artifactPublication{
+		FinalPath:   finalPath,
+		TempPattern: "." + exportFilename(renderRevision, format) + ".staging-*." + format,
+		Replace:     true,
+		Stage: func(path string) error {
+			if err := s.transcode(ctx, sourcePath, path, format, bitrate); err != nil {
+				return err
+			}
+			return ctx.Err()
+		},
+		Validate: func(path string) error {
+			audioFormat, _ := engine.LookupAudioFormat(format)
+			if err := engine.ValidateEncodedAudio(path, audioFormat); err != nil {
+				return fmt.Errorf("validate Story Builder export: %w", err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				return fmt.Errorf("inspect Story Builder export: %w", err)
+			}
+			export = RenderExport{
+				Format: format, Bitrate: bitrate, Bytes: int(info.Size()), CreatedAt: now,
+				URL: fmt.Sprintf("/v1/story-builder-projects/%s/renders/%d/exports/%s", id, renderRevision, format),
+			}
+			replaced := false
+			for i, existing := range render.Exports {
+				if existing.Format == format {
+					render.Exports[i] = export
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				render.Exports = append(render.Exports, export)
+			}
+			project.Revision++
+			project.UpdatedAt = now
+			manifest, err = encodeProject(project)
+			return err
+		},
+		Record: func() error {
+			if err := s.writeFileAtomic(filepath.Join(s.rootDir, id, manifestName), manifest); err != nil {
+				return fmt.Errorf("record Story Builder export: %w", err)
+			}
+			return nil
+		},
+	})
+	response := ExportResponse{Project: project, Export: export}
 	if err != nil {
+		if published {
+			return response, err
+		}
 		return ExportResponse{}, err
 	}
-
-	finalPath := filepath.Join(rendersDir, exportFilename(renderRevision, format))
-	backupPath := ""
-	if _, err := os.Stat(finalPath); err == nil {
-		backup, createErr := os.CreateTemp(rendersDir, "."+exportFilename(renderRevision, format)+".backup-*")
-		if createErr != nil {
-			return ExportResponse{}, fmt.Errorf("stage existing Story Builder export: %w", createErr)
-		}
-		backupPath = backup.Name()
-		_ = backup.Close()
-		_ = os.Remove(backupPath)
-		if err := os.Rename(finalPath, backupPath); err != nil {
-			return ExportResponse{}, fmt.Errorf("stage existing Story Builder export: %w", err)
-		}
-	} else if !os.IsNotExist(err) {
-		return ExportResponse{}, fmt.Errorf("inspect Story Builder export: %w", err)
-	}
-	restore := func() error {
-		if err := os.Remove(finalPath); err != nil && !os.IsNotExist(err) {
-			if backupPath != "" {
-				return fmt.Errorf("remove replacement before restoring backup %q: %w", backupPath, err)
-			}
-			return fmt.Errorf("remove unpublished Story Builder export: %w", err)
-		}
-		if backupPath != "" {
-			if err := os.Rename(backupPath, finalPath); err != nil {
-				return fmt.Errorf("restore Story Builder export backup %q: %w", backupPath, err)
-			}
-		}
-		return nil
-	}
-	if err := os.Rename(tmpPath, finalPath); err != nil {
-		return ExportResponse{}, errors.Join(fmt.Errorf("publish Story Builder export: %w", err), restore())
-	}
-	if err := s.writeFileAtomic(filepath.Join(s.rootDir, id, manifestName), manifest); err != nil {
-		return ExportResponse{}, errors.Join(fmt.Errorf("record Story Builder export: %w", err), restore())
-	}
-	if backupPath != "" {
-		if err := os.Remove(backupPath); err != nil {
-			return ExportResponse{Project: project, Export: export}, fmt.Errorf("Story Builder export was published but backup cleanup failed at %q: %w", backupPath, err)
-		}
-	}
-	return ExportResponse{Project: project, Export: export}, nil
+	return response, nil
 }
 
 func (s *Store) ExportPath(id string, renderRevision int, format string) (string, RenderExport, error) {
