@@ -142,6 +142,11 @@ republish the manifest that job is serving.
 A Story Builder Project is one separately saved production owned by the
 Story Builder tool. Its manifest has a stable id, user-facing name, typed
 Dialogue/SFX/Music tracks, timeline clips, timestamps, and a monotonic revision.
+An optional ordered list of Project Scenes names points on that same timeline;
+each scene runs until the next marker. Retained Story import preserves the
+Story's scene title, premise, order, and first-line timing so an Episode does not
+become a flat timeline when it crosses the ownership seam. Projects written
+before scenes, and blank projects, keep an empty scene list.
 Tracks own stable identity, order, mute state, and optional Character Voice
 binding. Silence clips are timing-only metadata and do not own media bytes.
 Reusable SFX and Music remain Library-owned until first placement. The project

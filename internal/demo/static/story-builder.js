@@ -35,6 +35,7 @@
   const timelineViewport = byID("storyBuilderTimelineViewport");
   const timelineContent = byID("storyBuilderTimelineContent");
   const timelineRuler = byID("storyBuilderTimelineRuler");
+  const scenesElement = byID("storyBuilderScenes");
   const playButton = byID("storyBuilderPlay");
   const playheadInput = byID("storyBuilderPlayhead");
   const playheadValue = byID("storyBuilderPlayheadValue");
@@ -150,8 +151,9 @@
     const mutations = new Map();
 
     const current = () => projects.find((project) => project.id === currentID) || null;
-    const snapshot = (project) => ({ tracks: clone(project.tracks), timeline_duration_ms: project.timeline_duration_ms });
+    const snapshot = (project) => ({ scenes: clone(project.scenes), tracks: clone(project.tracks), timeline_duration_ms: project.timeline_duration_ms });
     const applySnapshot = (project, value) => {
+      project.scenes = clone(value.scenes);
       project.tracks = clone(value.tracks);
       project.timeline_duration_ms = value.timeline_duration_ms;
       normalizeTracks(project);
@@ -262,6 +264,7 @@
           project.updated_at = saved.updated_at;
           project.created_at = saved.created_at;
           project.timeline_duration_ms = saved.timeline_duration_ms;
+          project.scenes = changedDuringSave ? project.scenes : clone(saved.scenes || []);
           project.name = changedDuringSave ? project.name : saved.name;
           if (!changedDuringSave) project.tracks = clone(saved.tracks);
           projects = [project, ...projects.filter((item) => item.id !== project.id)];
@@ -294,6 +297,7 @@
   const editSession = createEditSession();
 
   function normalizeTracks(project) {
+    project.scenes = Array.isArray(project.scenes) ? project.scenes : [];
     project.tracks = Array.isArray(project.tracks) ? project.tracks : [];
     project.tracks.forEach((track, index) => {
       track.order = index;
@@ -341,6 +345,35 @@
     const seconds = Math.floor((milliseconds % 60000) / 1000);
     const remainder = milliseconds % 1000;
     return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(remainder).padStart(3, "0")}`;
+  }
+
+  function renderScenes(project) {
+    scenesElement.replaceChildren();
+    const scenes = project && Array.isArray(project.scenes) ? project.scenes : [];
+    scenesElement.hidden = scenes.length === 0;
+    if (!scenes.length) return;
+    const label = document.createElement("strong");
+    label.textContent = "Scenes";
+    scenesElement.append(label);
+    scenes.forEach((scene, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "scene-jump";
+      button.title = scene.premise || `Jump to ${scene.title || scene.id}`;
+      const name = document.createElement("span");
+      name.textContent = `${index + 1}. ${scene.title || scene.id}`;
+      const time = document.createElement("small");
+      time.textContent = formatPlayhead(scene.start_ms);
+      button.append(name, time);
+      button.addEventListener("click", () => {
+        stopBrowserPlayback(true);
+        setPlayhead(scene.start_ms);
+        const duration = timelineDurationMS(project);
+        const scrollable = Math.max(0, timelineContent.scrollWidth - timelineViewport.clientWidth);
+        timelineViewport.scrollLeft = duration > 0 ? scrollable * scene.start_ms / duration : 0;
+      });
+      scenesElement.append(button);
+    });
   }
 
   function setPlaybackStatus(message, state = "") {
@@ -558,6 +591,16 @@
   function timelineError(project) {
     if (!Number.isInteger(project.timeline_duration_ms) || project.timeline_duration_ms <= 0) {
       return "The project length must be a positive whole millisecond value.";
+    }
+    let previousSceneStart = -1;
+    const sceneIDs = new Set();
+    for (const scene of project.scenes || []) {
+      if (!scene.id || sceneIDs.has(scene.id) || !Number.isInteger(scene.start_ms) ||
+        scene.start_ms < 0 || scene.start_ms >= project.timeline_duration_ms || scene.start_ms <= previousSceneStart) {
+        return "Scene markers must be unique, ordered, and inside the project length.";
+      }
+      sceneIDs.add(scene.id);
+      previousSceneStart = scene.start_ms;
     }
     for (const track of project.tracks) {
       const ordered = [...track.clips].sort((left, right) => left.start_ms - right.start_ms);
@@ -974,6 +1017,7 @@
     tracksElement.replaceChildren();
     const project = currentProject();
     if (!project) {
+      renderScenes(null);
       updateBuildControls();
       updateRenderControls();
       updatePlayheadDisplay();
@@ -983,6 +1027,7 @@
     normalizeTracks(project);
     pruneSelection();
     const timelineDuration = timelineDurationMS(project);
+    renderScenes(project);
     timelineDurationInput.value = String(timelineDuration / 1000);
     renderTimelineRuler(timelineDuration);
     updateTimelineWidth(timelineDuration);
@@ -1918,6 +1963,7 @@
       name: requestedName,
       revision: project.revision,
       timeline_duration_ms: project.timeline_duration_ms,
+      scenes: clone(project.scenes || []),
       tracks: clone(project.tracks),
     };
     setStatus("saving");

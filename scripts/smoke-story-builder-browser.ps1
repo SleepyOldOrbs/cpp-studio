@@ -1125,6 +1125,13 @@ async page => {
     'edited retained line was not imported stale');
   assert(project.tracks[0].clips[0].source_story_id === storyID && project.tracks[0].clips[0].source_story_line_id,
     'source Story IDs were not retained as provenance');
+  assert(project.scenes?.length === 2 && project.scenes[0].id === 'cold-open' && project.scenes[1].id === 'crossing',
+    'imported Episode scenes were flattened');
+  const sceneButtons = page.locator('.scene-jump');
+  assert(await sceneButtons.count() === 2, 'Story Builder did not render the imported scene navigator');
+  await sceneButtons.nth(1).click();
+  assert(Number(await page.locator('#storyBuilderPlayhead').inputValue()) === project.scenes[1].start_ms,
+    'scene navigation did not move the existing playhead to the scene marker');
 
   const sourceAfter = await page.evaluate(async id => {
     const manifest = await fetch(`/v1/stories/${id}`).then(response => response.json());
@@ -1535,9 +1542,13 @@ try {
       @{ id = "jon"; name = "Jon"; voice_id = $actorVoice.id }
     )
     title = "Retained Story import browser smoke"
+    scenes = @(
+      @{ id = "cold-open"; title = "Cold open"; premise = "The retained take establishes the scene." },
+      @{ id = "crossing"; title = "The crossing"; premise = "The changed line starts the next scene." }
+    )
     script = @(
-      @{ id = "line-001"; speaker_id = "mara"; text = "This take remains compatible."; fact_ids = @() },
-      @{ id = "line-002"; speaker_id = "jon"; text = "This take will become stale."; fact_ids = @() }
+      @{ id = "line-001"; speaker_id = "mara"; scene_id = "cold-open"; text = "This take remains compatible."; fact_ids = @() },
+      @{ id = "line-002"; speaker_id = "jon"; scene_id = "crossing"; text = "This take will become stale."; fact_ids = @() }
     )
   } | ConvertTo-Json -Depth 8)
   $storyImportStatus = $null

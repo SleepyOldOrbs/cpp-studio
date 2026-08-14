@@ -15,7 +15,10 @@ import (
 	"log"
 	"math"
 	mrand "math/rand/v2"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"os/exec"
@@ -2659,6 +2662,11 @@ func (r *router) handleSeparation(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
+	responseFormat := strings.TrimSpace(req.FormValue("response_format"))
+	if responseFormat != "" && responseFormat != "browser" {
+		writeJSONError(w, http.StatusBadRequest, "response_format must be browser when supplied")
+		return
+	}
 	model := strings.TrimSpace(req.FormValue("model"))
 	selected, err := r.resolveCatalogModel(model, "separation", "separation", "")
 	if err != nil {
@@ -2733,12 +2741,66 @@ func (r *router) handleSeparation(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("rewind stem archive: %v", err))
 		return
 	}
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="separated-stems.zip"`)
 	w.Header().Set("X-Separation-Model", model)
 	w.Header().Set("Access-Control-Expose-Headers", "X-Separation-Model")
+	if responseFormat == "browser" {
+		if err := writeSeparationBrowserResponse(w, archive, stems); err != nil {
+			log.Printf("separation_browser_response error=%q", err)
+		}
+		_ = archive.Close()
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="separated-stems.zip"`)
 	_, _ = io.Copy(w, archive)
 	_ = archive.Close()
+}
+
+// writeSeparationBrowserResponse keeps the existing one-request lifetime but
+// gives the browser both delivery shapes: the ZIP download and individually
+// playable WAV stems. Nothing survives the response on the server.
+func writeSeparationBrowserResponse(w http.ResponseWriter, archive io.Reader, stems []string) error {
+	writer := multipart.NewWriter(w)
+	w.Header().Set("Content-Type", writer.FormDataContentType())
+	archivePart, err := writer.CreatePart(separationPartHeader("archive", "separated-stems.zip", "application/zip"))
+	if err != nil {
+		return fmt.Errorf("create separation archive response: %w", err)
+	}
+	if _, err := io.Copy(archivePart, archive); err != nil {
+		return fmt.Errorf("write separation archive response: %w", err)
+	}
+	for _, stem := range stems {
+		name := filepath.Base(stem)
+		part, err := writer.CreatePart(separationPartHeader("stem", name, "audio/wav"))
+		if err != nil {
+			return fmt.Errorf("create separated stem response %s: %w", name, err)
+		}
+		input, err := os.Open(stem)
+		if err != nil {
+			return fmt.Errorf("open separated stem response %s: %w", name, err)
+		}
+		_, copyErr := io.Copy(part, input)
+		closeErr := input.Close()
+		if copyErr != nil {
+			return fmt.Errorf("write separated stem response %s: %w", name, copyErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close separated stem response %s: %w", name, closeErr)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("finish separation browser response: %w", err)
+	}
+	return nil
+}
+
+func separationPartHeader(field, filename, contentType string) textproto.MIMEHeader {
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{
+		"name": field, "filename": filename,
+	}))
+	header.Set("Content-Type", contentType)
+	return header
 }
 
 func (r *router) handleVAD(w http.ResponseWriter, req *http.Request) {
@@ -4040,11 +4102,12 @@ type storyBuilderProjectCreateRequest struct {
 }
 
 type storyBuilderProjectUpdateRequest struct {
-	Name               string                `json:"name"`
-	Revision           int                   `json:"revision"`
-	TimelineDurationMS int64                 `json:"timeline_duration_ms"`
-	Tracks             *[]storybuilder.Track `json:"tracks"`
-	RevoiceTrackIDs    []string              `json:"revoice_track_ids"`
+	Name               string                       `json:"name"`
+	Revision           int                          `json:"revision"`
+	TimelineDurationMS int64                        `json:"timeline_duration_ms"`
+	Scenes             *[]storybuilder.ProjectScene `json:"scenes"`
+	Tracks             *[]storybuilder.Track        `json:"tracks"`
+	RevoiceTrackIDs    []string                     `json:"revoice_track_ids"`
 }
 
 type storyBuilderLibraryAudioRequest struct {
@@ -4179,7 +4242,7 @@ func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Requ
 		}
 		project, err := r.storyBuilderProjects.Update(id, storybuilder.ProjectUpdate{
 			Name: body.Name, Revision: body.Revision, TimelineDurationMS: body.TimelineDurationMS,
-			Tracks: *body.Tracks, RevoiceTrackIDs: body.RevoiceTrackIDs,
+			Scenes: body.Scenes, Tracks: *body.Tracks, RevoiceTrackIDs: body.RevoiceTrackIDs,
 		})
 		if err != nil {
 			writeStoryBuilderProjectError(w, err)

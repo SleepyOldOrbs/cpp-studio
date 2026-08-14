@@ -338,17 +338,30 @@ mattered was that none of them should come first:
   browser acceptance covers preview/confirmation, progress/cancellation, GGUF evidence,
   lifecycle navigation, and error remedies without downloading a real model.
 
-### M10 — Episodes  ·  *the wall between here and the destination*
+### M10 — Episodes  ·  *code-complete; live episode acceptance remains*
 
-Everything M8 and M9 built lives on the story path, which caps at 300
-seconds, 60 script lines and 32 MiB. A comedy episode is roughly 330 lines.
-The only long-form path, audiobooks, is single-narrator with no cast, no
-takes, no mastering and no exports. So the studio can extract a cast and
-write them material, and then cannot produce the thing it exists to produce.
+- **Durable retained-Story Episodes — complete 2026-07-29.** The Story path is
+  episode-scale (45 minutes, 600 lines, 40 scenes), streams takes to disk,
+  fingerprints synthesis identity, resumes interrupted work, preserves a
+  recoverable cancel, and groups the take room by scene with audition and
+  Needs-work navigation.
+- **Story Builder convergence — complete 2026-08-14.** Story Builder remains
+  the durable arrangement owner. Retained Story import now preserves Project
+  Scene markers and exposes a scene navigator instead of flattening an Episode
+  or creating another production store.
+- **Acceptance still required.** Produce and listen to one real multi-scene
+  episode through the configured native engines. Fixture/API/browser checks do
+  not substitute for that technical and human audio gate. See
+  [`PLAN-EPISODES.md`](PLAN-EPISODES.md).
 
-The plan — merge direction, what breaks at length, resumability, and the
-two stages after it — is written up in
-[`PLAN-EPISODES.md`](PLAN-EPISODES.md).
+## Cross-cutting — Studio management UX  ·  *accepted direction*
+
+The audio.cpp native WebUI review on 2026-08-14 settled four requirements for
+a later shell pass: an explicit model download/storage root; multi-select model
+capability filters; model family versus variant/quantisation presentation with
+VRAM, size, install, and readiness evidence; and a dedicated global Runtime tab
+for session logs instead of the current per-shell drawer. These are management
+surface changes, not Episode-domain responsibilities.
 
 ## Cross-cutting — repo presentation  ·  *stars*
 
@@ -366,8 +379,8 @@ two stages after it — is written up in
 
 ## Sequence & rationale
 
-M1–M9 established the Studio foundation and production workflows. The current
-product frontier is M10: refresh the Episodes plan against the shipped Story Builder
-and then implement the smallest scene-based, resumable long-form production slice.
-Do not raise Story caps before durable incremental production and its ownership seam
-are settled.
+M1–M9 established the Studio foundation and production workflows. M10's durable
+scene-based and resumable code path is complete; its frontier is now one real
+multi-scene native-engine production and listening pass. After that, the Stage 2
+reference pack is the stranger-runnability gap. The accepted Studio management UX
+work remains a separate bounded shell pass.

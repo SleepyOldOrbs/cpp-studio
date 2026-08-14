@@ -183,6 +183,10 @@ Gateway restart.
   Dialogue Tracks preserve cast order and available line timing. Compatible
   current takes are validated and copied into project-owned `takes` as ready;
   missing or mismatched takes become stale with their original text. Project
+  scene order, titles, premises, and the timeline position of each scene's first
+  line are preserved as project-owned scene markers. The Story Builder scene
+  navigator moves the playhead to those markers without reading or mutating the
+  retained Story. Project
   publication is atomic, and the retained Story manifest and take files are
   read-only throughout.
 
@@ -192,7 +196,10 @@ Gateway restart.
   `{"name":"Production name"}`. Returns the project with `201`.
 - `GET /v1/story-builder-projects/{id}` — read one complete project manifest.
 - `PUT /v1/story-builder-projects/{id}` — replace the editable whole-project
-  state with `{"name":"New name","revision":1,"tracks":[...]}`. A successful
+  state with `{"name":"New name","revision":1,"scenes":[...],"tracks":[...]}`.
+  `scenes` is optional for compatibility; omission preserves the stored markers,
+  while an explicit list replaces them. Each marker has a stable `id`, optional
+  `title` and `premise`, and an ordered in-range integer `start_ms`. A successful
   save increments `revision`; `tracks` is required so an older rename-only
   client cannot erase a timeline, and a stale revision returns `409`. An
   intentional replacement of an occupied Dialogue Track's Character Voice
@@ -267,6 +274,12 @@ and scrolling do not. Isolated audition uses the selected ready audio-backed
 clip only. Playback and audition do not create a render or increment the project
 revision, and stale dialogue or missing project media is reported in the
 transport status instead of being silently skipped.
+
+Project Scene markers are navigation and production-structure metadata, not
+audio containers. A marker starts one scene; the next marker or project end
+closes it. This keeps clip timing and project length as the only duration truth.
+Jumping to a scene changes the browser playhead only and does not save, build,
+render, or advance the project revision.
 
 Each track has a stable `id`, editable `name`, contiguous `order`, `type`
 (`dialogue`, `sfx`, or `music`), `muted` state, and `clips`. Dialogue tracks may
@@ -748,6 +761,11 @@ Accepts multipart WAV `file` plus one of `htdemucs-q8-0`,
 `bs-roformer-q8-0`, or `mel-band-roformer-q8-0`. The gateway runs the fixed
 configured separation engine, validates every named WAV stem, and returns
 `application/zip` as `separated-stems.zip`.
+
+Studio also sends `response_format=browser`. That response is
+`multipart/form-data` with one `archive` part containing the same ZIP and one
+`stem` part for each validated `audio/wav` output, allowing the named stems to
+be played before the gateway removes its temporary files.
 
 ## POST /v1/audio/music/analyze
 

@@ -15,6 +15,7 @@ import (
 	stdpng "image/png"
 	"io"
 	"log"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -112,6 +113,10 @@ func TestStoryBuilderProjectLifecycleThroughGateway(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/v1/story-builder-projects/"+created.ID, strings.NewReader(`{
 		"name":"Lantern final edit",
 		"revision":1,
+		"scenes":[
+			{"id":"cold-open","title":"Cold open","premise":"The warning arrives.","start_ms":0},
+			{"id":"crossing","title":"The crossing","start_ms":12000}
+		],
 		"tracks":[
 			{"id":"dialogue_mara","name":"Mara","type":"dialogue","order":0,"muted":false,"clips":[]},
 			{"id":"foley","name":"Foley","type":"sfx","order":1,"muted":true,"clips":[
@@ -125,6 +130,7 @@ func TestStoryBuilderProjectLifecycleThroughGateway(t *testing.T) {
 	}
 	var renamed storybuilder.Project
 	if err := json.NewDecoder(rec.Body).Decode(&renamed); err != nil || renamed.Name != "Lantern final edit" || renamed.Revision != 2 ||
+		len(renamed.Scenes) != 2 || renamed.Scenes[1].StartMS != 12000 ||
 		len(renamed.Tracks) != 3 || renamed.Tracks[1].Clips[0].Type != storybuilder.ClipTypeSilence {
 		t.Fatalf("unexpected renamed project: %+v, err %v", renamed, err)
 	}
@@ -161,6 +167,7 @@ func TestStoryBuilderProjectLifecycleThroughGateway(t *testing.T) {
 	}
 	var reopened storybuilder.Project
 	if err := json.NewDecoder(rec.Body).Decode(&reopened); err != nil || reopened.Name != renamed.Name || reopened.Revision != renamed.Revision || len(reopened.Tracks) != 3 ||
+		len(reopened.Scenes) != 2 || reopened.Scenes[0].ID != "cold-open" ||
 		!reopened.CreatedAt.Equal(renamed.CreatedAt) || !reopened.UpdatedAt.Equal(renamed.UpdatedAt) {
 		t.Fatalf("unexpected reopened project: %+v, err %v", reopened, err)
 	}
@@ -6184,6 +6191,44 @@ func TestSeparationReturnsNamedWAVStemsAsZIP(t *testing.T) {
 	archive, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
 	if err != nil || len(archive.File) != 2 {
 		t.Fatalf("invalid stem archive: files=%d err=%v", len(archive.File), err)
+	}
+
+	var browserBody bytes.Buffer
+	browserWriter := multipart.NewWriter(&browserBody)
+	browserFile, _ := browserWriter.CreateFormFile("file", "song.wav")
+	_, _ = browserFile.Write(validWAVBytes())
+	_ = browserWriter.WriteField("model", "htdemucs-q8-0")
+	_ = browserWriter.WriteField("response_format", "browser")
+	_ = browserWriter.Close()
+	browserRec := httptest.NewRecorder()
+	browserReq := httptest.NewRequest(http.MethodPost, "/v1/audio/separation", &browserBody)
+	browserReq.Header.Set("Content-Type", browserWriter.FormDataContentType())
+	router.ServeHTTP(browserRec, browserReq)
+	mediaType, params, parseErr := mime.ParseMediaType(browserRec.Header().Get("Content-Type"))
+	if browserRec.Code != http.StatusOK || parseErr != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
+		t.Fatalf("browser separation response: status=%d content-type=%q parse=%v", browserRec.Code, browserRec.Header().Get("Content-Type"), parseErr)
+	}
+	parts := multipart.NewReader(bytes.NewReader(browserRec.Body.Bytes()), params["boundary"])
+	seen := map[string]string{}
+	for {
+		part, err := parts.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read browser separation part: %v", err)
+		}
+		data, err := io.ReadAll(part)
+		if err != nil {
+			t.Fatalf("read browser separation data: %v", err)
+		}
+		seen[part.FileName()] = part.Header.Get("Content-Type")
+		if part.FormName() == "stem" && !bytes.Equal(data, validWAVBytes()) {
+			t.Fatalf("stem %q content drifted", part.FileName())
+		}
+	}
+	if seen["separated-stems.zip"] != "application/zip" || seen["drums.wav"] != "audio/wav" || seen["vocals.wav"] != "audio/wav" {
+		t.Fatalf("browser separation parts = %+v", seen)
 	}
 }
 

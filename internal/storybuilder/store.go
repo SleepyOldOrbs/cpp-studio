@@ -149,12 +149,24 @@ type LibraryAudioPlacement struct {
 	StartMS       int64
 }
 
+// ProjectScene is a named point on the Story Builder timeline. The scene
+// continues until the next marker (or the end of the project), so moving clips
+// never creates a second source of duration truth. Empty scene lists keep blank
+// projects and manifests written before Episodes fully compatible.
+type ProjectScene struct {
+	ID      string `json:"id"`
+	Title   string `json:"title,omitempty"`
+	Premise string `json:"premise,omitempty"`
+	StartMS int64  `json:"start_ms"`
+}
+
 type ProjectUpdate struct {
-	Name               string   `json:"name"`
-	Revision           int      `json:"revision"`
-	TimelineDurationMS int64    `json:"timeline_duration_ms,omitempty"`
-	Tracks             []Track  `json:"tracks"`
-	RevoiceTrackIDs    []string `json:"revoice_track_ids,omitempty"`
+	Name               string          `json:"name"`
+	Revision           int             `json:"revision"`
+	TimelineDurationMS int64           `json:"timeline_duration_ms,omitempty"`
+	Scenes             *[]ProjectScene `json:"scenes,omitempty"`
+	Tracks             []Track         `json:"tracks"`
+	RevoiceTrackIDs    []string        `json:"revoice_track_ids,omitempty"`
 }
 
 type RenderRevision struct {
@@ -186,6 +198,7 @@ type Project struct {
 	CreatedAt          time.Time        `json:"created_at"`
 	UpdatedAt          time.Time        `json:"updated_at"`
 	TimelineDurationMS int64            `json:"timeline_duration_ms"`
+	Scenes             []ProjectScene   `json:"scenes,omitempty"`
 	Tracks             []Track          `json:"tracks"`
 	Renders            []RenderRevision `json:"renders,omitempty"`
 }
@@ -240,13 +253,13 @@ func NewStoreWithOptions(rootDir string, options StoreOptions) *Store {
 }
 
 func (s *Store) Create(name string) (Project, error) {
-	return s.createProject(name, DefaultTimelineDurationMS, []Track{}, nil)
+	return s.createProject(name, DefaultTimelineDurationMS, nil, []Track{}, nil)
 }
 
 // createProject is the one publication transaction for new projects. Imports
 // add validated project-owned takes to the same staged directory before its
 // manifest and directory become visible together.
-func (s *Store) createProject(name string, timelineDurationMS int64, tracks []Track, readyTakes map[string][]byte) (Project, error) {
+func (s *Store) createProject(name string, timelineDurationMS int64, scenes []ProjectScene, tracks []Track, readyTakes map[string][]byte) (Project, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -255,6 +268,9 @@ func (s *Store) createProject(name string, timelineDurationMS int64, tracks []Tr
 		return Project{}, err
 	}
 	if err := validateTracks(tracks, timelineDurationMS); err != nil {
+		return Project{}, err
+	}
+	if err := validateScenes(scenes, timelineDurationMS); err != nil {
 		return Project{}, err
 	}
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
@@ -267,7 +283,7 @@ func (s *Store) createProject(name string, timelineDurationMS int64, tracks []Tr
 		if err != nil {
 			return Project{}, err
 		}
-		project := Project{ID: id, Name: name, Revision: 1, CreatedAt: now, UpdatedAt: now, TimelineDurationMS: timelineDurationMS, Tracks: tracks}
+		project := Project{ID: id, Name: name, Revision: 1, CreatedAt: now, UpdatedAt: now, TimelineDurationMS: timelineDurationMS, Scenes: cloneScenes(scenes), Tracks: tracks}
 		finalDir := filepath.Join(s.rootDir, project.ID)
 		if _, err := os.Stat(finalDir); err == nil {
 			continue
@@ -337,6 +353,9 @@ func (s *Store) Get(id string) (Project, bool, error) {
 	}
 	if project.TimelineDurationMS == 0 {
 		project.TimelineDurationMS = minimumTimelineDurationMS(project.Tracks)
+	}
+	if err := validateScenes(project.Scenes, project.TimelineDurationMS); err != nil {
+		return Project{}, false, fmt.Errorf("decode Story Builder Project scenes: %w", err)
 	}
 	if s.resolveCharacterVoice != nil {
 		tracks, err := s.prepareTracks(project.Tracks, project.Tracks, nil)
@@ -534,11 +553,19 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 	if err := validateTracks(tracks, timelineDurationMS); err != nil {
 		return Project{}, err
 	}
+	scenes := project.Scenes
+	if update.Scenes != nil {
+		scenes = cloneScenes(*update.Scenes)
+	}
+	if err := validateScenes(scenes, timelineDurationMS); err != nil {
+		return Project{}, err
+	}
 	if update.Revision != project.Revision {
 		return Project{}, ErrConflict
 	}
 	project.Name = name
 	project.TimelineDurationMS = timelineDurationMS
+	project.Scenes = scenes
 	project.Tracks = tracks
 	project.Revision++
 	project.UpdatedAt = s.now()
@@ -1003,6 +1030,27 @@ func validateTracks(tracks []Track, timelineDurationMS int64) error {
 	return nil
 }
 
+func validateScenes(scenes []ProjectScene, timelineDurationMS int64) error {
+	if len(scenes) > story.MaxScenes || timelineDurationMS <= 0 {
+		return ErrInvalid
+	}
+	ids := make(map[string]struct{}, len(scenes))
+	var previousStart int64 = -1
+	for _, scene := range scenes {
+		if !validTimelineID(scene.ID) || utf8.RuneCountInString(strings.TrimSpace(scene.Title)) > story.MaxSceneTitleChars ||
+			utf8.RuneCountInString(strings.TrimSpace(scene.Premise)) > story.MaxScenePremiseChars ||
+			scene.StartMS < 0 || scene.StartMS >= timelineDurationMS || scene.StartMS <= previousStart {
+			return ErrInvalid
+		}
+		if _, exists := ids[scene.ID]; exists {
+			return ErrInvalid
+		}
+		ids[scene.ID] = struct{}{}
+		previousStart = scene.StartMS
+	}
+	return nil
+}
+
 func validTimelineID(id string) bool {
 	if id == "" || len(id) > 120 {
 		return false
@@ -1035,6 +1083,16 @@ func cloneTracks(tracks []Track) []Track {
 			cloned[i].Clips[j].ActorVoiceID = strings.TrimSpace(cloned[i].Clips[j].ActorVoiceID)
 			cloned[i].Clips[j].VoiceFingerprint = strings.TrimSpace(cloned[i].Clips[j].VoiceFingerprint)
 		}
+	}
+	return cloned
+}
+
+func cloneScenes(scenes []ProjectScene) []ProjectScene {
+	cloned := append([]ProjectScene(nil), scenes...)
+	for i := range cloned {
+		cloned[i].ID = strings.TrimSpace(cloned[i].ID)
+		cloned[i].Title = strings.TrimSpace(cloned[i].Title)
+		cloned[i].Premise = strings.TrimSpace(cloned[i].Premise)
 	}
 	return cloned
 }

@@ -174,6 +174,40 @@ func TestUserCanArrangeTypedTracksAndSilenceClips(t *testing.T) {
 	}
 }
 
+func TestProjectScenesPersistAndRejectInvalidMarkers(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(root)
+	created, err := store.Create("Scene markers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scenes := []ProjectScene{
+		{ID: "cold-open", Title: "Cold open", StartMS: 0},
+		{ID: "crossing", Title: "The crossing", Premise: "Mara commits to the crossing.", StartMS: 12000},
+	}
+	saved, err := store.Update(created.ID, ProjectUpdate{
+		Name: created.Name, Revision: created.Revision, Scenes: &scenes, Tracks: []Track{},
+	})
+	if err != nil {
+		t.Fatalf("save scenes: %v", err)
+	}
+	reopened, ok, err := NewStore(root).Get(created.ID)
+	if err != nil || !ok || len(reopened.Scenes) != 2 || reopened.Scenes[1].Premise != scenes[1].Premise {
+		t.Fatalf("reopen scenes: %+v ok=%v err=%v", reopened.Scenes, ok, err)
+	}
+
+	invalid := []ProjectScene{{ID: "one", StartMS: 5000}, {ID: "two", StartMS: 5000}}
+	if _, err := store.Update(saved.ID, ProjectUpdate{
+		Name: saved.Name, Revision: saved.Revision, Scenes: &invalid, Tracks: saved.Tracks,
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("duplicate scene start error = %v, want ErrInvalid", err)
+	}
+	after, ok, err := store.Get(saved.ID)
+	if err != nil || !ok || after.Revision != saved.Revision || len(after.Scenes) != 2 {
+		t.Fatalf("invalid scene update mutated project: %+v ok=%v err=%v", after, ok, err)
+	}
+}
+
 func TestLegacyProjectDerivesTimelineDurationFromExistingClips(t *testing.T) {
 	root := t.TempDir()
 	store := NewStore(root)

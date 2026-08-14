@@ -717,6 +717,13 @@
           <button class="primary" id="separationSubmitButton" type="submit" disabled>Separate and download ZIP</button>
           <small class="hint" id="separationStatus">The ZIP contains every named WAV stem produced by the selected model.</small>
         </form>
+        <section class="separation-results" id="separationResults" aria-labelledby="separationResultsTitle" hidden>
+          <header class="separation-results-head">
+            <div><span class="source-label">Separated tracks</span><h3 id="separationResultsTitle">Detected stems</h3></div>
+            <span id="separationResultsCount"></span>
+          </header>
+          <div class="separation-stem-list" id="separationStemList"></div>
+        </section>
       </div>
     </section>
 
