@@ -338,7 +338,7 @@ mattered was that none of them should come first:
   browser acceptance covers preview/confirmation, progress/cancellation, GGUF evidence,
   lifecycle navigation, and error remedies without downloading a real model.
 
-### M10 — Episodes  ·  *code-complete; live episode acceptance remains*
+### M10 — Episodes  ·  *complete 2026-08-14*
 
 - **Durable retained-Story Episodes — complete 2026-07-29.** The Story path is
   episode-scale (45 minutes, 600 lines, 40 scenes), streams takes to disk,
@@ -349,10 +349,13 @@ mattered was that none of them should come first:
   the durable arrangement owner. Retained Story import now preserves Project
   Scene markers and exposes a scene navigator instead of flattening an Episode
   or creating another production store.
-- **Acceptance still required.** Produce and listen to one real multi-scene
-  episode through the configured native engines. Fixture/API/browser checks do
-  not substitute for that technical and human audio gate. See
-  [`PLAN-EPISODES.md`](PLAN-EPISODES.md).
+- **Real native-engine acceptance — complete 2026-08-14.** “The Ministry of
+  Small Emergencies” produced 12 lines across three scenes with two stored
+  voices, retained and auditioned the takes, imported them into Story Builder
+  with scene navigation, rendered a 68.6-second mastered revision, and exported
+  WAV, MP3, and FLAC. The run exposed and fixed an exact-duration rounding bug;
+  the full Go suite passed afterward. James listened to the finished master and
+  gave it an explicit pass. See [`PLAN-EPISODES.md`](PLAN-EPISODES.md).
 
 ## Cross-cutting — Studio management UX  ·  *accepted direction*
 
@@ -379,8 +382,7 @@ surface changes, not Episode-domain responsibilities.
 
 ## Sequence & rationale
 
-M1–M9 established the Studio foundation and production workflows. M10's durable
-scene-based and resumable code path is complete; its frontier is now one real
-multi-scene native-engine production and listening pass. After that, the Stage 2
-reference pack is the stranger-runnability gap. The accepted Studio management UX
-work remains a separate bounded shell pass.
+M1–M10 established the Studio foundation and production workflows, including a
+real multi-scene native-engine Episode production and human listening pass. The
+Stage 2 reference pack is now the stranger-runnability gap. The accepted Studio
+management UX work remains a separate bounded shell pass.

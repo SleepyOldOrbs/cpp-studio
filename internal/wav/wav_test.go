@@ -57,6 +57,20 @@ func TestMixTimelinePlacesTrimsAndOverlapsSources(t *testing.T) {
 	}
 }
 
+func TestDurationPreservesWholeMilliseconds(t *testing.T) {
+	mixed, err := MixTimeline(68600, nil)
+	if err != nil {
+		t.Fatalf("mix timeline: %v", err)
+	}
+	duration, err := Duration(mixed)
+	if err != nil {
+		t.Fatalf("duration: %v", err)
+	}
+	if got := duration.Milliseconds(); got != 68600 {
+		t.Fatalf("duration = %d ms, want 68600 ms", got)
+	}
+}
+
 func steppedTestWAV() []byte {
 	format := Format{Channels: 1, SampleRate: ToneSampleRate, BitsPerSample: 16}
 	pcm := make([]byte, 2*ToneSampleRate*2)
