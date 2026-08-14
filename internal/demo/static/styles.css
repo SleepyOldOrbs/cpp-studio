@@ -900,54 +900,96 @@ audio {
   overflow-wrap: anywhere;
 }
 
-/* ---------- story desk ---------- */
+/* ---------- guided workflow steps ---------- */
 
-.mode-switch {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+.workflow-layout {
+  grid-template-columns: minmax(0, 1fr);
 }
 
-.mode-option {
-  display: grid;
-  gap: 2px;
-  padding: 10px 12px;
-  border: 1px solid var(--line-soft);
-  border-radius: 7px;
-  background: var(--well);
-  color: var(--muted);
-  text-align: left;
-  cursor: pointer;
-}
-
-.mode-option strong {
-  color: var(--ink);
-  font-family: var(--display);
-  font-size: 0.78rem;
-  letter-spacing: 0.04em;
-}
-
-.mode-option small {
-  font-size: 0.7rem;
-  line-height: 1.3;
-}
-
-.mode-option:hover {
-  border-color: var(--line);
-}
-
-.mode-option.is-selected {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.mode-option.is-selected strong {
-  color: var(--accent);
-}
-
-.sketch-fields {
-  display: grid;
+.workflow-steps {
   gap: 10px;
+}
+
+.workflow-step {
+  align-self: start;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--well);
+}
+
+.workflow-step > summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  color: var(--ink);
+  cursor: pointer;
+  list-style: none;
+}
+
+.workflow-step > summary::-webkit-details-marker {
+  display: none;
+}
+
+.workflow-step > summary::after {
+  margin-left: auto;
+  color: var(--format-accent);
+  font-family: var(--mono);
+  font-size: 1rem;
+  content: "+";
+}
+
+.workflow-step[open] > summary {
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--format-soft);
+}
+
+.workflow-step[open] > summary::after {
+  content: "\2212";
+}
+
+.workflow-step > summary strong,
+.workflow-step > summary small {
+  display: block;
+}
+
+.workflow-step > summary strong {
+  font-family: var(--display);
+  font-size: 0.84rem;
+  letter-spacing: 0.03em;
+}
+
+.workflow-step > summary small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.workflow-step-number {
+  display: inline-grid;
+  flex: none;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border: 1px solid var(--format-accent);
+  border-radius: 50%;
+  color: var(--format-accent);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.workflow-step-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.workflow-step:not([open]) > :not(summary) {
+  display: none !important;
 }
 
 .voice-item-source {

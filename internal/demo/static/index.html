@@ -44,7 +44,7 @@
           <nav class="subnav" data-parent-nav="music" aria-label="Music and sound effects tools" hidden>
             <a class="subnav-link" href="#music" data-page-link="music">Overview</a>
             <a class="subnav-link" href="#music-generation" data-page-link="music-generation">Music &amp; SFX</a>
-            <a class="subnav-link" href="#voice-separation" data-page-link="voice-separation">Separate stems</a>
+            <a class="subnav-link" href="#voice-separation" data-page-link="voice-separation">Audio Seperation</a>
           </nav>
           <nav class="subnav" data-parent-nav="imagery" aria-label="Imagery tools" hidden>
             <a class="subnav-link" href="#imagery" data-page-link="imagery">Overview</a>
@@ -52,9 +52,9 @@
           </nav>
           <nav class="subnav" data-parent-nav="stories-audiobooks" aria-label="Story and audiobook tools" hidden>
             <a class="subnav-link" href="#stories-audiobooks" data-page-link="stories-audiobooks">Overview</a>
-            <a class="subnav-link" href="#story" data-page-link="story">Story</a>
+            <a class="subnav-link" href="#story" data-page-link="story">Podcast Generator</a>
             <a class="subnav-link" href="/demo/story-builder.html">Story Builder</a>
-            <a class="subnav-link" href="#audiobook" data-page-link="audiobook">Audiobook</a>
+            <a class="subnav-link" href="#audiobook" data-page-link="audiobook">Audiobook Builder</a>
             <a class="subnav-link" href="#extract" data-page-link="extract">Extract</a>
           </nav>
         </div>
@@ -145,8 +145,8 @@
       <div class="tool-card-grid">
         <a class="tool-card" href="#story" data-page-link="story">
           <span class="tool-card-type">Produce</span>
-          <strong>Story</strong>
-          <span>Research or invent a script, cast its voices, and produce a finished performance.</span>
+          <strong>Podcast Generator</strong>
+          <span>Research a grounded subject, cast its voices, and produce a sourced podcast.</span>
         </a>
         <a class="tool-card" href="/demo/story-builder.html">
           <span class="tool-card-type">Build</span>
@@ -155,7 +155,7 @@
         </a>
         <a class="tool-card" href="#audiobook" data-page-link="audiobook">
           <span class="tool-card-type">Narrate</span>
-          <strong>Audiobook</strong>
+          <strong>Audiobook Builder</strong>
           <span>Turn a document into durable, resumable narration with listening and verification controls.</span>
         </a>
         <a class="tool-card" href="#extract" data-page-link="extract">
@@ -202,9 +202,12 @@
           </div>
         </div>
       </div>
-      <div class="module-body workspace">
-        <form class="control-panel" id="voiceForm">
-          <label class="field">
+      <div class="module-body workspace workflow-layout">
+        <form class="control-panel workflow-steps" id="voiceForm">
+          <details class="workflow-step" open>
+            <summary><span class="workflow-step-number">1</span><span><strong>Provide the message or recording</strong><small>Required: typed text, a recorded turn, or a WAV file.</small></span></summary>
+            <div class="workflow-step-body">
+              <label class="field">
             <span>Message</span>
             <textarea id="messageInput" rows="5" placeholder="Type a message for the assistant&hellip;"></textarea>
             <small class="hint">Used when no WAV is loaded. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs the loop.</small>
@@ -226,31 +229,44 @@
           </div>
           <small class="hint">Live transcribe streams your mic to whisper every few seconds; stop to keep the take as the WAV source. Hands-free keeps the mic open — a pause writes your turn into Transcript, the reply plays, then it listens again; whisper large-v3-turbo (picker in Extract) keeps turns snappy.</small>
 
-          <div class="source-row">
+              <div class="source-row">
             <span class="source-label">WAV source</span>
             <span id="wavStatus">None</span>
             <button class="plain" id="wavSaveButton" type="button" disabled>Save WAV</button>
             <button class="plain icon-button" id="wavClearButton" type="button" title="Remove WAV" aria-label="Remove WAV">&times;</button>
-          </div>
+              </div>
+            </div>
+          </details>
 
-          <label class="field compact-field">
-            <span>Reply voice</span>
-            <select class="text-input" id="voiceSelect">
-              <option value="" selected>Studio default</option>
-            </select>
-            <small class="hint">Clone a voice below to add options here.</small>
-          </label>
+          <details class="workflow-step">
+            <summary><span class="workflow-step-number">2</span><span><strong>Choose the reply voice</strong><small>Optional: keep Studio default or select a saved cloned voice.</small></span></summary>
+            <div class="workflow-step-body">
+              <label class="field compact-field">
+                <span>Reply voice</span>
+                <select class="text-input" id="voiceSelect">
+                  <option value="" selected>Studio default</option>
+                </select>
+                <small class="hint">Clone a voice below to add options here.</small>
+              </label>
+            </div>
+          </details>
 
-          <div class="action-row">
-            <button class="primary" id="runButton" type="submit">Run voice loop</button>
-            <button class="secondary" id="clearButton" type="button">Clear</button>
-          </div>
-
-          <p class="error-box" id="errorBox" hidden></p>
+          <details class="workflow-step">
+            <summary><span class="workflow-step-number">3</span><span><strong>Run the voice loop</strong><small>Transcribes recordings, writes the reply, and speaks it with the selected model.</small></span></summary>
+            <div class="workflow-step-body">
+              <div class="action-row">
+                <button class="primary" id="runButton" type="submit">Run voice loop</button>
+                <button class="secondary" id="clearButton" type="button">Clear</button>
+              </div>
+              <p class="error-box" id="errorBox" hidden></p>
+            </div>
+          </details>
         </form>
 
-        <section class="result-panel">
-          <label class="field">
+        <details class="result-panel workflow-step">
+          <summary><span class="workflow-step-number">4</span><span><strong>Review and play the result</strong><small>Read the transcript and reply, then play or save the generated audio.</small></span></summary>
+          <div class="workflow-step-body">
+            <label class="field">
             <span>Transcript</span>
             <textarea id="transcriptOutput" rows="5" readonly aria-live="polite" placeholder="Whisper transcript appears here"></textarea>
             <small class="hint">Hands-free updates this Transcript after each pause, before generating the reply.</small>
@@ -275,8 +291,9 @@
             <span id="convoStatus">No turns yet</span>
             <button class="secondary compact-button" id="newConvoButton" type="button">New conversation</button>
           </div>
-          <div class="convo-list" id="convoList" hidden></div>
-        </section>
+            <div class="convo-list" id="convoList" hidden></div>
+          </div>
+        </details>
       </div>
     </section>
 
@@ -457,14 +474,14 @@
       <div class="module-body conversion-workspace">
         <form id="conversionForm" class="conversion-form">
           <div class="conversion-input-grid">
-            <section class="conversion-deck" aria-labelledby="conversionSourceTitle">
-              <header class="conversion-deck-head">
+            <details class="conversion-deck workflow-step" aria-labelledby="conversionSourceTitle" open>
+              <summary class="conversion-deck-head">
                 <span class="conversion-step">1</span>
                 <div>
                   <h3 id="conversionSourceTitle">Performance</h3>
                   <p>Keep these words, timing, and expression.</p>
                 </div>
-              </header>
+              </summary>
               <audio id="conversionSourceAudio" controls></audio>
               <div class="conversion-button-row">
                 <button class="record-button" id="conversionSourceRecordButton" type="button">Hold to record</button>
@@ -473,21 +490,21 @@
               </div>
               <div class="vu"><span id="conversionSourceVu"></span></div>
               <small class="hint" id="conversionSourceStatus">Record or load the performance to convert.</small>
-            </section>
+            </details>
 
             <div class="conversion-bridge" aria-hidden="true">
               <span></span>
               <b>&rarr;</b>
             </div>
 
-            <section class="conversion-deck" aria-labelledby="conversionTargetTitle">
-              <header class="conversion-deck-head">
+            <details class="conversion-deck workflow-step" aria-labelledby="conversionTargetTitle">
+              <summary class="conversion-deck-head">
                 <span class="conversion-step">2</span>
                 <div>
                   <h3 id="conversionTargetTitle">Target voice</h3>
                   <p>Choose the identity the performance becomes.</p>
                 </div>
-              </header>
+              </summary>
               <label class="field conversion-library-choice">
                 <span>Saved voice</span>
                 <select class="text-input" id="conversionTargetVoiceSelect">
@@ -502,7 +519,7 @@
               </div>
               <div class="vu"><span id="conversionTargetVu"></span></div>
               <small class="hint" id="conversionTargetStatus">Use a clean target sample or select a saved voice.</small>
-            </section>
+            </details>
           </div>
 
           <div class="conversion-route-controls">
@@ -524,20 +541,20 @@
           <button class="primary conversion-submit" id="conversionSubmitButton" type="submit" disabled>Convert voice</button>
         </form>
 
-        <section class="conversion-output" aria-labelledby="conversionOutputTitle">
-          <header class="conversion-output-head">
+        <details class="conversion-output workflow-step" aria-labelledby="conversionOutputTitle">
+          <summary class="conversion-output-head">
             <span class="conversion-step">3</span>
             <div>
               <h3 id="conversionOutputTitle">Result</h3>
               <p id="conversionOutputStatus">Your converted performance will appear here.</p>
             </div>
-          </header>
+          </summary>
           <audio id="conversionOutputAudio" controls></audio>
           <div class="action-row conversion-output-actions">
             <button class="secondary" id="conversionSaveWavButton" type="button" disabled>Save WAV</button>
             <button class="secondary" id="conversionLibraryButton" type="button" disabled>Save to library</button>
           </div>
-        </section>
+        </details>
       </div>
     </section>
 
@@ -580,14 +597,14 @@
       <div class="module-body music-workspace">
         <form id="musicForm" class="music-form">
           <div class="music-desk">
-            <section class="music-composer" aria-labelledby="musicComposerTitle">
-              <header class="music-panel-head">
+            <details class="music-composer workflow-step" aria-labelledby="musicComposerTitle" open>
+              <summary class="music-panel-head">
                 <span class="music-step">1</span>
                 <div>
                   <h3 id="musicComposerTitle">Direction</h3>
                   <p>Describe the style, instruments, mood, and structure.</p>
                 </div>
-              </header>
+              </summary>
               <label class="field">
                 <span>Music brief</span>
                 <textarea id="musicPromptInput" rows="5" maxlength="4000" placeholder="Uplifting synth-pop with bright arpeggios, driving drums, a strong chorus, and a clean modern mix" required></textarea>
@@ -596,16 +613,16 @@
                 <span>Lyrics <em>optional</em></span>
                 <textarea id="musicLyricsInput" rows="7" maxlength="32768" placeholder="[Verse]\nWrite lyrics here, or leave blank for instrumental music."></textarea>
               </label>
-            </section>
+            </details>
 
-            <section class="music-source" aria-labelledby="musicSourceTitle">
-              <header class="music-panel-head">
+            <details class="music-source workflow-step" aria-labelledby="musicSourceTitle">
+              <summary class="music-panel-head">
                 <span class="music-step">2</span>
                 <div>
                   <h3 id="musicSourceTitle">Source &amp; shape</h3>
                   <p id="musicSourceRequirement">Source audio is optional.</p>
                 </div>
-              </header>
+              </summary>
               <audio id="musicSourceAudio" controls></audio>
               <div class="music-source-buttons">
                 <button class="record-button" id="musicSourceRecordButton" type="button">Hold to record</button>
@@ -661,24 +678,24 @@
                   </div>
                 </div>
               </details>
-            </section>
+            </details>
           </div>
           <div class="error-box" id="musicErrorBox" role="alert" hidden></div>
           <button class="primary music-generate" id="musicGenerateButton" type="submit" disabled>Generate music</button>
         </form>
 
-        <section class="music-output" aria-labelledby="musicOutputTitle">
-          <header class="music-panel-head">
+        <details class="music-output workflow-step" aria-labelledby="musicOutputTitle">
+          <summary class="music-panel-head">
             <span class="music-step">3</span>
             <div><h3 id="musicOutputTitle">Track</h3><p id="musicOutputStatus">Your generated track will appear here.</p></div>
-          </header>
+          </summary>
           <audio id="musicOutputAudio" controls></audio>
           <div class="action-row music-output-actions">
             <button class="secondary" id="musicSaveWavButton" type="button" disabled>Save WAV</button>
             <button class="secondary" id="musicReuseButton" type="button" disabled>Use as source</button>
             <button class="secondary" id="musicLibraryButton" type="button" disabled>Save to library</button>
           </div>
-        </section>
+        </details>
       </div>
     </section>
 
@@ -824,9 +841,9 @@
       </div>
     </section>
 
-    <section class="module" data-page="story" aria-label="Story desk">
+    <section class="module" data-page="story" aria-label="Podcast Generator">
       <header class="module-head">
-        <h2>Story desk</h2>
+        <h2>Podcast Generator</h2>
         <span class="module-route">POST /v1/stories</span>
         <span class="module-note" id="storyModeNote">sources &rarr; facts &rarr; script &rarr; audio</span>
       </header>
@@ -845,8 +862,10 @@
           </label>
           <label class="model-choice">
             <span>Speech model</span>
-            <output class="model-fixed-value" id="storySpeechModelSelect" data-model-engines="audio" data-model-families="qwen3-tts" data-model-state="checking">Checking configured models&hellip;</output>
-            <small>The configured audio.cpp model that performs the finished script.</small>
+            <select class="text-input" id="storySpeechModelSelect" data-speech-models data-model-capabilities="speech" data-model-engines="audio" data-allow-single="true">
+              <option>Checking compatible models&hellip;</option>
+            </select>
+            <small>Only the speech model supported by grounded podcast production is listed.</small>
           </label>
         </div>
         <div class="warn-box model-chooser-warning" id="storyModelWarn" hidden>
@@ -858,103 +877,101 @@
           </div>
         </div>
       </div>
-      <div class="module-body story-panel">
-        <form class="story-form" id="storyForm">
-          <div class="mode-switch" id="storyModeSwitch" role="radiogroup" aria-label="Story mode">
-            <button class="mode-option is-selected" id="storyModeGrounded" type="button" role="radio" aria-checked="true" data-mode="grounded">
-              <strong>Grounded</strong>
-              <small>Sourced, fact-checked documentary</small>
-            </button>
-            <button class="mode-option" id="storyModeSketch" type="button" role="radio" aria-checked="false" data-mode="sketch">
-              <strong>Sketch</strong>
-              <small>Invented comedy for your cast</small>
-            </button>
-          </div>
-
-          <div class="story-controls">
-            <label class="field">
-              <span id="storySubjectLabel">Story subject</span>
-              <input class="text-input" id="storySubjectInput" type="text" value="how stars are born">
-            </label>
-
-            <label class="field compact-field">
-              <span>Target seconds</span>
-              <input class="text-input" id="storySecondsInput" type="number" min="30" max="2700" value="90">
-            </label>
-
-            <label class="field compact-field">
-              <span>Voice</span>
-              <select class="text-input" id="storyVoiceSelect">
-                <option value="fixed" selected>Studio voices</option>
-                <option value="placeholder">Placeholder tone</option>
-              </select>
-            </label>
-          </div>
-
-          <div class="sketch-fields" id="sketchFields" hidden>
-            <label class="field">
-              <span>Premise</span>
-              <textarea class="text-input" id="storyPremiseInput" rows="3" maxlength="2000" placeholder="What happens? Who wants what, and what gets in the way?"></textarea>
-            </label>
-            <label class="field">
-              <span>Style notes</span>
-              <textarea class="text-input" id="storyStyleInput" rows="2" maxlength="1000" placeholder="Tone, era, references — e.g. 1960s BBC radio comedy, innuendo, groan-worthy puns."></textarea>
-            </label>
-            <small class="hint">No sources, no fact checking: the writer invents. Cast a cloned cast below and they perform it.</small>
-          </div>
-
-          <div class="story-library-header">
-            <span class="source-label">Cast</span>
-            <button class="secondary compact-button" id="castAddButton" type="button">Add speaker</button>
-          </div>
-          <div class="cast-list" id="castList"></div>
-          <small class="hint">Each speaker has a name, a role the writer follows, and a voice from your library. Two to six speakers.</small>
-
-          <div class="story-sources" id="storySources">
-            <div class="story-library-header">
-              <span class="source-label">Sources</span>
-              <button class="secondary compact-button" id="sourceAddButton" type="button">Add source</button>
+      <div class="module-body story-panel workflow-layout">
+        <form class="story-form workflow-steps" id="storyForm">
+          <details class="workflow-step" open>
+            <summary><span class="workflow-step-number">1</span><span><strong>Name and describe the podcast</strong><small>Required: a podcast name and a clear description of its factual subject.</small></span></summary>
+            <div class="workflow-step-body">
+              <label class="field">
+                <span>Podcast name</span>
+                <input class="text-input" id="storyNameInput" type="text" maxlength="200" value="How Stars Are Born" required>
+              </label>
+              <label class="field">
+                <span id="storySubjectLabel">Podcast description and subject</span>
+                <textarea class="text-input" id="storySubjectInput" rows="3" maxlength="500" required>Explain how stars form from cold clouds of gas and dust.</textarea>
+              </label>
             </div>
-            <div class="source-stack" id="sourceStack"></div>
-            <small class="hint">Three to five sources. Excerpts are split into notes and fact cards; every script line must cite them.</small>
-          </div>
+          </details>
 
-          <div class="action-row">
-            <button class="secondary" id="storyDraftButton" type="button">Draft script</button>
-            <button class="primary" id="storyGenerateButton" type="submit">Generate story</button>
-            <button class="secondary" id="storyCancelButton" type="button" disabled>Cancel story</button>
-          </div>
-          <small class="hint">Draft writes the script for review and editing (no audio). Generate story produces audio &mdash; from your edited draft when one is open, otherwise writing a fresh script.</small>
-          <p class="error-box" id="storyErrorBox" hidden></p>
-
-          <div class="script-editor" id="scriptEditor" hidden>
-            <div class="story-library-header">
-              <span class="source-label">Draft script &middot; <span id="scriptDraftMeta"></span></span>
-              <button class="plain compact-button" id="scriptDiscardButton" type="button">Discard draft</button>
+          <details class="workflow-step">
+            <summary><span class="workflow-step-number">2</span><span><strong>Provide your sources</strong><small>Required: three to five titled sources with URLs and relevant excerpts.</small></span></summary>
+            <div class="workflow-step-body story-sources" id="storySources">
+              <div class="story-library-header">
+                <span class="source-label">Sources</span>
+                <button class="secondary compact-button" id="sourceAddButton" type="button">Add source</button>
+              </div>
+              <div class="source-stack" id="sourceStack"></div>
+              <small class="hint">Excerpts are split into notes and fact cards; every script line must cite them.</small>
             </div>
-            <label class="field">
-              <span>Title</span>
-              <input class="text-input" id="storyTitleInput" type="text" maxlength="200">
-            </label>
-            <div class="script-lines" id="scriptLines"></div>
-            <small class="hint" id="scriptEditorHint">Edit any line's text or speaker; each line keeps its fact citations. Generate story produces exactly this script.</small>
-          </div>
+          </details>
+
+          <details class="workflow-step">
+            <summary><span class="workflow-step-number">3</span><span><strong>Choose cast and production</strong><small>Required: two to six speakers. Duration and voice choices have ready-to-use defaults.</small></span></summary>
+            <div class="workflow-step-body">
+              <div class="story-controls">
+                <label class="field compact-field">
+                  <span>Target seconds</span>
+                  <input class="text-input" id="storySecondsInput" type="number" min="30" max="2700" value="90">
+                </label>
+                <label class="field compact-field">
+                  <span>Voice</span>
+                  <select class="text-input" id="storyVoiceSelect">
+                    <option value="fixed" selected>Studio voices</option>
+                    <option value="placeholder">Placeholder tone</option>
+                  </select>
+                </label>
+              </div>
+              <div class="story-library-header">
+                <span class="source-label">Cast</span>
+                <button class="secondary compact-button" id="castAddButton" type="button">Add speaker</button>
+              </div>
+              <div class="cast-list" id="castList"></div>
+              <small class="hint">Each speaker has a name, a role the writer follows, and a voice from your library.</small>
+            </div>
+          </details>
+
+          <details class="workflow-step">
+            <summary><span class="workflow-step-number">4</span><span><strong>Draft or generate</strong><small>Review a text-only draft first, or generate the finished podcast directly. Cancel remains available while generation runs.</small></span></summary>
+            <div class="workflow-step-body">
+              <div class="action-row">
+                <button class="secondary" id="storyDraftButton" type="button">Draft podcast</button>
+                <button class="primary" id="storyGenerateButton" type="submit">Generate podcast</button>
+                <button class="secondary" id="storyCancelButton" type="button" disabled>Cancel</button>
+              </div>
+              <small class="hint">Draft writes the script for review and editing without generating audio. Generate uses the open edited draft when one exists.</small>
+              <p class="error-box" id="storyErrorBox" hidden></p>
+              <div class="script-editor" id="scriptEditor" hidden>
+                <div class="story-library-header">
+                  <span class="source-label">Draft script &middot; <span id="scriptDraftMeta"></span></span>
+                  <button class="plain compact-button" id="scriptDiscardButton" type="button">Discard draft</button>
+                </div>
+                <label class="field">
+                  <span>Title</span>
+                  <input class="text-input" id="storyTitleInput" type="text" maxlength="200">
+                </label>
+                <div class="script-lines" id="scriptLines"></div>
+                <small class="hint" id="scriptEditorHint">Edit any line's text or speaker; each line keeps its fact citations. Generate podcast produces exactly this script.</small>
+              </div>
+            </div>
+          </details>
         </form>
 
-        <section class="story-result" aria-live="polite">
-          <div class="source-row">
-            <span class="source-label">Story status</span>
-            <span id="storyStatus">Idle</span>
-          </div>
-          <progress id="storyProgress" max="1" value="0"></progress>
-          <div class="audio-panel">
-            <div class="panel-label-row">
-              <span>Story playback</span>
-              <button class="plain" id="saveStoryButton" type="button" disabled>Save WAV</button>
+        <details class="workflow-step story-result" aria-live="polite">
+          <summary><span class="workflow-step-number">5</span><span><strong>Status and playback</strong><small>Follow progress, play the finished podcast, refine takes, and reopen retained productions.</small></span></summary>
+          <div class="workflow-step-body">
+            <div class="source-row">
+              <span class="source-label">Podcast status</span>
+              <span id="storyStatus">Idle</span>
             </div>
-            <audio id="storyAudio" controls></audio>
-          </div>
-          <div class="take-room" id="takeRoom" hidden>
+            <progress id="storyProgress" max="1" value="0"></progress>
+            <div class="audio-panel">
+              <div class="panel-label-row">
+                <span>Podcast playback</span>
+                <button class="plain" id="saveStoryButton" type="button" disabled>Save WAV</button>
+              </div>
+              <audio id="storyAudio" controls></audio>
+            </div>
+            <div class="take-room" id="takeRoom" hidden>
             <div class="story-library-header">
               <span class="source-label">Take room &middot; <span id="takeRoomMeta"></span></span>
               <span class="take-room-actions">
@@ -967,7 +984,7 @@
             <small class="hint">Retake a line you don't like, pick the best take, mute it, or nudge the silence after it. Edit the words and the old takes stop counting until you retake. Episodes fold by scene — Play scene auditions its current takes without publishing, and Needs work jumps to the next line waiting on a take. Re-render publishes a new revision; earlier revisions stay on disk.</small>
           </div>
 
-          <div class="story-builder-import" id="storyBuilderImportSection" hidden>
+            <div class="story-builder-import" id="storyBuilderImportSection" hidden>
             <div class="story-library-header">
               <span class="source-label">Continue editing in Story Builder</span>
               <button class="secondary compact-button" id="storyBuilderImportOpenButton" type="button">Open in Story Builder</button>
@@ -982,19 +999,20 @@
             </div>
           </div>
 
-          <div class="story-library-header">
-            <span class="source-label">Retained stories</span>
-            <button class="secondary compact-button" id="storyLibraryButton" type="button">Refresh</button>
+            <div class="story-library-header">
+              <span class="source-label">Retained podcasts</span>
+              <button class="secondary compact-button" id="storyLibraryButton" type="button">Refresh</button>
+            </div>
+            <div class="story-library" id="storyLibrary"></div>
+            <div class="story-facts" id="storyFacts"></div>
           </div>
-          <div class="story-library" id="storyLibrary"></div>
-          <div class="story-facts" id="storyFacts"></div>
-        </section>
+        </details>
       </div>
     </section>
 
-    <section class="module" data-page="audiobook" aria-label="Audiobook desk">
+    <section class="module" data-page="audiobook" aria-label="Audiobook Builder">
       <header class="module-head">
-        <h2>Audiobook</h2>
+        <h2>Audiobook Builder</h2>
         <span class="module-route">POST /v1/audiobooks</span>
         <span class="module-note">document &rarr; chunks &rarr; narration &rarr; one WAV</span>
       </header>
@@ -1014,9 +1032,12 @@
           </label>
         </div>
       </div>
-      <div class="module-body workspace">
-        <form class="control-panel" id="audiobookForm">
-          <label class="field">
+      <div class="module-body workspace workflow-layout">
+        <form class="control-panel workflow-steps" id="audiobookForm">
+          <details class="workflow-step" open>
+            <summary><span class="workflow-step-number">1</span><span><strong>Choose the book</strong><small>Required: a TXT, Markdown, or EPUB document. The title can default to its file name.</small></span></summary>
+            <div class="workflow-step-body">
+              <label class="field">
             <span>Document</span>
             <label class="file-button">
               <input id="audiobookFileInput" type="file" accept=".txt,.md,.epub,text/plain">
@@ -1032,7 +1053,13 @@
             <span>Title</span>
             <input class="text-input" id="audiobookTitleInput" type="text" maxlength="200" placeholder="Defaults to the file name">
           </label>
-          <label class="field compact-field">
+            </div>
+          </details>
+
+          <details class="workflow-step">
+            <summary><span class="workflow-step-number">2</span><span><strong>Choose the narrator and settings</strong><small>Required: a configured narration model. Voice and advanced generation settings are optional.</small></span></summary>
+            <div class="workflow-step-body">
+              <label class="field compact-field">
             <span>Narrator voice</span>
             <select class="text-input" id="audiobookVoiceSelect">
               <option value="" selected>Studio default</option>
@@ -1128,7 +1155,13 @@
               </label>
             </details>
           </fieldset>
-          <div class="field">
+            </div>
+          </details>
+
+          <details class="workflow-step">
+            <summary><span class="workflow-step-number">3</span><span><strong>Resolve and narrate</strong><small>Resolve the exact request first, review it, then start or cancel narration.</small></span></summary>
+            <div class="workflow-step-body">
+              <div class="field">
             <div class="action-row">
               <button class="secondary" id="audiobookPreviewButton" type="button">Resolve request</button>
               <span class="hint">Required before Narrate; no job or engine invocation occurs.</span>
@@ -1139,11 +1172,15 @@
             <button class="primary" id="audiobookNarrateButton" type="submit" disabled>Narrate</button>
             <button class="secondary" id="audiobookCancelButton" type="button" disabled>Cancel</button>
           </div>
-          <p class="error-box" id="audiobookErrorBox" hidden></p>
+              <p class="error-box" id="audiobookErrorBox" hidden></p>
+            </div>
+          </details>
         </form>
 
-        <section class="result-panel">
-          <div class="source-row">
+        <details class="result-panel workflow-step">
+          <summary><span class="workflow-step-number">4</span><span><strong>Status, playback, and recovery</strong><small>Follow progress, play or save the narration, and resume recoverable work.</small></span></summary>
+          <div class="workflow-step-body">
+            <div class="source-row">
             <span class="source-label">Narration status</span>
             <span id="audiobookStatus">Idle</span>
           </div>
@@ -1165,8 +1202,9 @@
             <span class="source-label">Audiobooks and recoverable work</span>
             <button class="secondary compact-button" id="audiobookRefreshButton" type="button">Refresh</button>
           </div>
-          <div class="story-library" id="audiobookShelf"></div>
-        </section>
+            <div class="story-library" id="audiobookShelf"></div>
+          </div>
+        </details>
       </div>
     </section>
 
@@ -1248,7 +1286,7 @@
         </section>
         <p class="error-box" id="extractErrorBox" hidden></p>
 
-        <section class="transcribe-desk-tools" data-audio-workspace-mode="transcribe" aria-label="Transcript tools">
+        <section class="transcribe-desk-tools" aria-label="Transcript tools">
           <div class="transcribe-tool-row">
             <label class="compact-field">
               <span>Rename speaker</span>
@@ -1260,7 +1298,7 @@
             </label>
             <button class="secondary compact-button" id="transcribeRenameButton" type="button" disabled>Rename throughout</button>
           </div>
-          <div class="transcribe-tool-row">
+          <div class="transcribe-tool-row" data-audio-workspace-mode="transcribe">
             <label class="transcribe-search-field">
               <span class="source-label">Search transcript</span>
               <input class="text-input" id="transcribeSearchInput" type="search" placeholder="Words or speaker" disabled>
@@ -1270,7 +1308,7 @@
             <button class="plain compact-button" id="transcribeSearchNext" type="button" disabled>Next</button>
             <button class="plain compact-button" id="transcribeSearchClear" type="button" disabled>Clear</button>
           </div>
-          <div class="transcribe-tool-row transcribe-export-row" aria-label="Transcript downloads">
+          <div class="transcribe-tool-row transcribe-export-row" data-audio-workspace-mode="transcribe" aria-label="Transcript downloads">
             <span class="source-label">Download edited transcript</span>
             <button class="secondary compact-button" type="button" data-transcript-format="txt" disabled>TXT</button>
             <button class="secondary compact-button" type="button" data-transcript-format="md" disabled>Markdown</button>

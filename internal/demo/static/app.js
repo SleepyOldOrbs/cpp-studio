@@ -60,14 +60,7 @@
   var saveDescriptionButton = document.getElementById("saveDescriptionButton");
   var describeAudio = document.getElementById("describeAudio");
   var storyForm = document.getElementById("storyForm");
-  var storyModeSwitch = document.getElementById("storyModeSwitch");
-  var storyModeNote = document.getElementById("storyModeNote");
-  var storySubjectLabel = document.getElementById("storySubjectLabel");
-  var storySources = document.getElementById("storySources");
-  var sketchFields = document.getElementById("sketchFields");
-  var storyPremiseInput = document.getElementById("storyPremiseInput");
-  var storyStyleInput = document.getElementById("storyStyleInput");
-  var scriptEditorHint = document.getElementById("scriptEditorHint");
+  var storyNameInput = document.getElementById("storyNameInput");
   var storySubjectInput = document.getElementById("storySubjectInput");
   var storySecondsInput = document.getElementById("storySecondsInput");
   var storyVoiceSelect = document.getElementById("storyVoiceSelect");
@@ -274,17 +267,13 @@
   var activeStoryPoll = 0;
   var activeWavFile = null;
   var activeAudioUrl = "";
-  var recorder = null;
-  var recordSetupPending = false;
-  var recordStopRequested = false;
+  var voiceRecorder = null;
   var recordStartedAt = 0;
   var recordTimer = 0;
   var lastHealthStatus = "";
   var cloneWavFile = null;
   var cloneRecorder = null;
   var cloneRecording = false;
-  var cloneSetupPending = false;
-  var cloneStopRequested = false;
   var cloneStartedAt = 0;
   var cloneTimer = 0;
   var speakAudioUrl = "";
@@ -297,22 +286,17 @@
   var conversionTargetUrl = "";
   var conversionOutputUrl = "";
   var conversionOutputBlob = null;
-  var conversionCapture = null;
-  var conversionCapturePending = false;
-  var conversionStopRequested = false;
+  var conversionRecorder = null;
   var conversionModelReady = false;
   var musicSourceFile = null;
   var musicSourceUrl = "";
   var musicOutputBlob = null;
   var musicOutputUrl = "";
-  var musicCapture = null;
-  var musicCapturePending = false;
-  var musicStopRequested = false;
+  var musicRecorder = null;
   var musicModelReady = false;
   var musicAnalysisData = null;
   var libraryVoices = [];
   var storyDraft = null;
-  var storyMode = "grounded";
   // Whether the optional ffmpeg engine is configured, which decides if a
   // file the browser cannot decode can be converted instead of refused.
   var ffmpegAvailable = false;
@@ -334,9 +318,8 @@
     imageSeedClearButton,
     generateImageButton,
     clearImageButton,
+    storyNameInput,
     storySubjectInput,
-    storyPremiseInput,
-    storyStyleInput,
     storySecondsInput,
     storyVoiceSelect,
     storyGenerateButton,
@@ -475,6 +458,38 @@
     );
   };
 
+  function diagnosticLogMessage(message, level) {
+    var text = String(message || "").replace(/\s+/g, " ").trim();
+    if (level !== "error") {
+      // Keep actions, routes, models, ids, timings, and sizes while avoiding
+      // copies of authored/generated text in the persistent diagnostic log.
+      text = text.replace(/"[^"]*"/g, '"[text redacted]"');
+      text = text.replace(/^(POST \/v1\/voices\/design \([^)]+\)):.*$/, "$1: [description redacted]");
+      text = text.replace(/^(Description adapted for [^:]+):.*$/, "$1: [description redacted]");
+      text = text.replace(/^(POST \/v1\/audio\/import)\s+.*$/, "$1 [source redacted]");
+    }
+    return text.slice(0, 4096);
+  }
+
+  function persistDiagnosticEvent(message, level) {
+    var safeMessage = diagnosticLogMessage(message, level);
+    if (!safeMessage) {
+      return;
+    }
+    nativeFetch("/v1/logs/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        level: level === "error" ? "error" : "info",
+        page: window.location.hash || window.location.pathname,
+        message: safeMessage
+      }),
+      keepalive: true
+    }).catch(function () {
+      // Diagnostics must never interrupt the tool the user is operating.
+    });
+  }
+
   function log(message, level) {
     var stamp = new Date().toLocaleTimeString();
     var line = document.createElement("span");
@@ -484,7 +499,18 @@
     line.textContent = "[" + stamp + "] " + message + "\n";
     logOutput.appendChild(line);
     logOutput.scrollTop = logOutput.scrollHeight;
+    persistDiagnosticEvent(message, level);
   }
+
+  window.addEventListener("error", function (event) {
+    var location = event.filename ? " at " + event.filename + ":" + event.lineno + ":" + event.colno : "";
+    persistDiagnosticEvent("Uncaught browser error: " + (event.message || "unknown error") + location, "error");
+  });
+
+  window.addEventListener("unhandledrejection", function (event) {
+    var reason = event.reason;
+    persistDiagnosticEvent("Unhandled browser rejection: " + (reason && (reason.stack || reason.message) ? (reason.stack || reason.message) : String(reason)), "error");
+  });
 
   function setError(error) {
     var message = error && error.message ? error.message : String(error);
@@ -504,6 +530,10 @@
     var message = error && error.message ? error.message : String(error);
     storyErrorBox.textContent = message;
     storyErrorBox.hidden = false;
+    var step = storyErrorBox.closest("details");
+    if (step) {
+      step.open = true;
+    }
     log("Error: " + message, "error");
   }
 
@@ -537,17 +567,21 @@
   }
 
   function syncControls() {
-    var busy = running || recording || recordSetupPending || live || cloneRecording || cloneSetupPending || conversionCapture || conversionCapturePending || musicCapture || musicCapturePending || handsFree || handsFreeSetupPending;
+    var recordBusy = Boolean(voiceRecorder && voiceRecorder.state() !== "idle");
+    var cloneBusy = Boolean(cloneRecorder && cloneRecorder.state() !== "idle");
+    var conversionBusy = Boolean(conversionRecorder && conversionRecorder.state() !== "idle");
+    var musicBusy = Boolean(musicRecorder && musicRecorder.state() !== "idle");
+    var busy = running || recordBusy || live || cloneBusy || conversionBusy || musicBusy || handsFree || handsFreeSetupPending;
     apiControls.forEach(function (control) {
       control.disabled = busy;
     });
     if (activeStoryID) {
       storyGenerateButton.disabled = true;
     }
-    recordButton.disabled = running || live || handsFree || handsFreeSetupPending || cloneRecording || cloneSetupPending || (!recording && !recordSetupPending && !canRecord());
-    liveButton.disabled = running || recording || recordSetupPending || handsFree || handsFreeSetupPending || cloneRecording || cloneSetupPending || (!live && !canRecord());
-    cloneRecordButton.disabled = running || live || handsFree || handsFreeSetupPending || recording || recordSetupPending || (!cloneRecording && !cloneSetupPending && !canRecord());
-    handsFreeButton.disabled = running || recording || recordSetupPending || live || cloneRecording || cloneSetupPending || (!handsFree && !handsFreeSetupPending && !canRecord());
+    recordButton.disabled = running || live || handsFree || handsFreeSetupPending || cloneBusy || (!recordBusy && !canRecord());
+    liveButton.disabled = running || recordBusy || handsFree || handsFreeSetupPending || cloneBusy || (!live && !canRecord());
+    cloneRecordButton.disabled = running || live || handsFree || handsFreeSetupPending || recordBusy || (!cloneBusy && !canRecord());
+    handsFreeButton.disabled = running || recordBusy || live || cloneBusy || (!handsFree && !handsFreeSetupPending && !canRecord());
     describeImageButton.disabled = busy || imagePreview.hidden || !imagePreview.src;
     designSaveButton.disabled = busy || !designCandidate;
     storyDraftButton.disabled = busy || Boolean(activeStoryID);
@@ -595,7 +629,6 @@
   }
 
   function setRecordSetupPending(value) {
-    recordSetupPending = value;
     if (value) {
       recordButton.textContent = "Preparing...";
     } else if (recording) {
@@ -798,18 +831,8 @@
     { value: "qwen3", engine: "voicedesign", label: "Qwen3-TTS 1.7B VoiceDesign (characterful)" }
   ];
 
-  var CATALOG_MODEL_LABELS = {
-    "qwen3-tts-0.6b-base": "Qwen3-TTS 0.6B Base",
-    "omnivoice": "OmniVoice",
-    "voxcpm2": "VoxCPM2",
-    "dramabox-q8-0": "DramaBox Q8_0",
-    "chatterbox-q8-0": "Chatterbox Q8_0",
-    "ace-step-turbo-q8-0": "ACE-Step 1.5 Turbo Q8_0",
-    "qwen3-vl-4b-instruct": "Qwen3-VL 4B Instruct"
-  };
-
   function catalogModelLabel(model) {
-    return model.displayName || CATALOG_MODEL_LABELS[model.id] || model.id;
+    return model.displayName || model.id;
   }
 
   function catalogModelHasCapability(model, capability) {
@@ -882,7 +905,7 @@
 
   function renderVisionModel(models) {
     var usable = (models || []).filter(function (model) {
-      return model.engine === "vision" && model.family === "llama-gguf-vlm" &&
+      return catalogModelHasCapability(model, "vision") &&
         model.configured === true && catalogModelIsInstalled(model);
     });
     visionModelSelect.textContent = "";
@@ -893,7 +916,7 @@
       return;
     }
     var model = usable[0];
-    var option = createElement("option", "", CATALOG_MODEL_LABELS[model.id] || model.id);
+    var option = createElement("option", "", catalogModelLabel(model));
     option.value = model.id;
     option.title = model.description || "";
     visionModelSelect.appendChild(option);
@@ -1039,7 +1062,7 @@
             return;
           }
           display.textContent = compatible.map(function (model) {
-            return CATALOG_MODEL_LABELS[model.id] || model.id;
+            return catalogModelLabel(model);
           }).join(" + ");
           display.setAttribute("data-model-state", "fixed");
           display.title = compatible.map(function (model) { return model.description || ""; }).filter(Boolean).join("\n");
@@ -1092,9 +1115,10 @@
             return option.value === savedModel && !option.disabled;
           }) ? savedModel : firstUsable;
           select.value = wanted;
-          select.disabled = compatible.filter(function (model) {
+          var usableCount = compatible.filter(function (model) {
             return model.configured === true && catalogModelIsInstalled(model);
-          }).length < 2;
+          }).length;
+          select.disabled = usableCount === 0 || (usableCount < 2 && select.dataset.allowSingle !== "true");
         });
 
         function shareSpeechModel(value) {
@@ -2998,51 +3022,6 @@
     });
   }
 
-  // ---------- story mode ----------
-
-  // The Story desk runs two contracts. Grounded wants sources and cites fact
-  // cards; sketch wants a premise and invents. Switching swaps which half of
-  // the form is on screen — the request body follows from storyMode alone.
-  var STORY_MODE_COPY = {
-    grounded: {
-      note: "sources → facts → script → audio",
-      subject: "Story subject",
-      subjectPlaceholder: "how stars are born",
-      scriptHint: "Edit any line's text or speaker; each line keeps its fact citations. Generate story produces exactly this script."
-    },
-    sketch: {
-      note: "premise → script → your cast performs it",
-      subject: "Sketch premise",
-      subjectPlaceholder: "a shop that only sells apologies",
-      scriptHint: "Edit any line's text or speaker. Nothing is fact-checked here. Generate story produces exactly this script."
-    }
-  };
-
-  function setStoryMode(mode, options) {
-    storyMode = mode === "sketch" ? "sketch" : "grounded";
-    var copy = STORY_MODE_COPY[storyMode];
-    Array.prototype.forEach.call(storyModeSwitch.querySelectorAll(".mode-option"), function (button) {
-      var selected = button.dataset.mode === storyMode;
-      button.classList.toggle("is-selected", selected);
-      button.setAttribute("aria-checked", selected ? "true" : "false");
-    });
-    storySources.hidden = storyMode === "sketch";
-    sketchFields.hidden = storyMode !== "sketch";
-    storyModeNote.textContent = copy.note;
-    storySubjectLabel.textContent = copy.subject;
-    storySubjectInput.placeholder = copy.subjectPlaceholder;
-    scriptEditorHint.textContent = copy.scriptHint;
-    if (options && options.silent) {
-      return;
-    }
-    // A draft written under one contract cannot be produced under the other.
-    discardDraft();
-    clearStoryError();
-    log(storyMode === "sketch"
-      ? "Story desk in sketch mode: no sources, no grounding — the writer invents"
-      : "Story desk in grounded mode: sourced facts, every line cited");
-  }
-
   // ---------- story draft editor ----------
 
   function discardDraft() {
@@ -3096,18 +3075,8 @@
   }
 
   function storyRequestBody() {
-    if (storyMode === "sketch") {
-      return {
-        subject: storySubjectInput.value.trim(),
-        mode: "sketch",
-        premise: storyPremiseInput.value.trim(),
-        style: storyStyleInput.value.trim(),
-        target_seconds: Number(storySecondsInput.value || "90"),
-        voice_mode: storyVoiceSelect.value,
-        cast: collectCast()
-      };
-    }
     return {
+      title: storyNameInput.value.trim(),
       subject: storySubjectInput.value.trim(),
       mode: "grounded",
       target_seconds: Number(storySecondsInput.value || "90"),
@@ -3630,6 +3599,104 @@
     return new File([encodeWav(samples, recorder.sampleRate)], filename, { type: "audio/wav" });
   }
 
+  // A Recorder owns the permission/setup race, capture resources, pending
+  // stop, cleanup, minimum duration, and WAV construction. Tools keep only
+  // their presentation and what to do with an accepted recording.
+  function createRecorder(options) {
+    var state = "idle";
+    var active = null;
+    var stopRequested = false;
+    var metadata = null;
+
+    function publish(next) {
+      state = next;
+      if (options.onState) {
+        options.onState(state, active, metadata);
+      }
+    }
+
+    async function start(nextMetadata) {
+      if (state !== "idle") {
+        return false;
+      }
+      metadata = nextMetadata || {};
+      stopRequested = false;
+      publish("pending");
+      try {
+        var pending = await openToolRecorder(options.vu(metadata), function (candidate) {
+          return state === "active" && active === candidate;
+        });
+        active = pending;
+        if (stopRequested) {
+          publish("finishing");
+          await cleanupRecorderResources(pending);
+          active = null;
+          stopRequested = false;
+          publish("idle");
+          if (options.onCancelled) {
+            options.onCancelled(metadata);
+          }
+          return false;
+        }
+        publish("active");
+        return true;
+      } catch (error) {
+        await cleanupRecorderResources(active);
+        active = null;
+        stopRequested = false;
+        publish("idle");
+        options.onError(error, metadata);
+        return false;
+      }
+    }
+
+    async function stop() {
+      if (state === "pending") {
+        stopRequested = true;
+        return null;
+      }
+      if (state !== "active" || !active) {
+        return null;
+      }
+      var current = active;
+      var completedMetadata = metadata;
+      active = null;
+      stopRequested = false;
+      try {
+        publish("finishing");
+        var minimum = typeof options.minimumSamples === "function"
+          ? options.minimumSamples(current, completedMetadata)
+          : options.minimumSamples;
+        var filename = typeof options.filename === "function"
+          ? options.filename(completedMetadata)
+          : options.filename;
+        var file = await finishToolRecording(current, minimum, filename);
+        publish("idle");
+        if (!file) {
+          options.onTooShort(completedMetadata);
+          return null;
+        }
+        await options.onAccepted(file, completedMetadata);
+        return file;
+      } catch (error) {
+        await cleanupRecorderResources(current);
+        publish("idle");
+        options.onError(error, completedMetadata);
+        return null;
+      }
+    }
+
+    return Object.freeze({
+      start: start,
+      stop: stop,
+      state: function () { return state; },
+      session: function () { return active; },
+      metadata: function () { return metadata; },
+      isPending: function () { return state === "pending"; },
+      isActive: function () { return state === "active"; }
+    });
+  }
+
   async function normalizeToolAudio(file, fallbackName, logSuffix) {
     var name = file.name || fallbackName;
     if (/\.wav$/i.test(name) || /wav/i.test(file.type || "")) {
@@ -3647,6 +3714,23 @@
     };
   }
 
+  voiceRecorder = createRecorder({
+    vu: function () { return vuLevel; },
+    minimumSamples: function (current) { return Math.floor(current.sampleRate / 4); },
+    filename: "recording.wav",
+    onState: function (state, current) {
+      setRecordSetupPending(state === "pending");
+      setRecording(state === "active");
+      if (state === "active") {
+        log("Recording started at " + current.sampleRate + " Hz");
+      }
+    },
+    onAccepted: function (file) { setActiveWav(file, "recording"); },
+    onTooShort: function () { setError(new Error("Recording is too short")); },
+    onCancelled: function () { log("Recording cancelled before microphone setup completed"); },
+    onError: setError
+  });
+
   async function startRecording(event) {
     if (event && recordButton.setPointerCapture && event.pointerId !== undefined) {
       recordButton.setPointerCapture(event.pointerId);
@@ -3656,117 +3740,14 @@
       setError(new Error("Audio recording is not available in this browser"));
       return;
     }
-    if (recording || running) {
+    if (voiceRecorder.state() !== "idle" || running) {
       return;
     }
-
-    recordStopRequested = false;
-    setRecordSetupPending(true);
-    var stream = null;
-    var audioContext = null;
-    var source = null;
-    var processor = null;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true
-        }
-      });
-      if (recordStopRequested) {
-        await cleanupRecorderResources({ stream: stream });
-        recordStopRequested = false;
-        setRecordSetupPending(false);
-        log("Recording cancelled before microphone setup completed");
-        return;
-      }
-      var AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      audioContext = new AudioContextClass();
-      source = audioContext.createMediaStreamSource(stream);
-      processor = audioContext.createScriptProcessor(4096, 1, 1);
-      var chunks = [];
-      var length = 0;
-
-      processor.onaudioprocess = function (processEvent) {
-        if (!recording) {
-          return;
-        }
-        var input = processEvent.inputBuffer.getChannelData(0);
-        var copy = new Float32Array(input.length);
-        copy.set(input);
-        chunks.push(copy);
-        length += copy.length;
-        updateVuLevel(input);
-
-        var output = processEvent.outputBuffer.getChannelData(0);
-        output.fill(0);
-      };
-
-      source.connect(processor);
-      processor.connect(audioContext.destination);
-      recorder = {
-        audioContext: audioContext,
-        chunks: chunks,
-        length: length,
-        processor: processor,
-        sampleRate: audioContext.sampleRate,
-        source: source,
-        stream: stream
-      };
-
-      Object.defineProperty(recorder, "length", {
-        get: function () {
-          return length;
-        }
-      });
-
-      setRecordSetupPending(false);
-      setRecording(true);
-      log("Recording started at " + audioContext.sampleRate + " Hz");
-      if (recordStopRequested) {
-        await stopRecording();
-      }
-    } catch (error) {
-      await cleanupRecorderResources({
-        audioContext: audioContext,
-        processor: processor,
-        source: source,
-        stream: stream
-      });
-      recordStopRequested = false;
-      setRecordSetupPending(false);
-      setRecording(false);
-      setError(error);
-    }
+    await voiceRecorder.start();
   }
 
   async function stopRecording() {
-    if (recordSetupPending && !recording) {
-      recordStopRequested = true;
-      return;
-    }
-    if (!recording || !recorder) {
-      return;
-    }
-
-    var current = recorder;
-    recordStopRequested = false;
-    setRecording(false);
-    resetVuLevel();
-    await cleanupRecorderResources(current);
-
-    var samples = mergeChunks(current.chunks, current.length);
-    if (samples.length < current.sampleRate / 4) {
-      recorder = null;
-      setError(new Error("Recording is too short"));
-      return;
-    }
-
-    var wavBlob = encodeWav(samples, current.sampleRate);
-    var file = new File([wavBlob], "recording.wav", { type: "audio/wav" });
-    setActiveWav(file, "recording");
-    recorder = null;
+    await voiceRecorder.stop();
   }
 
   function cloneRecordLabel() {
@@ -3802,7 +3783,6 @@
   }
 
   function setCloneSetupPending(value) {
-    cloneSetupPending = value;
     if (value) {
       cloneRecordButton.textContent = "Preparing...";
     } else if (cloneRecording) {
@@ -3813,6 +3793,23 @@
     syncControls();
   }
 
+  cloneRecorder = createRecorder({
+    vu: function () { return cloneVuLevel; },
+    minimumSamples: function (current) { return current.sampleRate; },
+    filename: "reference.wav",
+    onState: function (state, current) {
+      setCloneSetupPending(state === "pending");
+      setCloneRecording(state === "active");
+      if (state === "active") {
+        log("Reference recording started at " + current.sampleRate + " Hz");
+      }
+    },
+    onAccepted: function (file) { setCloneWav(file, "recording"); },
+    onTooShort: function () { setCloneError(new Error("Reference recording is too short; aim for 5-15 seconds")); },
+    onCancelled: function () { log("Reference recording cancelled before microphone setup completed"); },
+    onError: setCloneError
+  });
+
   async function startCloneRecording(event) {
     if (event && cloneRecordButton.setPointerCapture && event.pointerId !== undefined) {
       cloneRecordButton.setPointerCapture(event.pointerId);
@@ -3822,114 +3819,14 @@
       setCloneError(new Error("Audio recording is not available in this browser"));
       return;
     }
-    if (cloneRecording || recording || recordSetupPending || live || running) {
+    if (cloneRecorder.state() !== "idle" || recording || voiceRecorder.isPending() || live || running) {
       return;
     }
-
-    cloneStopRequested = false;
-    setCloneSetupPending(true);
-    var stream = null;
-    var audioContext = null;
-    var source = null;
-    var processor = null;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true
-        }
-      });
-      if (cloneStopRequested) {
-        await cleanupRecorderResources({ stream: stream });
-        cloneStopRequested = false;
-        setCloneSetupPending(false);
-        log("Reference recording cancelled before microphone setup completed");
-        return;
-      }
-      var AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      audioContext = new AudioContextClass();
-      source = audioContext.createMediaStreamSource(stream);
-      processor = audioContext.createScriptProcessor(4096, 1, 1);
-      var chunks = [];
-      var length = 0;
-
-      processor.onaudioprocess = function (processEvent) {
-        if (!cloneRecording) {
-          return;
-        }
-        var input = processEvent.inputBuffer.getChannelData(0);
-        var copy = new Float32Array(input.length);
-        copy.set(input);
-        chunks.push(copy);
-        length += copy.length;
-        updateVuInto(cloneVuLevel, input);
-
-        processEvent.outputBuffer.getChannelData(0).fill(0);
-      };
-
-      source.connect(processor);
-      processor.connect(audioContext.destination);
-      cloneRecorder = {
-        audioContext: audioContext,
-        chunks: chunks,
-        processor: processor,
-        sampleRate: audioContext.sampleRate,
-        source: source,
-        stream: stream
-      };
-      Object.defineProperty(cloneRecorder, "length", {
-        get: function () {
-          return length;
-        }
-      });
-
-      setCloneSetupPending(false);
-      setCloneRecording(true);
-      log("Reference recording started at " + audioContext.sampleRate + " Hz");
-      if (cloneStopRequested) {
-        await stopCloneRecording();
-      }
-    } catch (error) {
-      await cleanupRecorderResources({
-        audioContext: audioContext,
-        processor: processor,
-        source: source,
-        stream: stream
-      });
-      cloneStopRequested = false;
-      setCloneSetupPending(false);
-      setCloneRecording(false);
-      setCloneError(error);
-    }
+    await cloneRecorder.start();
   }
 
   async function stopCloneRecording() {
-    if (cloneSetupPending && !cloneRecording) {
-      cloneStopRequested = true;
-      return;
-    }
-    if (!cloneRecording || !cloneRecorder) {
-      return;
-    }
-
-    var current = cloneRecorder;
-    cloneStopRequested = false;
-    setCloneRecording(false);
-    resetVuInto(cloneVuLevel);
-    await cleanupRecorderResources(current);
-
-    var samples = mergeChunks(current.chunks, current.length);
-    if (samples.length < current.sampleRate) {
-      cloneRecorder = null;
-      setCloneError(new Error("Reference recording is too short; aim for 5-15 seconds"));
-      return;
-    }
-
-    var wavBlob = encodeWav(samples, current.sampleRate);
-    var file = new File([wavBlob], "reference.wav", { type: "audio/wav" });
-    setCloneWav(file, "recording");
-    cloneRecorder = null;
+    await cloneRecorder.stop();
   }
 
   function chooseCloneWav(event) {
@@ -4065,10 +3962,12 @@
     if (!conversionForm) {
       return;
     }
-    var studioBusy = running || recording || recordSetupPending || live || cloneRecording || cloneSetupPending || musicCapture || musicCapturePending || handsFree || handsFreeSetupPending;
-    var capturingSource = conversionCapture && conversionCapture.kind === "source";
-    var capturingTarget = conversionCapture && conversionCapture.kind === "target";
-    var captureBusy = Boolean(conversionCapture || conversionCapturePending);
+    var studioBusy = running || voiceRecorder.state() !== "idle" || live || cloneRecorder.state() !== "idle" ||
+      (musicRecorder && musicRecorder.state() !== "idle") || handsFree || handsFreeSetupPending;
+    var conversionMetadata = conversionRecorder && conversionRecorder.metadata();
+    var capturingSource = conversionRecorder && conversionRecorder.state() !== "idle" && conversionMetadata.kind === "source";
+    var capturingTarget = conversionRecorder && conversionRecorder.state() !== "idle" && conversionMetadata.kind === "target";
+    var captureBusy = Boolean(conversionRecorder && conversionRecorder.state() !== "idle");
     var modelOption = conversionModelSelect.options[conversionModelSelect.selectedIndex];
     var isVevo = modelOption && modelOption.dataset.family === "vevo2";
     if (!isVevo && conversionRouteSelect.value !== "style_preserved_vc") {
@@ -4083,8 +3982,8 @@
     conversionSourceInput.disabled = studioBusy || captureBusy;
     conversionTargetInput.disabled = studioBusy || captureBusy || Boolean(conversionTargetVoiceSelect.value);
     conversionTargetVoiceSelect.disabled = studioBusy || captureBusy;
-    conversionSourceRecordButton.disabled = studioBusy || capturingTarget || (conversionCapturePending && !capturingSource) || (!captureBusy && !canRecord());
-    conversionTargetRecordButton.disabled = studioBusy || capturingSource || Boolean(conversionTargetVoiceSelect.value) || (conversionCapturePending && !capturingTarget) || (!captureBusy && !canRecord());
+    conversionSourceRecordButton.disabled = studioBusy || capturingTarget || (!captureBusy && !canRecord());
+    conversionTargetRecordButton.disabled = studioBusy || capturingSource || Boolean(conversionTargetVoiceSelect.value) || (!captureBusy && !canRecord());
     conversionSourceClearButton.disabled = studioBusy || captureBusy || !conversionSourceFile;
     conversionTargetClearButton.disabled = studioBusy || captureBusy || (!conversionTargetFile && !conversionTargetVoiceSelect.value);
     conversionRouteSelect.disabled = studioBusy || captureBusy || !isVevo;
@@ -4093,6 +3992,39 @@
     conversionSaveWavButton.disabled = studioBusy || !conversionOutputBlob;
     conversionLibraryButton.disabled = studioBusy || !conversionOutputBlob;
   }
+
+  conversionRecorder = createRecorder({
+    vu: function (metadata) { return metadata.kind === "source" ? conversionSourceVu : conversionTargetVu; },
+    minimumSamples: function (current, metadata) {
+      return metadata.kind === "source" ? Math.floor(current.sampleRate / 4) : current.sampleRate;
+    },
+    filename: function (metadata) { return metadata.kind + "-voice.wav"; },
+    onState: function (state, current, metadata) {
+      var button = metadata && metadata.button;
+      var status = metadata && metadata.status;
+      if (button) {
+        button.classList.toggle("recording", state === "active");
+        button.textContent = state === "pending" ? "Preparing…" :
+          state === "active" ? "Recording · release to stop" : "Hold to record";
+      }
+      if (status) {
+        status.textContent = state === "pending" ? "Opening the microphone…" :
+          state === "active" ? (metadata.kind === "source" ? "Recording the performance…" : "Recording the target voice…") :
+            state === "finishing" ? "Finishing recording…" : status.textContent;
+      }
+      syncControls();
+    },
+    onAccepted: function (file, metadata) { setConversionFile(metadata.kind, file, "microphone"); },
+    onTooShort: function (metadata) {
+      metadata.status.textContent = metadata.kind === "source" ? "Performance recording was too short." : "Target voice recording was too short.";
+      setConversionError(new Error(metadata.kind === "source" ? "The performance recording is too short" : "The target voice needs at least one second of speech"));
+    },
+    onCancelled: function (metadata) { metadata.status.textContent = "Recording cancelled."; },
+    onError: function (error, metadata) {
+      if (metadata && metadata.status) { metadata.status.textContent = "Microphone recording failed."; }
+      setConversionError(error);
+    }
+  });
 
   async function startConversionRecording(kind, event) {
     var button = kind === "source" ? conversionSourceRecordButton : conversionTargetRecordButton;
@@ -4105,63 +4037,14 @@
       setConversionError(new Error("Audio recording is not available in this browser"));
       return;
     }
-    if (running || conversionCapture || conversionCapturePending) {
+    if (running || conversionRecorder.state() !== "idle") {
       return;
     }
-    conversionStopRequested = false;
-    conversionCapturePending = true;
-    button.textContent = "Preparing…";
-    status.textContent = "Opening the microphone…";
-    syncControls();
-    var pending = {};
-    try {
-      pending = await openToolRecorder(kind === "source" ? conversionSourceVu : conversionTargetVu, function (recorder) {
-        return conversionCapture === recorder;
-      });
-      pending.kind = kind;
-      conversionCapture = pending;
-      conversionCapturePending = false;
-      button.classList.add("recording");
-      button.textContent = "Recording · release to stop";
-      status.textContent = kind === "source" ? "Recording the performance…" : "Recording the target voice…";
-      syncControls();
-      if (conversionStopRequested) {
-        await stopConversionRecording();
-      }
-    } catch (error) {
-      conversionCapturePending = false;
-      conversionCapture = null;
-      button.classList.remove("recording");
-      button.textContent = "Hold to record";
-      status.textContent = "Microphone recording failed.";
-      syncControls();
-      setConversionError(error);
-    }
+    await conversionRecorder.start({ kind: kind, button: button, status: status });
   }
 
   async function stopConversionRecording() {
-    if (conversionCapturePending && !conversionCapture) {
-      conversionStopRequested = true;
-      return;
-    }
-    if (!conversionCapture) {
-      return;
-    }
-    var current = conversionCapture;
-    conversionCapture = null;
-    conversionStopRequested = false;
-    var button = current.kind === "source" ? conversionSourceRecordButton : conversionTargetRecordButton;
-    button.classList.remove("recording");
-    button.textContent = "Hold to record";
-    var minimum = current.kind === "source" ? Math.floor(current.sampleRate / 4) : current.sampleRate;
-    var file = await finishToolRecording(current, minimum, current.kind + "-voice.wav");
-    if (!file) {
-      syncControls();
-      setConversionError(new Error(current.kind === "source" ? "The performance recording is too short" : "The target voice needs at least one second of speech"));
-      return;
-    }
-    setConversionFile(current.kind, file, "microphone");
-    syncControls();
+    await conversionRecorder.stop();
   }
 
   async function runVoiceConversion(event) {
@@ -4322,8 +4205,9 @@
     if (!musicForm) {
       return;
     }
-    var studioBusy = running || recording || recordSetupPending || live || cloneRecording || cloneSetupPending || conversionCapture || conversionCapturePending || handsFree || handsFreeSetupPending;
-    var captureBusy = Boolean(musicCapture || musicCapturePending);
+    var studioBusy = running || voiceRecorder.state() !== "idle" || live || cloneRecorder.state() !== "idle" ||
+      conversionRecorder.state() !== "idle" || handsFree || handsFreeSetupPending;
+    var captureBusy = musicRecorder.state() !== "idle";
     var modelOption = musicModelSelect.options[musicModelSelect.selectedIndex];
     var isACE = !modelOption || modelOption.dataset.family === "ace_step";
     var sourceAllowed = isACE && musicModeSelect.value !== "text2music";
@@ -4332,7 +4216,7 @@
     musicPromptInput.disabled = studioBusy || captureBusy;
     musicLyricsInput.disabled = studioBusy || captureBusy;
     musicSourceInput.disabled = studioBusy || captureBusy || !sourceAllowed;
-    musicSourceRecordButton.disabled = studioBusy || !sourceAllowed || (musicCapturePending && !musicCapture) || (!captureBusy && !canRecord());
+    musicSourceRecordButton.disabled = studioBusy || !sourceAllowed || (!captureBusy && !canRecord());
     musicSourceClearButton.disabled = studioBusy || captureBusy || !musicSourceFile;
     musicAnalyzeButton.disabled = studioBusy || captureBusy || !musicModelReady || !musicSourceFile || !isACE;
     [musicDurationInput, musicSeedInput, musicStepsInput, musicGuidanceInput, musicTrackInput,
@@ -4348,6 +4232,31 @@
     musicLibraryButton.disabled = studioBusy || !musicOutputBlob;
   }
 
+  musicRecorder = createRecorder({
+    vu: function () { return musicSourceVu; },
+    minimumSamples: function (current) { return Math.floor(current.sampleRate / 4); },
+    filename: "music-source.wav",
+    onState: function (state) {
+      musicSourceRecordButton.classList.toggle("recording", state === "active");
+      musicSourceRecordButton.textContent = state === "pending" ? "Preparing…" :
+        state === "active" ? "Recording · release to stop" : "Hold to record";
+      musicSourceStatus.textContent = state === "pending" ? "Opening the microphone…" :
+        state === "active" ? "Recording a music source…" :
+          state === "finishing" ? "Finishing recording…" : musicSourceStatus.textContent;
+      syncControls();
+    },
+    onAccepted: function (file) { setMusicSource(file, "microphone"); },
+    onTooShort: function () {
+      musicSourceStatus.textContent = "Music source recording was too short.";
+      setMusicError(new Error("The music source recording is too short"));
+    },
+    onCancelled: function () { musicSourceStatus.textContent = "Recording cancelled."; },
+    onError: function (error) {
+      musicSourceStatus.textContent = "Microphone recording failed.";
+      setMusicError(error);
+    }
+  });
+
   async function startMusicRecording(event) {
     if (event && musicSourceRecordButton.setPointerCapture && event.pointerId !== undefined) {
       musicSourceRecordButton.setPointerCapture(event.pointerId);
@@ -4357,60 +4266,14 @@
       setMusicError(new Error("Audio recording is not available in this browser"));
       return;
     }
-    if (running || musicCapture || musicCapturePending) {
+    if (running || musicRecorder.state() !== "idle") {
       return;
     }
-    musicStopRequested = false;
-    musicCapturePending = true;
-    musicSourceRecordButton.textContent = "Preparing…";
-    musicSourceStatus.textContent = "Opening the microphone…";
-    syncControls();
-    var pending = {};
-    try {
-      pending = await openToolRecorder(musicSourceVu, function (recorder) {
-        return musicCapture === recorder;
-      });
-      musicCapture = pending;
-      musicCapturePending = false;
-      musicSourceRecordButton.classList.add("recording");
-      musicSourceRecordButton.textContent = "Recording · release to stop";
-      musicSourceStatus.textContent = "Recording a music source…";
-      syncControls();
-      if (musicStopRequested) {
-        await stopMusicRecording();
-      }
-    } catch (error) {
-      musicCapturePending = false;
-      musicCapture = null;
-      musicSourceRecordButton.classList.remove("recording");
-      musicSourceRecordButton.textContent = "Hold to record";
-      musicSourceStatus.textContent = "Microphone recording failed.";
-      syncControls();
-      setMusicError(error);
-    }
+    await musicRecorder.start();
   }
 
   async function stopMusicRecording() {
-    if (musicCapturePending && !musicCapture) {
-      musicStopRequested = true;
-      return;
-    }
-    if (!musicCapture) {
-      return;
-    }
-    var current = musicCapture;
-    musicCapture = null;
-    musicStopRequested = false;
-    musicSourceRecordButton.classList.remove("recording");
-    musicSourceRecordButton.textContent = "Hold to record";
-    var file = await finishToolRecording(current, Math.floor(current.sampleRate / 4), "music-source.wav");
-    if (!file) {
-      syncControls();
-      setMusicError(new Error("The music source recording is too short"));
-      return;
-    }
-    setMusicSource(file, "microphone");
-    syncControls();
+    await musicRecorder.stop();
   }
 
   async function analyzeMusicSource() {
@@ -4576,7 +4439,12 @@
       analysisOutput.textContent = JSON.stringify(result, null, 2);
       log("Audio analysis complete with " + catalogModelLabel({ id: analysisModelSelect.value, displayName: option.textContent }));
     } catch (error) {
-      analysisOutput.textContent = "Analysis failed: " + (error.message || error);
+      var technicalError = "Analysis failed: " + (error.message || error);
+      var incompatibleWav = /sample[_ ]?rate|16\s?k|16000|pcm|wav/i.test(technicalError);
+      analysisOutput.textContent = (incompatibleWav
+        ? "This WAV file is incompatible with the selected model. Try a 16 kHz mono WAV file."
+        : "The selected model could not analyze this audio file.") +
+        "\n\nTechnical details:\n" + technicalError;
       log(analysisOutput.textContent, "error");
     } finally {
       clearBusy(analysisSubmitButton);
@@ -5039,7 +4907,7 @@
   }
 
   async function startLive() {
-    if (live || running || recording || recordSetupPending) {
+    if (live || running || recording || voiceRecorder.isPending()) {
       return;
     }
     if (!canRecord()) {
@@ -5427,7 +5295,7 @@
   }
 
   async function startHandsFree() {
-    if (handsFree || handsFreeSetupPending || running || recording || recordSetupPending || live || cloneRecording || cloneSetupPending) {
+    if (handsFree || handsFreeSetupPending || running || recording || voiceRecorder.isPending() || live || cloneRecording || cloneRecorder.isPending()) {
       return;
     }
     if (!canRecord()) {
@@ -5672,13 +5540,6 @@
   submitOnCtrlEnter(designDescriptionInput, designForm);
 
   storyVoiceSelect.addEventListener("change", syncControls);
-  Array.prototype.forEach.call(storyModeSwitch.querySelectorAll(".mode-option"), function (button) {
-    button.addEventListener("click", function () {
-      if (button.dataset.mode !== storyMode) {
-        setStoryMode(button.dataset.mode);
-      }
-    });
-  });
   takeRoomRenderButton.addEventListener("click", rerenderStory);
   takeRoomNextButton.addEventListener("click", jumpToNextNeedsWork);
   storyBuilderImportOpenButton.addEventListener("click", openStoryBuilderImport);
@@ -5933,7 +5794,6 @@
   var audioWorkspaceModeSections = document.querySelectorAll("[data-audio-workspace-mode]");
   var extractToolTitle = document.getElementById("extractToolTitle");
   var extractToolNote = document.getElementById("extractToolNote");
-  var audioWorkspaceMode = "transcribe";
 
   function activePageFromHash() {
     var name = (window.location.hash || "").replace(/^#/, "");
@@ -5958,7 +5818,9 @@
       return;
     }
     flushAudioWorkspaceEdit();
-    audioWorkspaceMode = mode;
+    if (typeof ex !== "undefined" && ex) {
+      ex.setMode(mode);
+    }
     audioWorkspaceModeSections.forEach(function (section) {
       section.hidden = section.getAttribute("data-audio-workspace-mode") !== mode;
     });
@@ -5975,7 +5837,7 @@
 
   function applyPage(name) {
     var parent = PAGE_PARENT[name] || "";
-    if (name !== "transcription" && (transcribeRecorder || transcribeRecorderPending)) {
+    if (name !== "transcription" && transcribeRecorder && transcribeRecorder.state() !== "idle") {
       stopTranscribeRecording();
     }
     pageModules.forEach(function (module) {
@@ -7323,8 +7185,6 @@
   // contexts per tab, so creating one per Play dies after a few clicks.
   var extractAudioCtx = null;
   var transcribeRecorder = null;
-  var transcribeRecorderPending = false;
-  var transcribeStopRequested = false;
   var transcribeSearchQuery = "";
   var transcribeSearchMatches = [];
   var transcribeSearchIndex = -1;
@@ -7338,21 +7198,124 @@
     }
     return extractAudioCtx;
   }
-  var ex = {
-    samples: null,      // mono Float32Array at ex.rate
-    rate: 0,
-    duration: 0,
-    sourceName: "",
-    view: { start: 0, end: 0 },
-    cursor: 0,          // playhead position when no region is marked
-    region: null,       // {start, end} seconds
-    segments: [],       // {start, end, text, speaker}
-    checked: {},        // segment index -> true: multi-segment selection
-    filter: "",
-    playback: null,     // active {ctx, source, anchor, offset, sampleOffset, samples, key, mode, raf}
-    pausedPlayback: null,
-    selectedRow: -1
-  };
+  function createAudioWorkspaceModule() {
+    return {
+      mode: "transcribe",
+      samples: null,      // mono Float32Array at ex.rate
+      rate: 0,
+      duration: 0,
+      sourceName: "",
+      view: { start: 0, end: 0 },
+      cursor: 0,          // playhead position when no region is marked
+      region: null,       // {start, end} seconds
+      segments: [],       // {start, end, text, speaker}
+      checked: {},        // segment index -> true: multi-segment selection
+      filter: "",
+      playback: null,     // active {ctx, source, anchor, offset, sampleOffset, samples, key, mode, raf}
+      pausedPlayback: null,
+      selectedRow: -1,
+      setMode: function (mode) {
+        if (mode === "transcribe" || mode === "extract") { this.mode = mode; }
+      },
+      loadSource: function (samples, rate, duration, sourceName) {
+        this.samples = samples;
+        this.rate = rate;
+        this.duration = duration;
+        this.sourceName = sourceName;
+        this.view = { start: 0, end: duration };
+        this.cursor = 0;
+        this.region = null;
+        this.segments = [];
+        this.checked = {};
+        this.filter = "";
+        this.playback = null;
+        this.pausedPlayback = null;
+        this.selectedRow = -1;
+      },
+      replaceTranscript: function (segments) {
+        this.segments = segments || [];
+        this.checked = {};
+        this.filter = "";
+        this.selectedRow = -1;
+      },
+      appendTranscript: function (segments) {
+        Array.prototype.push.apply(this.segments, segments || []);
+      },
+      editTranscript: function (index, text) {
+        if (this.segments[index]) { this.segments[index].text = String(text || "").trim(); }
+      },
+      renameSpeaker: function (from, to) { return renameTranscriptSpeaker(this.segments, from, to); },
+      tagSpeaker: function (index, name) {
+        if (this.segments[index]) {
+          this.segments[index].speaker = this.segments[index].speaker === name ? "" : name;
+        }
+      },
+      assignSpeaker: function (index, name) {
+        if (this.segments[index]) { this.segments[index].speaker = name || ""; }
+      },
+      setCursor: function (time, rowIndex) {
+        this.cursor = Math.min(this.duration, Math.max(0, Number(time) || 0));
+        this.selectedRow = rowIndex === undefined ? -1 : rowIndex;
+      },
+      clearRegionAtCursor: function (time) {
+        this.setCursor(time, -1);
+        this.region = null;
+      },
+      setRegion: function (start, end, rowIndex) {
+        this.region = { start: Math.max(0, start), end: Math.min(this.duration, end) };
+        this.selectedRow = rowIndex;
+      },
+      setChecked: function (index, checked) {
+        if (checked) { this.checked[index] = true; } else { delete this.checked[index]; }
+      },
+      clearChecked: function () { this.checked = {}; },
+      setFilter: function (speaker) { this.filter = speaker || ""; },
+      setPlayback: function (playback) { this.playback = playback; this.pausedPlayback = null; },
+      pausePlayback: function (playback) { this.playback = null; this.pausedPlayback = playback || null; },
+      stopPlayback: function () { this.playback = null; this.pausedPlayback = null; },
+      exportTranscript: function (format) {
+        var exporter = transcriptExportBuilders[format];
+        if (!exporter || !this.segments.length) { return null; }
+        return {
+          blob: new Blob([exporter.build(this.segments, {
+            sourceName: this.sourceName,
+            duration: this.duration,
+            sampleRate: this.rate
+          })], { type: exporter.type }),
+          name: ((this.sourceName || "transcript").replace(/\.[^.]+$/, "") || "transcript") + "." + format
+        };
+      },
+      selectionProvenance: function () {
+        var spans = selectionSpans();
+        if (!spans.length) { return null; }
+        return {
+          name: this.sourceName,
+          start: spans[0].start,
+          end: spans[spans.length - 1].end,
+          speaker: selectionSpeaker(),
+          segments: checkedIndices().length,
+          spans: spans.length
+        };
+      },
+      snapshot: function () {
+        return Object.freeze({
+          mode: this.mode,
+          sourceName: this.sourceName,
+          duration: this.duration,
+          sampleRate: this.rate,
+          cursor: this.cursor,
+          region: this.region ? { start: this.region.start, end: this.region.end } : null,
+          segments: this.segments.map(normalizedTranscriptSegment),
+          checked: Object.keys(this.checked).map(Number).sort(function (a, b) { return a - b; }),
+          filter: this.filter,
+          playback: this.playback ? this.playback.key : null,
+          pausedPlayback: this.pausedPlayback ? this.pausedPlayback.key : null
+        });
+      }
+    };
+  }
+
+  var ex = createAudioWorkspaceModule();
 
   // checkedIndices returns the multi-selection in chronological order.
   function checkedIndices() {
@@ -7569,16 +7532,10 @@
     return changed;
   }
 
-  window.__cppStudioTranscriptTools = Object.freeze({
-    formatTimestamp: formatTranscriptTimestamp,
-    escapeMarkdown: escapeTranscriptMarkdown,
-    findMatches: findTranscriptMatches,
-    renameSpeaker: renameTranscriptSpeaker,
-    buildTXT: buildTranscriptTXT,
-    buildMarkdown: buildTranscriptMarkdown,
-    buildSRT: buildTranscriptSRT,
-    buildVTT: buildTranscriptVTT,
-    buildJSON: buildTranscriptJSON
+  // Browser tests observe the same module interface the Transcribe and
+  // Extract desks use, rather than a parallel collection of pure helpers.
+  window.__cppStudioAudioWorkspace = Object.freeze({
+    snapshot: function () { return ex.snapshot(); }
   });
 
   function transcriptExportMeta() {
@@ -7663,75 +7620,68 @@
 
   function downloadTranscript(format) {
     flushAudioWorkspaceEdit();
-    var exporter = transcriptExportBuilders[format];
-    if (!exporter || !ex.segments.length) {
+    var exported = ex.exportTranscript(format);
+    if (!exported) {
       return;
     }
-    var blob = new Blob([exporter.build(ex.segments, transcriptExportMeta())], { type: exporter.type });
-    var url = URL.createObjectURL(blob);
-    downloadURL(url, transcriptSourceBaseName() + "." + format);
+    var url = URL.createObjectURL(exported.blob);
+    downloadURL(url, exported.name);
     window.setTimeout(function () { URL.revokeObjectURL(url); }, 0);
   }
 
   function syncTranscribeRecordingControls() {
-    var active = Boolean(transcribeRecorder);
-    transcribeRecordButton.disabled = active || transcribeRecorderPending || !canRecord();
-    transcribeStopRecordButton.disabled = !active && !transcribeRecorderPending;
-    transcribeRecordButton.textContent = transcribeRecorderPending ? "Opening microphone…" : "Record microphone";
+    var active = transcribeRecorder && transcribeRecorder.isActive();
+    var pending = transcribeRecorder && transcribeRecorder.isPending();
+    transcribeRecordButton.disabled = active || pending || !canRecord();
+    transcribeStopRecordButton.disabled = !active && !pending;
+    transcribeRecordButton.textContent = pending ? "Opening microphone…" : "Record microphone";
     transcribeStopRecordButton.textContent = active ? "Stop recording" : "Stop";
   }
+
+  transcribeRecorder = createRecorder({
+    vu: function () { return transcribeRecordVu; },
+    minimumSamples: function (current) { return Math.floor(current.sampleRate / 4); },
+    filename: "microphone-recording.wav",
+    onState: function (state, current) {
+      syncTranscribeRecordingControls();
+      if (state === "active") {
+        log("Transcribe microphone recording started at " + current.sampleRate + " Hz");
+      }
+    },
+    onAccepted: async function (file) {
+      await extractLoadFile(file);
+      log("Transcribe microphone recording loaded; transcription remains a separate action");
+    },
+    onTooShort: function () { extractError("Microphone recording is too short; record at least a quarter second."); },
+    onError: function (error) { extractError("Microphone recording failed: " + error.message); }
+  });
+
+  window.__cppStudioRecorders = Object.freeze({
+    snapshot: function () {
+      return Object.freeze({
+        voice: voiceRecorder.state(),
+        clone: cloneRecorder.state(),
+        conversion: conversionRecorder.state(),
+        music: musicRecorder.state(),
+        transcribe: transcribeRecorder.state()
+      });
+    }
+  });
 
   async function startTranscribeRecording() {
     if (!canRecord()) {
       extractError("Audio recording is not available in this browser.");
       return;
     }
-    if (transcribeRecorder || transcribeRecorderPending) {
+    if (transcribeRecorder.state() !== "idle") {
       return;
     }
     extractErrorBox.hidden = true;
-    transcribeStopRequested = false;
-    transcribeRecorderPending = true;
-    syncTranscribeRecordingControls();
-    try {
-      var pending = await openToolRecorder(transcribeRecordVu, function (recorder) {
-        return transcribeRecorder === recorder;
-      });
-      transcribeRecorder = pending;
-      transcribeRecorderPending = false;
-      syncTranscribeRecordingControls();
-      log("Transcribe microphone recording started at " + pending.sampleRate + " Hz");
-      if (transcribeStopRequested) {
-        await stopTranscribeRecording();
-      }
-    } catch (error) {
-      transcribeRecorder = null;
-      transcribeRecorderPending = false;
-      transcribeStopRequested = false;
-      syncTranscribeRecordingControls();
-      extractError("Microphone recording failed: " + error.message);
-    }
+    await transcribeRecorder.start();
   }
 
   async function stopTranscribeRecording() {
-    if (transcribeRecorderPending && !transcribeRecorder) {
-      transcribeStopRequested = true;
-      return;
-    }
-    if (!transcribeRecorder) {
-      return;
-    }
-    var current = transcribeRecorder;
-    transcribeRecorder = null;
-    transcribeStopRequested = false;
-    syncTranscribeRecordingControls();
-    var file = await finishToolRecording(current, Math.floor(current.sampleRate / 4), "microphone-recording.wav");
-    if (!file) {
-      extractError("Microphone recording is too short; record at least a quarter second.");
-      return;
-    }
-    await extractLoadFile(file);
-    log("Transcribe microphone recording loaded; transcription remains a separate action");
+    await transcribeRecorder.stop();
   }
 
   transcribeRecordButton.addEventListener("click", startTranscribeRecording);
@@ -7742,10 +7692,10 @@
     flushAudioWorkspaceEdit();
     var from = transcribeRenameFrom.value;
     var to = transcribeRenameTo.value.trim();
-    var changed = renameTranscriptSpeaker(ex.segments, from, to);
+    var changed = ex.renameSpeaker(from, to);
     if (changed) {
       if (ex.filter === from) {
-        ex.filter = to;
+        ex.setFilter(to);
       }
       transcribeRenameTo.value = "";
       extractTranscribeStatus.textContent = "Renamed " + changed + " segment" + (changed === 1 ? "" : "s");
@@ -7791,17 +7741,7 @@
         }
       }
       extractStopPlayback();
-      ex.samples = mono;
-      ex.rate = decoded.sampleRate;
-      ex.duration = decoded.duration;
-      ex.sourceName = file.name;
-      ex.view = { start: 0, end: decoded.duration };
-      ex.cursor = 0;
-      ex.region = null;
-      ex.segments = [];
-      ex.checked = {};
-      ex.filter = "";
-      ex.selectedRow = -1;
+      ex.loadSource(mono, decoded.sampleRate, decoded.duration, file.name);
       resetTranscribeDesk();
       extractFileStatus.textContent = file.name + " · " + fmtTime(decoded.duration) + " · " + decoded.sampleRate + " Hz";
       extractTranscribeButton.disabled = false;
@@ -7929,7 +7869,7 @@
   function drawExtractWave() {
     var dpr = window.devicePixelRatio || 1;
     var cssWidth = extractCanvas.clientWidth || extractCanvas.parentElement.clientWidth || 600;
-    var cssHeight = audioWorkspaceMode === "transcribe" ? 88 : 140;
+    var cssHeight = ex.mode === "transcribe" ? 88 : 140;
     extractCanvas.width = Math.floor(cssWidth * dpr);
     extractCanvas.height = Math.floor(cssHeight * dpr);
     var g = extractCanvas.getContext("2d");
@@ -8040,8 +7980,7 @@
   }
 
   function setAudioCursorTime(time, rowIndex) {
-    ex.cursor = Math.min(ex.duration, Math.max(0, Number(time) || 0));
-    ex.selectedRow = rowIndex === undefined ? -1 : rowIndex;
+    ex.setCursor(time, rowIndex);
     extractCursor.textContent = "cursor " + fmtTime(ex.cursor);
     renderExtractTimeline();
     drawExtractWave();
@@ -8060,7 +7999,7 @@
     if (!ex.samples) {
       return;
     }
-    if (audioWorkspaceMode === "transcribe") {
+    if (ex.mode === "transcribe") {
       setAudioCursorTime(canvasXToTime(event.clientX), -1);
       event.preventDefault();
       return;
@@ -8085,9 +8024,7 @@
     if (!extractDrag.moved) {
       // A plain click behaves like any audio editor: clear the selection
       // and park the playhead there — Play then plays from the cursor.
-      ex.cursor = canvasXToTime(event.clientX);
-      ex.region = null;
-      ex.selectedRow = -1;
+      ex.clearRegionAtCursor(canvasXToTime(event.clientX));
       extractCursor.textContent = "cursor " + fmtTime(ex.cursor);
       updateExtractRegionUI();
       renderExtractTimeline();
@@ -8097,7 +8034,7 @@
   });
 
   extractCanvas.addEventListener("keydown", function (event) {
-    if (audioWorkspaceMode !== "transcribe" || !ex.samples) {
+    if (ex.mode !== "transcribe" || !ex.samples) {
       return;
     }
     var step = event.shiftKey ? 5 : 1;
@@ -8120,22 +8057,21 @@
   });
 
   function setExtractRegion(start, end, rowIndex) {
-    ex.region = { start: Math.max(0, start), end: Math.min(ex.duration, end) };
-    ex.selectedRow = rowIndex;
+    ex.setRegion(start, end, rowIndex);
     updateExtractRegionUI();
     renderExtractTimeline();
     drawExtractWave();
   }
 
   function updateExtractRegionUI() {
-    var checked = audioWorkspaceMode === "extract" ? checkedSpans() : [];
-    var spans = audioWorkspaceMode === "extract" ? selectionSpans() : [];
+    var checked = ex.mode === "extract" ? checkedSpans() : [];
+    var spans = ex.mode === "extract" ? selectionSpans() : [];
     var hasChecked = checked.length > 0;
     var hasRegion = Boolean(ex.region && ex.region.end - ex.region.start > 0.05);
     // Play works from the cursor even without a marked region; extraction
     // needs a region or a ticked selection to know what to cut. A ticked
     // selection wins over the region: it is the more deliberate act.
-    extractPlayButton.disabled = !ex.samples || (audioWorkspaceMode === "extract" && !spans.length);
+    extractPlayButton.disabled = !ex.samples || (ex.mode === "extract" && !spans.length);
     extractCloneButton.disabled = !(hasChecked || hasRegion);
     extractLibraryButton.disabled = !(hasChecked || hasRegion);
     extractSelectionDuration.textContent = selectionOutputDuration(spans).toFixed(1) + "s";
@@ -8179,10 +8115,10 @@
   }
 
   function syncExtractPlaybackControls() {
-    var mode = ex.playback ? ex.playback.mode : audioWorkspaceMode;
+    var mode = ex.playback ? ex.playback.mode : ex.mode;
     extractPlayButton.textContent = ex.playback
       ? (mode === "segment" ? "Pause segment" : mode === "extract" ? "Pause selection" : "Pause audio")
-      : (audioWorkspaceMode === "extract" ? "Play selection" : "Play audio");
+      : (ex.mode === "extract" ? "Play selection" : "Play audio");
     extractPlayButton.setAttribute("aria-pressed", ex.playback ? "true" : "false");
     extractStopButton.disabled = !ex.playback && !ex.pausedPlayback;
     document.querySelectorAll(".extract-segment-play").forEach(function (button) {
@@ -8201,13 +8137,13 @@
     try { current.source.stop(); } catch (err) { /* already stopped */ }
     window.cancelAnimationFrame(current.raf);
     // The shared context stays open for the next play.
-    ex.playback = null;
+    ex.pausePlayback(null);
     return current;
   }
 
   function extractStopPlayback() {
     releaseExtractPlayback();
-    ex.pausedPlayback = null;
+    ex.stopPlayback();
     syncExtractPlaybackControls();
     drawExtractWave();
   }
@@ -8220,7 +8156,7 @@
     var elapsedSamples = Math.max(0, Math.floor((current.ctx.currentTime - current.anchor) * ex.rate));
     current.sampleOffset = Math.min(current.samples.length, current.sampleOffset + elapsedSamples);
     releaseExtractPlayback();
-    ex.pausedPlayback = current.sampleOffset < current.samples.length ? current : null;
+    ex.pausePlayback(current.sampleOffset < current.samples.length ? current : null);
     syncExtractPlaybackControls();
     drawExtractWave();
   }
@@ -8228,7 +8164,7 @@
   function extractPlaybackPlan() {
     // Extract auditions its selected result; Transcribe always listens from
     // the written transcript's cursor without consuming clip-selection state.
-    var spans = audioWorkspaceMode === "extract" ? checkedSpans() : [];
+    var spans = ex.mode === "extract" ? checkedSpans() : [];
     var start;
     var end;
     var samples;
@@ -8240,16 +8176,16 @@
         return span.start.toFixed(3) + "-" + span.end.toFixed(3);
       }).join(",");
     } else {
-      var activeRegion = audioWorkspaceMode === "extract" ? ex.region : null;
+      var activeRegion = ex.mode === "extract" ? ex.region : null;
       start = activeRegion ? activeRegion.start : Math.min(ex.cursor, ex.duration);
       end = activeRegion ? activeRegion.end : ex.duration;
       if (end - start <= 0.01) {
         return null;
       }
       samples = ex.samples.subarray(Math.floor(start * ex.rate), Math.floor(end * ex.rate));
-      key = audioWorkspaceMode + ":" + start.toFixed(3) + "-" + end.toFixed(3);
+      key = ex.mode + ":" + start.toFixed(3) + "-" + end.toFixed(3);
     }
-    return { samples: samples, offset: start, sampleOffset: 0, key: key, mode: audioWorkspaceMode };
+    return { samples: samples, offset: start, sampleOffset: 0, key: key, mode: ex.mode };
   }
 
   function startExtractPlayback(plan) {
@@ -8264,7 +8200,7 @@
     var source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
-    ex.playback = {
+    ex.setPlayback({
       ctx: ctx,
       source: source,
       anchor: ctx.currentTime,
@@ -8274,7 +8210,7 @@
       key: plan.key,
       mode: plan.mode,
       raf: 0
-    };
+    });
     source.onended = function () {
       if (ex.playback && ex.playback.source === source) {
         extractStopPlayback();
@@ -8356,13 +8292,7 @@
     }
     var blob = extractSelectionWav();
     var file = new File([blob], extractClipName().replace(/[:]/g, ".") + ".wav", { type: "audio/wav" });
-    var spans = selectionSpans();
-    setCloneWav(file, "the Extractor", {
-      name: ex.sourceName,
-      start: spans[0].start,
-      end: spans[spans.length - 1].end,
-      speaker: selectionSpeaker()
-    });
+    setCloneWav(file, "the Extractor", ex.selectionProvenance());
     window.location.hash = "#voices";
     cloneNameInput.focus();
     log("Extractor clip sent to voice clone: " + file.name);
@@ -8378,19 +8308,19 @@
     extractLibraryButton.textContent = "Saving…";
     try {
       var b64 = await srcToB64(URL.createObjectURL(extractSelectionWav()));
-      var meta = { source: ex.sourceName };
+      var provenance = ex.selectionProvenance();
+      var meta = { source: provenance.name };
       if (indices.length) {
-        var spans = checkedSpans();
-        meta.segments = String(indices.length);
-        meta.spans = String(spans.length);
-        meta.start = spans[0].start.toFixed(2);
-        meta.end = spans[spans.length - 1].end.toFixed(2);
+        meta.segments = String(provenance.segments);
+        meta.spans = String(provenance.spans);
+        meta.start = provenance.start.toFixed(2);
+        meta.end = provenance.end.toFixed(2);
       } else {
-        meta.start = ex.region.start.toFixed(2);
-        meta.end = ex.region.end.toFixed(2);
+        meta.start = provenance.start.toFixed(2);
+        meta.end = provenance.end.toFixed(2);
       }
-      if (selectionSpeaker()) {
-        meta.speaker = selectionSpeaker();
+      if (provenance.speaker) {
+        meta.speaker = provenance.speaker;
       }
       var response = await fetch("/v1/library", {
         method: "POST",
@@ -8422,9 +8352,7 @@
     }
     extractErrorBox.hidden = true;
     extractTranscribeButton.disabled = true;
-    ex.segments = [];
-    ex.checked = {};
-    ex.filter = "";
+    ex.replaceTranscript([]);
     resetTranscribeDesk();
     renderExtractTimeline();
     try {
@@ -8448,14 +8376,14 @@
           throw new Error(await readErrorBody(response));
         }
         var payload = await response.json();
-        (payload.segments || []).forEach(function (segment) {
-          ex.segments.push({
+        ex.appendTranscript((payload.segments || []).map(function (segment) {
+          return {
             start: segment.start + offsetSeconds,
             end: segment.end + offsetSeconds,
             text: segment.text,
             speaker: segment.speaker || ""
-          });
-        });
+          };
+        }));
         renderExtractTimeline();
         drawExtractWave();
       }
@@ -8473,18 +8401,18 @@
   function renderExtractTimeline() {
     extractTimeline.textContent = "";
     if (!ex.segments.length) {
-      extractTimeline.textContent = audioWorkspaceMode === "transcribe"
+      extractTimeline.textContent = ex.mode === "transcribe"
         ? "No transcript yet — load a source and press Transcribe."
         : "No transcript yet — load a source or import audio, then press Transcribe.";
       syncTranscribeTools();
       return;
     }
     ex.segments.forEach(function (segment, index) {
-      if (audioWorkspaceMode === "extract" && ex.filter && segment.speaker !== ex.filter) {
+      if (ex.mode === "extract" && ex.filter && segment.speaker !== ex.filter) {
         return;
       }
       var searchPosition = transcribeSearchMatches.indexOf(index);
-      var searchClass = audioWorkspaceMode === "transcribe" && searchPosition >= 0
+      var searchClass = ex.mode === "transcribe" && searchPosition >= 0
         ? " search-match" + (searchPosition === transcribeSearchIndex ? " search-active" : "")
         : "";
       var row = createElement("div", "extract-segment" + (index === ex.selectedRow ? " selected" : "") +
@@ -8500,16 +8428,12 @@
         event.stopPropagation();
       });
       tick.addEventListener("change", function () {
-        if (tick.checked) {
-          ex.checked[index] = true;
-        } else {
-          delete ex.checked[index];
-        }
+        ex.setChecked(index, tick.checked);
         row.classList.toggle("checked", tick.checked);
         updateExtractRegionUI();
         drawExtractWave();
       });
-      if (audioWorkspaceMode === "extract") {
+      if (ex.mode === "extract") {
         head.appendChild(tick);
       }
       head.appendChild(createElement("span", "extract-segment-time", fmtTime(segment.start)));
@@ -8565,7 +8489,7 @@
       textDiv.contentEditable = "true";
       textDiv.spellcheck = false;
       textDiv.addEventListener("blur", function () {
-        segment.text = textDiv.textContent.trim();
+        ex.editTranscript(index, textDiv.textContent);
         if (transcribeSearchQuery) {
           transcribeSearchMatches = findTranscriptMatches(ex.segments, transcribeSearchQuery);
           if (transcribeSearchIndex >= transcribeSearchMatches.length) {
@@ -8586,7 +8510,7 @@
         if (event.target.closest("button, input, [contenteditable=true]")) {
           return;
         }
-        if (audioWorkspaceMode === "transcribe") {
+        if (ex.mode === "transcribe") {
           setTranscriptCursor(index);
         } else {
           setExtractRegion(segment.start, Math.min(segment.end + EXTRACT_TAIL_PAD, ex.duration), index);
@@ -8608,8 +8532,7 @@
   }
 
   function tagExtractSegment(index, name) {
-    var segment = ex.segments[index];
-    segment.speaker = segment.speaker === name ? "" : name;
+    ex.tagSpeaker(index, name);
     renderExtractFilter();
     renderExtractTimeline();
     updateExtractRegionUI();
@@ -8621,7 +8544,7 @@
     if (!button) {
       return;
     }
-    ex.filter = button.getAttribute("data-speaker");
+    ex.setFilter(button.getAttribute("data-speaker"));
     extractFilterRow.querySelectorAll(".speaker-filter").forEach(function (b) {
       b.classList.toggle("active", b === button);
     });
@@ -8764,7 +8687,7 @@
     selectShown.addEventListener("click", function () {
       ex.segments.forEach(function (segment, index) {
         if (!ex.filter || segment.speaker === ex.filter) {
-          ex.checked[index] = true;
+          ex.setChecked(index, true);
         }
       });
       renderExtractTimeline();
@@ -8775,7 +8698,7 @@
     var clearSel = createElement("button", "plain compact-button", "Clear");
     clearSel.type = "button";
     clearSel.addEventListener("click", function () {
-      ex.checked = {};
+      ex.clearChecked();
       renderExtractTimeline();
       updateExtractRegionUI();
       drawExtractWave();
@@ -8813,7 +8736,7 @@
         speaker: speaker
       };
       ex.segments.splice(indices[0], indices.length, merged);
-      ex.checked = {};
+      ex.clearChecked();
       ex.selectedRow = -1;
       renderExtractFilter();
       renderExtractTimeline();
@@ -8862,7 +8785,7 @@
       // Assign each transcript line the speaker whose span overlaps it most;
       // lines with no meaningful overlap keep their manual tag.
       var tagged = 0;
-      ex.segments.forEach(function (segment) {
+      ex.segments.forEach(function (segment, index) {
         var best = null;
         var bestOverlap = 0;
         spans.forEach(function (span) {
@@ -8873,7 +8796,7 @@
           }
         });
         if (best && bestOverlap > 0.2 * (segment.end - segment.start)) {
-          segment.speaker = best.speaker;
+          ex.assignSpeaker(index, best.speaker);
           tagged += 1;
         }
       });
@@ -9287,7 +9210,6 @@
 
   resetCast();
   resetSources();
-  setStoryMode("grounded", { silent: true });
   renderEngineRack(null);
   syncTranscribeRecordingControls();
   applyPage(activePageFromHash());

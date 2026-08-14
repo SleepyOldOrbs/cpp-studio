@@ -48,25 +48,11 @@
   const voiceStatus = byID("storyBuilderVoiceStatus");
   const voiceGroups = byID("storyBuilderVoiceGroups");
 
-  let projects = [];
-  let currentID = "";
-  let autosaveTimer = 0;
-  let savePromise = null;
-  let saveAgain = false;
-  let editVersion = 0;
-  let undoStack = [];
-  let redoStack = [];
-  let selectedClipIDs = new Set();
   let panelPosition = null;
   let clipPointerEdit = null;
   let panelPointerEdit = null;
   let actorVoices = [];
   let libraryAudio = [];
-  let revoicePromise = null;
-  let mediaPlacementPromise = null;
-  let dialogueBuildPromise = null;
-  let renderPromise = null;
-  let exportPromise = null;
   let deliveryFormats = null;
   let activeDialogueBuild = null;
   let dialogueCancelPending = false;
@@ -79,6 +65,31 @@
   let playbackSources = new Set();
   let playheadMS = 0;
   let requestedProjectID = new URLSearchParams(window.location.search).get("project") || "";
+
+  function persistDiagnosticError(message) {
+    fetch("/v1/logs/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        level: "error",
+        page: window.location.pathname,
+        message: String(message || "unknown Story Builder error").replace(/\s+/g, " ").slice(0, 4096),
+      }),
+      keepalive: true,
+    }).catch(() => {
+      // Diagnostics must never interrupt editing or recovery.
+    });
+  }
+
+  window.addEventListener("error", (event) => {
+    const location = event.filename ? ` at ${event.filename}:${event.lineno}:${event.colno}` : "";
+    persistDiagnosticError(`Uncaught Story Builder error: ${event.message || "unknown error"}${location}`);
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason;
+    persistDiagnosticError(`Unhandled Story Builder rejection: ${reason && (reason.stack || reason.message) ? (reason.stack || reason.message) : String(reason)}`);
+  });
 
   async function request(path, options = {}) {
     const response = await fetch(path, {
@@ -95,15 +106,16 @@
     }
     const error = new Error(message);
     error.status = response.status;
+    persistDiagnosticError(`${options.method || "GET"} ${path} failed (${response.status}): ${message}`);
     throw error;
   }
 
   function currentProject() {
-    return projects.find((project) => project.id === currentID) || null;
+    return editSession.current();
   }
 
   function serverMutationPending() {
-    return Boolean(revoicePromise || mediaPlacementPromise || dialogueBuildPromise || renderPromise || exportPromise);
+    return editSession.mutationPending();
   }
 
   function characterVoiceDetails(id) {
@@ -122,6 +134,164 @@
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
   }
+
+  // The edit session owns caller-ordering state; DOM rendering and the HTTP
+  // request adapter remain outside this interface.
+  function createEditSession() {
+    let projects = [];
+    let currentID = "";
+    let autosaveTimer = 0;
+    let savePromise = null;
+    let saveAgain = false;
+    let editVersion = 0;
+    let undoStack = [];
+    let redoStack = [];
+    let selectedClipIDs = new Set();
+    const mutations = new Map();
+
+    const current = () => projects.find((project) => project.id === currentID) || null;
+    const snapshot = (project) => ({ tracks: clone(project.tracks), timeline_duration_ms: project.timeline_duration_ms });
+    const applySnapshot = (project, value) => {
+      project.tracks = clone(value.tracks);
+      project.timeline_duration_ms = value.timeline_duration_ms;
+      normalizeTracks(project);
+    };
+    const pruneSelection = () => {
+      const available = new Set();
+      const project = current();
+      if (project) project.tracks.forEach((track) => track.clips.forEach((clip) => available.add(clip.id)));
+      selectedClipIDs = new Set([...selectedClipIDs].filter((id) => available.has(id)));
+    };
+    const invalidateHistory = () => {
+      undoStack = [];
+      redoStack = [];
+    };
+
+    return {
+      current,
+      list: () => projects,
+      replaceList: (items) => { projects = items; },
+      currentID: () => currentID,
+      clearAutosave: () => window.clearTimeout(autosaveTimer),
+      scheduleAutosave: (callback) => {
+        editVersion += 1;
+        window.clearTimeout(autosaveTimer);
+        autosaveTimer = window.setTimeout(callback, 600);
+      },
+      open: (project) => {
+        currentID = project ? project.id : "";
+        invalidateHistory();
+        selectedClipIDs = new Set();
+        if (project) normalizeTracks(project);
+      },
+      upsert: (project) => {
+        projects = [project, ...projects.filter((item) => item.id !== project.id)];
+      },
+      removeCurrent: () => {
+        projects = projects.filter((item) => item.id !== currentID);
+        currentID = "";
+        invalidateHistory();
+        selectedClipIDs = new Set();
+      },
+      mutationPending: () => mutations.size > 0,
+      mutation: (name) => mutations.get(name) || null,
+      beginMutation: (name, promise) => {
+        if (mutations.size > 0) return false;
+        mutations.set(name, promise);
+        return true;
+      },
+      endMutation: (name) => mutations.delete(name),
+      history: () => ({ canUndo: undoStack.length > 0, canRedo: redoStack.length > 0 }),
+      invalidateHistory,
+      selectionIDs: () => new Set(selectedClipIDs),
+      selectionHas: (id) => selectedClipIDs.has(id),
+      selectionSize: () => selectedClipIDs.size,
+      selectOnly: (id) => { selectedClipIDs = id ? new Set([id]) : new Set(); },
+      toggleSelection: (id) => {
+        if (selectedClipIDs.has(id)) selectedClipIDs.delete(id);
+        else selectedClipIDs.add(id);
+      },
+      removeSelection: (id) => selectedClipIDs.delete(id),
+      pruneSelection,
+      edit: (mutator) => {
+        if (mutations.size > 0) return { accepted: false };
+        const project = current();
+        if (!project) return { accepted: false };
+        const before = snapshot(project);
+        const selectionBefore = new Set(selectedClipIDs);
+        mutator(project);
+        normalizeTracks(project);
+        const error = timelineError(project);
+        if (error) {
+          applySnapshot(project, before);
+          selectedClipIDs = selectionBefore;
+          return { accepted: false, error };
+        }
+        if (JSON.stringify(before) === JSON.stringify(snapshot(project))) return { accepted: false };
+        undoStack.push(before);
+        redoStack = [];
+        pruneSelection();
+        return { accepted: true };
+      },
+      restore: (redo = false) => {
+        if (mutations.size > 0) return false;
+        const project = current();
+        const source = redo ? redoStack : undoStack;
+        const destination = redo ? undoStack : redoStack;
+        if (!project || !source.length) return false;
+        destination.push(snapshot(project));
+        applySnapshot(project, source.pop());
+        pruneSelection();
+        return true;
+      },
+      savePromise: () => savePromise,
+      beginSave: (promise) => {
+        if (savePromise) {
+          saveAgain = true;
+          return false;
+        }
+        savePromise = promise;
+        return true;
+      },
+      saveVersion: () => editVersion,
+      reconcileSaved: (saved, savingVersion) => {
+        const changedDuringSave = editVersion !== savingVersion;
+        const project = current();
+        if (project && project.id === saved.id) {
+          project.revision = saved.revision;
+          project.updated_at = saved.updated_at;
+          project.created_at = saved.created_at;
+          project.timeline_duration_ms = saved.timeline_duration_ms;
+          project.name = changedDuringSave ? project.name : saved.name;
+          if (!changedDuringSave) project.tracks = clone(saved.tracks);
+          projects = [project, ...projects.filter((item) => item.id !== project.id)];
+          if (changedDuringSave) saveAgain = true;
+        } else {
+          projects = [saved, ...projects.filter((item) => item.id !== saved.id)];
+        }
+        return changedDuringSave;
+      },
+      finishSave: (savingID) => {
+        savePromise = null;
+        const repeat = saveAgain && currentID === savingID;
+        saveAgain = false;
+        return repeat;
+      },
+      applySaved: (saved, options = {}) => {
+        const project = current();
+        if (!project || project.id !== saved.id) return false;
+        Object.assign(project, saved);
+        normalizeTracks(project);
+        projects = [project, ...projects.filter((item) => item.id !== project.id)];
+        if (options.invalidateHistory !== false) invalidateHistory();
+        if (options.selectID !== undefined) selectedClipIDs = options.selectID ? new Set([options.selectID]) : new Set();
+        pruneSelection();
+        return true;
+      },
+    };
+  }
+
+  const editSession = createEditSession();
 
   function normalizeTracks(project) {
     project.tracks = Array.isArray(project.tracks) ? project.tracks : [];
@@ -213,27 +383,25 @@
   }
 
   function scheduleAutosave() {
-    editVersion += 1;
     setStatus("dirty");
-    window.clearTimeout(autosaveTimer);
-    autosaveTimer = window.setTimeout(() => saveProject(), 600);
+    editSession.scheduleAutosave(() => saveProject());
   }
 
   function renderProjects() {
     projectList.replaceChildren();
-    if (!projects.length) {
+    if (!editSession.list().length) {
       const message = document.createElement("p");
       message.className = "project-list-empty";
       message.textContent = "No Story Builder Projects yet.";
       projectList.append(message);
       return;
     }
-    for (const project of projects) {
+    for (const project of editSession.list()) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "project-item";
       button.dataset.projectId = project.id;
-      button.setAttribute("aria-current", String(project.id === currentID));
+      button.setAttribute("aria-current", String(project.id === editSession.currentID()));
       const name = document.createElement("strong");
       name.textContent = project.name;
       const updated = document.createElement("span");
@@ -272,7 +440,7 @@
     const selected = [];
     for (const track of project.tracks) {
       for (const clip of track.clips) {
-        if (selectedClipIDs.has(clip.id)) selected.push({ track, clip });
+        if (editSession.selectionHas(clip.id)) selected.push({ track, clip });
       }
     }
     return selected;
@@ -294,9 +462,9 @@
 
   function updateBuildControls() {
     const count = dialogueBuildableCount();
-    buildButton.disabled = Boolean(dialogueBuildPromise || !count);
+    buildButton.disabled = Boolean(editSession.mutation("dialogueBuild") || !count);
     buildButton.textContent = count ? `Build stale (${count})` : "Build stale";
-    const cancellable = Boolean(dialogueBuildPromise && activeDialogueBuild &&
+    const cancellable = Boolean(editSession.mutation("dialogueBuild") && activeDialogueBuild &&
       (activeDialogueBuild.status === "queued" || activeDialogueBuild.status === "running"));
     buildCancelButton.hidden = !cancellable;
     buildCancelButton.disabled = !cancellable || dialogueCancelPending;
@@ -321,11 +489,11 @@
     if (latest) {
       latestMaster.href = `${apiRoot}/${encodeURIComponent(project.id)}/master`;
       latestMaster.textContent = `Latest master (r${latest.revision})`;
-      if (!renderPromise && !exportPromise) setRenderStatus(`Rendered revision ${latest.revision}`, "ready");
+      if (!editSession.mutation("render") && !editSession.mutation("export")) setRenderStatus(`Rendered revision ${latest.revision}`, "ready");
     } else {
       latestMaster.removeAttribute("href");
       latestMaster.textContent = "Latest master";
-      if (!renderPromise && !exportPromise) setRenderStatus("No master rendered");
+      if (!editSession.mutation("render") && !editSession.mutation("export")) setRenderStatus("No master rendered");
     }
     renderRenderHistory(project);
   }
@@ -420,79 +588,51 @@
   }
 
   function updateHistoryButtons() {
-    undoButton.disabled = undoStack.length === 0;
-    redoButton.disabled = redoStack.length === 0;
+    const history = editSession.history();
+    undoButton.disabled = !history.canUndo;
+    redoButton.disabled = !history.canRedo;
   }
 
   function pruneSelection() {
-    const available = new Set();
-    const project = currentProject();
-    if (project) project.tracks.forEach((track) => track.clips.forEach((clip) => available.add(clip.id)));
-    selectedClipIDs = new Set([...selectedClipIDs].filter((id) => available.has(id)));
-  }
-
-  function timelineSnapshot(project) {
-    return { tracks: clone(project.tracks), timeline_duration_ms: project.timeline_duration_ms };
-  }
-
-  function applyTimelineSnapshot(project, snapshot) {
-    project.tracks = clone(snapshot.tracks);
-    project.timeline_duration_ms = snapshot.timeline_duration_ms;
-    normalizeTracks(project);
+    editSession.pruneSelection();
   }
 
   function acceptTimelineEdit(mutator) {
-    if (serverMutationPending()) return false;
     stopBrowserPlayback(true);
-    const project = currentProject();
-    if (!project) return false;
-    const before = timelineSnapshot(project);
-    mutator(project);
-    normalizeTracks(project);
-    const error = timelineError(project);
-    if (error) {
-      applyTimelineSnapshot(project, before);
-      setStatus("failed", error);
+    const result = editSession.edit(mutator);
+    if (result.error) {
+      setStatus("failed", result.error);
       renderTracks();
       return false;
     }
-    if (JSON.stringify(before) === JSON.stringify(timelineSnapshot(project))) {
+    if (!result.accepted) {
       renderTracks();
       return false;
     }
-    undoStack.push(before);
-    redoStack = [];
-    pruneSelection();
     scheduleAutosave();
     renderTracks();
     return true;
   }
 
-  function restoreTimeline(source, destination) {
-    if (serverMutationPending()) return;
-    const project = currentProject();
-    if (!project || !source.length) return;
+  function restoreTimeline(redo = false) {
     stopBrowserPlayback(true);
-    destination.push(timelineSnapshot(project));
-    applyTimelineSnapshot(project, source.pop());
-    pruneSelection();
+    if (!editSession.restore(redo)) return;
     scheduleAutosave();
     renderTracks();
   }
 
   function selectClip(id, additive = false) {
     if (additive) {
-      if (selectedClipIDs.has(id)) selectedClipIDs.delete(id);
-      else selectedClipIDs.add(id);
+      editSession.toggleSelection(id);
     } else {
-      selectedClipIDs = new Set([id]);
+      editSession.selectOnly(id);
     }
     refreshSelectionUI();
   }
 
   function refreshSelectionUI() {
     document.querySelectorAll(".timeline-clip").forEach((element) => {
-      const selected = selectedClipIDs.has(element.dataset.clipId);
+      const selected = editSession.selectionHas(element.dataset.clipId);
       element.classList.toggle("is-selected", selected);
       if (element.getAttribute("role") === "button") element.setAttribute("aria-pressed", String(selected));
     });
@@ -661,7 +801,7 @@
     } else {
       block.tabIndex = 0;
       block.setAttribute("role", "button");
-      block.setAttribute("aria-pressed", String(selectedClipIDs.has(clip.id)));
+      block.setAttribute("aria-pressed", String(editSession.selectionHas(clip.id)));
     }
     let label;
     if (clip.type === "dialogue") {
@@ -795,7 +935,7 @@
     const remove = actionButton("Remove", `Remove ${clip.label}`, () => {
       acceptTimelineEdit(() => {
         track.clips = track.clips.filter((item) => item.id !== clip.id);
-        selectedClipIDs.delete(clip.id);
+        editSession.removeSelection(clip.id);
       });
     });
     remove.classList.add("danger-button");
@@ -930,10 +1070,8 @@
 
   async function refreshBuiltProject(projectID) {
     const saved = await request(`${apiRoot}/${encodeURIComponent(projectID)}`);
-    if (currentID === projectID) {
-      projects = [saved, ...projects.filter((item) => item.id !== projectID)];
-      normalizeTracks(saved);
-      pruneSelection();
+    if (editSession.currentID() === projectID) {
+      editSession.applySaved(saved);
       renderProjects();
       renderTracks();
     }
@@ -945,9 +1083,9 @@
   }
 
   async function monitorDialogueBuild(started) {
-    if (dialogueBuildPromise) return dialogueBuildPromise;
+    if (editSession.mutation("dialogueBuild")) return editSession.mutation("dialogueBuild");
     activeDialogueBuild = started;
-    dialogueBuildPromise = Promise.resolve().then(async () => {
+    const dialogueBuildPromise = Promise.resolve().then(async () => {
       let build = activeDialogueBuild;
       while (build.status === "queued" || build.status === "running") {
         activeDialogueBuild = build;
@@ -961,8 +1099,7 @@
       activeDialogueBuild = build;
       const saved = await refreshBuiltProject(build.project_id);
       if (build.status === "complete") {
-        undoStack = [];
-        redoStack = [];
+        editSession.invalidateHistory();
         const remaining = dialogueBuildableCount(saved);
         setBuildStatus(remaining
           ? `Previous build complete · ${remaining} dialogue clip${remaining === 1 ? "" : "s"} need building`
@@ -975,6 +1112,7 @@
       }
       setBuildStatus(`Dialogue build failed after ${build.completed}/${build.total}: ${build.error || "unknown error"}`, "failed");
     });
+    editSession.beginMutation("dialogueBuild", dialogueBuildPromise);
     updateBuildControls();
     try {
       await dialogueBuildPromise;
@@ -982,7 +1120,7 @@
       const detail = error.status === 409 ? "the project changed or another build is active" : error.message;
       setBuildStatus(`Could not build dialogue: ${detail}`, "failed");
     } finally {
-      dialogueBuildPromise = null;
+      editSession.endMutation("dialogueBuild");
       activeDialogueBuild = null;
       dialogueCancelPending = false;
       updateBuildControls();
@@ -990,12 +1128,12 @@
   }
 
   async function resumeDialogueBuild(projectID) {
-    if (!projectID || dialogueBuildPromise) return;
+    if (!projectID || editSession.mutation("dialogueBuild")) return;
     try {
       const build = await request(`${apiRoot}/${encodeURIComponent(projectID)}/builds`);
-      if (build && currentID === projectID) await monitorDialogueBuild(build);
+      if (build && editSession.currentID() === projectID) await monitorDialogueBuild(build);
     } catch (error) {
-      if (currentID === projectID) setBuildStatus(`Could not recover dialogue build status: ${error.message}`, "failed");
+      if (editSession.currentID() === projectID) setBuildStatus(`Could not recover dialogue build status: ${error.message}`, "failed");
     }
   }
 
@@ -1004,7 +1142,7 @@
     stopBrowserPlayback(true);
     let project = currentProject();
     if (!project || dialogueBuildableCount(project) === 0) return;
-    if (savePromise || saveStatus.dataset.state !== "saved") {
+    if (editSession.savePromise() || saveStatus.dataset.state !== "saved") {
       await saveProject();
       project = currentProject();
       if (!project || saveStatus.dataset.state !== "saved") {
@@ -1244,10 +1382,10 @@
     block.focus({ preventScroll: true });
     if (mode === "move") {
       if (event.shiftKey) {
-        const wasSelected = selectedClipIDs.has(clipID);
+        const wasSelected = editSession.selectionHas(clipID);
         selectClip(clipID, true);
         if (wasSelected) return;
-      } else if (!selectedClipIDs.has(clipID)) {
+      } else if (!editSession.selectionHas(clipID)) {
         selectClip(clipID);
       }
     } else {
@@ -1346,26 +1484,22 @@
   }
 
   function showCurrent(project, preserveInput = false) {
-    const changedProject = currentID !== (project ? project.id : "");
+    const changedProject = editSession.currentID() !== (project ? project.id : "");
     if (changedProject) {
       stopBrowserPlayback(false);
       playheadMS = 0;
     }
-    currentID = project ? project.id : "";
+    editSession.open(project);
     editor.hidden = !project;
     emptyState.hidden = Boolean(project);
-    undoStack = [];
-    redoStack = [];
-    selectedClipIDs = new Set();
-    if (!dialogueBuildPromise) setBuildStatus("No dialogue build running.");
+    if (!editSession.mutation("dialogueBuild")) setBuildStatus("No dialogue build running.");
     if (project) {
-      normalizeTracks(project);
       if (!preserveInput) nameInput.value = project.name;
       setStatus("saved");
     }
     renderProjects();
     renderTracks();
-    if (project && !dialogueBuildPromise) void resumeDialogueBuild(project.id);
+    if (project && !editSession.mutation("dialogueBuild")) void resumeDialogueBuild(project.id);
     if (project && !panelPosition) {
       const heading = document.querySelector(".canvas-heading").getBoundingClientRect();
       clampPanelPosition({ x: window.innerWidth - selectionPanel.offsetWidth - 24, y: heading.bottom + 12 });
@@ -1375,7 +1509,7 @@
   async function refreshProjects() {
     try {
       const body = await request(apiRoot);
-      projects = body.projects || [];
+      editSession.replaceList(body.projects || []);
       if (requestedProjectID) {
         const id = requestedProjectID;
         requestedProjectID = "";
@@ -1390,11 +1524,10 @@
 
   async function openProject(id) {
     if (serverMutationPending()) return;
-    window.clearTimeout(autosaveTimer);
+    editSession.clearAutosave();
     try {
       const project = await request(`${apiRoot}/${encodeURIComponent(id)}`);
-      projects = [project, ...projects.filter((item) => item.id !== id)];
-      editVersion = 0;
+      editSession.upsert(project);
       showCurrent(project);
     } catch (error) {
       setStatus("failed", error.message);
@@ -1410,7 +1543,7 @@
     if (serverMutationPending()) return;
     stopBrowserPlayback(true);
     const project = currentProject();
-    if (!project || savePromise || saveStatus.dataset.state !== "saved") {
+    if (!project || editSession.savePromise() || saveStatus.dataset.state !== "saved") {
       setVoiceLibraryStatus("Save pending timeline changes before revoicing this track.", "failed");
       saveProject();
       return;
@@ -1439,15 +1572,11 @@
     setStatus("saving");
     setVoiceLibraryStatus(`Revoicing ${track.name} as ${actor.name} / ${character.name}…`);
     appShell.inert = true;
-    revoicePromise = request(`${apiRoot}/${encodeURIComponent(project.id)}`, { method: "PUT", body: JSON.stringify(payload) });
+    const revoicePromise = request(`${apiRoot}/${encodeURIComponent(project.id)}`, { method: "PUT", body: JSON.stringify(payload) });
+    editSession.beginMutation("revoice", revoicePromise);
     try {
       const saved = await revoicePromise;
-      if (currentID !== saved.id) return;
-      Object.assign(project, saved);
-      projects = [project, ...projects.filter((item) => item.id !== project.id)];
-      undoStack = [];
-      redoStack = [];
-      pruneSelection();
+      if (!editSession.applySaved(saved)) return;
       setStatus("saved");
       setVoiceLibraryStatus(`Revoiced ${track.name} as ${actor.name} / ${character.name}.`, "ready");
       renderProjects();
@@ -1457,7 +1586,7 @@
       setStatus("failed", detail);
       setVoiceLibraryStatus(`Could not revoice ${track.name}: ${detail}`, "failed");
     } finally {
-      revoicePromise = null;
+      editSession.endMutation("revoice");
       appShell.inert = false;
     }
   }
@@ -1500,7 +1629,7 @@
       track.actor_voice_id = actor.id;
       track.voice_fingerprint = "";
       track.clips.push(clip);
-      selectedClipIDs = new Set([clip.id]);
+      editSession.selectOnly(clip.id);
     });
     if (accepted) setVoiceLibraryStatus(`Added ${actor.name} / ${character.name} to ${track.name}.`, "ready");
   }
@@ -1536,7 +1665,7 @@
       setVoiceLibraryStatus(`${asset.name} is ${mediaRoleLabel(asset.mediaRole)} and cannot be added to ${track.name}.`, "failed");
       return;
     }
-    if (!project || savePromise || saveStatus.dataset.state !== "saved") {
+    if (!project || editSession.savePromise() || saveStatus.dataset.state !== "saved") {
       setVoiceLibraryStatus("Save pending timeline changes before adding Library audio.", "failed");
       saveProject();
       return;
@@ -1551,19 +1680,15 @@
     setStatus("saving");
     setVoiceLibraryStatus(`Copying ${asset.name} into ${project.name}…`);
     appShell.inert = true;
-    mediaPlacementPromise = request(`${apiRoot}/${encodeURIComponent(project.id)}/library-audio`, {
+    const mediaPlacementPromise = request(`${apiRoot}/${encodeURIComponent(project.id)}/library-audio`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    editSession.beginMutation("mediaPlacement", mediaPlacementPromise);
     try {
       const saved = await mediaPlacementPromise;
-      if (currentID !== saved.id) return;
-      Object.assign(project, saved);
-      projects = [project, ...projects.filter((item) => item.id !== project.id)];
-      const added = project.tracks.flatMap((item) => item.clips).find((clip) => !beforeClipIDs.has(clip.id));
-      selectedClipIDs = added ? new Set([added.id]) : new Set();
-      undoStack = [];
-      redoStack = [];
+      const added = saved.tracks.flatMap((item) => item.clips).find((clip) => !beforeClipIDs.has(clip.id));
+      if (!editSession.applySaved(saved, { selectID: added?.id || "" })) return;
       setStatus("saved");
       setVoiceLibraryStatus(`Added ${asset.name} to ${track.name}.`, "ready");
       renderProjects();
@@ -1573,7 +1698,7 @@
       setStatus("failed", detail);
       setVoiceLibraryStatus(`Could not add ${asset.name}: ${detail}`, "failed");
     } finally {
-      mediaPlacementPromise = null;
+      editSession.endMutation("mediaPlacement");
       appShell.inert = false;
     }
   }
@@ -1741,7 +1866,7 @@
     const project = currentProject();
     if (!project) return;
     acceptTimelineEdit(() => {
-      project.tracks[index].clips.forEach((clip) => selectedClipIDs.delete(clip.id));
+      project.tracks[index].clips.forEach((clip) => editSession.removeSelection(clip.id));
       project.tracks.splice(index, 1);
     });
   }
@@ -1751,23 +1876,24 @@
       const latestEnd = track.clips.reduce((end, clip) => Math.max(end, clip.start_ms + clip.duration_ms), 0);
       const clip = { id: mintID("clip"), type: "silence", label: "Silence", start_ms: snappedTime(latestEnd), duration_ms: 1000 };
       track.clips.push(clip);
-      selectedClipIDs = new Set([clip.id]);
+      editSession.selectOnly(clip.id);
     });
   }
 
   function removeSelectedClips() {
-    if (!selectedClipIDs.size) return;
+    if (!editSession.selectionSize()) return;
+    const selectedClipIDs = editSession.selectionIDs();
     acceptTimelineEdit((project) => {
       project.tracks.forEach((track) => {
         track.clips = track.clips.filter((clip) => !selectedClipIDs.has(clip.id));
       });
-      selectedClipIDs = new Set();
+      editSession.selectOnly("");
     });
   }
 
   async function saveProject() {
     if (serverMutationPending()) return;
-    window.clearTimeout(autosaveTimer);
+    editSession.clearAutosave();
     const project = currentProject();
     if (!project) return;
     const requestedName = nameInput.value.trim();
@@ -1780,13 +1906,14 @@
       setStatus("failed", validationError);
       return;
     }
-    if (savePromise) {
-      saveAgain = true;
-      return savePromise;
+    const activeSave = editSession.savePromise();
+    if (activeSave) {
+      editSession.beginSave(activeSave);
+      return activeSave;
     }
     normalizeTracks(project);
     const savingID = project.id;
-    const savingVersion = editVersion;
+    const savingVersion = editSession.saveVersion();
     const payload = {
       name: requestedName,
       revision: project.revision,
@@ -1794,59 +1921,43 @@
       tracks: clone(project.tracks),
     };
     setStatus("saving");
-    savePromise = request(`${apiRoot}/${encodeURIComponent(savingID)}`, { method: "PUT", body: JSON.stringify(payload) });
+    const savePromise = request(`${apiRoot}/${encodeURIComponent(savingID)}`, { method: "PUT", body: JSON.stringify(payload) });
+    if (!editSession.beginSave(savePromise)) return editSession.savePromise();
     try {
       const saved = await savePromise;
-      const changedDuringSave = editVersion !== savingVersion;
-      if (currentID === savingID) {
-        project.revision = saved.revision;
-        project.updated_at = saved.updated_at;
-        project.created_at = saved.created_at;
-        project.timeline_duration_ms = saved.timeline_duration_ms;
-        project.name = changedDuringSave ? project.name : saved.name;
-        if (!changedDuringSave) project.tracks = clone(saved.tracks);
-        projects = [project, ...projects.filter((item) => item.id !== project.id)];
-        if (changedDuringSave) saveAgain = true;
-      } else {
-        projects = [saved, ...projects.filter((item) => item.id !== saved.id)];
-      }
+      const changedDuringSave = editSession.reconcileSaved(saved, savingVersion);
       if (!changedDuringSave) setStatus("saved");
       renderProjects();
-      if (!changedDuringSave && currentID === savingID) renderTracks();
+      if (!changedDuringSave && editSession.currentID() === savingID) renderTracks();
     } catch (error) {
       const detail = error.status === 409 ? "another edit changed this project; reopen it before saving" : error.message;
       setStatus("failed", detail);
     } finally {
-      savePromise = null;
-      if (saveAgain && currentID === savingID) {
-        saveAgain = false;
-        await saveProject();
-      }
+      if (editSession.finishSave(savingID)) await saveProject();
     }
   }
 
   async function renderMaster() {
     if (serverMutationPending()) return;
     stopBrowserPlayback(true);
-    if (saveStatus.dataset.state !== "saved" || savePromise) await saveProject();
+    if (saveStatus.dataset.state !== "saved" || editSession.savePromise()) await saveProject();
     const project = currentProject();
     if (!project || saveStatus.dataset.state !== "saved") {
       setRenderStatus("Save the project before rendering", "failed");
       return;
     }
     setRenderStatus("Rendering mixed master…", "running");
-    renderPromise = request(`${apiRoot}/${encodeURIComponent(project.id)}/renders`, {
+    const renderPromise = request(`${apiRoot}/${encodeURIComponent(project.id)}/renders`, {
       method: "POST",
       body: JSON.stringify({ revision: project.revision }),
     });
+    editSession.beginMutation("render", renderPromise);
     appShell.inert = true;
     updateRenderControls();
     let failure = "";
     try {
       const response = await renderPromise;
-      if (currentID !== response.project.id) return;
-      Object.assign(project, response.project);
-      projects = [project, ...projects.filter((item) => item.id !== project.id)];
+      if (!editSession.applySaved(response.project)) return;
       setStatus("saved");
       setRenderStatus(`Rendered revision ${response.render.revision}`, "ready");
       renderProjects();
@@ -1854,7 +1965,7 @@
       const detail = error.status === 409 ? "the saved arrangement is not ready or changed; reopen it and try again" : error.message;
       failure = `Render failed — ${detail}`;
     } finally {
-      renderPromise = null;
+      editSession.endMutation("render");
       appShell.inert = false;
       updateRenderControls();
       if (failure) setRenderStatus(failure, "failed");
@@ -1866,26 +1977,25 @@
     const project = currentProject();
     if (!project) return;
     setRenderStatus(`Encoding revision ${renderRevision} as ${format.toUpperCase()}…`, "running");
-    exportPromise = request(`${apiRoot}/${encodeURIComponent(project.id)}/renders/${renderRevision}/exports`, {
+    const exportPromise = request(`${apiRoot}/${encodeURIComponent(project.id)}/renders/${renderRevision}/exports`, {
       method: "POST",
       body: JSON.stringify({ revision: project.revision, format }),
     });
+    editSession.beginMutation("export", exportPromise);
     appShell.inert = true;
     renderRenderHistory(project);
     let failure = "";
     let success = "";
     try {
       const response = await exportPromise;
-      if (currentID !== response.project.id) return;
-      Object.assign(project, response.project);
-      projects = [project, ...projects.filter((item) => item.id !== project.id)];
+      if (!editSession.applySaved(response.project)) return;
       setStatus("saved");
       success = `Revision ${renderRevision} ${format.toUpperCase()} is ready`;
       renderProjects();
     } catch (error) {
       failure = `Export failed — ${error.message}`;
     } finally {
-      exportPromise = null;
+      editSession.endMutation("export");
       appShell.inert = false;
       updateRenderControls();
       if (failure) setRenderStatus(failure, "failed");
@@ -1943,9 +2053,8 @@
     if (!name) return;
     try {
       const project = await request(apiRoot, { method: "POST", body: JSON.stringify({ name }) });
-      projects = [project, ...projects];
+      editSession.upsert(project);
       newNameInput.value = "";
-      editVersion = 0;
       showCurrent(project);
       nameInput.focus();
     } catch (error) {
@@ -1967,8 +2076,8 @@
   byID("storyBuilderAddDialogue").addEventListener("click", () => addTrack("dialogue"));
   byID("storyBuilderAddSFX").addEventListener("click", () => addTrack("sfx"));
   byID("storyBuilderAddMusic").addEventListener("click", () => addTrack("music"));
-  undoButton.addEventListener("click", () => restoreTimeline(undoStack, redoStack));
-  redoButton.addEventListener("click", () => restoreTimeline(redoStack, undoStack));
+  undoButton.addEventListener("click", () => restoreTimeline(false));
+  redoButton.addEventListener("click", () => restoreTimeline(true));
   snapInput.addEventListener("change", () => refreshSelectionUI());
   timelineDurationInput.addEventListener("change", () => {
     const seconds = Number(timelineDurationInput.value);
@@ -2008,7 +2117,7 @@
     )) return;
     try {
       await request(`${apiRoot}/${encodeURIComponent(project.id)}`, { method: "DELETE" });
-      projects = projects.filter((item) => item.id !== project.id);
+      editSession.removeCurrent();
       showCurrent(null);
     } catch (error) {
       setStatus("failed", error.message);
@@ -2022,10 +2131,10 @@
       saveProject();
     } else if (command && event.key.toLowerCase() === "z") {
       event.preventDefault();
-      restoreTimeline(event.shiftKey ? redoStack : undoStack, event.shiftKey ? undoStack : redoStack);
+      restoreTimeline(event.shiftKey);
     } else if (command && event.key.toLowerCase() === "y") {
       event.preventDefault();
-      restoreTimeline(redoStack, undoStack);
+      restoreTimeline(true);
     } else if (!command && event.key === " ") {
       event.preventDefault();
       if (playbackPlaying) pauseTimeline();

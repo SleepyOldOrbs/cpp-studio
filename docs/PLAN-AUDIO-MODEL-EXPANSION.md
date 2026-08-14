@@ -66,3 +66,19 @@ with pinned revision, size, checksum, and URL metadata.
   or arbitrary request option.
 - Existing Qwen3 0.6B, Whisper, ACE-Step, Chatterbox, Sortformer, DramaBox,
   voice-library, Story, and Story Builder flows remain compatible.
+
+## Current implementation evidence
+
+Code completion was verified on 2026-08-13. The tracked manifest now carries model
+display names, aliases and capabilities; Gateway selection resolves public model ids
+through that catalogue; and the Studio exposes compatible catalog-driven selectors
+and the requested generation, conversion, separation and analysis surfaces. Native
+protocol mapping remains owned by Engine invocation rather than browser or Gateway
+allowlists.
+
+`scripts/verify.ps1`, every Go package, JavaScript syntax, configuration checks and
+the fixture browser smokes pass. A focused live regression also exercised the
+catalog-selected resident Qwen TTS path and produced a valid mono, 16-bit, 24 kHz
+WAV. This is implementation and compatibility evidence, not a claim that every
+optional model package has been perceptually qualified on real weights; installed
+state, runtime readiness, benchmarks and listening remain distinct catalogue gates.

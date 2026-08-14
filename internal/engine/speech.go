@@ -214,10 +214,10 @@ func SpeechVoiceSpecForRequest(request SynthesisRequest, voice *Voice) Spec {
 				"--out", outPath,
 			}
 		}
-		return spec
+		return withResidentSpeech(spec, request, voice)
 	}
 	if request.EngineID != DramaBoxSpeechEngineID {
-		return spec
+		return withResidentSpeech(spec, request, voice)
 	}
 	options := request.Options
 	spec.BuildArgs = func(_, outPath string) []string {
@@ -232,7 +232,7 @@ func SpeechVoiceSpecForRequest(request SynthesisRequest, voice *Voice) Spec {
 			"--out", outPath,
 		}
 	}
-	return spec
+	return withResidentSpeech(spec, request, voice)
 }
 
 type serverSpeechRequest struct {

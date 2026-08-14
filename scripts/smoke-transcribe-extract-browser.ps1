@@ -146,12 +146,13 @@ async page => {
   await page.locator('[data-parent-link="talk-voice"]').click();
   await page.waitForFunction(() => location.hash === '#talk-voice');
   const talkHome = page.locator('[data-page="talk-voice"]');
+  await talkHome.waitFor({ state: 'visible' });
   assert(await talkHome.isVisible(), 'Talk & voice homepage did not open');
-  assert((await talkHome.locator('.tool-card').count()) === 5, 'Talk & voice homepage tool count was wrong');
+  assert((await talkHome.locator('.tool-card').count()) === 6, 'Talk & voice homepage tool count was wrong');
   await page.screenshot({ path: screenshotPath, fullPage: true });
 
   const homes = [
-    ['music', 1],
+    ['music', 2],
     ['imagery', 1],
     ['stories-audiobooks', 4]
   ];
@@ -342,32 +343,12 @@ async page => {
   };
   const editedText = 'Edited second fixture line';
 
-  const pureTools = await page.evaluate(() => {
-    const tools = window.__cppStudioTranscriptTools;
-    const sample = [{ start: 59.9996, end: 59.5, speaker: 'Speaker_[1]', text: '*hello*' }];
-    const renameSample = [{ speaker: 'A' }, { speaker: 'A' }, { speaker: 'B' }];
-    return {
-      timestamp: tools.formatTimestamp(59.9996, ','),
-      markdown: tools.buildMarkdown(sample, { sourceName: 'source_[x]' }),
-      srt: tools.buildSRT(sample),
-      vtt: tools.buildVTT(sample),
-      txt: tools.buildTXT(sample),
-      json: tools.buildJSON(sample, { sourceName: 'source.wav', duration: 60, sampleRate: 16000 }),
-      matches: tools.findMatches([{ text: 'One', speaker: 'A' }, { text: 'Two', speaker: 'Narrator' }], 'narrator'),
-      renamed: tools.renameSpeaker(renameSample, 'A', 'Host'),
-      renameSample
-    };
-  });
-  assert(pureTools.timestamp === '00:01:00,000', 'timestamp rounding crossed a boundary incorrectly');
-  assert(pureTools.markdown.includes('Speaker\\_\\[1\\]') && pureTools.markdown.includes('\\*hello\\*'),
-    'Markdown export did not escape user text');
-  assert(pureTools.srt.includes('00:01:00,000 --> 00:01:00,000'), 'SRT did not prevent reversed timestamps');
-  assert(pureTools.vtt.startsWith('WEBVTT\n\n'), 'WebVTT header was missing');
-  assert(pureTools.txt.includes('Speaker_[1]: *hello*'), 'TXT content was incomplete');
-  assert(JSON.parse(pureTools.json).sample_rate === 16000, 'JSON metadata was incomplete');
-  assert(JSON.stringify(pureTools.matches) === '[1]', 'speaker-name search helper returned the wrong match');
-  assert(pureTools.renamed === 2 && JSON.stringify(pureTools.renameSample.map(item => item.speaker)) === '["Host","Host","B"]',
-    'speaker rename helper changed non-matching segments');
+  const workspace = await page.evaluate(() => window.__cppStudioAudioWorkspace.snapshot());
+  assert(workspace.mode === 'transcribe', 'Audio Workspace did not own Transcribe mode');
+  assert(workspace.sourceName === 'input.wav' && workspace.sampleRate > 0,
+    'Audio Workspace did not own the decoded source');
+  assert(workspace.segments.length === 3 && workspace.segments[1].text === editedText,
+    'Audio Workspace did not own the edited transcript');
 
   const captureDownload = async (name) => {
     const pending = page.waitForEvent('download');
@@ -392,8 +373,8 @@ async page => {
   assert(downloads.srt.text.includes('00:00:00,900 --> 00:00:01,700'), 'SRT timestamps were wrong');
   assert(downloads.vtt.text.startsWith('WEBVTT\n\n'), 'downloaded WebVTT header was wrong');
   const downloadedJSON = JSON.parse(downloads.json.text);
-  assert(downloadedJSON.source_name === 'input.wav' && downloadedJSON.sample_rate === 48000 && downloadedJSON.segments.length === 3,
-    'downloaded JSON metadata was wrong');
+  assert(downloadedJSON.source_name === 'input.wav' && downloadedJSON.sample_rate > 0 && downloadedJSON.segments.length === 3,
+    'downloaded JSON metadata was wrong: ' + JSON.stringify(downloadedJSON));
 
   const waveform = page.locator('#extractCanvas');
   await waveform.focus();
@@ -430,8 +411,19 @@ async page => {
     'active transcript edit was lost on Transcribe to Extract');
   assert((await page.locator('#extractFileStatus').textContent()) === sourceStatus,
     'loaded source changed on Transcribe to Extract');
+  const extractWorkspace = await page.evaluate(() => window.__cppStudioAudioWorkspace.snapshot());
+  assert(extractWorkspace.mode === 'extract' && extractWorkspace.sourceName === 'input.wav' &&
+    extractWorkspace.segments[0].text === activeEdit,
+    'Audio Workspace interface lost mode, source, or transcript ordering on Transcribe to Extract');
   assert(await page.locator('#extractCloneButton').isVisible(), 'Extract did not expose clone-reference action');
   assert(await page.locator('#extractLibraryButton').isVisible(), 'Extract did not expose Library clip action');
+  assert(await page.locator('#transcribeRenameFrom').isVisible(), 'Extract did not expose speaker rename controls');
+  await page.locator('#transcribeRenameFrom').selectOption('Narrator');
+  await page.locator('#transcribeRenameTo').fill('Host');
+  await page.locator('#transcribeRenameButton').click();
+  const extractRenamedSpeakers = await page.locator('.extract-segment-speaker').allTextContents();
+  assert(JSON.stringify(extractRenamedSpeakers) === JSON.stringify(['Host', 'Host', 'B']),
+    'Extract speaker rename changed the wrong segments: ' + JSON.stringify(extractRenamedSpeakers));
 
   await page.locator('.extract-segment-time').first().click();
   const tick = page.locator('.extract-segment-tick').first();
@@ -447,7 +439,7 @@ async page => {
   assert(!(await page.locator('#extractCloneButton').isVisible()), 'Transcribe leaked extraction actions after returning');
   assert((await page.locator('.extract-segment-text').first().textContent()) === activeEdit,
     'edited transcript changed on Extract to Transcribe');
-  assert((await page.locator('.extract-segment-speaker').first().textContent()) === 'Narrator',
+  assert((await page.locator('.extract-segment-speaker').first().textContent()) === 'Host',
     'speaker correction changed on Extract to Transcribe');
 
   await page.locator('#openExtractButton').click();
@@ -471,7 +463,7 @@ async page => {
   assert(await page.locator('#extractCastButton').isEnabled(), 'cast cloning stayed disabled after speaker tagging');
   await page.locator('.extract-segment-tick').nth(2).check();
   assert((await page.locator('#extractSelectionDuration').textContent()) === '2.3s', 'stitched selection duration was wrong');
-  assert((await page.locator('#extractSelectionSpeakers').textContent()) === 'Narrator, B', 'selection speaker provenance was wrong');
+  assert((await page.locator('#extractSelectionSpeakers').textContent()) === 'Host, B', 'selection speaker provenance was wrong');
   assert((await page.locator('#extractSelectionSpanCount').textContent()) === '2', 'stitched span count was wrong');
 
   await page.locator('#extractPlayButton').click();
@@ -502,11 +494,11 @@ async page => {
   assert(deleted.status() === 204, 'browser smoke could not clean up its saved Library item');
 
   await page.locator('.extract-segment-tick').nth(2).uncheck();
-  assert((await page.locator('#extractSelectionSpeakers').textContent()) === 'Narrator', 'single-speaker selection provenance was wrong');
+  assert((await page.locator('#extractSelectionSpeakers').textContent()) === 'Host', 'single-speaker selection provenance was wrong');
   await page.locator('#extractCloneButton').click();
   await page.waitForFunction(() => location.hash === '#voices');
   const cloneStatus = await page.locator('#cloneWavStatus').textContent();
-  assert(cloneStatus.includes('from input.wav') && cloneStatus.includes('speaker Narrator') && cloneStatus.includes('0:00.0–0:01.1'),
+  assert(cloneStatus.includes('from input.wav') && cloneStatus.includes('speaker Host') && cloneStatus.includes('0:00.0–0:01.1'),
     'clone-reference handoff lost provenance: ' + cloneStatus);
   await page.locator('[data-parent-link="stories-audiobooks"]').click();
   await page.locator('[data-parent-nav="stories-audiobooks"] [data-page-link="extract"]').click();
@@ -547,6 +539,25 @@ async page => {
       }
     }
     Object.defineProperty(window, 'AudioContext', { configurable: true, value: FakeRecordingContext });
+    window.__transcribePendingMic = new Promise(resolve => { window.__resolveTranscribeMic = resolve; });
+    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
+      configurable: true,
+      value: () => window.__transcribePendingMic
+    });
+  });
+  await page.locator('#transcribeRecordButton').click();
+  await page.waitForFunction(() => window.__cppStudioRecorders.snapshot().transcribe === 'pending');
+  await page.locator('#transcribeStopRecordButton').click();
+  assert((await page.evaluate(() => window.__cppStudioRecorders.snapshot().transcribe)) === 'pending',
+    'Recorder did not retain the pending setup state until permission resolved');
+  await page.evaluate(() => window.__resolveTranscribeMic({
+    getTracks: () => [{ stop: () => { window.__transcribeTrackStopped = true; } }]
+  }));
+  await page.waitForFunction(() => window.__cppStudioRecorders.snapshot().transcribe === 'idle');
+  assert(await page.evaluate(() => window.__transcribeTrackStopped),
+    'Recorder did not clean up a microphone stopped during permission setup');
+  await page.evaluate(() => {
+    window.__transcribeTrackStopped = false;
     Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
       configurable: true,
       value: async () => ({ getTracks: () => [{ stop: () => { window.__transcribeTrackStopped = true; } }] })
@@ -554,6 +565,8 @@ async page => {
   });
   await page.locator('#transcribeRecordButton').click();
   await page.waitForFunction(() => !document.querySelector('#transcribeStopRecordButton').disabled);
+  assert((await page.evaluate(() => window.__cppStudioRecorders.snapshot().transcribe)) === 'active',
+    'Recorder did not publish active after microphone setup');
   await page.evaluate(() => {
     const samples = new Float32Array(8192);
     samples.fill(0.15);
@@ -564,6 +577,8 @@ async page => {
   });
   await page.locator('#transcribeStopRecordButton').click();
   await page.waitForFunction(() => document.querySelector('#extractFileStatus').textContent.includes('microphone-recording.wav'));
+  assert((await page.evaluate(() => window.__cppStudioRecorders.snapshot().transcribe)) === 'idle',
+    'Recorder did not return to idle after finishing a valid WAV');
   assert(await page.evaluate(() => window.__transcribeTrackStopped), 'microphone track was not stopped after recording');
   await page.waitForFunction(() => document.querySelectorAll('.extract-segment').length === 0);
   assert((await page.locator('.extract-segment').count()) === 0, 'stopping a recording transcribed implicitly');

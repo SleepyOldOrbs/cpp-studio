@@ -201,7 +201,7 @@ func TestCaptureLogsHandlesLongLines(t *testing.T) {
 	engine := &engineProcess{logs: newLogRing(5)}
 	line := strings.Repeat("x", 128*1024)
 
-	engine.captureLogs(strings.NewReader(line + "\n"))
+	engine.captureLogs("stdout", strings.NewReader(line+"\n"))
 
 	logs := engine.logs.snapshot()
 	if len(logs) != 1 || logs[0] != line {

@@ -4,10 +4,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -39,6 +41,22 @@ func run(args []string) error {
 		fmt.Println("config ok")
 		return nil
 	}
+
+	logFile, logPath, err := openSessionLog(filepath.Join(filepath.Dir(*configPath), "out", "logs"), time.Now().UTC(), os.Getpid())
+	if err != nil {
+		return fmt.Errorf("open diagnostic log: %w", err)
+	}
+	defer logFile.Close()
+	previousLogOutput := log.Writer()
+	previousLogFlags := log.Flags()
+	log.SetOutput(io.MultiWriter(previousLogOutput, logFile))
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.LUTC)
+	defer func() {
+		log.SetOutput(previousLogOutput)
+		log.SetFlags(previousLogFlags)
+	}()
+	log.Printf("session_start pid=%d config=%q log=%q", os.Getpid(), *configPath, logPath)
+	defer log.Printf("session_stop pid=%d", os.Getpid())
 
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
@@ -94,4 +112,22 @@ func run(args []string) error {
 		return fmt.Errorf("server shutdown: %w", shutdownErr)
 	}
 	return nil
+}
+
+func openSessionLog(dir string, now time.Time, pid int) (*os.File, string, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, "", err
+	}
+	name := fmt.Sprintf("cpp-studio-%s-pid%d.log", now.UTC().Format("20060102T150405Z"), pid)
+	path := filepath.Join(dir, name)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, "", err
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		_ = file.Close()
+		return nil, "", err
+	}
+	return file, abs, nil
 }

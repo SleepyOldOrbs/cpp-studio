@@ -346,6 +346,9 @@ func TestAudioCPPAnalysisSpecsUseFixedOutputContracts(t *testing.T) {
 	if got := align.BuildArgs("input.wav", "words.json"); !reflect.DeepEqual(got, wantAlign) {
 		t.Fatalf("alignment args = %v, want %v", got, wantAlign)
 	}
+	if got := ForcedAlignmentSpecFor("catalog-aligner", nil, "exact", "en").Engine; got != "catalog-aligner" {
+		t.Fatalf("catalog alignment engine = %q", got)
+	}
 }
 
 func TestParseAudioCPPTextOutput(t *testing.T) {

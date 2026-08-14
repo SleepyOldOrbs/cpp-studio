@@ -241,6 +241,37 @@ async page => {
 }
 '@
 
+$sessionSequenceCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const waitSaved = async () => {
+    await page.waitForFunction(() => document.querySelector('#storyBuilderSaveStatus')?.textContent === 'Saved');
+  };
+  await waitSaved();
+  const projectID = await page.locator('.project-item[aria-current="true"]').getAttribute('data-project-id');
+  const routePattern = `**/v1/story-builder-projects/${projectID}`;
+  let saveRequests = 0;
+  await page.route(routePattern, async route => {
+    if (route.request().method() !== 'PUT') return route.continue();
+    saveRequests += 1;
+    if (saveRequests === 1) await page.waitForTimeout(200);
+    return route.continue();
+  });
+  const name = page.locator('#storyBuilderNameInput');
+  await name.fill('Autosave sequence one');
+  await page.getByRole('button', { name: 'Save Project', exact: true }).click();
+  await name.fill('Autosave sequence two');
+  await waitSaved();
+  const durable = await page.evaluate(id => fetch(`/v1/story-builder-projects/${id}`).then(response => response.json()), projectID);
+  assert(saveRequests === 2, `overlapping edits produced ${saveRequests} saves instead of one serialized follow-up`);
+  assert(durable.name === 'Autosave sequence two', 'optimistic save reconciliation lost the edit made during the first save');
+  await page.unroute(routePattern);
+  return { project: projectID, serializedSaves: saveRequests };
+}
+'@
+
 $panelCode = @'
 async page => {
   const assert = (condition, message) => {
@@ -281,6 +312,7 @@ async page => {
   await page.locator('.timeline-clip').first().waitFor();
   assert(JSON.stringify(savedLabels) === JSON.stringify(await clipLabels()), 'saved millisecond timing drifted after reload');
   assert(await page.getByRole('button', { name: 'Undo' }).isDisabled(), 'undo history incorrectly survived reload');
+  assert((await page.locator('#storyBuilderSelectionBody').innerText()).includes('Select a clip'), 'selection incorrectly survived current-project reload');
 
   return { project: projectID, savedLabels };
 }
@@ -1051,6 +1083,8 @@ async page => {
   }, storyID);
 
   await page.goto(`${origin}/demo/#story`);
+  const storyResultSummary = page.locator('.story-result > summary');
+  if (await storyResultSummary.count()) await storyResultSummary.click();
   await page.locator(`.story-library-item[data-story-id="${storyID}"]`).click();
   const open = page.getByRole('button', { name: 'Open in Story Builder' });
   await open.waitFor();
@@ -1662,6 +1696,7 @@ try {
   Invoke-BrowserCLI -Arguments @("open", "$baseURL/demo/")
   Invoke-BrowserCode -Code $launchCode
   Invoke-BrowserCode -Code $arrangementCode
+  Invoke-BrowserCode -Code $sessionSequenceCode
   Invoke-BrowserCode -Code $panelCode
   Invoke-BrowserCode -Code $keyboardCode
   Invoke-BrowserCode -Code $audioCode
