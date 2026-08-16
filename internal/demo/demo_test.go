@@ -315,6 +315,30 @@ func TestHandlerServesIndex(t *testing.T) {
 	}
 }
 
+func TestExtractOffersCleanSpeechMiningControls(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, marker := range []string{
+		`id="extractActorInput"`,
+		`id="extractCharacterInput"`,
+		`id="extractAddSpeechButton"`,
+		`id="extractSpeechList"`,
+		`id="extractProcessSpeechButton"`,
+		`id="extractPassTrainingButton"`,
+		`data-page="training"`,
+		`id="trainingClipList"`,
+		`id="trainingExportButton"`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("Extract must offer the clean-speech mining control %q", marker)
+		}
+	}
+}
+
 func TestSeparationBrowserRendersPlayableStemResults(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/app.js", nil)

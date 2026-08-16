@@ -55,6 +55,7 @@ $inputWav = Join-Path $runtimeDir "input.wav"
 $homepageScreenshotPath = Join-Path $playwrightDir "talk-voice-home.png"
 $transcribeScreenshotPath = Join-Path $playwrightDir "transcribe.png"
 $extractScreenshotPath = Join-Path $playwrightDir "extract.png"
+$trainingScreenshotPath = Join-Path $playwrightDir "training.png"
 
 go build -o $gatewayExe .\cmd\cpp-studio
 if ($LASTEXITCODE -ne 0) {
@@ -231,7 +232,7 @@ async page => {
   await page.unroute('**/health');
 
   const studioPages = [
-    'talk-voice', 'text-to-speech', 'transcription', 'voice-cloning', 'voice-design', 'voice-convert',
+    'talk-voice', 'text-to-speech', 'transcription', 'voice-cloning', 'voice-design', 'voice-convert', 'training',
     'music', 'music-generation', 'imagery', 'image-generation', 'stories-audiobooks', 'audiobook',
     'story', 'extract', 'library', 'models', 'engines'
   ];
@@ -449,8 +450,117 @@ async page => {
   assert((await page.locator('#extractViewStart').textContent()) === viewStart, 'waveform view start was not preserved');
   assert((await page.locator('#extractViewEnd').textContent()) === viewEnd, 'waveform zoom was not preserved');
 
+  await page.locator('#extractActorInput').fill('Kenneth Williams');
+  await page.locator('#extractCharacterInput').fill('Rambling Sid Rumpo');
+  assert(await page.locator('#extractAddSpeechButton').isEnabled(), 'labelled waveform range could not be added');
+  await page.locator('#extractAddSpeechButton').click();
+  await page.locator('.extract-segment-time').nth(1).click();
+  await page.locator('#extractCharacterInput').fill('Snide');
+  await page.locator('#extractAddSpeechButton').click();
+  assert((await page.locator('.extract-speech-item').count()) === 2, 'Extract did not retain two clean speech selections');
+  const speechLabels = await page.locator('.extract-speech-item').allTextContents();
+  assert(speechLabels[0].includes('Kenneth Williams') && speechLabels[0].includes('Rambling Sid Rumpo') &&
+    speechLabels[1].includes('Kenneth Williams') && speechLabels[1].includes('Snide'),
+    'clean speech labels were not retained: ' + JSON.stringify(speechLabels));
+
   page.off('request', trackRequest);
   assert(switchRequests.length === 0, 'mode switching made network requests: ' + switchRequests.join(', '));
+}
+'@
+  Invoke-BrowserCode -Code $browserCode
+
+  $browserCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const trainingScreenshotPath = __TRAINING_SCREENSHOT__;
+  const clipTranscriptions = [];
+  const trackClipTranscription = request => {
+    if (request.method() === 'POST' && request.url().includes('/v1/audio/transcriptions')) {
+      clipTranscriptions.push(request.url());
+    }
+  };
+  page.on('request', trackClipTranscription);
+  await page.locator('#extractProcessSpeechButton').click();
+  await page.waitForFunction(() => document.querySelector('#extractProcessSpeechStatus').textContent.includes('processed'));
+  page.off('request', trackClipTranscription);
+  const processStatus = await page.locator('#extractProcessSpeechStatus').textContent();
+  assert(processStatus === '2 clips processed', 'clean speech processing did not finish successfully: ' + processStatus);
+  assert(clipTranscriptions.length === 2, 'clean ranges were not transcribed independently: ' + clipTranscriptions.length);
+  assert((await page.locator('.extract-speech-audio').count()) === 2, 'processed clips did not each receive audio playback');
+  assert((await page.locator('.extract-speech-transcript').count()) === 2, 'processed clips did not each receive a transcript editor');
+  assert((await page.locator('.extract-speech-verified').count()) === 2, 'processed clips did not each receive human verification');
+  assert(await page.locator('#extractPassTrainingButton').isDisabled(), 'unverified clips could be passed to Training');
+  await page.locator('.extract-speech-transcript').nth(1).fill('Corrected clean line');
+  await page.locator('.extract-speech-verified').nth(0).check();
+  assert(await page.locator('#extractPassTrainingButton').isDisabled(), 'partly verified clips could be passed to Training');
+  await page.locator('.extract-speech-verified').nth(1).check();
+  assert(await page.locator('#extractPassTrainingButton').isEnabled(), 'verified clips could not be passed to Training');
+  const processedWorkspace = await page.evaluate(() => window.__cppStudioAudioWorkspace.snapshot());
+  assert(processedWorkspace.speechClips.every(clip => clip.verified), 'human verification was not retained');
+  assert(processedWorkspace.speechClips[1].transcript === 'Corrected clean line', 'corrected clean transcript was not retained');
+
+  await page.locator('#extractPassTrainingButton').click();
+  await page.waitForFunction(() => location.hash === '#training');
+  await page.waitForFunction(() => window.scrollY === 0);
+  assert(await page.getByRole('heading', { name: 'Voice LoRA training', exact: true }).isVisible(),
+    'Training page heading was not visible after the handoff');
+  assert((await page.locator('#trainingClipList .training-clip').count()) === 2,
+    'Training did not receive the two verified clips');
+  assert((await page.locator('[data-page="training"] canvas').count()) === 0,
+    'Training duplicated the waveform editor');
+  const trainingText = await page.locator('#trainingClipList').textContent();
+  assert(trainingText.includes('Kenneth Williams') && trainingText.includes('Rambling Sid Rumpo') &&
+    trainingText.includes('Snide') && trainingText.includes('Corrected clean line'),
+    'Training handoff lost clip identity or corrected text: ' + trainingText);
+  await page.waitForTimeout(100);
+  assert(await page.locator('#trainingClipList .training-clip').first().isVisible(),
+    'Training clip cards were not visibly laid out');
+  await page.screenshot({ path: trainingScreenshotPath });
+}
+'@
+  $browserCode = $browserCode.Replace("__TRAINING_SCREENSHOT__", ($trainingScreenshotPath | ConvertTo-Json -Compress))
+  Invoke-BrowserCode -Code $browserCode
+
+  $browserCode = @'
+async page => {
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  await page.evaluate(() => {
+    window.__trainingWrites = {};
+    const files = window.__trainingWrites;
+    const makeDirectory = prefix => ({
+      async getDirectoryHandle(name) { return makeDirectory(prefix + name + '/'); },
+      async getFileHandle(name) {
+        return { async createWritable() {
+          return {
+            async write(value) { files[prefix + name] = value; },
+            async close() {}
+          };
+        } };
+      }
+    });
+    window.showDirectoryPicker = async () => makeDirectory('');
+  });
+  await page.locator('#trainingExportButton').click();
+  await page.waitForFunction(() => document.querySelector('#trainingExportStatus').textContent.includes('Exported'));
+  const exportProof = await page.evaluate(async () => {
+    const keys = Object.keys(window.__trainingWrites).sort();
+    const manifestValue = window.__trainingWrites['train.jsonl'];
+    const manifest = typeof manifestValue === 'string' ? manifestValue : await manifestValue.text();
+    return { keys, manifest };
+  });
+  assert(exportProof.keys.filter(name => name.endsWith('.wav')).length === 2,
+    'training folder did not contain two WAVs: ' + JSON.stringify(exportProof.keys));
+  assert(exportProof.keys.filter(name => name.endsWith('.txt')).length === 2,
+    'training folder did not contain two transcripts: ' + JSON.stringify(exportProof.keys));
+  assert(exportProof.keys.includes('train.jsonl'), 'training folder did not contain train.jsonl');
+  assert(exportProof.manifest.split('\n').filter(Boolean).length === 2 && exportProof.manifest.includes('Corrected clean line'),
+    'training manifest was incomplete: ' + exportProof.manifest);
+  await page.evaluate(() => { location.hash = 'extract'; });
+  await page.waitForFunction(() => location.hash === '#extract');
 }
 '@
   Invoke-BrowserCode -Code $browserCode

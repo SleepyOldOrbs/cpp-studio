@@ -563,6 +563,15 @@ output from resident Whisper preserves model timestamps. The audio.cpp ASR
 lanes currently return one whole-file segment because their stable CLI output
 is transcript text rather than timestamped spans.
 
+Extract also uses this route once per marked clean-speech range. Each successful
+range keeps its own WAV and editable transcript in the current browser session;
+one failed request does not discard other successful clips. After every clip has
+been processed and its transcript explicitly checked by the human, **Pass to
+Training** copies that set to the browser-local Training page. **Export training
+folder** writes `audio/*.wav`, matching `audio/*.txt`, and `train.jsonl` rows of
+`{"audio":"audio/name.wav","text":"corrected words"}` to a human-chosen
+directory. No new Gateway route or durable dataset store is involved.
+
 ## POST /v1/audio/diarization
 
 Automatic "who spoke when": runs the uploaded WAV (multipart `file`, 64 MB

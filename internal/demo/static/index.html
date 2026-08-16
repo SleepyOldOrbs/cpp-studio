@@ -39,6 +39,7 @@
             <a class="subnav-link" href="#voice-cloning" data-page-link="voice-cloning">Voice cloning</a>
             <a class="subnav-link" href="#voice-design" data-page-link="voice-design">Voice design</a>
             <a class="subnav-link" href="#voice-convert" data-page-link="voice-convert">Voice convert</a>
+            <a class="subnav-link" href="#training" data-page-link="training">Training</a>
             <a class="subnav-link" href="#audio-analysis" data-page-link="audio-analysis">Audio analysis</a>
           </nav>
           <nav class="subnav" data-parent-nav="music" aria-label="Music and sound effects tools" hidden>
@@ -1291,6 +1292,31 @@
             <button class="secondary compact-button" id="extractCastButton" type="button" disabled>Clone the cast</button>
           </div>
         </section>
+        <section class="extract-selection-card" data-audio-workspace-mode="extract" aria-label="Clean speech mining" hidden>
+          <div class="extract-selection-heading">
+            <div>
+              <span class="source-label">Clean speech</span>
+              <span>Label the current waveform range, then add it to the list.</span>
+            </div>
+          </div>
+          <div class="transcribe-tool-row">
+            <label class="compact-field">
+              <span>Actor</span>
+              <input class="text-input" id="extractActorInput" type="text" maxlength="120" placeholder="Performer name">
+            </label>
+            <label class="compact-field">
+              <span>Character</span>
+              <input class="text-input" id="extractCharacterInput" type="text" maxlength="120" placeholder="Character name">
+            </label>
+            <button class="primary compact-button" id="extractAddSpeechButton" type="button" disabled>Add selection</button>
+          </div>
+          <div class="extract-timeline" id="extractSpeechList">No clean speech selected yet.</div>
+          <div class="extract-selection-actions">
+            <button class="primary compact-button" id="extractProcessSpeechButton" type="button" disabled>Process selections</button>
+            <button class="secondary compact-button" id="extractPassTrainingButton" type="button" disabled>Pass to Training</button>
+            <span id="extractProcessSpeechStatus" aria-live="polite"></span>
+          </div>
+        </section>
         <p class="error-box" id="extractErrorBox" hidden></p>
 
         <section class="transcribe-desk-tools" aria-label="Transcript tools">
@@ -1337,6 +1363,22 @@
           <button class="secondary compact-button" id="openExtractButton" data-audio-workspace-mode="transcribe" type="button">Open in Extract</button>
           <button class="secondary compact-button" id="openTranscribeButton" data-audio-workspace-mode="extract" type="button" hidden>Open in Transcribe</button>
         </div>
+      </div>
+    </section>
+
+    <section class="module" data-page="training" aria-label="Voice LoRA training">
+      <header class="module-head">
+        <h2>Voice LoRA training</h2>
+        <span class="module-note">verified speech from Extract</span>
+      </header>
+      <div class="module-body">
+        <p id="trainingSummary">No speech has been passed from Extract yet.</p>
+        <div class="training-clip-list" id="trainingClipList"></div>
+        <div class="extract-selection-actions">
+          <button class="primary compact-button" id="trainingExportButton" type="button" disabled>Export training folder</button>
+          <span id="trainingExportStatus" aria-live="polite"></span>
+        </div>
+        <small class="hint">Exports one extracted WAV without cleanup processing and one corrected TXT transcript per clip, plus a <code>train.jsonl</code> manifest. Choose the folder where the training set should live.</small>
       </div>
     </section>
 

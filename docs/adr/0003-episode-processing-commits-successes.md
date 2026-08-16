@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted
+Superseded
+
+Superseded on 2026-08-16 by the deliberately browser-local clean-speech flow in
+`docs/agents/transcribe-extract-plan.md`. Successful processed clips live only
+for the current browser handoff and are made durable by explicit folder export.
 
 ## Context
 

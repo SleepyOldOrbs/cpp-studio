@@ -206,6 +206,29 @@ Acceptance:
 - Update README/API wording that currently describes the combined Extractor so
   the two product roles and shared routes are explicit.
 
+### 5. Clean-speech training handoff
+
+- Let Extract retain multiple labelled actor/character waveform ranges in the
+  current browser session.
+- Process each range independently into a WAV and transcript so one failure can
+  be retried without discarding successful clips.
+- Require explicit human transcript checks before the complete set can pass to
+  Training.
+- Keep Training as a small, separate read-only handoff page; do not duplicate
+  decoding, waveform, selection, or transcript editing.
+- Export the verified WAV/TXT pairs and an `audio`/`text` `train.jsonl` directly
+  to a human-chosen folder. Keep model installation and trainer orchestration
+  outside this first slice.
+
+Acceptance:
+
+- Two independently marked ranges retain different actor/character labels.
+- Processing makes two transcription requests and exposes audio, editable text,
+  and a human-check control for each result.
+- Pass to Training is disabled until every clip is ready, non-empty, and checked.
+- The Training page receives exactly those clips and writes matching WAV/TXT
+  pairs plus a complete `train.jsonl` without a new server-side store.
+
 ## Completion evidence
 
 - Slices 1–3 are implemented on `codex/transcribe-extract-split` with one shared
@@ -228,6 +251,10 @@ Acceptance:
   `output/playwright/transcribe-extract/extract.png`. Agent visual inspection
   confirms the intended text-first and waveform-first hierarchy. The owner
   reviewed and accepted both captures on 2026-08-14.
+- The 2026-08-16 fixture-backed browser run also proves two labelled clean ranges,
+  independent transcription, corrected-text retention, all-or-nothing human
+  verification gating, the separate Training handoff, and folder output with two
+  WAVs, two TXT transcripts, and a two-row `train.jsonl`.
 
 ## Non-goals
 
@@ -236,6 +263,7 @@ Acceptance:
 - No multitrack audio editor, noise removal, mastering, or destructive source
   editing.
 - No new model installation or switching behavior.
+- No trainer installation, training-job orchestration, or fake training action.
 - No duplicate decoding, transcription, diarization, or waveform implementation.
 - No changes to Story, Story Builder, Voice, Audiobook, or Library ownership.
 

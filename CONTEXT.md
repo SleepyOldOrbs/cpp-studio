@@ -93,138 +93,27 @@ decoded source, edited transcript, cursor and selection, playback state,
 transcript exports, and extracted-audio provenance across tool switches.
 Transcribe produces words; Extract produces audio assets.
 
-## Corpus preparation
+## Clean speech preparation
 
-**Corpus Preparation Workspace**:
-A durable workspace for reviewing recorded programmes and producing validated,
-training-ready speech-and-transcript datasets for individual Performance
-Identities. Applause, laughter, Foley, ambience, and other non-speech audio stay
-outside this workspace and remain generation work for the existing Stable Audio
-models. Model training is a separate downstream activity.
+Extract owns one browser-local clean-speech pass: the human marks waveform
+ranges, labels each with the actor and character heard in that range, processes
+each range independently, corrects its transcript, and explicitly checks it.
+These are working labels, not new persisted domain aggregates.
 
-**Reviewed**:
-An explicit human declaration that the reviewer has finished selecting all of
-the clean audio they intend to keep from a recorded source. It is never inferred
-from annotation, transcript, or export counts.
-_Avoid_: Done, complete
+**Clean speech clip**:
+One singular marked range with actor, character, extracted WAV, corrected
+transcript, and human-check state. Draft and failed clips remain retryable only
+in the current browser session. Closing or clearing the page discards them.
 
-**Modified since review**:
-The current Source Episode differs from the annotation state covered by its
-latest Reviewed declaration. The historical declaration remains recorded until
-the human reviews the current state again.
+**Training handoff**:
+A browser-local copy of one completely processed and checked clip set. It is
+read-only and does not duplicate the waveform editor. Export writes the extracted
+clip WAVs, matching TXT transcripts, and an `audio`/`text` `train.jsonl` to a
+human-chosen folder. The exported folder is the durability boundary; cpp-studio
+does not yet own trainer installation or training runs.
 
-**Performer**:
-The real person whose recorded performance appears in source material.
-One Performer may portray any number of Characters.
-_Avoid_: Actor, which conflicts with Actor Voice
-
-**Character**:
-The studio-wide reusable role portrayed by a Performer in a recorded
-performance. A Character may share a name with the Performer but remains a
-distinct identity; it is not owned by one Source Series or Source Episode. Its
-name is unique across the studio and it belongs to exactly one Performer; a
-different Performer requires a differently named Character record.
-
-**Performance Identity**:
-The studio-wide reusable pairing of exactly one Performer with exactly one
-Character represented by a speech selection, including when both share the same
-name. Its automatically assigned, human-editable colour stays stable wherever
-that pairing is used.
-
-**Source Catalogue**:
-The human-arranged Series, optional Season folders, and Episode organisation
-from which datasets are prepared. It owns managed source media, annotations,
-and review declarations; the Library presents that work without owning it.
-
-**Source Series**:
-The required top-level programme grouping within the Source Catalogue. Every
-Source Episode belongs to one Source Series, either directly or through one of
-its optional Source Season folders.
-_Avoid_: Series
-
-**Source Season**:
-A human-created, optional folder within a Source Series. Source Episodes may be
-placed in it or directly in the Source Series, and the product never invents a
-placeholder season.
-_Avoid_: Season
-
-**Source Episode**:
-The catalogue record for one imported recorded programme placed directly in a
-Source Series or in one of its optional Source Season folders. It may remain as
-review history and Corpus Item provenance after its managed media and Source
-Annotations are removed.
-_Avoid_: Episode, originating episode
-
-**Source Annotation**:
-One committed, non-overlapping time range on a Source Episode containing clean,
-singular speech from exactly one Performance Identity. It is persisted with a
-successfully extracted Corpus Item and is independent of Whisper transcript
-segments.
-_Avoid_: Segment, Timeline Clip, highlighted section
-
-**Draft Annotation**:
-A browser-local, auditionable time range being prepared for a Source Episode.
-Each Draft Annotation becomes a Source Annotation only when its processing
-succeeds; closing the workspace discards every unprocessed draft.
-
-**Corpus Item**:
-One durable, self-contained speech bundle containing the best available
-lossless extracted `audio.wav`, `item.json` metadata, and `transcript.txt`. It
-belongs to the Prepared Corpus independently of source media, Source
-Annotations, and training runs. Its WAV is never overwritten by later boundary
-adjustments, and it can be explicitly deleted only together with its metadata
-and transcript.
-
-**Prepared Corpus**:
-The single studio-wide collection of Corpus Items. It can be filtered by source
-hierarchy, Performer, Character, and Performance Identity without belonging to
-any particular training tool or Dataset Package. Stable item identifiers own the
-on-disk bundles; the Library supplies the human-readable organisation. It is a
-growing long-term archive with no duration target or automatic cleanup: the
-human may continue extracting clean material from any number of Source Episodes
-for future cloning systems.
-
-**Corpus eligibility**:
-Only a Corpus Item with a human-verified transcript is eligible for a voice
-Dataset Package. A human may exclude an item without deleting it. Adjust and
-Reprocess automatically marks the earlier item Superseded and excluded, while
-allowing an explicit later restoration.
-
-**Transcript verification**:
-The human confirmation or correction of the transcript paired with one Corpus
-Item. Automatic transcription alone never makes a transcript verified; newly
-transcribed items enter a Prepared Corpus Needs Verification list.
-
-Human corrections to a Corpus Item's transcript or Performance Identity do not
-require WAV re-extraction. A human transcript edit remains Verified, while an
-identity correction moves the item to the corrected Prepared Corpus grouping.
-
-**Dataset Package**:
-An immutable, trainer-specific export snapshot made from eligible Corpus Items
-for exactly one Performance Identity. Changing the Prepared Corpus never mutates
-an existing package; the human creates a new package instead. The first package
-contract is VoxCPM2 LoRA: 16 kHz mono PCM WAV copies, one verified transcript and
-audio path per `train.jsonl` row, no automatic validation split, and successful
-official VoxCPM validation before the package is ready. Export conversion does
-not denoise, normalise, trim, compress, or otherwise alter the master audio.
-Ready packages live in managed storage and appear in the Library with reveal and
-copy actions; deleting one never deletes its Corpus Items.
-
-**Process Episode**:
-The explicit human action that declares the Source Episode Reviewed and starts
-a browser-owned attempt to extract and transcribe its Draft Annotations. Each
-success persists independently; closing the workspace discards unprocessed
-Draft Annotations rather than leaving resumable work.
-
-The active Performance Identity acts as the waveform highlighter: changing it
-changes the colour assigned to subsequently dragged Draft Annotations. Process
-Episode may also declare an Episode Reviewed with no annotations when the human
-found no usable speech.
-
-**Adjust and Reprocess**:
-The explicit return of a processed Source Annotation to browser-local draft
-editing. Successful reprocessing creates an additional Corpus Item while the
-previous item remains; abandoning the draft restores the last processed range.
+This flow handles speech only. Applause, laughter, Foley, ambience, and other
+non-speech sounds remain work for the existing Stable Audio tools.
 
 The Voice Library uses two related terms. An **Actor Voice** is an existing
 recorded or designed reusable voice with its own reference WAV and transcript.

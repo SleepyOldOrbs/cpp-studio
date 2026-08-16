@@ -3090,6 +3090,30 @@ html[data-studio-format="stories-audiobooks"] {
   flex-wrap: wrap;
 }
 
+.training-clip-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.training-clip {
+  display: grid;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--well);
+}
+
+.training-clip audio {
+  width: 100%;
+}
+
+.training-clip-transcript {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 #extractRegionStatus {
   color: var(--muted);
   font-size: 0.85rem;

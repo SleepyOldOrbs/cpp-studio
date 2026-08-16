@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted
+Superseded
+
+Superseded on 2026-08-16 by the deliberately browser-local clean-speech flow in
+`docs/agents/transcribe-extract-plan.md`. The implementation preserves each
+extracted WAV and exports paired files directly; it has no Prepared Corpus or
+immutable Dataset Package aggregate.
 
 ## Context
 

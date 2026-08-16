@@ -5813,7 +5813,7 @@
 
   // --- Studio navigation ------------------------------------------------
   var PAGES = [
-    "talk-voice", "text-to-speech", "transcription", "voice-cloning", "voice-design", "voice-convert", "audio-analysis",
+    "talk-voice", "text-to-speech", "transcription", "voice-cloning", "voice-design", "voice-convert", "training", "audio-analysis",
     "music", "music-generation", "voice-separation", "imagery", "image-generation",
     "stories-audiobooks", "audiobook", "story", "extract",
     "library", "models", "engines"
@@ -5830,6 +5830,7 @@
     "voice-cloning": "talk-voice",
     "voice-design": "talk-voice",
     "voice-convert": "talk-voice",
+    training: "talk-voice",
     "audio-analysis": "talk-voice",
     music: "music",
     "music-generation": "music",
@@ -7215,6 +7216,17 @@
   var extractStopButton = document.getElementById("extractStopButton");
   var extractCloneButton = document.getElementById("extractCloneButton");
   var extractLibraryButton = document.getElementById("extractLibraryButton");
+  var extractActorInput = document.getElementById("extractActorInput");
+  var extractCharacterInput = document.getElementById("extractCharacterInput");
+  var extractAddSpeechButton = document.getElementById("extractAddSpeechButton");
+  var extractSpeechList = document.getElementById("extractSpeechList");
+  var extractProcessSpeechButton = document.getElementById("extractProcessSpeechButton");
+  var extractPassTrainingButton = document.getElementById("extractPassTrainingButton");
+  var extractProcessSpeechStatus = document.getElementById("extractProcessSpeechStatus");
+  var trainingSummary = document.getElementById("trainingSummary");
+  var trainingClipList = document.getElementById("trainingClipList");
+  var trainingExportButton = document.getElementById("trainingExportButton");
+  var trainingExportStatus = document.getElementById("trainingExportStatus");
   var extractErrorBox = document.getElementById("extractErrorBox");
   var extractTimeline = document.getElementById("extractTimeline");
   var extractFilterRow = document.getElementById("extractFilterRow");
@@ -7243,6 +7255,8 @@
   var transcribeSearchQuery = "";
   var transcribeSearchMatches = [];
   var transcribeSearchIndex = -1;
+  var speechProcessing = false;
+  var trainingClips = [];
   function extractCtx() {
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!extractAudioCtx || extractAudioCtx.state === "closed") {
@@ -7265,6 +7279,8 @@
       region: null,       // {start, end} seconds
       segments: [],       // {start, end, text, speaker}
       checked: {},        // segment index -> true: multi-segment selection
+      speechClips: [],    // clean labelled ranges waiting to be processed
+      nextSpeechClipID: 1,
       filter: "",
       playback: null,     // active {ctx, source, anchor, offset, sampleOffset, samples, key, mode, raf}
       pausedPlayback: null,
@@ -7282,6 +7298,8 @@
         this.region = null;
         this.segments = [];
         this.checked = {};
+        this.speechClips = [];
+        this.nextSpeechClipID = 1;
         this.filter = "";
         this.playback = null;
         this.pausedPlayback = null;
@@ -7324,6 +7342,26 @@
         if (checked) { this.checked[index] = true; } else { delete this.checked[index]; }
       },
       clearChecked: function () { this.checked = {}; },
+      addSpeechClip: function (start, end, actor, character, transcript) {
+        var clip = {
+          id: this.nextSpeechClipID++,
+          start: start,
+          end: end,
+          actor: actor,
+          character: character,
+          transcript: transcript || "",
+          status: "draft",
+          verified: false,
+          wavBlob: null,
+          audioURL: "",
+          error: ""
+        };
+        this.speechClips.push(clip);
+        return clip;
+      },
+      removeSpeechClip: function (id) {
+        this.speechClips = this.speechClips.filter(function (clip) { return clip.id !== id; });
+      },
       setFilter: function (speaker) { this.filter = speaker || ""; },
       setPlayback: function (playback) { this.playback = playback; this.pausedPlayback = null; },
       pausePlayback: function (playback) { this.playback = null; this.pausedPlayback = playback || null; },
@@ -7362,6 +7400,19 @@
           region: this.region ? { start: this.region.start, end: this.region.end } : null,
           segments: this.segments.map(normalizedTranscriptSegment),
           checked: Object.keys(this.checked).map(Number).sort(function (a, b) { return a - b; }),
+          speechClips: this.speechClips.map(function (clip) {
+            return {
+              id: clip.id,
+              start: clip.start,
+              end: clip.end,
+              actor: clip.actor,
+              character: clip.character,
+              transcript: clip.transcript,
+              status: clip.status,
+              verified: clip.verified,
+              error: clip.error
+            };
+          }),
           filter: this.filter,
           playback: this.playback ? this.playback.key : null,
           pausedPlayback: this.pausedPlayback ? this.pausedPlayback.key : null
@@ -7796,8 +7847,13 @@
         }
       }
       extractStopPlayback();
+      ex.speechClips.forEach(function (clip) {
+        if (clip.audioURL) { URL.revokeObjectURL(clip.audioURL); }
+      });
       ex.loadSource(mono, decoded.sampleRate, decoded.duration, file.name);
       resetTranscribeDesk();
+      extractProcessSpeechStatus.textContent = "";
+      renderSpeechClips();
       extractFileStatus.textContent = file.name + " · " + fmtTime(decoded.duration) + " · " + decoded.sampleRate + " Hz";
       extractTranscribeButton.disabled = false;
       extractDiarizeButton.disabled = false;
@@ -7945,6 +8001,22 @@
     var mid = cssHeight / 2;
 
     // Region shading under the waveform.
+    ex.speechClips.forEach(function (clip, index) {
+      if (clip.end < viewStart || clip.start > ex.view.end) {
+        return;
+      }
+      var sx0 = ((clip.start - viewStart) / viewLen) * cssWidth;
+      var sx1 = ((clip.end - viewStart) / viewLen) * cssWidth;
+      var colours = [
+        "rgba(94, 196, 255, 0.18)",
+        "rgba(190, 126, 255, 0.18)",
+        "rgba(255, 111, 145, 0.18)",
+        "rgba(88, 201, 124, 0.18)"
+      ];
+      g.fillStyle = colours[index % colours.length];
+      g.fillRect(sx0, 0, sx1 - sx0, cssHeight);
+    });
+
     if (ex.region) {
       var rx0 = ((ex.region.start - viewStart) / viewLen) * cssWidth;
       var rx1 = ((ex.region.end - viewStart) / viewLen) * cssWidth;
@@ -8139,8 +8211,293 @@
     } else {
       extractRegionStatus.textContent = "None — drag on the waveform, click a transcript line, or tick segments";
     }
+    syncSpeechMiningControls();
     syncExtractPlaybackControls();
   }
+
+  function speechTranscript(start, end) {
+    return ex.segments.filter(function (segment) {
+      return segment.end > start && segment.start < end;
+    }).map(function (segment) {
+      return String(segment.text || "").trim();
+    }).filter(Boolean).join(" ");
+  }
+
+  function syncSpeechMiningControls() {
+    var hasRegion = Boolean(ex.region && ex.region.end - ex.region.start > 0.05);
+    extractAddSpeechButton.disabled = !hasRegion || !extractActorInput.value.trim() || !extractCharacterInput.value.trim();
+    extractProcessSpeechButton.disabled = speechProcessing || !ex.speechClips.some(function (clip) {
+      return clip.status === "draft" || clip.status === "failed";
+    });
+    extractPassTrainingButton.disabled = speechProcessing || !ex.speechClips.length || !ex.speechClips.every(function (clip) {
+      return clip.status === "ready" && clip.verified && clip.transcript.trim();
+    });
+  }
+
+  function renderSpeechClips() {
+    extractSpeechList.textContent = "";
+    if (!ex.speechClips.length) {
+      extractSpeechList.textContent = "No clean speech selected yet.";
+      return;
+    }
+    ex.speechClips.forEach(function (clip) {
+      var row = createElement("div", "extract-segment extract-speech-item");
+      var head = createElement("div", "extract-segment-head");
+      head.appendChild(createElement("strong", "extract-speech-character", clip.character));
+      head.appendChild(createElement("span", "extract-segment-speaker", clip.actor));
+      head.appendChild(createElement("span", "extract-segment-time", fmtTime(clip.start) + "–" + fmtTime(clip.end)));
+      var remove = createElement("button", "plain compact-button", "Remove");
+      remove.type = "button";
+      remove.addEventListener("click", function () {
+        if (clip.audioURL) { URL.revokeObjectURL(clip.audioURL); }
+        ex.removeSpeechClip(clip.id);
+        renderSpeechClips();
+        syncSpeechMiningControls();
+        drawExtractWave();
+      });
+      head.appendChild(remove);
+      row.appendChild(head);
+      if (clip.status === "ready") {
+        var audio = document.createElement("audio");
+        audio.className = "extract-speech-audio";
+        audio.controls = true;
+        audio.src = clip.audioURL;
+        row.appendChild(audio);
+        var transcript = document.createElement("textarea");
+        transcript.className = "text-input extract-speech-transcript";
+        transcript.rows = 2;
+        transcript.value = clip.transcript;
+        transcript.setAttribute("aria-label", "Verified transcript for " + clip.character);
+        transcript.addEventListener("input", function () {
+          clip.transcript = transcript.value;
+          syncSpeechMiningControls();
+        });
+        row.appendChild(transcript);
+        var verifyLabel = createElement("label", "extract-speech-verify");
+        var verified = document.createElement("input");
+        verified.type = "checkbox";
+        verified.className = "extract-speech-verified";
+        verified.checked = clip.verified;
+        verified.addEventListener("change", function () {
+          clip.verified = verified.checked;
+          syncSpeechMiningControls();
+        });
+        verifyLabel.appendChild(verified);
+        verifyLabel.appendChild(document.createTextNode(" Transcript checked"));
+        row.appendChild(verifyLabel);
+      } else if (clip.status === "processing") {
+        row.appendChild(createElement("span", "hint", "Extracting and transcribing…"));
+      } else if (clip.status === "failed") {
+        row.appendChild(createElement("span", "error-box", clip.error || "Processing failed"));
+      } else if (clip.transcript) {
+        row.appendChild(createElement("div", "extract-segment-text", clip.transcript));
+      }
+      extractSpeechList.appendChild(row);
+    });
+    syncSpeechMiningControls();
+  }
+
+  extractActorInput.addEventListener("input", syncSpeechMiningControls);
+  extractCharacterInput.addEventListener("input", syncSpeechMiningControls);
+  extractAddSpeechButton.addEventListener("click", function () {
+    if (!ex.region) {
+      return;
+    }
+    flushAudioWorkspaceEdit();
+    ex.addSpeechClip(
+      ex.region.start,
+      ex.region.end,
+      extractActorInput.value.trim(),
+      extractCharacterInput.value.trim(),
+      speechTranscript(ex.region.start, ex.region.end)
+    );
+    ex.region = null;
+    renderSpeechClips();
+    updateExtractRegionUI();
+    drawExtractWave();
+  });
+
+  function speechClipWav(clip) {
+    var start = Math.max(0, Math.floor(clip.start * ex.rate));
+    var end = Math.min(ex.samples.length, Math.ceil(clip.end * ex.rate));
+    return encodeWav(ex.samples.subarray(start, end), ex.rate);
+  }
+
+  async function processSpeechClip(clip) {
+    clip.status = "processing";
+    clip.error = "";
+    clip.verified = false;
+    renderSpeechClips();
+    try {
+      var wav = speechClipWav(clip);
+      var form = new FormData();
+      form.append("file", new File([wav], "clean-speech.wav", { type: "audio/wav" }));
+      appendTranscriptionModel(form);
+      var response = await fetch("/v1/audio/transcriptions?format=segments", { method: "POST", body: form });
+      if (!response.ok) {
+        throw new Error(await readErrorBody(response));
+      }
+      var payload = await response.json();
+      if (clip.audioURL) { URL.revokeObjectURL(clip.audioURL); }
+      clip.wavBlob = wav;
+      clip.audioURL = URL.createObjectURL(wav);
+      clip.transcript = String(payload.text || "").trim();
+      clip.status = "ready";
+    } catch (err) {
+      clip.status = "failed";
+      clip.error = err && err.message ? err.message : String(err);
+    }
+    renderSpeechClips();
+  }
+
+  extractProcessSpeechButton.addEventListener("click", async function () {
+    if (speechProcessing) {
+      return;
+    }
+    var pending = ex.speechClips.filter(function (clip) {
+      return clip.status === "draft" || clip.status === "failed";
+    });
+    if (!pending.length) {
+      return;
+    }
+    speechProcessing = true;
+    extractProcessSpeechStatus.textContent = "Processing 0 of " + pending.length + "…";
+    syncSpeechMiningControls();
+    for (var i = 0; i < pending.length; i += 1) {
+      extractProcessSpeechStatus.textContent = "Processing " + (i + 1) + " of " + pending.length + "…";
+      await processSpeechClip(pending[i]);
+    }
+    speechProcessing = false;
+    var ready = ex.speechClips.filter(function (clip) { return clip.status === "ready"; }).length;
+    var failed = ex.speechClips.filter(function (clip) { return clip.status === "failed"; }).length;
+    extractProcessSpeechStatus.textContent = failed
+      ? ready + " clips processed · " + failed + " failed — retry when ready"
+      : ready + " clip" + (ready === 1 ? "" : "s") + " processed";
+    syncSpeechMiningControls();
+  });
+
+  function trainingSafeName(value) {
+    return String(value || "speech")
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/[. ]+$/g, "") || "speech";
+  }
+
+  function trainingClipStem(clip, index) {
+    var number = String(index + 1).padStart(3, "0");
+    return trainingSafeName(clip.actor) + " -- " + trainingSafeName(clip.character) + " -- " + number;
+  }
+
+  function trainingManifest() {
+    return trainingClips.map(function (clip, index) {
+      return JSON.stringify({
+        audio: "audio/" + trainingClipStem(clip, index) + ".wav",
+        text: clip.transcript.trim()
+      });
+    }).join("\n") + "\n";
+  }
+
+  function renderTrainingClips() {
+    trainingClipList.textContent = "";
+    trainingExportStatus.textContent = "";
+    trainingExportButton.disabled = !trainingClips.length;
+    if (!trainingClips.length) {
+      trainingSummary.textContent = "No speech has been passed from Extract yet.";
+      return;
+    }
+    var duration = trainingClips.reduce(function (total, clip) { return total + clip.end - clip.start; }, 0);
+    trainingSummary.textContent = trainingClips.length + " verified clip" + (trainingClips.length === 1 ? "" : "s") +
+      " · " + duration.toFixed(1) + " seconds · ready to export";
+    trainingClips.forEach(function (clip) {
+      var row = createElement("article", "training-clip");
+      var head = createElement("div", "extract-segment-head");
+      head.appendChild(createElement("strong", "extract-speech-character", clip.character));
+      head.appendChild(createElement("span", "extract-segment-speaker", clip.actor));
+      head.appendChild(createElement("span", "extract-segment-time", fmtTime(clip.start) + "–" + fmtTime(clip.end)));
+      row.appendChild(head);
+      var audio = document.createElement("audio");
+      audio.controls = true;
+      audio.src = clip.audioURL;
+      row.appendChild(audio);
+      row.appendChild(createElement("p", "training-clip-transcript", clip.transcript));
+      trainingClipList.appendChild(row);
+    });
+  }
+
+  extractPassTrainingButton.addEventListener("click", function () {
+    if (extractPassTrainingButton.disabled) {
+      return;
+    }
+    trainingClips.forEach(function (clip) { URL.revokeObjectURL(clip.audioURL); });
+    trainingClips = ex.speechClips.map(function (clip) {
+      return {
+        actor: clip.actor,
+        character: clip.character,
+        start: clip.start,
+        end: clip.end,
+        transcript: clip.transcript.trim(),
+        wavBlob: clip.wavBlob,
+        audioURL: URL.createObjectURL(clip.wavBlob)
+      };
+    });
+    renderTrainingClips();
+    window.location.hash = "training";
+    window.setTimeout(function () { window.scrollTo(0, 0); }, 0);
+  });
+
+  async function writeTrainingFile(directory, name, contents) {
+    var handle = await directory.getFileHandle(name, { create: true });
+    var writable = await handle.createWritable();
+    await writable.write(contents);
+    await writable.close();
+  }
+
+  function downloadTrainingFiles() {
+    trainingClips.forEach(function (clip, index) {
+      var stem = trainingClipStem(clip, index);
+      downloadURL(clip.audioURL, stem + ".wav");
+      var textURL = URL.createObjectURL(new Blob([clip.transcript.trim() + "\n"], { type: "text/plain" }));
+      downloadURL(textURL, stem + ".txt");
+      window.setTimeout(function () { URL.revokeObjectURL(textURL); }, 0);
+    });
+    var manifestURL = URL.createObjectURL(new Blob([trainingManifest()], { type: "application/x-ndjson" }));
+    downloadURL(manifestURL, "train.jsonl");
+    window.setTimeout(function () { URL.revokeObjectURL(manifestURL); }, 0);
+  }
+
+  trainingExportButton.addEventListener("click", async function () {
+    if (!trainingClips.length) {
+      return;
+    }
+    trainingExportButton.disabled = true;
+    trainingExportStatus.textContent = "Choose an export folder…";
+    try {
+      if (typeof window.showDirectoryPicker !== "function") {
+        downloadTrainingFiles();
+        trainingExportStatus.textContent = "Downloaded " + trainingClips.length + " clip pairs and train.jsonl";
+        return;
+      }
+      var root = await window.showDirectoryPicker({ mode: "readwrite" });
+      var audioDirectory = await root.getDirectoryHandle("audio", { create: true });
+      for (var i = 0; i < trainingClips.length; i += 1) {
+        var clip = trainingClips[i];
+        var stem = trainingClipStem(clip, i);
+        await writeTrainingFile(audioDirectory, stem + ".wav", clip.wavBlob);
+        await writeTrainingFile(audioDirectory, stem + ".txt", clip.transcript.trim() + "\n");
+      }
+      await writeTrainingFile(root, "train.jsonl", trainingManifest());
+      trainingExportStatus.textContent = "Exported " + trainingClips.length + " clip pairs and train.jsonl";
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        trainingExportStatus.textContent = "Export cancelled";
+      } else {
+        trainingExportStatus.textContent = "Export failed: " + (error && error.message ? error.message : error);
+      }
+    } finally {
+      trainingExportButton.disabled = !trainingClips.length;
+    }
+  });
 
   // --- zoom --------------------------------------------------------------
   function extractZoom(factor) {

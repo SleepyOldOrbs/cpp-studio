@@ -2,12 +2,13 @@
 
 Verified: 2026-08-14
 
-Planning decision: the proposed Corpus Preparation Workspace is deliberately
-limited to Performer–Character speech. Applause, laughter, Foley, ambience, and
-other non-speech sounds will continue to use cpp-studio's existing Stable Audio
-3 Medium/Small generation rather than entering this annotation, corpus, or LoRA
-workflow. The Stable Audio LoRA information below remains research context, not
-selected product scope.
+Current product decision: keep the first implementation to one browser-local
+journey in Extract — mark clean actor/character speech, process it, correct and
+verify each transcript, then pass the checked set to Training for folder export.
+There is no Source Catalogue, Prepared Corpus, dataset service, or training-job
+owner in this slice. Applause, laughter, Foley, ambience, and other non-speech
+sounds continue to use cpp-studio's existing Stable Audio generation. The
+Stable Audio LoRA information below remains research context, not selected scope.
 
 - **Yes, there is a real speech LoRA equivalent.** VoxCPM2's official repository supports LoRA and full fine-tuning for speaker, language, or domain adaptation, says 5–10 minutes of paired speech can be enough to start, and includes a training WebUI. Training needs clean audio with accurate transcripts, not unlabelled mixed episodes. Sources: [VoxCPM](https://github.com/OpenBMB/VoxCPM), [official trainer](https://github.com/OpenBMB/VoxCPM/blob/main/scripts/train_voxcpm_finetune.py), [VoxCPM2 model card](https://huggingface.co/openbmb/VoxCPM2).
 

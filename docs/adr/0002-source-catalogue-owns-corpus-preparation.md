@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted
+Superseded
+
+Superseded on 2026-08-16 by the deliberately browser-local clean-speech flow in
+`docs/agents/transcribe-extract-plan.md`. There is no Source Catalogue or durable
+annotation owner in the implemented first slice.
 
 ## Context
 
