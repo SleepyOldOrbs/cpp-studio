@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1323,8 +1324,8 @@ func TestDemoRoute(t *testing.T) {
 	if !strings.Contains(body, "cpp-studio local studio") {
 		t.Fatalf("expected demo HTML, got %q", body)
 	}
-	if !strings.Contains(body, "/v1/images/generations") {
-		t.Fatalf("expected image route marker, got %q", body)
+	if !strings.Contains(body, `id="imageForm"`) {
+		t.Fatalf("expected image generation form, got %q", body)
 	}
 
 	rec = httptest.NewRecorder()
@@ -6380,10 +6381,11 @@ func waitGatewayStoryActive(t *testing.T, router http.Handler, id string) {
 }
 
 func testConfig(engines map[string]config.EngineConfig) config.Config {
+	_, sourceFile, _, _ := runtime.Caller(0)
 	return config.Config{
 		Gateway: config.GatewayConfig{Host: "127.0.0.1", Port: 8765},
 		Engines: engines,
-		Models:  &config.ModelsConfig{Manifest: filepath.Join("..", "..", "models.json"), Root: filepath.Join("..", "..", "models")},
+		Models:  &config.ModelsConfig{Manifest: filepath.Join(filepath.Dir(sourceFile), "..", "..", "models.json"), Root: filepath.Join("..", "..", "models")},
 	}
 }
 
@@ -7082,7 +7084,7 @@ func TestAudiobookPreviewReturnsCompleteEffectiveOptionsWithoutStartingWork(t *t
 	if err := json.NewDecoder(rec.Body).Decode(&preview); err != nil {
 		t.Fatalf("decode preview: %v", err)
 	}
-	if preview.Engine != "dramabox" || preview.Model != audioServerModelID || preview.Voice != "default" {
+	if preview.Engine != "dramabox" || preview.Model != "dramabox-q8-0" || preview.Voice != "default" {
 		t.Fatalf("preview identities wrong: %+v", preview)
 	}
 	if len(preview.EngineFingerprint) != 64 || preview.VoiceFingerprint != "default" {

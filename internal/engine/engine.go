@@ -10,7 +10,6 @@ package engine
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -208,10 +207,10 @@ func (r *Runner) RunReserved(ctx context.Context, spec Spec) (result Result, run
 		}
 		result, err := spec.resident(ctx, r, engineCfg)
 		if err != nil {
-			var engineErr *Error
-			if errors.As(err, &engineErr) && engineErr.Kind == KindEngineFailure {
-				r.recorder.MarkFailure(spec.Engine, lifecycle.StatusCrashed, engineErr.Message)
-			}
+			// A failed HTTP request (including cancellation or bad output) is
+			// not a process exit. Lifecycle owns resident health through its
+			// startup probe and process watcher; a late response must not mark
+			// a stopped or replacement process crashed.
 			return Result{}, err
 		}
 		if result.StatusCode == 0 || (result.StatusCode >= 200 && result.StatusCode < 300) {

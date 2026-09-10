@@ -121,13 +121,17 @@ $inputWav = Join-Path $OutDir "input.wav"
 $outputWav = Join-Path $OutDir "reply.wav"
 
 go build -o $gatewayExe .\cmd\cpp-studio
+
+if ($LASTEXITCODE -ne 0) { throw "Native command failed with exit code $LASTEXITCODE" }
 go build -o $fixtureExe .\cmd\cpp-studio-fixture
+if ($LASTEXITCODE -ne 0) { throw "Native command failed with exit code $LASTEXITCODE" }
 
 $fixtureCommand = (Resolve-Path $fixtureExe).Path
 Assert-PortFree -Port $GatewayPort -Label "gateway"
 Stop-FixtureListener -Port $LlamaPort -ExpectedPath $fixtureCommand
 Assert-PortFree -Port $LlamaPort -Label "fixture llama"
 & $fixtureExe speech --text "fixture input" --out $inputWav
+if ($LASTEXITCODE -ne 0) { throw "Native command failed with exit code $LASTEXITCODE" }
 
 $config = [ordered]@{
   gateway = [ordered]@{

@@ -30,7 +30,8 @@ jobs:
       - name: gofmt check
         shell: pwsh
         run: |
-          $files = gofmt -l ./cmd ./internal
+          $files = gofmt -l ./catalog.go ./cmd ./internal
+          if ($LASTEXITCODE -ne 0) { throw "gofmt failed" }
           if ($files) {
             $files
             throw "gofmt reported unformatted files"
@@ -41,6 +42,14 @@ jobs:
 
       - name: vet
         run: go vet ./...
+
+      - name: browser state regressions
+        run: node --test ./scripts/test-story-builder-state.cjs ./scripts/test-studio-ux.cjs
+
+      - name: native command failure regressions
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/test-native-command-failures.ps1
 
       - name: config check
         run: go run ./cmd/cpp-studio --config ./config.ci.json --check
@@ -78,6 +87,12 @@ jobs:
           $exe = if ("${{ matrix.runtime }}".StartsWith("windows")) { ".exe" } else { "" }
           & (Join-Path $packageDir "cpp-studio$exe") --config (Join-Path $packageDir "config.ci.json") --check
           & (Join-Path $packageDir "cpp-studio-fixture$exe") --help
+          $catalogCheck = Join-Path ([IO.Path]::GetTempPath()) "cpp-studio-package-catalog-check.json"
+          @{
+            engines = @{ fixture = @{ command = (Resolve-Path (Join-Path $packageDir "cpp-studio-fixture$exe")).Path; mode = "subprocess" } }
+            models = @{ manifest = (Resolve-Path (Join-Path $packageDir "models.json")).Path; root = $packageDir }
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $catalogCheck
+          & (Join-Path $packageDir "cpp-studio$exe") --config $catalogCheck --check
 
       - name: upload release archive
         uses: actions/upload-artifact@v7.0.1

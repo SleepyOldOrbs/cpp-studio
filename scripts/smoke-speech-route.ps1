@@ -12,6 +12,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Out) | Out-Null
 
 $exe = ".\bin\cpp-studio.exe"
 go build -o $exe .\cmd\cpp-studio
+if ($LASTEXITCODE -ne 0) { throw "Native command failed with exit code $LASTEXITCODE" }
 
 $server = Start-Process -WindowStyle Hidden -PassThru -FilePath $exe -ArgumentList @("--config", $Config)
 try {

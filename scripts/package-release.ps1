@@ -75,9 +75,13 @@ $gatewayPath = Join-Path $packageDir "cpp-studio$exe"
 $fixturePath = Join-Path $packageDir "cpp-studio-fixture$exe"
 
 go build -trimpath -o $gatewayPath ./cmd/cpp-studio
+
+if ($LASTEXITCODE -ne 0) { throw "Native command failed with exit code $LASTEXITCODE" }
 go build -trimpath -o $fixturePath ./cmd/cpp-studio-fixture
+if ($LASTEXITCODE -ne 0) { throw "Native command failed with exit code $LASTEXITCODE" }
 
 Copy-RequiredFile -Path "./README.md" -Destination $packageDir
+Copy-RequiredFile -Path "./models.json" -Destination $packageDir
 Copy-RequiredFile -Path "./config.audio-local.example.json" -Destination $packageDir
 Copy-RequiredFile -Path "./config.example.json" -Destination $packageDir
 Copy-RequiredFile -Path "./config.ci.json" -Destination $packageDir
@@ -90,6 +94,7 @@ $manifest = [ordered]@{
   runtime = $Runtime
   createdAt = (Get-Date).ToUniversalTime().ToString("o")
   binaries = @("cpp-studio$exe", "cpp-studio-fixture$exe")
+  modelManifest = "models.json"
   configs = @("config.audio-local.example.json", "config.example.json", "config.ci.json", "config.smoke.json")
   docs = @(
     "README.md",
@@ -124,6 +129,7 @@ if ($Runtime.StartsWith("windows")) {
     Remove-Item -LiteralPath $archive -Force
   }
   tar -czf $archive -C $distRoot $packageName
+  if ($LASTEXITCODE -ne 0) { throw "Native command failed with exit code $LASTEXITCODE" }
 }
 
 [pscustomobject]@{

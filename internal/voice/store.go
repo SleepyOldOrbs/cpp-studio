@@ -88,9 +88,10 @@ var ErrActorHasCharacters = errors.New("Actor Voice has Character Voices and can
 // Store persists cloned voices, one directory per voice holding ref.wav and
 // manifest.json, in the same shape as the story store.
 type Store struct {
-	mu      sync.Mutex
-	rootDir string
-	vad     VADAnalyzer
+	mu              sync.Mutex
+	rootDir         string
+	vad             VADAnalyzer
+	writeFileAtomic func(string, []byte) error
 }
 
 // VADAnalyzer returns an optional measured spoken duration. The caller owns
@@ -109,7 +110,7 @@ func NewStoreWithOptions(rootDir string, options StoreOptions) *Store {
 	if rootDir == "" {
 		rootDir = DefaultVoicesRootDir
 	}
-	return &Store{rootDir: rootDir, vad: options.AnalyzeVAD}
+	return &Store{rootDir: rootDir, vad: options.AnalyzeVAD, writeFileAtomic: writeVoiceFileAtomic}
 }
 
 // Save validates and persists a new cloned voice, returning it with a fresh
@@ -183,6 +184,13 @@ func (s *Store) SaveWithSource(name string, transcript string, refWAV []byte, pr
 }
 
 func (s *Store) Load(id string) (Clone, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.load(id)
+}
+
+// load is also used by mutations that already hold the voice store lock.
+func (s *Store) load(id string) (Clone, bool, error) {
 	if err := validateVoiceID(id); err != nil {
 		return Clone{}, false, nil
 	}
@@ -207,7 +215,7 @@ func (s *Store) Load(id string) (Clone, bool, error) {
 		if marshalErr != nil {
 			return Clone{}, false, fmt.Errorf("encode analyzed voice manifest: %w", marshalErr)
 		}
-		if writeErr := os.WriteFile(filepath.Join(s.rootDir, id, "manifest.json"), append(updated, '\n'), 0o644); writeErr != nil {
+		if writeErr := s.writeFileAtomic(filepath.Join(s.rootDir, id, "manifest.json"), append(updated, '\n')); writeErr != nil {
 			return Clone{}, false, fmt.Errorf("persist voice analysis: %w", writeErr)
 		}
 	}
@@ -332,7 +340,7 @@ func (s *Store) Delete(id string) error {
 	if err := validateVoiceID(id); err != nil {
 		return fmt.Errorf("voice not found")
 	}
-	if clone, ok, err := s.Load(id); err != nil {
+	if clone, ok, err := s.load(id); err != nil {
 		return err
 	} else if ok && clone.Protected {
 		return ErrProtected

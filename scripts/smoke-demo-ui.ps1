@@ -70,7 +70,10 @@ $configPath = Join-Path $OutDir "config.demo-ui.json"
 $inputWav = Join-Path $OutDir "input.wav"
 
 go build -o $gatewayExe .\cmd\cpp-studio
+
+if ($LASTEXITCODE -ne 0) { throw "Native command failed with exit code $LASTEXITCODE" }
 go build -o $fixtureExe .\cmd\cpp-studio-fixture
+if ($LASTEXITCODE -ne 0) { throw "Native command failed with exit code $LASTEXITCODE" }
 
 $fixtureCommand = (Resolve-Path $fixtureExe).Path
 Assert-PortFree -Port $GatewayPort -Label "gateway"
@@ -79,6 +82,7 @@ Assert-PortFree -Port $LlamaPort -Label "fixture llama"
 Stop-FixtureListener -Port $VisionPort -ExpectedPath $fixtureCommand
 Assert-PortFree -Port $VisionPort -Label "fixture vision"
 & $fixtureExe speech --text "fixture input" --out $inputWav
+if ($LASTEXITCODE -ne 0) { throw "Native command failed with exit code $LASTEXITCODE" }
 
 # A bring-your-own-model directory with one stand-in file. The bytes are
 # deliberately not GGUF: the fit preflight must degrade to size-only
@@ -88,6 +92,7 @@ New-Item -ItemType Directory -Force -Path $byomDir | Out-Null
 Set-Content -Encoding ascii -Path (Join-Path $byomDir "smoke-model.gguf") -Value "stand-in model bytes"
 
 $config = [ordered]@{
+  models = [ordered]@{ manifest = (Resolve-Path './models.json').Path; root = (Join-Path (Get-Location) 'models') }
   gateway = [ordered]@{
     host = "127.0.0.1"
     port = $GatewayPort

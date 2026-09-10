@@ -2,6 +2,9 @@
 
 ## Source Release Checklist
 
+The verification gate needs Go and Node.js 18 or newer (for the browser-state
+regressions). No npm dependencies are required for those tests.
+
 1. Run the portable gate:
 
    ```powershell
@@ -54,7 +57,7 @@
 - `cpp-studio-windows-amd64`: `dist\cpp-studio-windows-amd64.zip`
 - `cpp-studio-linux-amd64`: `dist/cpp-studio-linux-amd64.tar.gz`
 
-Both archives extract to a top-level `cpp-studio-<runtime>` directory. They include `cpp-studio`, `cpp-studio-fixture`, README, docs, and sample configs. They do not include native inference engine binaries or model weights.
+Both archives extract to a top-level `cpp-studio-<runtime>` directory. They include `cpp-studio`, `cpp-studio-fixture`, README, docs, sample configs, and `models.json` metadata. They do not include native inference engine binaries or model weights. An explicitly configured missing or invalid model manifest fails the configuration check; standalone Voice Design configurations without a models block use the same catalogue embedded in the binary.
 
 `config.ci.json` is the portable config-check example. `config.smoke.json` is included for parity with the source tree, but it is Windows-oriented because it starts `powershell.exe`.
 

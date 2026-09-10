@@ -263,7 +263,7 @@
           project.revision = saved.revision;
           project.updated_at = saved.updated_at;
           project.created_at = saved.created_at;
-          project.timeline_duration_ms = saved.timeline_duration_ms;
+          if (!changedDuringSave) project.timeline_duration_ms = saved.timeline_duration_ms;
           project.scenes = changedDuringSave ? project.scenes : clone(saved.scenes || []);
           project.name = changedDuringSave ? project.name : saved.name;
           if (!changedDuringSave) project.tracks = clone(saved.tracks);
@@ -496,7 +496,7 @@
   function updateBuildControls() {
     const count = dialogueBuildableCount();
     buildButton.disabled = Boolean(editSession.mutation("dialogueBuild") || !count);
-    buildButton.textContent = count ? `Build stale (${count})` : "Build stale";
+    buildButton.textContent = count ? `Build dialogue (${count})` : "Build dialogue";
     const cancellable = Boolean(editSession.mutation("dialogueBuild") && activeDialogueBuild &&
       (activeDialogueBuild.status === "queued" || activeDialogueBuild.status === "running"));
     buildCancelButton.hidden = !cancellable;
@@ -515,18 +515,23 @@
 
   function updateRenderControls() {
     const project = currentProject();
-    renderButton.disabled = !project || serverMutationPending();
+    const hasClips = Boolean(project?.tracks.some((track) => track.clips.length));
+    renderButton.disabled = !hasClips || serverMutationPending();
     const renders = project?.renders || [];
     const latest = renders[renders.length - 1];
     latestMaster.hidden = !latest;
     if (latest) {
       latestMaster.href = `${apiRoot}/${encodeURIComponent(project.id)}/master`;
       latestMaster.textContent = `Latest master (r${latest.revision})`;
-      if (!editSession.mutation("render") && !editSession.mutation("export")) setRenderStatus(`Rendered revision ${latest.revision}`, "ready");
+      if (!editSession.mutation("render") && !editSession.mutation("export")) {
+        setRenderStatus(hasClips ? `Rendered revision ${latest.revision}` : "Add a clip to render a new master.", hasClips ? "ready" : "");
+      }
     } else {
       latestMaster.removeAttribute("href");
       latestMaster.textContent = "Latest master";
-      if (!editSession.mutation("render") && !editSession.mutation("export")) setRenderStatus("No master rendered");
+      if (!editSession.mutation("render") && !editSession.mutation("export")) {
+        setRenderStatus(hasClips ? "No master rendered" : "Add a clip to render a master.");
+      }
     }
     renderRenderHistory(project);
   }
@@ -641,6 +646,7 @@
   }
 
   function acceptTimelineEdit(mutator) {
+    if (projectTransitionPending) return false;
     stopBrowserPlayback(true);
     const result = editSession.edit(mutator);
     if (result.error) {
@@ -658,6 +664,7 @@
   }
 
   function restoreTimeline(redo = false) {
+    if (projectTransitionPending) return;
     stopBrowserPlayback(true);
     if (!editSession.restore(redo)) return;
     scheduleAutosave();
@@ -759,13 +766,11 @@
   function renderSelection() {
     selectionBody.replaceChildren();
     const selected = selectedClips();
-    if (!selected.length) {
-      const message = document.createElement("p");
-      message.className = "selection-empty";
-      message.textContent = "Select a clip. Hold Shift to select more than one.";
-      selectionBody.append(message);
-      if (panelPosition) clampPanelPosition();
-      return;
+    selectionPanel.hidden = !selected.length;
+    if (!selected.length) return;
+    if (!panelPosition) {
+      const heading = document.querySelector(".canvas-heading").getBoundingClientRect();
+      clampPanelPosition({ x: window.innerWidth - selectionPanel.offsetWidth - 24, y: heading.bottom + 12 });
     }
     if (selected.length > 1) {
       const count = document.createElement("p");
@@ -1038,6 +1043,9 @@
       const empty = document.createElement("div");
       empty.className = "tracks-empty";
       empty.textContent = "Add a Dialogue, SFX, or Music track to begin.";
+      const add = actionButton("Add dialogue track", "Add your first Dialogue track", () => addTrack("dialogue"));
+      add.classList.add("empty-track-action");
+      empty.append(add);
       tracksElement.append(empty);
       renderSelection();
       return;
@@ -1132,13 +1140,18 @@
     activeDialogueBuild = started;
     const dialogueBuildPromise = Promise.resolve().then(async () => {
       let build = activeDialogueBuild;
+      let refreshedProgress = null;
       while (build.status === "queued" || build.status === "running") {
         activeDialogueBuild = build;
         updateBuildControls();
         const active = build.active_clip_id ? ` · ${build.active_clip_id}` : "";
         setBuildStatus(`Building ${build.completed}/${build.total}${active}`, "running");
-        await refreshBuiltProject(build.project_id);
-        await wait(100);
+        const progress = JSON.stringify([build.status, build.completed, build.active_clip_id]);
+        if (progress !== refreshedProgress) {
+          await refreshBuiltProject(build.project_id);
+          refreshedProgress = progress;
+        }
+        await wait(500);
         build = await request(build.status_url);
       }
       activeDialogueBuild = build;
@@ -1169,6 +1182,7 @@
       activeDialogueBuild = null;
       dialogueCancelPending = false;
       updateBuildControls();
+      updateRenderControls();
     }
   }
 
@@ -1545,35 +1559,59 @@
     renderProjects();
     renderTracks();
     if (project && !editSession.mutation("dialogueBuild")) void resumeDialogueBuild(project.id);
-    if (project && !panelPosition) {
-      const heading = document.querySelector(".canvas-heading").getBoundingClientRect();
-      clampPanelPosition({ x: window.innerWidth - selectionPanel.offsetWidth - 24, y: heading.bottom + 12 });
+  }
+
+  let projectTransitionPending = false;
+
+  function hasUnsavedProject() {
+    return Boolean(currentProject() && (saveStatus.dataset.state !== "saved" || editSession.savePromise()));
+  }
+
+  async function runProjectTransition(action) {
+    if (projectTransitionPending || serverMutationPending()) return;
+    projectTransitionPending = true;
+    appShell.inert = true;
+    try {
+      editSession.clearAutosave();
+      // A save may have queued another save for edits made while it was running.
+      while (editSession.savePromise()) {
+        try { await editSession.savePromise(); } catch { return; }
+      }
+      if (hasUnsavedProject()) await saveProject();
+      if (hasUnsavedProject()) return;
+      await action();
+    } finally {
+      projectTransitionPending = false;
+      appShell.inert = false;
     }
   }
 
   async function refreshProjects() {
     try {
-      const body = await request(apiRoot);
-      editSession.replaceList(body.projects || []);
-      if (requestedProjectID) {
-        const id = requestedProjectID;
-        requestedProjectID = "";
-        await openProject(id);
-        return;
-      }
-      showCurrent(currentProject());
+      await runProjectTransition(async () => {
+        const body = await request(apiRoot);
+        editSession.replaceList(body.projects || []);
+        if (requestedProjectID) {
+          const project = await request(`${apiRoot}/${encodeURIComponent(requestedProjectID)}`);
+          requestedProjectID = "";
+          editSession.upsert(project);
+          showCurrent(project);
+          return;
+        }
+        showCurrent(currentProject());
+      });
     } catch (error) {
       projectList.textContent = `Could not load projects: ${error.message}`;
     }
   }
 
   async function openProject(id) {
-    if (serverMutationPending()) return;
-    editSession.clearAutosave();
     try {
-      const project = await request(`${apiRoot}/${encodeURIComponent(id)}`);
-      editSession.upsert(project);
-      showCurrent(project);
+      await runProjectTransition(async () => {
+        const project = await request(`${apiRoot}/${encodeURIComponent(id)}`);
+        editSession.upsert(project);
+        showCurrent(project);
+      });
     } catch (error) {
       setStatus("failed", error.message);
     }
@@ -1633,6 +1671,7 @@
     } finally {
       editSession.endMutation("revoice");
       appShell.inert = false;
+      updateRenderControls();
     }
   }
 
@@ -1745,6 +1784,7 @@
     } finally {
       editSession.endMutation("mediaPlacement");
       appShell.inert = false;
+      updateRenderControls();
     }
   }
 
@@ -1816,7 +1856,16 @@
     if (!visibleCharacters) {
       const empty = document.createElement("p");
       empty.className = "voice-library-empty";
-      empty.textContent = query ? "No Character Voices match this search." : "Create Character Voices in the Library to use them here.";
+      empty.textContent = query ? "No Character Voices match this search." : "Add a Character Voice to an Actor Voice before using it on a Dialogue track. ";
+      if (!query) {
+        const setup = document.createElement("a");
+        setup.className = "voice-setup-link";
+        setup.href = "/demo/#voice-cloning";
+        setup.target = "_blank";
+        setup.rel = "noopener";
+        setup.textContent = "Set up voices (new tab)";
+        empty.append(setup);
+      }
       voiceGroups.append(empty);
     }
 
@@ -2050,7 +2099,7 @@
   }
 
   function clampPanelPosition(position = panelPosition) {
-    if (!position) return;
+    if (!position || selectionPanel.hidden) return;
     const width = selectionPanel.offsetWidth;
     const height = selectionPanel.offsetHeight;
     panelPosition = {
@@ -2098,11 +2147,13 @@
     const name = newNameInput.value.trim();
     if (!name) return;
     try {
-      const project = await request(apiRoot, { method: "POST", body: JSON.stringify({ name }) });
-      editSession.upsert(project);
-      newNameInput.value = "";
-      showCurrent(project);
-      nameInput.focus();
+      await runProjectTransition(async () => {
+        const project = await request(apiRoot, { method: "POST", body: JSON.stringify({ name }) });
+        editSession.upsert(project);
+        newNameInput.value = "";
+        showCurrent(project);
+        nameInput.focus();
+      });
     } catch (error) {
       projectList.textContent = `Could not create project: ${error.message}`;
     }
@@ -2170,6 +2221,7 @@
     }
   });
   document.addEventListener("keydown", (event) => {
+    if (projectTransitionPending) return;
     if (isEditableTarget(event.target)) return;
     const command = event.ctrlKey || event.metaKey;
     if (command && event.key.toLowerCase() === "s") {
@@ -2194,6 +2246,19 @@
     if (panelPosition) clampPanelPosition();
     const project = currentProject();
     if (project) updateTimelineWidth(timelineDurationMS(project));
+  });
+
+  window.addEventListener("beforeunload", (event) => {
+    if (!hasUnsavedProject()) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest("a[href]");
+    if (!link || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey ||
+        link.hasAttribute("download") || (link.target && link.target !== "_self") || !hasUnsavedProject()) return;
+    event.preventDefault();
+    void runProjectTransition(() => window.location.assign(link.href));
   });
 
   renderSelection();

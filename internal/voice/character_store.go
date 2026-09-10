@@ -108,7 +108,7 @@ func (s *Store) CreateCharacterVoice(actorVoiceID, name, direction string) (Char
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok, err := s.Load(actorVoiceID); err != nil {
+	if _, ok, err := s.load(actorVoiceID); err != nil {
 		return CharacterVoice{}, err
 	} else if !ok {
 		return CharacterVoice{}, ErrActorVoiceNotFound

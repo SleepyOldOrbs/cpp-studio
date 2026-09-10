@@ -150,6 +150,16 @@ async page => {
   ]);
   assert((await page.getByRole('heading', { name: 'Story Builder', exact: true }).count()) === 1,
     'main-studio launch did not open the separate Story Builder tool');
+  const studioHeader = page.locator('.studio-header');
+  await studioHeader.waitFor();
+  const headerBox = await studioHeader.boundingBox();
+  const viewport = page.viewportSize();
+  assert(headerBox && viewport && headerBox.width >= viewport.width - 2,
+    'Story Builder did not retain a full-width studio header');
+  assert(await page.getByRole('link', { name: 'Stories & audiobooks', exact: true }).getAttribute('aria-current') === 'page',
+    'Story Builder did not keep Stories & Audiobooks active in the studio header');
+  assert(await studioHeader.getByRole('link', { name: 'Story Builder', exact: true }).getAttribute('aria-current') === 'page',
+    'Story Builder did not mark its studio navigation entry active');
 }
 '@
 
@@ -505,7 +515,7 @@ async page => {
     if (!condition) throw new Error(message);
   };
   const projectID = await page.locator('.project-item[aria-current="true"]').getAttribute('data-project-id');
-  await page.getByRole('button', { name: /Build stale/ }).click();
+  await page.getByRole('button', { name: /Build dialogue/ }).click();
   const buildStatus = page.locator('#storyBuilderBuildStatus');
   await buildStatus.filter({ hasText: /Building/ }).waitFor();
   await buildStatus.filter({ hasText: /Dialogue ready/ }).waitFor({ timeout: 15000 });
@@ -645,7 +655,7 @@ async page => {
     'First durable line.', '[fixture-fail] Second line fails.', 'Third line must not start.',
   ]);
   await page.goto(`${origin}/demo/story-builder.html?project=${failedProject.id}`);
-  await page.getByRole('button', { name: /Build stale/ }).click();
+  await page.getByRole('button', { name: /Build dialogue/ }).click();
   await page.waitForFunction(async id => {
     const build = await fetch(`/v1/story-builder-projects/${id}/builds`).then(response => response.json());
     return build.status === 'failed';
@@ -668,8 +678,8 @@ async page => {
     const button = document.querySelector('#storyBuilderBuildButton');
     return button && !button.disabled;
   });
-  assert(await page.getByRole('button', { name: /Build stale \(2\)/ }).isEnabled(), 'failed build reload did not offer retry');
-  await page.getByRole('button', { name: /Build stale/ }).click();
+  assert(await page.getByRole('button', { name: /Build dialogue \(2\)/ }).isEnabled(), 'failed build reload did not offer retry');
+  await page.getByRole('button', { name: /Build dialogue/ }).click();
   await page.waitForFunction(async ({ id, previous }) => {
     const build = await fetch(`/v1/story-builder-projects/${id}/builds`).then(response => response.json());
     return build.id !== previous && build.status === 'complete';
@@ -727,7 +737,7 @@ async page => {
   }, { id, index, text });
 
   await page.goto(`${origin}/demo/story-builder.html?project=${cancelledProject.id}`);
-  await page.getByRole('button', { name: /Build stale/ }).click();
+  await page.getByRole('button', { name: /Build dialogue/ }).click();
   await page.waitForFunction(async id => {
     const response = await fetch(`/v1/story-builder-projects/${id}/builds`);
     const build = await response.json();
@@ -752,8 +762,8 @@ async page => {
     const button = document.querySelector('#storyBuilderBuildButton');
     return button && !button.disabled;
   });
-  assert(await page.getByRole('button', { name: /Build stale \(2\)/ }).isEnabled(), 'cancelled build reload did not offer retry');
-  await page.getByRole('button', { name: /Build stale/ }).click();
+  assert(await page.getByRole('button', { name: /Build dialogue \(2\)/ }).isEnabled(), 'cancelled build reload did not offer retry');
+  await page.getByRole('button', { name: /Build dialogue/ }).click();
   await page.waitForFunction(async ({ id, previous }) => {
     const build = await fetch(`/v1/story-builder-projects/${id}/builds`).then(response => response.json());
     return build.id !== previous && build.status === 'complete';

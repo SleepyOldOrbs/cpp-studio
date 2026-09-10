@@ -8,13 +8,46 @@
   <link rel="stylesheet" href="/demo/story-builder.css">
 </head>
 <body>
+  <header class="studio-header">
+    <div class="studio-header-top">
+      <a class="studio-brand" href="/demo/" aria-label="cpp-studio home">
+        <strong>cpp&#8209;studio</strong>
+        <span>local studio console</span>
+      </a>
+      <div class="studio-location" aria-label="Current tool">
+        <span>Stories &amp; audiobooks</span>
+        <strong>Story Builder</strong>
+      </div>
+      <a class="studio-return" href="/demo/">Return to studio</a>
+    </div>
+    <div class="studio-navigation">
+      <nav class="studio-format-nav" aria-label="Studio formats">
+        <a class="studio-format-link" href="/demo/#talk-voice" data-parent-link="talk-voice">Talk &amp; voice</a>
+        <a class="studio-format-link" href="/demo/#music" data-parent-link="music">Music &amp; SFX</a>
+        <a class="studio-format-link" href="/demo/#imagery" data-parent-link="imagery">Imagery</a>
+        <a class="studio-format-link active" href="/demo/#stories-audiobooks" data-parent-link="stories-audiobooks" aria-current="page">Stories &amp; audiobooks</a>
+      </nav>
+      <nav class="studio-utility-nav" aria-label="Studio management">
+        <a href="/demo/#library">Library</a>
+        <a href="/demo/#models">Models</a>
+        <a href="/demo/#engines">Engines</a>
+      </nav>
+    </div>
+    <nav class="studio-subnav" aria-label="Story and audiobook tools">
+      <a class="studio-subnav-link" href="/demo/#stories-audiobooks">Overview</a>
+      <a class="studio-subnav-link" href="/demo/#story">Podcast Generator</a>
+      <a class="studio-subnav-link active" href="/demo/story-builder.html" aria-current="page">Story Builder</a>
+      <a class="studio-subnav-link" href="/demo/#audiobook">Audiobook Builder</a>
+      <a class="studio-subnav-link" href="/demo/#extract">Extract</a>
+    </nav>
+  </header>
+
   <header class="app-header">
     <div>
       <p class="eyebrow">cpp-studio</p>
       <h1>Story Builder</h1>
-      <p class="subtitle">Arrange Dialogue, SFX, and Music on a durable story timeline.</p>
+      <p class="subtitle">Arrange Dialogue, SFX, and Music on your project timeline.</p>
     </div>
-    <a class="studio-link" href="/demo/">Return to studio</a>
   </header>
 
   <main class="app-shell">
@@ -41,7 +74,7 @@
         </div>
         <div class="save-controls">
           <span id="storyBuilderBuildStatus" class="build-status" role="status" aria-live="polite">No dialogue build running</span>
-          <button id="storyBuilderBuildButton" class="build-button" type="button" disabled>Build stale</button>
+          <button id="storyBuilderBuildButton" class="build-button" type="button" disabled>Build dialogue</button>
           <button id="storyBuilderBuildCancelButton" class="cancel-build-button" type="button" hidden>Cancel build</button>
           <span id="storyBuilderRenderStatus" class="render-status" role="status" aria-live="polite">No master rendered</span>
           <button id="storyBuilderRenderButton" class="render-button" type="button">Render master</button>
@@ -53,7 +86,7 @@
       <section class="render-history" aria-labelledby="storyBuilderRenderHistoryTitle">
         <div>
           <p class="eyebrow">Delivery</p>
-          <h2 id="storyBuilderRenderHistoryTitle">Mixed-master revisions</h2>
+          <h2 id="storyBuilderRenderHistoryTitle">Rendered masters</h2>
         </div>
         <div id="storyBuilderRenderHistory" class="render-history-list"></div>
       </section>
@@ -100,7 +133,7 @@
             <div id="storyBuilderTracks" class="track-list" aria-live="polite"></div>
           </div>
         </div>
-        <aside id="storyBuilderSelectionPanel" class="selection-panel" aria-labelledby="storyBuilderSelectionTitle">
+        <aside id="storyBuilderSelectionPanel" class="selection-panel" aria-labelledby="storyBuilderSelectionTitle" hidden>
           <header id="storyBuilderSelectionHandle" class="selection-panel-header">
             <h3 id="storyBuilderSelectionTitle">Selection</h3>
             <span>Drag to move</span>

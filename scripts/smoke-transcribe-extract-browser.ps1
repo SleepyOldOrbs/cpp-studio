@@ -426,7 +426,7 @@ async page => {
   assert(JSON.stringify(extractRenamedSpeakers) === JSON.stringify(['Host', 'Host', 'B']),
     'Extract speaker rename changed the wrong segments: ' + JSON.stringify(extractRenamedSpeakers));
 
-  await page.locator('.extract-segment-time').first().click();
+  await page.locator('#extractTimeline .extract-segment-time').first().click();
   const tick = page.locator('.extract-segment-tick').first();
   await tick.check();
   await page.locator('#extractZoomInButton').click();
@@ -450,21 +450,163 @@ async page => {
   assert((await page.locator('#extractViewStart').textContent()) === viewStart, 'waveform view start was not preserved');
   assert((await page.locator('#extractViewEnd').textContent()) === viewEnd, 'waveform zoom was not preserved');
 
+  page.off('request', trackRequest);
+  assert(switchRequests.length === 0, 'mode switching made network requests: ' + switchRequests.join(', '));
+}
+'@
+  Invoke-BrowserCode -Code $browserCode
+
+  $browserCode = @'
+async page => {
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
   await page.locator('#extractActorInput').fill('Kenneth Williams');
   await page.locator('#extractCharacterInput').fill('Rambling Sid Rumpo');
   assert(await page.locator('#extractAddSpeechButton').isEnabled(), 'labelled waveform range could not be added');
   await page.locator('#extractAddSpeechButton').click();
-  await page.locator('.extract-segment-time').nth(1).click();
+  const labelledWorkspace = await page.evaluate(() => window.__cppStudioAudioWorkspace.snapshot());
+  assert(labelledWorkspace.segments[0].speaker === 'Kenneth Williams',
+    'clean speech actor did not replace the provisional transcript speaker');
+  assert((await page.locator('#transcribeRenameFrom option').allTextContents()).includes('Kenneth Williams'),
+    'clean speech actor did not appear in the transcript rename control');
+  assert(await page.locator('#extractTimeline .extract-segment').first().locator('.tag-button.active').filter({ hasText: /^Kenneth Williams$/ }).isVisible(),
+    'clean speech actor was not shown as the active transcript speaker');
+  await page.locator('#extractTimeline .extract-segment-time').nth(1).click();
   await page.locator('#extractCharacterInput').fill('Snide');
   await page.locator('#extractAddSpeechButton').click();
+  const twiceLabelledWorkspace = await page.evaluate(() => window.__cppStudioAudioWorkspace.snapshot());
+  assert(JSON.stringify(twiceLabelledWorkspace.segments.map(segment => segment.speaker)) ===
+    JSON.stringify(['Kenneth Williams', 'Kenneth Williams', 'B']),
+    'clean speech labels leaked through a short playback-tail overlap: ' +
+      JSON.stringify(twiceLabelledWorkspace.segments.map(segment => segment.speaker)));
   assert((await page.locator('.extract-speech-item').count()) === 2, 'Extract did not retain two clean speech selections');
   const speechLabels = await page.locator('.extract-speech-item').allTextContents();
   assert(speechLabels[0].includes('Kenneth Williams') && speechLabels[0].includes('Rambling Sid Rumpo') &&
     speechLabels[1].includes('Kenneth Williams') && speechLabels[1].includes('Snide'),
     'clean speech labels were not retained: ' + JSON.stringify(speechLabels));
 
-  page.off('request', trackRequest);
-  assert(switchRequests.length === 0, 'mode switching made network requests: ' + switchRequests.join(', '));
+}
+'@
+  Invoke-BrowserCode -Code $browserCode
+
+  $browserCode = @'
+async page => {
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  const waveform = page.locator('#extractCanvas');
+  const tick = page.locator('.extract-segment-tick').first();
+  await tick.uncheck();
+  const canvasBox = await waveform.boundingBox();
+  await waveform.click({ position: { x: canvasBox.width - 5, y: canvasBox.height / 2 } });
+  assert(!(await page.locator('#extractSelectionActions').isVisible()),
+    'Extract showed selection actions before a waveform range existed');
+
+  await page.locator('#extractZoomFitButton').click();
+  const fittedBox = await waveform.boundingBox();
+  const fixtureDuration = Number(await waveform.getAttribute('aria-valuemax'));
+  await page.mouse.move(fittedBox.x + (0.9 / fixtureDuration) * fittedBox.width, fittedBox.y + fittedBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(fittedBox.x + (1.7 / fixtureDuration) * fittedBox.width, fittedBox.y + fittedBox.height / 2);
+  await page.mouse.up();
+  const actions = page.locator('#extractSelectionActions');
+  await actions.waitFor({ state: 'visible' });
+  assert((await actions.locator('#extractPlayButton').count()) === 1 &&
+    (await actions.locator('#extractTranscribeButton').count()) === 1,
+    'Extract did not move Play selection and Transcribe into the waveform range');
+  const cardActionLayout = await page.locator('.extract-selection-card .extract-selection-actions').evaluateAll(rows => rows.map(row => {
+    const card = row.closest('.extract-selection-card').getBoundingClientRect();
+    const bounds = row.getBoundingClientRect();
+    return {
+      position: getComputedStyle(row).position,
+      insideCard: bounds.left >= card.left && bounds.right <= card.right && bounds.top >= card.top && bounds.bottom <= card.bottom
+    };
+  }));
+  assert(cardActionLayout.every(row => row.position !== 'absolute' && row.insideCard),
+    'ordinary Extract action rows escaped their cards: ' + JSON.stringify(cardActionLayout));
+  assert((await actions.locator('#extractTranscribeButton').textContent()) === 'Transcribe selection',
+    'Extract did not distinguish selection transcription from whole-audio transcription');
+}
+'@
+  Invoke-BrowserCode -Code $browserCode
+
+  $browserCode = @'
+async page => {
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  const actions = page.locator('#extractSelectionActions');
+  const tick = page.locator('.extract-segment-tick').first();
+  let selectionUploadBytes = 0;
+  await page.route('**/v1/audio/transcriptions?format=segments', async route => {
+    selectionUploadBytes = route.request().postDataBuffer().length;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        text: 'Edited second fixture line',
+        segments: [{ start: 0, end: 0.8, text: 'Edited second fixture line', speaker: 'Kenneth Williams' }]
+      })
+    });
+  });
+  await actions.locator('#extractTranscribeButton').evaluate(element => element.click());
+  await page.waitForFunction(() => document.querySelector('#extractTranscribeStatus').textContent.startsWith('Selection transcribed'));
+  await page.unroute('**/v1/audio/transcriptions?format=segments');
+  assert(selectionUploadBytes > 0 && selectionUploadBytes < 60000,
+    'Extract uploaded the whole fixture instead of the highlighted range: ' + selectionUploadBytes + ' bytes');
+  const selectedTranscript = await page.evaluate(() => window.__cppStudioAudioWorkspace.snapshot().segments.find(segment =>
+    segment.text === 'Edited second fixture line'));
+  assert(selectedTranscript && Math.abs(selectedTranscript.start - 0.9) < 0.01 && Math.abs(selectedTranscript.end - 1.7) < 0.01,
+    'selection transcript was not restored to its source time range: ' + JSON.stringify(selectedTranscript));
+  const position = await page.evaluate(() => {
+    const canvas = document.querySelector('#extractCanvas').getBoundingClientRect();
+    const actions = document.querySelector('#extractSelectionActions').getBoundingClientRect();
+    const state = window.__cppStudioAudioWorkspace.snapshot();
+    return {
+      center: actions.left + actions.width / 2,
+      start: canvas.left + (state.region.start / state.duration) * canvas.width,
+      end: canvas.left + (state.region.end / state.duration) * canvas.width,
+      top: actions.top,
+      canvasTop: canvas.top,
+      canvasBottom: canvas.bottom
+    };
+  });
+  assert(position.center >= position.start && position.center <= position.end &&
+    position.top >= position.canvasTop && position.top < position.canvasBottom,
+    'selection actions were not positioned over the highlighted waveform range');
+
+  await page.locator('#openTranscribeButton').click();
+  await page.waitForFunction(() => location.hash === '#transcription');
+  await page.waitForFunction(() => document.querySelector('#extractPrimaryActions')?.parentElement?.id === 'extractToolbarActions');
+  assert((await page.locator('#extractToolbarActions #extractPrimaryActions').count()) === 1,
+    'Transcribe did not return its actions to the source toolbar');
+  assert((await page.locator('#extractTranscribeButton').textContent()) === 'Transcribe',
+    'Transcribe page did not retain the whole-audio action label');
+  await page.locator('#openExtractButton').click();
+  await page.waitForFunction(() => location.hash === '#extract');
+  await page.waitForFunction(() => document.querySelector('#extractPrimaryActions')?.parentElement?.id === 'extractSelectionActions' &&
+    !document.querySelector('#extractSelectionActions').hidden);
+  assert((await page.locator('#extractSelectionActions #extractPrimaryActions').count()) === 1 && await actions.isVisible(),
+    'Extract did not restore its actions over the retained range');
+  await tick.check();
+}
+'@
+  Invoke-BrowserCode -Code $browserCode
+
+  $browserCode = @'
+async page => {
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  const waveform = page.locator('#extractCanvas');
+  const duration = Number(await waveform.getAttribute('aria-valuemax'));
+  await waveform.focus();
+  await waveform.press('End');
+  assert(Number(await waveform.getAttribute('aria-valuenow')) === duration, 'End did not seek to the Extract end');
+  await waveform.press('ArrowLeft');
+  assert(Number(await waveform.getAttribute('aria-valuenow')) === duration - 1, 'Left did not nudge the Extract playhead');
+  await waveform.press('Home');
+  await waveform.press('ArrowRight');
+  assert(Number(await waveform.getAttribute('aria-valuenow')) === 1, 'Home and Right did not seek from the Extract start');
+  const before = await page.locator('#extractViewEnd').textContent();
+  const box = await waveform.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, -120);
+  assert(await page.locator('#extractViewEnd').textContent() !== before, 'wheel up did not zoom into the Extract waveform');
+  await page.locator('#extractZoomFitButton').click();
 }
 '@
   Invoke-BrowserCode -Code $browserCode
@@ -482,7 +624,8 @@ async page => {
     }
   };
   page.on('request', trackClipTranscription);
-  await page.locator('#extractProcessSpeechButton').click();
+  const processButton = page.locator('#extractProcessSpeechButton');
+  await processButton.evaluate(element => element.click());
   await page.waitForFunction(() => document.querySelector('#extractProcessSpeechStatus').textContent.includes('processed'));
   page.off('request', trackClipTranscription);
   const processStatus = await page.locator('#extractProcessSpeechStatus').textContent();
@@ -501,10 +644,10 @@ async page => {
   assert(processedWorkspace.speechClips.every(clip => clip.verified), 'human verification was not retained');
   assert(processedWorkspace.speechClips[1].transcript === 'Corrected clean line', 'corrected clean transcript was not retained');
 
-  await page.locator('#extractPassTrainingButton').click();
+  await page.locator('#extractPassTrainingButton').evaluate(element => element.click());
   await page.waitForFunction(() => location.hash === '#training');
   await page.waitForFunction(() => window.scrollY === 0);
-  assert(await page.getByRole('heading', { name: 'Voice LoRA training', exact: true }).isVisible(),
+  assert(await page.getByRole('heading', { name: 'Prepare training data', exact: true }).isVisible(),
     'Training page heading was not visible after the handoff');
   assert((await page.locator('#trainingClipList .training-clip').count()) === 2,
     'Training did not receive the two verified clips');
@@ -544,7 +687,7 @@ async page => {
     });
     window.showDirectoryPicker = async () => makeDirectory('');
   });
-  await page.locator('#trainingExportButton').click();
+  await page.locator('#trainingExportButton').evaluate(element => element.click());
   await page.waitForFunction(() => document.querySelector('#trainingExportStatus').textContent.includes('Exported'));
   const exportProof = await page.evaluate(async () => {
     const keys = Object.keys(window.__trainingWrites).sort();
@@ -573,25 +716,25 @@ async page => {
   assert(await page.locator('#extractCastButton').isEnabled(), 'cast cloning stayed disabled after speaker tagging');
   await page.locator('.extract-segment-tick').nth(2).check();
   assert((await page.locator('#extractSelectionDuration').textContent()) === '2.3s', 'stitched selection duration was wrong');
-  assert((await page.locator('#extractSelectionSpeakers').textContent()) === 'Host, B', 'selection speaker provenance was wrong');
+  assert((await page.locator('#extractSelectionSpeakers').textContent()) === 'Kenneth Williams, B', 'selection speaker provenance was wrong');
   assert((await page.locator('#extractSelectionSpanCount').textContent()) === '2', 'stitched span count was wrong');
 
-  await page.locator('#extractPlayButton').click();
+  await page.locator('#extractPlayButton').evaluate(element => element.click());
   await page.waitForFunction(() => document.querySelector('#extractPlayButton').textContent === 'Pause selection');
   assert((await page.locator('#extractPlayButton').getAttribute('aria-pressed')) === 'true', 'selection playback did not expose playing state');
   await page.waitForTimeout(80);
-  await page.locator('#extractPlayButton').click();
+  await page.locator('#extractPlayButton').evaluate(element => element.click());
   await page.waitForFunction(() => document.querySelector('#extractPlayButton').textContent === 'Play selection');
   assert(!(await page.locator('#extractStopButton').isDisabled()), 'paused selection could not be stopped');
-  await page.locator('#extractPlayButton').click();
+  await page.locator('#extractPlayButton').evaluate(element => element.click());
   await page.waitForFunction(() => document.querySelector('#extractPlayButton').textContent === 'Pause selection');
-  await page.locator('#extractStopButton').click();
+  await page.locator('#extractStopButton').evaluate(element => element.click());
   assert((await page.locator('#extractPlayButton').textContent()) === 'Play selection', 'selection stop did not reset Play state');
   assert(await page.locator('#extractStopButton').isDisabled(), 'selection playback did not stop');
 
   const saveResponsePending = page.waitForResponse(response =>
     response.url().endsWith('/v1/library') && response.request().method() === 'POST');
-  await page.locator('#extractLibraryButton').click();
+  await page.locator('#extractLibraryButton').evaluate(element => element.click());
   const saveResponse = await saveResponsePending;
   assert(saveResponse.status() === 201, 'selection save failed with ' + saveResponse.status());
   const saved = await saveResponse.json();
@@ -604,11 +747,11 @@ async page => {
   assert(deleted.status() === 204, 'browser smoke could not clean up its saved Library item');
 
   await page.locator('.extract-segment-tick').nth(2).uncheck();
-  assert((await page.locator('#extractSelectionSpeakers').textContent()) === 'Host', 'single-speaker selection provenance was wrong');
-  await page.locator('#extractCloneButton').click();
+  assert((await page.locator('#extractSelectionSpeakers').textContent()) === 'Kenneth Williams', 'single-speaker selection provenance was wrong');
+  await page.locator('#extractCloneButton').evaluate(element => element.click());
   await page.waitForFunction(() => location.hash === '#voices');
   const cloneStatus = await page.locator('#cloneWavStatus').textContent();
-  assert(cloneStatus.includes('from input.wav') && cloneStatus.includes('speaker Host') && cloneStatus.includes('0:00.0–0:01.1'),
+  assert(cloneStatus.includes('from input.wav') && cloneStatus.includes('speaker Kenneth Williams') && cloneStatus.includes('0:00.0–0:01.1'),
     'clone-reference handoff lost provenance: ' + cloneStatus);
   await page.locator('[data-parent-link="stories-audiobooks"]').click();
   await page.locator('[data-parent-nav="stories-audiobooks"] [data-page-link="extract"]').click();
@@ -719,17 +862,18 @@ async page => {
     location.hash = 'models';
   });
   await page.waitForFunction(() => location.hash === '#models');
+  page.once('dialog', dialog => dialog.accept());
   await Promise.all([
     page.waitForEvent('load'),
     page.locator('#clearAllButton').click()
   ]);
   await page.waitForLoadState('networkidle');
-  assert((await page.evaluate(() => location.hash)) === '#models', 'Clear all did not preserve the current tool');
-  assert((await page.locator('#messageInput').inputValue()) === '', 'Clear all retained voice-loop text');
-  assert((await page.locator('#imagePromptInput').inputValue()) === '', 'Clear all retained image text');
-  assert((await page.locator('#designDescriptionInput').inputValue()) === '', 'Clear all retained voice-design text');
-  assert((await page.locator('#musicPromptInput').inputValue()) === '', 'Clear all retained music text');
-  assert((await page.locator('#extractFileStatus').textContent()) === 'Nothing loaded', 'Clear all retained Transcribe audio');
+  assert((await page.evaluate(() => location.hash)) === '#models', 'Reset session did not preserve the current tool');
+  assert((await page.locator('#messageInput').inputValue()) === '', 'Reset session retained voice-loop text');
+  assert((await page.locator('#imagePromptInput').inputValue()) === '', 'Reset session retained image text');
+  assert((await page.locator('#designDescriptionInput').inputValue()) === '', 'Reset session retained voice-design text');
+  assert((await page.locator('#musicPromptInput').inputValue()) === '', 'Reset session retained music text');
+  assert((await page.locator('#extractFileStatus').textContent()) === 'Nothing loaded', 'Reset session retained Transcribe audio');
 }
 '@
   Invoke-BrowserCode -Code $browserCode

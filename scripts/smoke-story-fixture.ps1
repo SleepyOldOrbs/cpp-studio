@@ -68,6 +68,8 @@ $configPath = Join-Path $OutDir "config.story.json"
 $storyWav = Join-Path $OutDir "story.wav"
 
 go build -o $gatewayExe .\cmd\cpp-studio
+
+if ($LASTEXITCODE -ne 0) { throw "Native command failed with exit code $LASTEXITCODE" }
 $gatewayCommand = (Resolve-Path $gatewayExe).Path
 
 $config = [ordered]@{

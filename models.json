@@ -132,6 +132,7 @@
     },
     {
       "id": "qwen3-tts-1.7b-voicedesign",
+      "aliases": ["qwen3"],
       "displayName": "Qwen3-TTS 1.7B VoiceDesign",
       "engine": "voicedesign",
       "family": "qwen3-tts-voicedesign",

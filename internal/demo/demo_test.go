@@ -26,11 +26,11 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "cpp-studio local studio") {
 		t.Fatalf("expected index HTML marker, got %q", body)
 	}
-	if !strings.Contains(body, "/v1/images/generations") {
-		t.Fatalf("expected image route marker, got %q", body)
+	if !strings.Contains(body, "imageForm") {
+		t.Fatalf("expected image form marker, got %q", body)
 	}
-	if !strings.Contains(body, "/v1/stories") {
-		t.Fatalf("expected story route marker, got %q", body)
+	if !strings.Contains(body, "storyForm") {
+		t.Fatalf("expected story form marker, got %q", body)
 	}
 	if !strings.Contains(body, "imageErrorBox") {
 		t.Fatalf("expected image error marker, got %q", body)
@@ -68,8 +68,8 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "storyLibraryButton") {
 		t.Fatalf("expected story library marker, got %q", body)
 	}
-	if !strings.Contains(body, "/v1/voices") {
-		t.Fatalf("expected voice clone route marker, got %q", body)
+	if !strings.Contains(body, "cloneForm") {
+		t.Fatalf("expected voice clone form marker, got %q", body)
 	}
 	if !strings.Contains(body, "voiceLibrary") {
 		t.Fatalf("expected voice library marker, got %q", body)
@@ -89,14 +89,14 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "describeImageButton") {
 		t.Fatalf("expected image description marker, got %q", body)
 	}
-	if !strings.Contains(body, "/v1/images/descriptions") {
-		t.Fatalf("expected image description route marker, got %q", body)
+	if !strings.Contains(body, "imageDescriptionOutput") {
+		t.Fatalf("expected image description form marker, got %q", body)
 	}
 	if !strings.Contains(body, "designForm") {
 		t.Fatalf("expected voice designer marker, got %q", body)
 	}
-	if !strings.Contains(body, "/v1/voices/design") {
-		t.Fatalf("expected voice design route marker, got %q", body)
+	if !strings.Contains(body, "designSaveStatus") {
+		t.Fatalf("expected voice design form marker, got %q", body)
 	}
 	if !strings.Contains(body, "designModelSelect") {
 		t.Fatalf("expected design model selector marker, got %q", body)
@@ -161,7 +161,7 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "Music &amp; SFX") {
 		t.Fatalf("expected Music and SFX navigation label")
 	}
-	for _, label := range []string{"Audio Seperation", "Podcast Generator", "Audiobook Builder"} {
+	for _, label := range []string{"Voice &amp; stem separation", "Podcast Generator", "Audiobook Builder"} {
 		if !strings.Contains(body, label) {
 			t.Fatalf("expected updated navigation label %q", label)
 		}
@@ -180,7 +180,7 @@ func TestHandlerServesIndex(t *testing.T) {
 		"conversionModelSelect",
 		"conversionSourceRecordButton",
 		"conversionTargetVoiceSelect",
-		"/v1/audio/conversions",
+		"conversionForm",
 		"musicModelSelect",
 		"musicModeSelect",
 		"musicSourceInput",
@@ -188,7 +188,7 @@ func TestHandlerServesIndex(t *testing.T) {
 		"musicPromptInput",
 		"musicLyricsInput",
 		"musicOutputAudio",
-		"/v1/audio/music",
+		"musicForm",
 		"separationResults",
 		"separationStemList",
 	} {
@@ -196,8 +196,8 @@ func TestHandlerServesIndex(t *testing.T) {
 			t.Fatalf("expected tool model chooser marker %q", marker)
 		}
 	}
-	if !strings.Contains(body, "/v1/models/catalog") {
-		t.Fatalf("expected models catalog route marker, got %q", body)
+	if !strings.Contains(body, "modelsList") {
+		t.Fatalf("expected models catalog form marker, got %q", body)
 	}
 	if !strings.Contains(body, "modelsList") {
 		t.Fatalf("expected models list marker, got %q", body)
@@ -231,8 +231,8 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "libraryImageButton") {
 		t.Fatalf("expected save-to-library marker, got %q", body)
 	}
-	if !strings.Contains(body, "/v1/audiobooks") {
-		t.Fatalf("expected audiobook route marker, got %q", body)
+	if !strings.Contains(body, "audiobookForm") {
+		t.Fatalf("expected audiobook form marker, got %q", body)
 	}
 	if !strings.Contains(body, "audiobookShelf") {
 		t.Fatalf("expected audiobook shelf marker, got %q", body)
@@ -281,8 +281,8 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "extractTimeline") {
 		t.Fatalf("expected extractor timeline marker, got %q", body)
 	}
-	if !strings.Contains(body, "format=segments") {
-		t.Fatalf("expected segments route marker, got %q", body)
+	if !strings.Contains(body, "extractTranscribeButton") {
+		t.Fatalf("expected transcript action marker, got %q", body)
 	}
 	if !strings.Contains(body, "extractDiarizeButton") {
 		t.Fatalf("expected diarization button marker, got %q", body)
@@ -445,6 +445,10 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 			path:        "/story-builder.html",
 			contentType: "text/html",
 			markers: []string{
+				`class="studio-header"`,
+				`aria-label="Studio formats"`,
+				`data-parent-link="stories-audiobooks" aria-current="page"`,
+				`class="studio-subnav-link active" href="/demo/story-builder.html" aria-current="page"`,
 				"Story Builder",
 				"storyBuilderNewForm",
 				"storyBuilderProjectList",
@@ -486,7 +490,7 @@ func TestHandlerServesSeparateStoryBuilderProjectTool(t *testing.T) {
 		{
 			path:        "/story-builder.css",
 			contentType: "text/css",
-			markers:     []string{".project-list", ".save-status", ".story-canvas", ".scene-navigator", ".scene-jump", ".timeline-transport", ".timeline-playhead", ".playback-status", ".timeline-viewport", ".track-row", ".silence-clip", ".silence-block", ".trim-handle", ".selection-panel", ".voice-library", ".actor-voice-group", ".character-voice-asset", ".reusable-audio-group", ".reusable-audio-asset", ".clip-media-error", ".dialogue-text-inline", ".clip-status-badge", ".audition-clip"},
+			markers:     []string{".studio-header", ".studio-format-nav", ".studio-subnav", ".project-list", ".save-status", ".story-canvas", ".scene-navigator", ".scene-jump", ".timeline-transport", ".timeline-playhead", ".playback-status", ".timeline-viewport", ".track-row", ".silence-clip", ".silence-block", ".trim-handle", ".selection-panel", ".voice-library", ".actor-voice-group", ".character-voice-asset", ".reusable-audio-group", ".reusable-audio-asset", ".clip-media-error", ".dialogue-text-inline", ".clip-status-badge", ".audition-clip"},
 		},
 	}
 

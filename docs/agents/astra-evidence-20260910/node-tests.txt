@@ -1,0 +1,29 @@
+✔ save reconciliation preserves edits made while a save is in flight (1.8413ms)
+✔ build polling avoids unchanged project reloads and refreshes on complete (0.8018ms)
+✔ build polling avoids unchanged project reloads and refreshes on cancelled (0.5169ms)
+✔ build polling avoids unchanged project reloads and refreshes on failed (0.4746ms)
+✔ empty-project render gate preserves previous delivery and permits silence clips (0.7053ms)
+✔ open saves a pending edit before replacing project state (2.2428ms)
+✔ refresh saves a pending edit before replacing project state (0.8761ms)
+✔ failed save blocks a project transition and retains the editable draft (0.7956ms)
+✔ transition waits for an in-flight save and its newer queued edit (0.8623ms)
+✔ document shortcuts cannot edit the old project while its replacement is loading (1.1659ms)
+✔ render control unlocks after dialogue build complete (0.7176ms)
+✔ render control unlocks after dialogue build cancelled (0.419ms)
+✔ render control unlocks after dialogue build failed (0.384ms)
+✔ revoiceCharacterVoice refreshes render availability after releasing its mutation (0.8495ms)
+✔ placeLibraryAudio refreshes render availability after releasing its mutation (0.6742ms)
+✔ Library dates prefer real updates and fall back from missing, zero or invalid updates (10.1899ms)
+✔ session reset cancels without reloading and states the durable boundary before confirmation (0.6327ms)
+✔ result disclosure opens only its enclosing workflow steps without scrolling (0.9223ms)
+✔ voice save displays its returned name and link, and clears old confirmation on failure (1.2029ms)
+✔ tool navigation resets scroll only on a real change while preserving shared audio data (1.0485ms)
+✔ voice request reveals output at start and again on completion after the user collapses it (0.7431ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 62.7377

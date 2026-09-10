@@ -1,0 +1,17 @@
+?   	cpp-studio	[no test files]
+ok  	cpp-studio/cmd/cpp-studio	0.155s
+ok  	cpp-studio/cmd/cpp-studio-fixture	0.531s
+ok  	cpp-studio/internal/audiobook	1.567s
+ok  	cpp-studio/internal/config	0.382s
+ok  	cpp-studio/internal/demo	0.391s
+ok  	cpp-studio/internal/engine	0.498s
+ok  	cpp-studio/internal/gateway	8.310s
+ok  	cpp-studio/internal/gguf	0.205s
+ok  	cpp-studio/internal/jobs	0.180s
+ok  	cpp-studio/internal/library	0.351s
+ok  	cpp-studio/internal/lifecycle	8.714s
+ok  	cpp-studio/internal/models	0.618s
+ok  	cpp-studio/internal/story	1.917s
+ok  	cpp-studio/internal/storybuilder	1.625s
+ok  	cpp-studio/internal/voice	0.687s
+ok  	cpp-studio/internal/wav	0.197s

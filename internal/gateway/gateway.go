@@ -198,10 +198,14 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	// The model manifest is optional: a config without a models block (CI,
 	// fixture setups) simply serves an empty catalog rather than failing.
 	if cfg.Models != nil && cfg.Models.Manifest != "" {
-		if manifest, err := models.Load(cfg.Models.Manifest); err == nil {
-			r.catalog = manifest
-			r.modelsRoot = cfg.Models.Root
+		manifest, err := models.Load(cfg.Models.Manifest)
+		if err != nil {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("load configured model manifest: %v", err))
+			})
 		}
+		r.catalog = manifest
+		r.modelsRoot = cfg.Models.Root
 	}
 	if cfg.Models != nil && cfg.Models.Discovery != nil {
 		discovery := cfg.Models.Discovery
@@ -3568,8 +3572,18 @@ func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
 	if model == "" {
 		model = "voxcpm2"
 	}
-	if model != "qwen3" && model != "omnivoice" && model != "voxcpm2" {
-		writeJSONError(w, http.StatusBadRequest, "model must be qwen3, omnivoice, or voxcpm2")
+	catalog := r.catalog
+	if len(catalog.Models) == 0 && (r.cfg.Models == nil || r.cfg.Models.Manifest == "") {
+		var err error
+		catalog, err = models.DefaultManifest()
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "load default model catalogue: "+err.Error())
+			return
+		}
+	}
+	selected, err := catalog.Resolve(model, "voice_design", "voxcpm2")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -3578,8 +3592,8 @@ func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
 	prose, attributes := r.normalizeVoiceDescription(req.Context(), description)
 	engineInput := description
 	var spec engine.Spec
-	switch model {
-	case "qwen3":
+	switch selected.Family {
+	case "qwen3-tts-voicedesign":
 		if prose != "" {
 			engineInput = prose
 		}
@@ -3597,7 +3611,11 @@ func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
 			engineInput = prose
 		}
 		spec = engine.VoxCPMDesignSpec(engineInput, sampleText)
+	default:
+		writeJSONError(w, http.StatusBadRequest, "voice design model family is not supported")
+		return
 	}
+	spec.Engine = selected.Engine
 
 	result, err := r.engines.Run(req.Context(), spec)
 	if err != nil {
