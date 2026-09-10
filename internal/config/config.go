@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"cpp-studio/internal/models"
 )
 
 type Config struct {
@@ -316,6 +318,11 @@ func LoadChecked(path string) (Config, error) {
 	}
 	if err := cfg.CheckCommands(nil); err != nil {
 		return Config{}, err
+	}
+	if cfg.Models != nil && cfg.Models.Manifest != "" {
+		if _, err := models.Load(cfg.Models.Manifest); err != nil {
+			return Config{}, fmt.Errorf("load configured model manifest: %w", err)
+		}
 	}
 	return cfg, nil
 }

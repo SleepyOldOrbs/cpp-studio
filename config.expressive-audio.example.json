@@ -1,0 +1,88 @@
+{
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "models": {
+    "manifest": "${configDir}/models.json",
+    "root": "${configDir}/models"
+  },
+  "engines": {
+    "index-tts2.5": {
+      "command": "${configDir}/engines/audio-0.7.3/audiocpp_cli.exe",
+      "args": [
+        "--task",
+        "tts",
+        "--family",
+        "index_tts2",
+        "--model",
+        "${configDir}/models/speech/synthesis/IndexTTS2.5-GGUF/index-tts2_5-q8_0.gguf",
+        "--backend",
+        "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 900,
+      "gpu": true,
+      "defaultVoiceRef": "${configDir}/../audio.cpp/assets/resources/b.wav",
+      "defaultVoiceText": "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you."
+    },
+    "higgs-audio": {
+      "command": "${configDir}/engines/audio-0.7.3/audiocpp_cli.exe",
+      "args": [
+        "--task",
+        "tts",
+        "--family",
+        "higgs_audio_tts",
+        "--model",
+        "${configDir}/models/speech/synthesis/Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf",
+        "--backend",
+        "cuda"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 900,
+      "gpu": true,
+      "defaultVoiceRef": "${configDir}/../audio.cpp/assets/resources/b.wav",
+      "defaultVoiceText": "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you."
+    },
+    "fireredtts3-base": {
+      "command": "${configDir}/engines/audio-0.7.3/audiocpp_cli.exe",
+      "args": [
+        "--task",
+        "clon",
+        "--family",
+        "fireredtts3",
+        "--model",
+        "${configDir}/models/speech/synthesis/FireRedTTS3-Base-GGUF/fireredtts3-base-q8_0.gguf",
+        "--backend",
+        "cuda",
+        "--language",
+        "English"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 900,
+      "gpu": true,
+      "defaultVoiceRef": "${configDir}/../audio.cpp/assets/resources/b.wav",
+      "defaultVoiceText": "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you."
+    },
+    "fireredtts3-instruct": {
+      "command": "${configDir}/engines/audio-0.7.3/audiocpp_cli.exe",
+      "args": [
+        "--task",
+        "tts",
+        "--family",
+        "fireredtts3",
+        "--model",
+        "${configDir}/models/speech/synthesis/FireRedTTS3-Instruct-GGUF/fireredtts3-instruct-q8_0.gguf",
+        "--backend",
+        "cuda",
+        "--language",
+        "English"
+      ],
+      "mode": "subprocess",
+      "requestTimeoutSeconds": 900,
+      "gpu": true,
+      "defaultVoiceRef": "${configDir}/../audio.cpp/assets/resources/b.wav",
+      "defaultVoiceText": "Some call me nature. Others call me Mother Nature. I've been here for over 4.5 billion years. 22,500 times longer than you."
+    }
+  }
+}

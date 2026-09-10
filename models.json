@@ -132,6 +132,7 @@
     },
     {
       "id": "qwen3-tts-1.7b-voicedesign",
+      "aliases": ["qwen3"],
       "displayName": "Qwen3-TTS 1.7B VoiceDesign",
       "engine": "voicedesign",
       "family": "qwen3-tts-voicedesign",
@@ -474,6 +475,83 @@
       "source": "https://huggingface.co/audio-cpp/audio.cpp-gguf",
       "license": "Apache-2.0",
       "description": "Word-level alignment for an exact transcript and language."
+    },
+    {
+      "id": "index-tts2.5",
+      "displayName": "IndexTTS 2.5 Q8",
+      "engine": "index-tts2.5",
+      "family": "index_tts2",
+      "capabilities": [
+        "speech",
+        "voice_clone"
+      ],
+      "path": "speech/synthesis/IndexTTS2.5-GGUF/index-tts2_5-q8_0.gguf",
+      "bytes": 3502955328,
+      "sha256": "5e827b2072042e4a1b21ccf24a5cb4f71cb1011403067a0a9b039311d8b38628",
+      "source": "https://huggingface.co/audio-cpp/audio.cpp-gguf",
+      "license": "bilibili Model Use License",
+      "description": "Voice cloning with independent emotion strength, emotion descriptions, and speaking duration.",
+      "packageId": "index_tts2_5_q8_0",
+      "revision": "056144d2744697c9439bd32647279674dba0c964",
+      "downloadUrl": "https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/056144d2744697c9439bd32647279674dba0c964/IndexTTS2.5-GGUF/index-tts2_5-q8_0.gguf"
+    },
+    {
+      "id": "higgs-audio",
+      "displayName": "Higgs Audio v3 TTS 4B Q8",
+      "engine": "higgs-audio",
+      "family": "higgs_audio_tts",
+      "capabilities": [
+        "speech",
+        "voice_clone"
+      ],
+      "path": "speech/synthesis/Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf",
+      "bytes": 5095354048,
+      "sha256": "79746822045b5bf8f9ab2bda87b16cd3f8ea3d9e319cbcf887a87aa1b537a74a",
+      "source": "https://huggingface.co/audio-cpp/audio.cpp-gguf",
+      "license": "Boson Higgs Audio v3 Research and Non-Commercial License",
+      "description": "Expressive voice cloning with named emotions, delivery, pace, pitch, pauses and sound effects.",
+      "packageId": "higgs_audio_tts_4b_q8_0",
+      "revision": "056144d2744697c9439bd32647279674dba0c964",
+      "downloadUrl": "https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/056144d2744697c9439bd32647279674dba0c964/Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf"
+    },
+    {
+      "id": "fireredtts3-base",
+      "displayName": "FireRedTTS3 Base Q8 (experimental)",
+      "engine": "fireredtts3-base",
+      "family": "fireredtts3",
+      "capabilities": [
+        "speech",
+        "voice_clone"
+      ],
+      "path": "speech/synthesis/FireRedTTS3-Base-GGUF/fireredtts3-base-q8_0.gguf",
+      "bytes": 4180334848,
+      "sha256": "68acd5bce0d87a53bb5b88255c65e19df4cbc6017b4bab0824e96f1e2351c3a7",
+      "source": "https://huggingface.co/audio-cpp/audio.cpp-gguf",
+      "license": "Apache-2.0",
+      "description": "Experimental multilingual voice cloning. Inherits the reference performance.",
+      "packageId": "fireredtts3_base_q8_0",
+      "revision": "056144d2744697c9439bd32647279674dba0c964",
+      "downloadUrl": "https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/056144d2744697c9439bd32647279674dba0c964/FireRedTTS3-Base-GGUF/fireredtts3-base-q8_0.gguf"
+    },
+    {
+      "id": "fireredtts3-instruct",
+      "displayName": "FireRedTTS3 Instruct Q8 (experimental)",
+      "engine": "fireredtts3-instruct",
+      "family": "fireredtts3",
+      "capabilities": [
+        "speech",
+        "voice_clone",
+        "voice_design"
+      ],
+      "path": "speech/synthesis/FireRedTTS3-Instruct-GGUF/fireredtts3-instruct-q8_0.gguf",
+      "bytes": 4149192928,
+      "sha256": "04cd0ff6624bbfdc6b39e2dd1a0068f9e9769d1c217bf7343e28f3415eb2859e",
+      "source": "https://huggingface.co/audio-cpp/audio.cpp-gguf",
+      "license": "Apache-2.0",
+      "description": "Experimental voice cloning and voice design from a description of character, emotion, pace and accent.",
+      "packageId": "fireredtts3_instruct_q8_0",
+      "revision": "056144d2744697c9439bd32647279674dba0c964",
+      "downloadUrl": "https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/056144d2744697c9439bd32647279674dba0c964/FireRedTTS3-Instruct-GGUF/fireredtts3-instruct-q8_0.gguf"
     }
   ]
 }

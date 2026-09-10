@@ -2,6 +2,18 @@
   "use strict";
 
   var shell = document.querySelector(".app-shell");
+  var quickSpeechForm = document.getElementById("quickSpeechForm");
+  var quickSpeechModel = document.getElementById("quickSpeechModel");
+  var quickSpeechText = document.getElementById("quickSpeechText");
+  var quickSpeechPlay = document.getElementById("quickSpeechPlay");
+  var quickSpeechCancel = document.getElementById("quickSpeechCancel");
+  var quickSpeechStatus = document.getElementById("quickSpeechStatus");
+  var quickSpeechError = document.getElementById("quickSpeechError");
+  var quickSpeechResult = document.getElementById("quickSpeechResult");
+  var quickSpeechAudio = document.getElementById("quickSpeechAudio");
+  var quickSpeechDownload = document.getElementById("quickSpeechDownload");
+  var quickSpeechURL = "";
+  var quickSpeechController = null;
   var healthButton = document.getElementById("healthButton");
   var gatewayStatus = document.getElementById("gatewayStatus");
   var healthUpdated = document.getElementById("healthUpdated");
@@ -122,6 +134,7 @@
   var designAudio = document.getElementById("designAudio");
   var designNameInput = document.getElementById("designNameInput");
   var designSaveButton = document.getElementById("designSaveButton");
+  var designSaveStatus = document.getElementById("designSaveStatus");
   var cloneSpeakForm = document.getElementById("cloneSpeakForm");
   var speakVoiceLabel = document.getElementById("speakVoiceLabel");
   var speakTextInput = document.getElementById("speakTextInput");
@@ -516,10 +529,20 @@
     persistDiagnosticEvent("Unhandled browser rejection: " + (reason && (reason.stack || reason.message) ? (reason.stack || reason.message) : String(reason)), "error");
   });
 
+  function revealWorkflowResult(element) {
+    var step = element && element.closest("details.workflow-step");
+    while (step) {
+      step.open = true;
+      step = step.parentElement && step.parentElement.closest("details.workflow-step");
+    }
+  }
+
   function setError(error) {
     var message = error && error.message ? error.message : String(error);
     errorBox.textContent = message;
     errorBox.hidden = false;
+    revealWorkflowResult(errorBox);
+    revealWorkflowResult(transcriptOutput);
     log("Error: " + message, "error");
   }
 
@@ -527,6 +550,8 @@
     var message = error && error.message ? error.message : String(error);
     imageErrorBox.textContent = message;
     imageErrorBox.hidden = false;
+    revealWorkflowResult(imageErrorBox);
+    revealWorkflowResult(imageStatus);
     log("Error: " + message, "error");
   }
 
@@ -534,10 +559,8 @@
     var message = error && error.message ? error.message : String(error);
     storyErrorBox.textContent = message;
     storyErrorBox.hidden = false;
-    var step = storyErrorBox.closest("details");
-    if (step) {
-      step.open = true;
-    }
+    revealWorkflowResult(storyErrorBox);
+    revealWorkflowResult(storyStatus);
     log("Error: " + message, "error");
   }
 
@@ -576,6 +599,7 @@
     var conversionBusy = Boolean(conversionRecorder && conversionRecorder.state() !== "idle");
     var musicBusy = Boolean(musicRecorder && musicRecorder.state() !== "idle");
     var busy = running || recordBusy || live || cloneBusy || conversionBusy || musicBusy || handsFree || handsFreeSetupPending;
+    quickSpeechPlay.disabled = busy || !quickSpeechModel.value || !quickSpeechText.value.trim();
     apiControls.forEach(function (control) {
       control.disabled = busy;
     });
@@ -832,8 +856,81 @@
   var DESIGN_MODELS = [
     { value: "voxcpm2", engine: "voxcpm2", label: "VoxCPM2 2B (realistic, 48 kHz)" },
     { value: "omnivoice", engine: "omnivoice", label: "OmniVoice (precision accents)" },
-    { value: "qwen3", engine: "voicedesign", label: "Qwen3-TTS 1.7B VoiceDesign (characterful)" }
+    { value: "qwen3", engine: "voicedesign", label: "Qwen3-TTS 1.7B VoiceDesign (characterful)" },
+    { value: "fireredtts3-instruct", engine: "fireredtts3-instruct", label: "FireRedTTS3 Instruct (experimental)" }
   ];
+
+  function updateSpeechPerformance(id, model) {
+    var panel = document.getElementById(id);
+    if (!panel || panel.dataset.model === model) return;
+    panel.dataset.model = model;
+    var fields = panel.querySelector("[data-performance-fields]");
+    fields.replaceChildren();
+    panel.hidden = ["index-tts2.5", "higgs-audio", "fireredtts3-base", "fireredtts3-instruct"].indexOf(model) < 0;
+    if (panel.hidden) return;
+    function field(key, label, choices, value) {
+      var wrapper = createElement("label", "field");
+      wrapper.appendChild(createElement("span", "", label));
+      var input = document.createElement(choices ? "select" : "input");
+      input.className = "text-input";
+      input.dataset.performance = key;
+      if (choices) choices.forEach(function (choice) {
+        var option = createElement("option", "", choice[1]);
+        option.value = choice[0]; input.appendChild(option);
+      });
+      else { input.type = "text"; input.maxLength = 500; }
+      input.value = value || "";
+      wrapper.appendChild(input); fields.appendChild(wrapper);
+      return input;
+    }
+    function number(key, label, value, min, max, step) {
+      var input = field(key, label, null, value);
+      input.type = "number"; input.min = min; input.max = max; input.step = step;
+      return input;
+    }
+    function choices(words) {
+      return [["", "Natural / unchanged"]].concat(words.split(" ").map(function (word) { return [word, word.replace(/_/g, " ")]; }));
+    }
+    if (model === "index-tts2.5") {
+      field("language", "Language", [["en", "English"], ["zh", "Chinese"], ["ja", "Japanese"], ["es", "Spanish"], ["ar", "Arabic"], ["auto", "Automatic"]], "en");
+      field("emotion", "Emotion direction", null, "").placeholder = "e.g. restrained anger, giving way to relief";
+      number("intensity", "Emotion intensity (0–1)", "0.6", "0", "1", "0.05");
+      number("duration_factor", "Duration multiplier (above 1 is slower)", "1", "0.5", "2", "0.1");
+      fields.appendChild(createElement("p", "hint", "Optional emotion blend: leave the direction empty and set strengths below. Unfilled strengths count as zero."));
+      ["Happy", "Angry", "Sad", "Afraid", "Disgusted", "Melancholic", "Surprised", "Calm"].forEach(function (name, i) {
+        number("emotion_vector_" + i, name + " (0–1)", "", "0", "1", "0.1");
+      });
+    } else if (model === "higgs-audio") {
+      field("emotion", "Emotion", choices("elation amusement enthusiasm determination pride contentment affection relief contemplation confusion surprise awe longing arousal anger fear disgust bitterness sadness shame helplessness"));
+      field("style", "Delivery", choices("whispering shouting singing"));
+      field("pace", "Pace", choices("speed_very_slow speed_slow speed_fast speed_very_fast"));
+      field("pitch", "Pitch", choices("pitch_low pitch_high"));
+      field("expression", "Expressiveness", choices("expressive_high expressive_low"));
+      fields.appendChild(createElement("p", "hint", "In spoken text, place <|prosody:pause|> for a pause, <|sfx:laughter|>Haha for laughter, or <|sfx:sigh|>Uh for a sigh. Delivery settings apply to the whole utterance."));
+    } else {
+      field("language", "Language", "Arabic Cantonese Chinese Czech Dutch English Finnish French German Greek Hindi Indonesian Italian Japanese Korean Polish Portuguese Romanian Russian Spanish Thai Turkish Ukrainian Vietnamese".split(" ").map(function (name) { return [name, name]; }), "English");
+      fields.appendChild(createElement("p", "hint", "Experimental. Cloning follows the reference delivery. Use FireRed Instruct in Voice design to describe emotion, character, pace and accent."));
+    }
+  }
+
+  function readSpeechPerformance(id) {
+    var panel = document.getElementById(id);
+    if (!panel || panel.hidden) return undefined;
+    var result = {}, vector = new Array(8).fill(0), hasVector = false;
+    panel.querySelectorAll("[data-performance]").forEach(function (input) {
+      if (!input.value.trim()) return;
+      if (input.checkValidity && !input.checkValidity()) throw new Error("Check the speech performance values");
+      var key = input.dataset.performance;
+      if (key.indexOf("emotion_vector_") === 0) {
+        vector[Number(key.slice(15))] = Number(input.value); hasVector = true;
+      } else result[key] = input.type === "number" ? Number(input.value) : input.value.trim();
+    });
+    if (hasVector) {
+      if (result.emotion) throw new Error("Use either an emotion direction or an emotion blend");
+      result.emotion_vector = vector;
+    }
+    return result;
+  }
 
   function catalogModelLabel(model) {
     return model.displayName || model.id;
@@ -971,7 +1068,7 @@
       }
       musicModelSelect.disabled = true;
       musicModelHint.textContent = compatible.length
-        ? "Install ACE-Step from Models before generating. The 6.19 GB download always requires confirmation."
+        ? "Open Models to install or configure a compatible music model."
         : "No compatible music model is configured.";
       musicModelInstallLink.hidden = compatible.length === 0;
     }
@@ -1083,7 +1180,7 @@
           var families = (select.getAttribute("data-model-families") || "").split(/\s+/).filter(Boolean);
           var capabilities = (select.getAttribute("data-model-capabilities") || "").split(/\s+/).filter(Boolean);
           var compatible = models.filter(function (model) {
-            return engines.indexOf(model.engine) >= 0 &&
+            return (engines.length === 0 || engines.indexOf(model.engine) >= 0) &&
               (families.length === 0 || families.indexOf(model.family) >= 0) &&
               (capabilities.length === 0 || capabilities.some(function (capability) {
                 return catalogModelHasCapability(model, capability);
@@ -1134,6 +1231,10 @@
               select.value = value;
             }
           });
+          updateSpeechPerformance("ttsPerformanceControls", ttsSpeechModelSelect.value);
+          updateSpeechPerformance("clonePerformanceControls", cloneModelSelect.value);
+          updateSpeechPerformance("quickSpeechPerformance", quickSpeechModel.value);
+          syncControls();
           try {
             window.localStorage.setItem("cpp-studio-speech-model", value);
           } catch (_) {
@@ -1447,6 +1548,9 @@
   }
 
   function setStoryStatus(status, progress) {
+    if (/^(starting|queued|complete|completed|failed|cancelled|error)/i.test(status || "")) {
+      revealWorkflowResult(storyStatus);
+    }
     storyStatus.textContent = status || "Idle";
     storyProgress.value = Number.isFinite(progress) ? progress : 0;
   }
@@ -2183,6 +2287,7 @@
       return;
     }
     clearStoryPoll();
+    revealWorkflowResult(storyStatus);
     setRunning(true);
     try {
       log("GET /v1/stories/" + id);
@@ -2331,6 +2436,7 @@
   // with a one-click pin: pinning fills the seed box so the next generation
   // reproduces this image, ready for prompt-tweaking around a keeper.
   function renderImageStatus(summary, seed) {
+    revealWorkflowResult(imageStatus);
     imageStatus.textContent = summary;
     if (typeof seed !== "number") {
       return;
@@ -2351,6 +2457,7 @@
       event.preventDefault();
     }
     clearImageError();
+    revealWorkflowResult(imageStatus);
     setRunning(true);
     setBusy(generateImageButton, "Generating...");
     try {
@@ -2537,6 +2644,7 @@
   //                the reply audio is staged (the form path clears its
   //                inputs here)
   async function performVoiceTurn(options) {
+    revealWorkflowResult(transcriptOutput);
     var form = new FormData();
     if (options.file) {
       form.append("file", options.file, options.file.name || "input.wav");
@@ -2553,6 +2661,8 @@
       log("Speaking with cloned voice: " + (chosen ? chosen.textContent : voiceSelect.value));
     }
     form.append("speech_model", ttsSpeechModelSelect.value || "audio");
+    var performance = readSpeechPerformance("ttsPerformanceControls");
+    if (performance) form.append("performance", JSON.stringify(performance));
 
     log("POST /v1/voice");
     var response = await fetch("/v1/voice", {
@@ -2563,6 +2673,7 @@
     var data = await response.json();
     transcriptOutput.value = data.transcript || "";
     replyOutput.value = data.reply || "";
+    revealWorkflowResult(transcriptOutput);
     if (!data.audio_b64) {
       throw new Error("Voice loop returned no audio");
     }
@@ -2586,6 +2697,7 @@
       event.preventDefault();
     }
     clearError();
+    revealWorkflowResult(transcriptOutput);
     setRunning(true);
     setBusy(runButton, "Running...");
     try {
@@ -2818,7 +2930,7 @@
       }
 
       var actions = createElement("div", "voice-item-actions");
-      var useButton = createElement("button", "secondary compact-button", clone.id === selectedVoiceId ? "In use" : "Use in loop");
+      var useButton = createElement("button", "secondary compact-button", clone.id === selectedVoiceId ? "In use" : "Use voice");
       useButton.type = "button";
       useButton.addEventListener("click", function () {
         selectVoice(clone.id === selectedVoiceId ? "" : clone.id);
@@ -3321,6 +3433,65 @@
     librarySpeakButton.disabled = true;
   }
 
+  async function playQuickSpeech(event) {
+    if (event) event.preventDefault();
+    if (running || quickSpeechController || quickSpeechPlay.disabled) return;
+    var text = quickSpeechText.value.trim();
+    var model = quickSpeechModel.value;
+    if (!text || !model) return;
+    quickSpeechError.hidden = true;
+    quickSpeechError.textContent = "";
+    var controller = new AbortController();
+    quickSpeechController = controller;
+    var modelLabel = quickSpeechModel.options[quickSpeechModel.selectedIndex].textContent;
+    setRunning(true);
+    setBusy(quickSpeechPlay, "Generating…");
+    quickSpeechCancel.hidden = false;
+    quickSpeechStatus.textContent = "Generating with " + modelLabel + "… The first run may take longer while the model loads.";
+    try {
+      var performance = readSpeechPerformance("quickSpeechPerformance");
+      quickSpeechAudio.pause();
+      var response = await fetch("/v1/audio/speech", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({ input: text, model: model, performance: performance, format: "wav" })
+      });
+      await ensureOk(response, "Text to speech");
+      var blob = await response.blob();
+      if (controller.signal.aborted) {
+        quickSpeechStatus.textContent = "Generation cancelled.";
+        return;
+      }
+      if (quickSpeechURL) URL.revokeObjectURL(quickSpeechURL);
+      quickSpeechURL = URL.createObjectURL(blob);
+      quickSpeechAudio.src = quickSpeechURL;
+      quickSpeechDownload.href = quickSpeechURL;
+      document.getElementById("quickSpeechResultLabel").textContent = "Generated with " + modelLabel;
+      quickSpeechResult.hidden = false;
+      quickSpeechAudio.load();
+      quickSpeechStatus.textContent = "Ready. Use the audio player to replay, or save the WAV.";
+      try {
+        await quickSpeechAudio.play();
+      } catch (_) {
+        quickSpeechStatus.textContent = "Ready. Press play on the audio player to listen.";
+      }
+    } catch (error) {
+      if (controller.signal.aborted) {
+        quickSpeechStatus.textContent = "Generation cancelled.";
+      } else {
+        quickSpeechError.textContent = error.message || String(error);
+        quickSpeechError.hidden = false;
+        quickSpeechStatus.textContent = "";
+      }
+    } finally {
+      quickSpeechController = null;
+      quickSpeechCancel.hidden = true;
+      clearBusy(quickSpeechPlay);
+      setRunning(false);
+    }
+  }
+
   async function speakText(event) {
     if (event) {
       event.preventDefault();
@@ -3345,6 +3516,7 @@
           input: text,
           voice: selectedVoiceId,
           model: cloneModelSelect.value || "audio",
+          performance: readSpeechPerformance("clonePerformanceControls"),
           format: "wav"
         })
       });
@@ -3370,6 +3542,7 @@
   }
 
   function setDesignError(error) {
+    showDesignSaveStatus();
     var message = error && error.message ? error.message : String(error);
     designErrorBox.textContent = message;
     designErrorBox.hidden = false;
@@ -3382,6 +3555,7 @@
   }
 
   function clearDesignCandidate() {
+    showDesignSaveStatus();
     designCandidate = null;
     designStatus.textContent = "None yet";
     designEngineInput.textContent = "–";
@@ -3456,8 +3630,19 @@
     }
   }
 
+  function showDesignSaveStatus(name) {
+    designSaveStatus.replaceChildren();
+    designSaveStatus.hidden = !name;
+    if (!name) return;
+    designSaveStatus.appendChild(document.createTextNode("Saved “" + name + "” to your voice library. "));
+    var link = createElement("a", "", "Open Library");
+    link.href = "#library";
+    designSaveStatus.appendChild(link);
+  }
+
   async function saveDesign() {
     clearDesignError();
+    showDesignSaveStatus();
     if (!designCandidate) {
       setDesignError(new Error("Generate a voice first"));
       return;
@@ -3475,6 +3660,7 @@
       await ensureOk(response, "Voice save");
       var clone = await response.json();
       log("Designed voice saved to the library: " + clone.name);
+      showDesignSaveStatus(clone.name);
       selectedVoiceId = clone.id;
       persistSelectedVoice();
       designNameInput.value = "";
@@ -3852,6 +4038,8 @@
   // ---------- voice conversion ----------
 
   function setConversionError(error) {
+    revealWorkflowResult(conversionErrorBox);
+    revealWorkflowResult(conversionOutputStatus);
     conversionErrorBox.textContent = error && error.message ? error.message : String(error);
     conversionErrorBox.hidden = false;
     log("Voice conversion: " + conversionErrorBox.textContent, "error");
@@ -4064,6 +4252,8 @@
     }
     setRunning(true);
     setBusy(conversionSubmitButton, "Converting…");
+    conversionOutputStatus.textContent = "Converting…";
+    revealWorkflowResult(conversionOutputStatus);
     try {
       var form = new FormData();
       form.append("model", conversionModelSelect.value);
@@ -4088,6 +4278,7 @@
       conversionOutputAudio.load();
       var modelLabel = (conversionModelSelect.options[conversionModelSelect.selectedIndex] || {}).textContent || "Chatterbox";
       conversionOutputStatus.textContent = "Ready · " + modelLabel + " · " + formatBytes(blob.size);
+      revealWorkflowResult(conversionOutputStatus);
       log("Voice conversion ready: " + formatBytes(blob.size));
     } catch (error) {
       clearConversionOutput();
@@ -4110,6 +4301,8 @@
   }
 
   function setMusicError(error) {
+    revealWorkflowResult(musicErrorBox);
+    revealWorkflowResult(musicOutputStatus);
     musicErrorBox.hidden = false;
     musicErrorBox.textContent = error && error.message ? error.message : String(error);
     log("Music error: " + musicErrorBox.textContent);
@@ -4332,6 +4525,8 @@
     }
     setRunning(true);
     setBusy(musicGenerateButton, route === "text2music" ? "Composing…" : "Rendering…");
+    musicOutputStatus.textContent = route === "text2music" ? "Composing…" : "Rendering…";
+    revealWorkflowResult(musicOutputStatus);
     try {
       var form = new FormData();
       form.append("model", musicModelSelect.value);
@@ -4364,6 +4559,7 @@
       musicOutputAudio.src = musicOutputUrl;
       musicOutputAudio.load();
       musicOutputStatus.textContent = "Ready · " + (musicModeSelect.options[musicModeSelect.selectedIndex] || {}).textContent + " · " + formatBytes(blob.size);
+      revealWorkflowResult(musicOutputStatus);
       log("Music ready: " + formatBytes(blob.size));
     } catch (error) {
       clearMusicOutput();
@@ -5473,6 +5669,7 @@
   // and future tool is covered. Durable Library data and server-side jobs
   // are not page state, so reloading cannot delete or cancel them.
   function clearEverything() {
+    if (!window.confirm("Reset this session? Unsaved inputs, results and browser-local clips will be cleared. Saved Library items and running jobs will remain.")) return;
     window.location.reload();
   }
 
@@ -5589,6 +5786,12 @@
   submitOnCtrlEnter(messageInput, voiceForm);
   submitOnCtrlEnter(imagePromptInput, imageForm);
   submitOnCtrlEnter(speakTextInput, cloneSpeakForm);
+  submitOnCtrlEnter(quickSpeechText, quickSpeechForm);
+  quickSpeechText.addEventListener("input", syncControls);
+  quickSpeechForm.addEventListener("submit", playQuickSpeech);
+  quickSpeechCancel.addEventListener("click", function () {
+    if (quickSpeechController) quickSpeechController.abort();
+  });
   submitOnCtrlEnter(designDescriptionInput, designForm);
 
   storyVoiceSelect.addEventListener("change", syncControls);
@@ -5811,12 +6014,36 @@
     musicSourceRecordButton.textContent = "Recording unavailable";
   }
 
+  // The guide is static editorial content; model availability stays in the catalogue.
+  document.getElementById("modelGuideSearch").addEventListener("input", function (event) {
+    var query = event.target.value.trim().toLowerCase();
+    var count = 0;
+    document.querySelectorAll(".guide-card").forEach(function (card) {
+      card.hidden = card.textContent.toLowerCase().indexOf(query) < 0;
+      if (!card.hidden) count++;
+    });
+    document.getElementById("modelGuideEmpty").hidden = count > 0;
+  });
+  document.querySelectorAll("[data-guide-copy]").forEach(function (button) {
+    button.addEventListener("click", async function () {
+      var status = document.getElementById("modelGuideCopyStatus");
+      try {
+        await navigator.clipboard.writeText(button.parentElement.querySelector("code").textContent);
+        button.textContent = "Copied";
+        status.textContent = "Example copied. Paste it into the field named above the example.";
+        setTimeout(function () { button.textContent = "Copy example"; }, 2000);
+      } catch (error) {
+        status.textContent = "Clipboard unavailable. Select the example text and copy it manually.";
+      }
+    });
+  });
+
   // --- Studio navigation ------------------------------------------------
   var PAGES = [
-    "talk-voice", "text-to-speech", "transcription", "voice-cloning", "voice-design", "voice-convert", "audio-analysis",
+    "talk-voice", "getting-started-tts", "text-to-speech", "transcription", "voice-cloning", "voice-design", "voice-convert", "training", "audio-analysis",
     "music", "music-generation", "voice-separation", "imagery", "image-generation",
     "stories-audiobooks", "audiobook", "story", "extract",
-    "library", "models", "engines"
+    "library", "models", "model-guide", "engines"
   ];
   var LEGACY_PAGES = {
     talk: "text-to-speech",
@@ -5825,11 +6052,13 @@
   };
   var PAGE_PARENT = {
     "talk-voice": "talk-voice",
+    "getting-started-tts": "talk-voice",
     "text-to-speech": "talk-voice",
     transcription: "talk-voice",
     "voice-cloning": "talk-voice",
     "voice-design": "talk-voice",
     "voice-convert": "talk-voice",
+    training: "talk-voice",
     "audio-analysis": "talk-voice",
     music: "music",
     "music-generation": "music",
@@ -5849,6 +6078,9 @@
   var audioWorkspaceModeSections = document.querySelectorAll("[data-audio-workspace-mode]");
   var extractToolTitle = document.getElementById("extractToolTitle");
   var extractToolNote = document.getElementById("extractToolNote");
+  var extractToolbarActions = document.getElementById("extractToolbarActions");
+  var extractPrimaryActions = document.getElementById("extractPrimaryActions");
+  var extractSelectionActions = document.getElementById("extractSelectionActions");
 
   function activePageFromHash() {
     var name = (window.location.hash || "").replace(/^#/, "");
@@ -5876,6 +6108,13 @@
     if (typeof ex !== "undefined" && ex) {
       ex.setMode(mode);
     }
+    if (extractPrimaryActions) {
+      (mode === "extract" ? extractSelectionActions : extractToolbarActions).appendChild(extractPrimaryActions);
+    }
+    if (mode === "transcribe") {
+      extractSelectionActions.hidden = true;
+    }
+    extractTranscribeButton.textContent = mode === "extract" ? "Transcribe selection" : "Transcribe";
     audioWorkspaceModeSections.forEach(function (section) {
       section.hidden = section.getAttribute("data-audio-workspace-mode") !== mode;
     });
@@ -5890,7 +6129,11 @@
     updateExtractRegionUI();
   }
 
+  var displayedPage = "";
+
   function applyPage(name) {
+    var changedPage = displayedPage !== "" && displayedPage !== name;
+    displayedPage = name;
     var parent = PAGE_PARENT[name] || "";
     if (name !== "transcription" && transcribeRecorder && transcribeRecorder.state() !== "idle") {
       stopTranscribeRecording();
@@ -5940,6 +6183,7 @@
       // The canvas has zero width while its page is hidden; repaint on entry.
       window.setTimeout(drawExtractWave, 0);
     }
+    if (changedPage) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
   }
 
   window.addEventListener("hashchange", function () {
@@ -5969,7 +6213,7 @@
   var modelsList = document.getElementById("modelsList");
 
   var MODEL_CATEGORIES = [
-    { id: "speech", title: "Text to speech & cloning", description: "Speak written text and reuse a recorded voice.", engines: ["audio", "dramabox", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-customvoice", "vibevoice", "fish-audio", "chatterbox-clone"] },
+    { id: "speech", title: "Text to speech & cloning", description: "Speak written text and reuse a recorded voice.", engines: ["audio", "dramabox", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-customvoice", "vibevoice", "fish-audio", "chatterbox-clone", "index-tts2.5", "higgs-audio", "fireredtts3-base", "fireredtts3-instruct"] },
     { id: "voice-design", title: "Voice design", description: "Create a new voice from a written description.", engines: ["voicedesign", "omnivoice", "voxcpm2"] },
     { id: "voice-conversion", title: "Voice conversion", description: "Change the speaker while preserving the performance.", engines: ["voiceconvert", "vevo2"] },
     { id: "transcription", title: "Transcription", description: "Turn speech into text and ignore unwanted silence.", engines: ["whisper", "qwen3-asr-0.6b", "qwen3-asr-1.7b", "vibevoice-asr"] },
@@ -6443,7 +6687,7 @@
   function invalidateAudiobookPreview() {
     audiobookResolvedKey = "";
 	audiobookResolvedDirection = "";
-    audiobookRequestPreview.textContent = "Request changed. Resolve it before narration.";
+    audiobookRequestPreview.textContent = "Settings changed. Preview them again before narration.";
     showMatchingAudiobookBenchmark();
     syncAudiobookEngineControls();
   }
@@ -6518,7 +6762,7 @@
   audiobookPreviewButton.addEventListener("click", async function () {
     audiobookErrorBox.hidden = true;
     audiobookPreviewButton.disabled = true;
-    audiobookRequestPreview.textContent = "Resolving effective request…";
+    audiobookRequestPreview.textContent = "Preparing narration preview…";
     try {
       var optionsText = audiobookOptionsText();
 	  var requestBody = {
@@ -6562,7 +6806,7 @@
       audiobookRequestPreview.textContent = JSON.stringify(preview, null, 2);
     } catch (err) {
       audiobookResolvedKey = "";
-      audiobookRequestPreview.textContent = "Request could not be resolved.";
+      audiobookRequestPreview.textContent = "Could not preview narration settings. Check the error below and try again.";
       audiobookErrorBox.textContent = err.message;
       audiobookErrorBox.hidden = false;
     } finally {
@@ -6747,6 +6991,7 @@
   });
 
   function setAudiobookBusy(busy) {
+    revealWorkflowResult(audiobookStatus);
     audiobookBusy = busy;
     syncAudiobookEngineControls();
     audiobookCancelButton.disabled = !busy;
@@ -6870,6 +7115,8 @@
 
   audiobookForm.addEventListener("submit", async function (event) {
     event.preventDefault();
+    revealWorkflowResult(audiobookErrorBox);
+    revealWorkflowResult(audiobookStatus);
     audiobookErrorBox.hidden = true;
     var file = audiobookFileInput.files && audiobookFileInput.files[0];
     if (!file) {
@@ -6878,7 +7125,7 @@
       return;
     }
     if (audiobookResolvedKey !== audiobookRequestKey()) {
-      audiobookErrorBox.textContent = "Resolve the current narrator request before starting narration.";
+      audiobookErrorBox.textContent = "Preview the current narration settings before starting narration.";
       audiobookErrorBox.hidden = false;
       return;
     }
@@ -7215,6 +7462,17 @@
   var extractStopButton = document.getElementById("extractStopButton");
   var extractCloneButton = document.getElementById("extractCloneButton");
   var extractLibraryButton = document.getElementById("extractLibraryButton");
+  var extractActorInput = document.getElementById("extractActorInput");
+  var extractCharacterInput = document.getElementById("extractCharacterInput");
+  var extractAddSpeechButton = document.getElementById("extractAddSpeechButton");
+  var extractSpeechList = document.getElementById("extractSpeechList");
+  var extractProcessSpeechButton = document.getElementById("extractProcessSpeechButton");
+  var extractPassTrainingButton = document.getElementById("extractPassTrainingButton");
+  var extractProcessSpeechStatus = document.getElementById("extractProcessSpeechStatus");
+  var trainingSummary = document.getElementById("trainingSummary");
+  var trainingClipList = document.getElementById("trainingClipList");
+  var trainingExportButton = document.getElementById("trainingExportButton");
+  var trainingExportStatus = document.getElementById("trainingExportStatus");
   var extractErrorBox = document.getElementById("extractErrorBox");
   var extractTimeline = document.getElementById("extractTimeline");
   var extractFilterRow = document.getElementById("extractFilterRow");
@@ -7243,6 +7501,8 @@
   var transcribeSearchQuery = "";
   var transcribeSearchMatches = [];
   var transcribeSearchIndex = -1;
+  var speechProcessing = false;
+  var trainingClips = [];
   function extractCtx() {
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!extractAudioCtx || extractAudioCtx.state === "closed") {
@@ -7265,6 +7525,8 @@
       region: null,       // {start, end} seconds
       segments: [],       // {start, end, text, speaker}
       checked: {},        // segment index -> true: multi-segment selection
+      speechClips: [],    // clean labelled ranges waiting to be processed
+      nextSpeechClipID: 1,
       filter: "",
       playback: null,     // active {ctx, source, anchor, offset, sampleOffset, samples, key, mode, raf}
       pausedPlayback: null,
@@ -7282,6 +7544,8 @@
         this.region = null;
         this.segments = [];
         this.checked = {};
+        this.speechClips = [];
+        this.nextSpeechClipID = 1;
         this.filter = "";
         this.playback = null;
         this.pausedPlayback = null;
@@ -7324,6 +7588,26 @@
         if (checked) { this.checked[index] = true; } else { delete this.checked[index]; }
       },
       clearChecked: function () { this.checked = {}; },
+      addSpeechClip: function (start, end, actor, character, transcript) {
+        var clip = {
+          id: this.nextSpeechClipID++,
+          start: start,
+          end: end,
+          actor: actor,
+          character: character,
+          transcript: transcript || "",
+          status: "draft",
+          verified: false,
+          wavBlob: null,
+          audioURL: "",
+          error: ""
+        };
+        this.speechClips.push(clip);
+        return clip;
+      },
+      removeSpeechClip: function (id) {
+        this.speechClips = this.speechClips.filter(function (clip) { return clip.id !== id; });
+      },
       setFilter: function (speaker) { this.filter = speaker || ""; },
       setPlayback: function (playback) { this.playback = playback; this.pausedPlayback = null; },
       pausePlayback: function (playback) { this.playback = null; this.pausedPlayback = playback || null; },
@@ -7362,6 +7646,19 @@
           region: this.region ? { start: this.region.start, end: this.region.end } : null,
           segments: this.segments.map(normalizedTranscriptSegment),
           checked: Object.keys(this.checked).map(Number).sort(function (a, b) { return a - b; }),
+          speechClips: this.speechClips.map(function (clip) {
+            return {
+              id: clip.id,
+              start: clip.start,
+              end: clip.end,
+              actor: clip.actor,
+              character: clip.character,
+              transcript: clip.transcript,
+              status: clip.status,
+              verified: clip.verified,
+              error: clip.error
+            };
+          }),
           filter: this.filter,
           playback: this.playback ? this.playback.key : null,
           pausedPlayback: this.pausedPlayback ? this.pausedPlayback.key : null
@@ -7796,8 +8093,13 @@
         }
       }
       extractStopPlayback();
+      ex.speechClips.forEach(function (clip) {
+        if (clip.audioURL) { URL.revokeObjectURL(clip.audioURL); }
+      });
       ex.loadSource(mono, decoded.sampleRate, decoded.duration, file.name);
       resetTranscribeDesk();
+      extractProcessSpeechStatus.textContent = "";
+      renderSpeechClips();
       extractFileStatus.textContent = file.name + " · " + fmtTime(decoded.duration) + " · " + decoded.sampleRate + " Hz";
       extractTranscribeButton.disabled = false;
       extractDiarizeButton.disabled = false;
@@ -7921,6 +8223,36 @@
   });
 
   // --- waveform rendering ------------------------------------------------
+  function positionExtractSelectionActions() {
+    if (!extractSelectionActions || !extractPrimaryActions || ex.mode !== "extract") {
+      if (extractSelectionActions) {
+        extractSelectionActions.hidden = true;
+      }
+      return;
+    }
+    var spans = selectionSpans();
+    var span = spans.find(function (candidate) {
+      return candidate.end >= ex.view.start && candidate.start <= ex.view.end;
+    });
+    if (!span) {
+      extractSelectionActions.hidden = true;
+      return;
+    }
+    var canvasWidth = extractCanvas.clientWidth;
+    var viewLength = ex.view.end - ex.view.start;
+    if (!canvasWidth || viewLength <= 0) {
+      extractSelectionActions.hidden = true;
+      return;
+    }
+    extractSelectionActions.hidden = false;
+    var startX = Math.max(0, ((span.start - ex.view.start) / viewLength) * canvasWidth);
+    var endX = Math.min(canvasWidth, ((span.end - ex.view.start) / viewLength) * canvasWidth);
+    var actionWidth = extractSelectionActions.offsetWidth;
+    var left = (startX + endX - actionWidth) / 2;
+    left = Math.max(4, Math.min(canvasWidth - actionWidth - 4, left));
+    extractSelectionActions.style.left = Math.round(left) + "px";
+  }
+
   function drawExtractWave() {
     var dpr = window.devicePixelRatio || 1;
     var cssWidth = extractCanvas.clientWidth || extractCanvas.parentElement.clientWidth || 600;
@@ -7932,6 +8264,7 @@
     g.fillStyle = "#151a21";
     g.fillRect(0, 0, cssWidth, cssHeight);
     if (!ex.samples) {
+      positionExtractSelectionActions();
       g.fillStyle = "#5d6775";
       g.font = "13px sans-serif";
       g.fillText("Load a file to see its waveform", 16, cssHeight / 2);
@@ -7945,6 +8278,22 @@
     var mid = cssHeight / 2;
 
     // Region shading under the waveform.
+    ex.speechClips.forEach(function (clip, index) {
+      if (clip.end < viewStart || clip.start > ex.view.end) {
+        return;
+      }
+      var sx0 = ((clip.start - viewStart) / viewLen) * cssWidth;
+      var sx1 = ((clip.end - viewStart) / viewLen) * cssWidth;
+      var colours = [
+        "rgba(94, 196, 255, 0.18)",
+        "rgba(190, 126, 255, 0.18)",
+        "rgba(255, 111, 145, 0.18)",
+        "rgba(88, 201, 124, 0.18)"
+      ];
+      g.fillStyle = colours[index % colours.length];
+      g.fillRect(sx0, 0, sx1 - sx0, cssHeight);
+    });
+
     if (ex.region) {
       var rx0 = ((ex.region.start - viewStart) / viewLen) * cssWidth;
       var rx1 = ((ex.region.end - viewStart) / viewLen) * cssWidth;
@@ -8005,7 +8354,7 @@
         g.lineTo(px, cssHeight);
         g.stroke();
       }
-    } else if (!ex.region && ex.cursor >= viewStart && ex.cursor <= ex.view.end) {
+    } else if (ex.cursor >= viewStart && ex.cursor <= ex.view.end) {
       var cx = ((ex.cursor - viewStart) / viewLen) * cssWidth;
       g.strokeStyle = "#8d97a6";
       g.lineWidth = 1;
@@ -8020,6 +8369,7 @@
     extractCanvas.setAttribute("aria-valuemax", String(ex.duration || 0));
     extractCanvas.setAttribute("aria-valuenow", String(Math.min(ex.duration, Math.max(0, ex.cursor || 0))));
     extractCanvas.setAttribute("aria-valuetext", fmtTime(Math.min(ex.duration, Math.max(0, ex.cursor || 0))));
+    positionExtractSelectionActions();
   }
 
   window.addEventListener("resize", function () {
@@ -8089,7 +8439,7 @@
   });
 
   extractCanvas.addEventListener("keydown", function (event) {
-    if (ex.mode !== "transcribe" || !ex.samples) {
+    if (!ex.samples) {
       return;
     }
     var step = event.shiftKey ? 5 : 1;
@@ -8111,6 +8461,14 @@
     event.preventDefault();
   });
 
+  extractCanvas.addEventListener("wheel", function (event) {
+    if (ex.mode !== "extract" || !ex.samples || event.deltaY === 0) {
+      return;
+    }
+    event.preventDefault();
+    extractZoom(event.deltaY < 0 ? 0.8 : 1.25, canvasXToTime(event.clientX));
+  }, { passive: false });
+
   function setExtractRegion(start, end, rowIndex) {
     ex.setRegion(start, end, rowIndex);
     updateExtractRegionUI();
@@ -8127,6 +8485,7 @@
     // needs a region or a ticked selection to know what to cut. A ticked
     // selection wins over the region: it is the more deliberate act.
     extractPlayButton.disabled = !ex.samples || (ex.mode === "extract" && !spans.length);
+    extractTranscribeButton.disabled = extractTranscribing || !ex.samples || (ex.mode === "extract" && !hasRegion);
     extractCloneButton.disabled = !(hasChecked || hasRegion);
     extractLibraryButton.disabled = !(hasChecked || hasRegion);
     extractSelectionDuration.textContent = selectionOutputDuration(spans).toFixed(1) + "s";
@@ -8139,16 +8498,332 @@
     } else {
       extractRegionStatus.textContent = "None — drag on the waveform, click a transcript line, or tick segments";
     }
+    syncSpeechMiningControls();
     syncExtractPlaybackControls();
+    positionExtractSelectionActions();
   }
 
+  function speechTranscript(start, end) {
+    return ex.segments.filter(function (segment) {
+      return segment.end > start && segment.start < end;
+    }).map(function (segment) {
+      return String(segment.text || "").trim();
+    }).filter(Boolean).join(" ");
+  }
+
+  function syncSpeechMiningControls() {
+    var hasRegion = Boolean(ex.region && ex.region.end - ex.region.start > 0.05);
+    extractAddSpeechButton.disabled = !hasRegion || !extractActorInput.value.trim() || !extractCharacterInput.value.trim();
+    extractProcessSpeechButton.disabled = speechProcessing || !ex.speechClips.some(function (clip) {
+      return clip.status === "draft" || clip.status === "failed";
+    });
+    extractPassTrainingButton.disabled = speechProcessing || !ex.speechClips.length || !ex.speechClips.every(function (clip) {
+      return clip.status === "ready" && clip.verified && clip.transcript.trim();
+    });
+  }
+
+  function renderSpeechClips() {
+    extractSpeechList.textContent = "";
+    if (!ex.speechClips.length) {
+      extractSpeechList.textContent = "No clean speech selected yet.";
+      return;
+    }
+    ex.speechClips.forEach(function (clip) {
+      var row = createElement("div", "extract-segment extract-speech-item");
+      var head = createElement("div", "extract-segment-head");
+      head.appendChild(createElement("strong", "extract-speech-character", clip.character));
+      head.appendChild(createElement("span", "extract-segment-speaker", clip.actor));
+      head.appendChild(createElement("span", "extract-segment-time", fmtTime(clip.start) + "–" + fmtTime(clip.end)));
+      var remove = createElement("button", "plain compact-button", "Remove");
+      remove.type = "button";
+      remove.addEventListener("click", function () {
+        if (clip.audioURL) { URL.revokeObjectURL(clip.audioURL); }
+        ex.removeSpeechClip(clip.id);
+        renderSpeechClips();
+        syncSpeechMiningControls();
+        drawExtractWave();
+      });
+      head.appendChild(remove);
+      row.appendChild(head);
+      if (clip.status === "ready") {
+        var audio = document.createElement("audio");
+        audio.className = "extract-speech-audio";
+        audio.controls = true;
+        audio.src = clip.audioURL;
+        row.appendChild(audio);
+        var transcript = document.createElement("textarea");
+        transcript.className = "text-input extract-speech-transcript";
+        transcript.rows = 2;
+        transcript.value = clip.transcript;
+        transcript.setAttribute("aria-label", "Verified transcript for " + clip.character);
+        transcript.addEventListener("input", function () {
+          clip.transcript = transcript.value;
+          syncSpeechMiningControls();
+        });
+        row.appendChild(transcript);
+        var verifyLabel = createElement("label", "extract-speech-verify");
+        var verified = document.createElement("input");
+        verified.type = "checkbox";
+        verified.className = "extract-speech-verified";
+        verified.checked = clip.verified;
+        verified.addEventListener("change", function () {
+          clip.verified = verified.checked;
+          syncSpeechMiningControls();
+        });
+        verifyLabel.appendChild(verified);
+        verifyLabel.appendChild(document.createTextNode(" Transcript checked"));
+        row.appendChild(verifyLabel);
+      } else if (clip.status === "processing") {
+        row.appendChild(createElement("span", "hint", "Extracting and transcribing…"));
+      } else if (clip.status === "failed") {
+        row.appendChild(createElement("span", "error-box", clip.error || "Processing failed"));
+      } else if (clip.transcript) {
+        row.appendChild(createElement("div", "extract-segment-text", clip.transcript));
+      }
+      extractSpeechList.appendChild(row);
+    });
+    syncSpeechMiningControls();
+  }
+
+  extractActorInput.addEventListener("input", syncSpeechMiningControls);
+  extractCharacterInput.addEventListener("input", syncSpeechMiningControls);
+  extractAddSpeechButton.addEventListener("click", function () {
+    if (!ex.region) {
+      return;
+    }
+    flushAudioWorkspaceEdit();
+    var start = ex.region.start;
+    var end = ex.region.end;
+    var actor = extractActorInput.value.trim();
+    var character = extractCharacterInput.value.trim();
+    ex.addSpeechClip(
+      start,
+      end,
+      actor,
+      character,
+      speechTranscript(start, end)
+    );
+    ex.segments.forEach(function (segment) {
+      var overlap = Math.max(0, Math.min(segment.end, end) - Math.max(segment.start, start));
+      var shorterRange = Math.min(segment.end - segment.start, end - start);
+      if (shorterRange > 0 && overlap >= shorterRange * 0.5) {
+        segment.speaker = actor;
+      }
+    });
+    ex.setFilter("");
+    ex.region = null;
+    renderSpeechClips();
+    renderExtractFilter();
+    renderExtractTimeline();
+    updateExtractRegionUI();
+    drawExtractWave();
+  });
+
+  function speechClipWav(clip) {
+    var start = Math.max(0, Math.floor(clip.start * ex.rate));
+    var end = Math.min(ex.samples.length, Math.ceil(clip.end * ex.rate));
+    return encodeWav(ex.samples.subarray(start, end), ex.rate);
+  }
+
+  async function processSpeechClip(clip) {
+    clip.status = "processing";
+    clip.error = "";
+    clip.verified = false;
+    renderSpeechClips();
+    try {
+      var wav = speechClipWav(clip);
+      var form = new FormData();
+      form.append("file", new File([wav], "clean-speech.wav", { type: "audio/wav" }));
+      appendTranscriptionModel(form);
+      var response = await fetch("/v1/audio/transcriptions?format=segments", { method: "POST", body: form });
+      if (!response.ok) {
+        throw new Error(await readErrorBody(response));
+      }
+      var payload = await response.json();
+      if (clip.audioURL) { URL.revokeObjectURL(clip.audioURL); }
+      clip.wavBlob = wav;
+      clip.audioURL = URL.createObjectURL(wav);
+      clip.transcript = String(payload.text || "").trim();
+      clip.status = "ready";
+    } catch (err) {
+      clip.status = "failed";
+      clip.error = err && err.message ? err.message : String(err);
+    }
+    renderSpeechClips();
+  }
+
+  extractProcessSpeechButton.addEventListener("click", async function () {
+    if (speechProcessing) {
+      return;
+    }
+    var pending = ex.speechClips.filter(function (clip) {
+      return clip.status === "draft" || clip.status === "failed";
+    });
+    if (!pending.length) {
+      return;
+    }
+    speechProcessing = true;
+    extractProcessSpeechStatus.textContent = "Processing 0 of " + pending.length + "…";
+    syncSpeechMiningControls();
+    for (var i = 0; i < pending.length; i += 1) {
+      extractProcessSpeechStatus.textContent = "Processing " + (i + 1) + " of " + pending.length + "…";
+      await processSpeechClip(pending[i]);
+    }
+    speechProcessing = false;
+    var ready = ex.speechClips.filter(function (clip) { return clip.status === "ready"; }).length;
+    var failed = ex.speechClips.filter(function (clip) { return clip.status === "failed"; }).length;
+    extractProcessSpeechStatus.textContent = failed
+      ? ready + " clips processed · " + failed + " failed — retry when ready"
+      : ready + " clip" + (ready === 1 ? "" : "s") + " processed";
+    syncSpeechMiningControls();
+  });
+
+  function trainingSafeName(value) {
+    return String(value || "speech")
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/[. ]+$/g, "") || "speech";
+  }
+
+  function trainingClipStem(clip, index) {
+    var number = String(index + 1).padStart(3, "0");
+    return trainingSafeName(clip.actor) + " -- " + trainingSafeName(clip.character) + " -- " + number;
+  }
+
+  function trainingManifest() {
+    return trainingClips.map(function (clip, index) {
+      return JSON.stringify({
+        audio: "audio/" + trainingClipStem(clip, index) + ".wav",
+        text: clip.transcript.trim()
+      });
+    }).join("\n") + "\n";
+  }
+
+  function renderTrainingClips() {
+    trainingClipList.textContent = "";
+    trainingExportStatus.textContent = "";
+    trainingExportButton.disabled = !trainingClips.length;
+    if (!trainingClips.length) {
+      trainingSummary.textContent = "No checked clips yet. In Extract, check each speech clip, then choose Prepare training data.";
+      return;
+    }
+    var duration = trainingClips.reduce(function (total, clip) { return total + clip.end - clip.start; }, 0);
+    trainingSummary.textContent = trainingClips.length + " verified clip" + (trainingClips.length === 1 ? "" : "s") +
+      " · " + duration.toFixed(1) + " seconds · ready to export";
+    trainingClips.forEach(function (clip) {
+      var row = createElement("article", "training-clip");
+      var head = createElement("div", "extract-segment-head");
+      head.appendChild(createElement("strong", "extract-speech-character", clip.character));
+      head.appendChild(createElement("span", "extract-segment-speaker", clip.actor));
+      head.appendChild(createElement("span", "extract-segment-time", fmtTime(clip.start) + "–" + fmtTime(clip.end)));
+      row.appendChild(head);
+      var audio = document.createElement("audio");
+      audio.controls = true;
+      audio.src = clip.audioURL;
+      row.appendChild(audio);
+      row.appendChild(createElement("p", "training-clip-transcript", clip.transcript));
+      trainingClipList.appendChild(row);
+    });
+  }
+
+  extractPassTrainingButton.addEventListener("click", function () {
+    if (extractPassTrainingButton.disabled) {
+      return;
+    }
+    trainingClips.forEach(function (clip) { URL.revokeObjectURL(clip.audioURL); });
+    trainingClips = ex.speechClips.map(function (clip) {
+      return {
+        actor: clip.actor,
+        character: clip.character,
+        start: clip.start,
+        end: clip.end,
+        transcript: clip.transcript.trim(),
+        wavBlob: clip.wavBlob,
+        audioURL: URL.createObjectURL(clip.wavBlob)
+      };
+    });
+    renderTrainingClips();
+    window.location.hash = "training";
+    window.setTimeout(function () { window.scrollTo(0, 0); }, 0);
+  });
+
+  async function writeTrainingFile(directory, name, contents) {
+    var handle = await directory.getFileHandle(name, { create: true });
+    var writable = await handle.createWritable();
+    await writable.write(contents);
+    await writable.close();
+  }
+
+  function downloadTrainingFiles() {
+    trainingClips.forEach(function (clip, index) {
+      var stem = trainingClipStem(clip, index);
+      downloadURL(clip.audioURL, stem + ".wav");
+      var textURL = URL.createObjectURL(new Blob([clip.transcript.trim() + "\n"], { type: "text/plain" }));
+      downloadURL(textURL, stem + ".txt");
+      window.setTimeout(function () { URL.revokeObjectURL(textURL); }, 0);
+    });
+    var manifestURL = URL.createObjectURL(new Blob([trainingManifest()], { type: "application/x-ndjson" }));
+    downloadURL(manifestURL, "train.jsonl");
+    window.setTimeout(function () { URL.revokeObjectURL(manifestURL); }, 0);
+  }
+
+  trainingExportButton.addEventListener("click", async function () {
+    if (!trainingClips.length) {
+      return;
+    }
+    trainingExportButton.disabled = true;
+    trainingExportStatus.textContent = "Choose an export folder…";
+    try {
+      if (typeof window.showDirectoryPicker !== "function") {
+        downloadTrainingFiles();
+        trainingExportStatus.textContent = "Downloaded " + trainingClips.length + " clip pairs and train.jsonl";
+        return;
+      }
+      var root = await window.showDirectoryPicker({ mode: "readwrite" });
+      var audioDirectory = await root.getDirectoryHandle("audio", { create: true });
+      for (var i = 0; i < trainingClips.length; i += 1) {
+        var clip = trainingClips[i];
+        var stem = trainingClipStem(clip, i);
+        await writeTrainingFile(audioDirectory, stem + ".wav", clip.wavBlob);
+        await writeTrainingFile(audioDirectory, stem + ".txt", clip.transcript.trim() + "\n");
+      }
+      await writeTrainingFile(root, "train.jsonl", trainingManifest());
+      trainingExportStatus.textContent = "Exported " + trainingClips.length + " clip pairs and train.jsonl";
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        trainingExportStatus.textContent = "Export cancelled";
+      } else {
+        trainingExportStatus.textContent = "Export failed: " + (error && error.message ? error.message : error);
+      }
+    } finally {
+      trainingExportButton.disabled = !trainingClips.length;
+    }
+  });
+
   // --- zoom --------------------------------------------------------------
-  function extractZoom(factor) {
-    var center = ex.region ? (ex.region.start + ex.region.end) / 2 : (ex.view.start + ex.view.end) / 2;
-    var half = ((ex.view.end - ex.view.start) * factor) / 2;
-    half = Math.max(0.5, Math.min(ex.duration / 2, half));
-    ex.view.start = Math.max(0, center - half);
-    ex.view.end = Math.min(ex.duration, center + half);
+  function extractZoom(factor, center) {
+    var currentLength = ex.view.end - ex.view.start;
+    if (!ex.samples || !ex.duration || currentLength <= 0) {
+      return;
+    }
+    if (!Number.isFinite(center)) {
+      center = ex.region ? (ex.region.start + ex.region.end) / 2 : (ex.view.start + ex.view.end) / 2;
+    }
+    var anchor = Math.min(1, Math.max(0, (center - ex.view.start) / currentLength));
+    var nextLength = Math.max(1, Math.min(ex.duration, currentLength * factor));
+    var start = center - nextLength * anchor;
+    var end = start + nextLength;
+    if (start < 0) {
+      end -= start;
+      start = 0;
+    }
+    if (end > ex.duration) {
+      start -= end - ex.duration;
+      end = ex.duration;
+    }
+    ex.view.start = Math.max(0, start);
+    ex.view.end = Math.min(ex.duration, end);
     drawExtractWave();
   }
   extractZoomInButton.addEventListener("click", function () { extractZoom(0.5); });
@@ -8400,17 +9075,76 @@
 
   // --- transcription -----------------------------------------------------
   var EXTRACT_CHUNK_SECONDS = 600; // 10 min of 16k mono ≈ 19MB WAV, inside the upload cap
+  var extractTranscribing = false;
 
   extractTranscribeButton.addEventListener("click", async function () {
     if (!ex.samples) {
       return;
     }
+    var selectedRegion = ex.mode === "extract" && ex.region
+      ? { start: ex.region.start, end: ex.region.end }
+      : null;
+    if (ex.mode === "extract" && (!selectedRegion || selectedRegion.end - selectedRegion.start <= 0.05)) {
+      return;
+    }
     extractErrorBox.hidden = true;
+    extractTranscribing = true;
     extractTranscribeButton.disabled = true;
-    ex.replaceTranscript([]);
-    resetTranscribeDesk();
-    renderExtractTimeline();
     try {
+      if (selectedRegion) {
+        extractTranscribeButton.textContent = "Transcribing selection…";
+        extractTranscribeStatus.textContent = "Transcribing " + fmtTime(selectedRegion.start) + " – " + fmtTime(selectedRegion.end) + "…";
+        var selectionStart = Math.floor(selectedRegion.start * ex.rate);
+        var selectionEnd = Math.ceil(selectedRegion.end * ex.rate);
+        var selectionSamples = ex.samples.subarray(selectionStart, selectionEnd);
+        var selectionRate = ex.rate;
+        if (selectionRate > LIVE_TARGET_RATE) {
+          selectionSamples = downsampleForLive(selectionSamples, selectionRate);
+          selectionRate = LIVE_TARGET_RATE;
+        }
+        var selectionForm = new FormData();
+        selectionForm.append("file", new File([encodeWav(selectionSamples, selectionRate)], "selection.wav", { type: "audio/wav" }));
+        appendTranscriptionModel(selectionForm);
+        var selectionResponse = await fetch("/v1/audio/transcriptions?format=segments", { method: "POST", body: selectionForm });
+        if (!selectionResponse.ok) {
+          throw new Error(await readErrorBody(selectionResponse));
+        }
+        var selectionPayload = await selectionResponse.json();
+        var selectionSegments = (selectionPayload.segments || []).map(function (segment) {
+          return {
+            start: Math.min(selectedRegion.end, selectedRegion.start + Number(segment.start || 0)),
+            end: Math.min(selectedRegion.end, selectedRegion.start + Number(segment.end || 0)),
+            text: segment.text,
+            speaker: segment.speaker || ""
+          };
+        }).filter(function (segment) {
+          return segment.end > segment.start && String(segment.text || "").trim();
+        });
+        if (!selectionSegments.length && String(selectionPayload.text || "").trim()) {
+          selectionSegments.push({
+            start: selectedRegion.start,
+            end: selectedRegion.end,
+            text: String(selectionPayload.text).trim(),
+            speaker: ""
+          });
+        }
+        ex.replaceTranscript(ex.segments.filter(function (segment) {
+          return segment.end <= selectedRegion.start || segment.start >= selectedRegion.end;
+        }).concat(selectionSegments).sort(function (left, right) {
+          return left.start - right.start;
+        }));
+        resetTranscribeDesk();
+        renderExtractTimeline();
+        renderExtractFilter();
+        drawExtractWave();
+        extractTranscribeStatus.textContent = "Selection transcribed · " + selectionSegments.length + " segment" + (selectionSegments.length === 1 ? "" : "s");
+        log("Extractor transcribed selection from " + ex.sourceName + ": " + fmtTime(selectedRegion.start) + "–" + fmtTime(selectedRegion.end));
+        return;
+      }
+
+      ex.replaceTranscript([]);
+      resetTranscribeDesk();
+      renderExtractTimeline();
       var samples = ex.samples;
       var rate = ex.rate;
       if (rate > LIVE_TARGET_RATE) {
@@ -8448,8 +9182,11 @@
     } catch (err) {
       extractError("Transcription failed: " + err.message);
       extractTranscribeStatus.textContent = "";
+    } finally {
+      extractTranscribing = false;
+      extractTranscribeButton.textContent = ex.mode === "extract" ? "Transcribe selection" : "Transcribe";
+      updateExtractRegionUI();
     }
-    extractTranscribeButton.disabled = false;
   });
 
   // --- transcript timeline + speaker tagging ------------------------------
@@ -9120,6 +9857,17 @@
     row.appendChild(actions);
   }
 
+  function libraryTimestamp(entry) {
+    var candidates = [entry.updated_at, entry.created_at];
+    for (var index = 0; index < candidates.length; index += 1) {
+      var value = candidates[index];
+      if (!value || /^0001-01-01T00:00:00(?:\.0+)?Z$/.test(value)) continue;
+      var date = new Date(value);
+      if (Number.isFinite(date.getTime())) return date.toLocaleString();
+    }
+    return "";
+  }
+
   function renderLibraryEntry(entry, nested) {
     var row = createElement("article", nested ? "library-child" : "library-item");
     var head = createElement("div", "library-item-head");
@@ -9131,8 +9879,8 @@
     var text = metadata.transcript || metadata.subject || metadata.direction || metadata.text || metadata.sample_text;
     if (text && text !== entry.name) { row.appendChild(createElement("div", "library-item-text", text)); }
     var detail = [];
-    var timestamp = entry.updated_at || entry.created_at;
-    if (timestamp) { detail.push(new Date(timestamp).toLocaleString()); }
+    var timestamp = libraryTimestamp(entry);
+    if (timestamp) { detail.push(timestamp); }
     if (entry.relationship) { detail.push("from " + entry.relationship.name); }
     ["status", "fitness", "bitrate", "duration_seconds", "duration_ms", "tracks", "revision"].forEach(function (key) {
       if (metadata[key]) {

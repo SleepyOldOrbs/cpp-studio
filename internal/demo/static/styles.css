@@ -274,6 +274,27 @@ summary:focus-visible,
   vertical-align: 1px;
 }
 
+.model-guide {
+  max-width: 1040px;
+}
+
+.model-guide p { line-height: 1.6; }
+.model-guide a { color: var(--accent-strong); }
+.guide-intro { margin-top: 0; max-width: 75ch; }
+.guide-list { display: grid; gap: 10px; }
+.guide-card { border: 1px solid var(--line); border-radius: 8px; background: var(--well); }
+.guide-card > summary { cursor: pointer; padding: 15px 18px; line-height: 1.5; }
+.guide-card > summary strong { color: var(--ink); }
+.guide-card > summary span { display: block; margin-left: 18px; color: var(--muted); font-size: 0.85rem; }
+.guide-card[open] > summary { border-bottom: 1px solid var(--line); background: var(--accent-soft); }
+.guide-content { padding: 0 18px 8px; }
+.guide-content p { max-width: 85ch; }
+.guide-content code { font-family: var(--mono); color: var(--accent-strong); overflow-wrap: anywhere; }
+.guide-example { border-left: 3px solid var(--accent); padding: 12px 14px; background: var(--panel); }
+.guide-example > span { color: var(--muted); font-size: 0.8rem; }
+.guide-example pre { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; margin: 10px 0; min-height: 0; max-height: none; }
+.guide-links { font-size: 0.85rem; }
+
 .module-route {
   border: 1px solid var(--line-soft);
   border-radius: 5px;
@@ -919,7 +940,8 @@ audio {
   background: var(--well);
 }
 
-.workflow-step > summary {
+.workflow-step > summary,
+.workflow-action-step > .workflow-action-heading {
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -927,6 +949,12 @@ audio {
   color: var(--ink);
   cursor: pointer;
   list-style: none;
+}
+
+.workflow-action-step > .workflow-action-heading {
+  cursor: default;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--format-soft);
 }
 
 .workflow-step > summary::-webkit-details-marker {
@@ -951,17 +979,21 @@ audio {
 }
 
 .workflow-step > summary strong,
-.workflow-step > summary small {
+.workflow-step > summary small,
+.workflow-action-heading strong,
+.workflow-action-heading small {
   display: block;
 }
 
-.workflow-step > summary strong {
+.workflow-step > summary strong,
+.workflow-action-heading strong {
   font-family: var(--display);
   font-size: 0.84rem;
   letter-spacing: 0.03em;
 }
 
-.workflow-step > summary small {
+.workflow-step > summary small,
+.workflow-action-heading small {
   margin-top: 3px;
   color: var(--muted);
   font-size: 0.72rem;
@@ -988,7 +1020,7 @@ audio {
   padding: 14px;
 }
 
-.workflow-step:not([open]) > :not(summary) {
+details.workflow-step:not([open]) > :not(summary) {
   display: none !important;
 }
 
@@ -2712,12 +2744,31 @@ html[data-studio-format="stories-audiobooks"] {
 .library-jobs-summary,
 .library-group-summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 18px;
   padding: 13px 15px;
   cursor: pointer;
-  list-style-position: inside;
+  list-style: none;
+}
+
+.library-jobs-summary::-webkit-details-marker,
+.library-group-summary::-webkit-details-marker {
+  display: none;
+}
+
+.library-jobs-summary::after,
+.library-group-summary::after {
+  content: "+";
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 1rem;
+  width: 1ch;
+}
+
+details[open] > .library-jobs-summary::after,
+details[open] > .library-group-summary::after {
+  content: "\2212";
 }
 
 .library-jobs-summary:hover,
@@ -2990,6 +3041,13 @@ html[data-studio-format="stories-audiobooks"] {
   margin-bottom: 8px;
 }
 
+.extract-primary-action-host,
+.extract-primary-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 #extractFileStatus {
   color: var(--muted);
   font-size: 0.85rem;
@@ -3013,11 +3071,35 @@ html[data-studio-format="stories-audiobooks"] {
 }
 
 .extract-wave-wrap {
+  position: relative;
   margin: 12px 0 10px;
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   background: var(--well);
   overflow: hidden;
+}
+
+.extract-wave-selection-actions {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  padding: 4px;
+  border: 1px solid rgba(240, 166, 75, 0.62);
+  border-radius: 7px;
+  background: rgba(21, 26, 33, 0.9);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(5px);
+}
+
+.extract-wave-selection-actions .extract-primary-actions {
+  display: flex;
+}
+
+.extract-wave-selection-actions button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 0.78rem;
 }
 
 .extract-canvas {
@@ -3088,6 +3170,30 @@ html[data-studio-format="stories-audiobooks"] {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.training-clip-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.training-clip {
+  display: grid;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--well);
+}
+
+.training-clip audio {
+  width: 100%;
+}
+
+.training-clip-transcript {
+  margin: 0;
+  white-space: pre-wrap;
 }
 
 #extractRegionStatus {

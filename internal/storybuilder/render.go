@@ -21,9 +21,6 @@ type RenderResponse struct {
 // Render validates the complete audible arrangement before it mixes or
 // publishes anything, then records one new immutable project-owned WAV.
 func (s *Store) Render(ctx context.Context, id string, expectedRevision int) (RenderResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if !validProjectID(id) {
 		return RenderResponse{}, ErrNotFound
 	}
@@ -109,6 +106,16 @@ func (s *Store) Render(ctx context.Context, id string, expectedRevision int) (Re
 		}
 	}
 
+	// Source media and this snapshot are immutable during the expensive
+	// work. Recheck the revision under the mutation lock before publishing.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return RenderResponse{}, err
+	}
+	if err := s.checkProjectRevision(id, expectedRevision); err != nil {
+		return RenderResponse{}, err
+	}
 	number := len(project.Renders) + 1
 	rendersDir := filepath.Join(s.rootDir, id, "renders")
 	if err := os.MkdirAll(rendersDir, 0o755); err != nil {

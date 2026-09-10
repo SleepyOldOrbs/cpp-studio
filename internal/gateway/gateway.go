@@ -198,10 +198,14 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	// The model manifest is optional: a config without a models block (CI,
 	// fixture setups) simply serves an empty catalog rather than failing.
 	if cfg.Models != nil && cfg.Models.Manifest != "" {
-		if manifest, err := models.Load(cfg.Models.Manifest); err == nil {
-			r.catalog = manifest
-			r.modelsRoot = cfg.Models.Root
+		manifest, err := models.Load(cfg.Models.Manifest)
+		if err != nil {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("load configured model manifest: %v", err))
+			})
 		}
+		r.catalog = manifest
+		r.modelsRoot = cfg.Models.Root
 	}
 	if cfg.Models != nil && cfg.Models.Discovery != nil {
 		discovery := cfg.Models.Discovery
@@ -1830,7 +1834,11 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	audio, err := r.speakWithEngine(req.Context(), selected.Engine, body.Input, clonedVoice, false)
+	if err := engine.ValidateSpeechPerformance(selected.Engine, body.Performance); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	audio, err := r.speakSynthesis(req.Context(), engine.SynthesisRequest{EngineID: selected.Engine, Text: body.Input, Performance: body.Performance}, clonedVoice, false)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -3397,13 +3405,24 @@ func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	var performance *engine.SpeechPerformance
+	if raw := req.FormValue("performance"); strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &performance); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid speech performance controls")
+			return
+		}
+	}
+	if err := engine.ValidateSpeechPerformance(selectedSpeech.Engine, performance); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	loop := voice.Loop{
 		Engines:    r.engines,
 		Chat:       r.chatOnce,
 		Transcribe: r.transcribe,
 		Speak: func(ctx context.Context, text string, v *engine.Voice) ([]byte, error) {
-			return r.speakWithEngine(ctx, selectedSpeech.Engine, text, v, false)
+			return r.speakSynthesis(ctx, engine.SynthesisRequest{EngineID: selectedSpeech.Engine, Text: text, Performance: performance}, v, false)
 		},
 	}
 	result, err := loop.Run(req.Context(), voice.Request{
@@ -3568,8 +3587,18 @@ func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
 	if model == "" {
 		model = "voxcpm2"
 	}
-	if model != "qwen3" && model != "omnivoice" && model != "voxcpm2" {
-		writeJSONError(w, http.StatusBadRequest, "model must be qwen3, omnivoice, or voxcpm2")
+	catalog := r.catalog
+	if len(catalog.Models) == 0 && (r.cfg.Models == nil || r.cfg.Models.Manifest == "") {
+		var err error
+		catalog, err = models.DefaultManifest()
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "load default model catalogue: "+err.Error())
+			return
+		}
+	}
+	selected, err := catalog.Resolve(model, "voice_design", "voxcpm2")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -3578,8 +3607,8 @@ func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
 	prose, attributes := r.normalizeVoiceDescription(req.Context(), description)
 	engineInput := description
 	var spec engine.Spec
-	switch model {
-	case "qwen3":
+	switch selected.Family {
+	case "qwen3-tts-voicedesign":
 		if prose != "" {
 			engineInput = prose
 		}
@@ -3597,7 +3626,16 @@ func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
 			engineInput = prose
 		}
 		spec = engine.VoxCPMDesignSpec(engineInput, sampleText)
+	case "fireredtts3":
+		if prose != "" {
+			engineInput = prose
+		}
+		spec = engine.FireRedVoiceDesignSpec(engineInput, sampleText)
+	default:
+		writeJSONError(w, http.StatusBadRequest, "voice design model family is not supported")
+		return
 	}
+	spec.Engine = selected.Engine
 
 	result, err := r.engines.Run(req.Context(), spec)
 	if err != nil {
@@ -5414,10 +5452,11 @@ func storyHTTPStatus(code story.ErrorCode) int {
 }
 
 type speechRequest struct {
-	Input  string `json:"input"`
-	Voice  string `json:"voice"`
-	Model  string `json:"model"`
-	Format string `json:"format"`
+	Input       string                    `json:"input"`
+	Voice       string                    `json:"voice"`
+	Model       string                    `json:"model"`
+	Format      string                    `json:"format"`
+	Performance *engine.SpeechPerformance `json:"performance,omitempty"`
 }
 
 type imageGenerationRequest struct {
@@ -5451,8 +5490,7 @@ type transcriptionResponse struct {
 type voiceDesignRequest struct {
 	Description string `json:"description"`
 	SampleText  string `json:"sample_text"`
-	// Model picks the design engine: "qwen3" (default), "omnivoice", or
-	// "voxcpm2".
+	// Model resolves a catalogued voice designer; VoxCPM2 is the default.
 	Model string `json:"model"`
 }
 

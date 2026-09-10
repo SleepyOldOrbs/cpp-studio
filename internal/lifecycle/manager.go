@@ -335,7 +335,7 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 		m.mu.Unlock()
 		return nil
 	}
-	if engine.cmd != nil && engine.cmd.Process != nil {
+	if engine.cmd != nil {
 		m.mu.Unlock()
 		return fmt.Errorf("engine %q already started", name)
 	}
@@ -366,43 +366,45 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	}
 	engine.cmd = cmd
 	engine.cancel = cancel
-	engine.done = make(chan error, 1)
-	m.mu.Unlock()
+	done := make(chan error, 1)
+	engine.done = done
 
+	// Keep process installation and OS start one transaction. Stop and other
+	// starts must never observe a published command without its process.
 	if err := cmd.Start(); err != nil {
-		m.mu.Lock()
+		engine.cmd, engine.cancel, engine.done = nil, nil, nil
 		engine.setStatusLocked(classifyStartError(err), err.Error())
 		m.mu.Unlock()
 		cancel()
 		return err
 	}
 
-	m.mu.Lock()
 	engine.health.PID = cmd.Process.Pid
 	engine.health.StartedAt = time.Now().UTC()
 	engine.setStatusLocked(StatusRunning, "")
+	healthURL := engine.cfg.HealthURL
 	log.Printf("engine_lifecycle event=started name=%q pid=%d", engine.name, cmd.Process.Pid)
 	m.mu.Unlock()
 
 	go engine.captureLogs("stdout", stdout)
 	go engine.captureLogs("stderr", stderr)
-	go m.watchExit(engine, cmd, engine.done)
+	go m.watchExit(engine, cmd, done)
 
-	if engine.cfg.HealthURL == "" {
+	if healthURL == "" {
 		log.Printf("engine_lifecycle event=ready name=%q pid=%d probe=none", engine.name, cmd.Process.Pid)
 		return nil
 	}
-	if err := m.waitReady(ctx, engine); err != nil {
+	if err := m.waitReady(ctx, engine, cmd); err != nil {
 		log.Printf("engine_lifecycle event=ready_failed name=%q pid=%d error=%q", engine.name, cmd.Process.Pid, err)
 		rollbackCtx, cancel := context.WithTimeout(context.Background(), durationSeconds(engine.cfg.ShutdownTimeoutSeconds, defaultShutdownTimeout))
-		stopErr := m.Stop(rollbackCtx, name)
+		stopErr := m.stop(rollbackCtx, name, cmd)
 		cancel()
 		if stopErr != nil {
 			return errors.Join(err, fmt.Errorf("rollback stop: %w", stopErr))
 		}
 		return err
 	}
-	log.Printf("engine_lifecycle event=ready name=%q pid=%d probe=%q", engine.name, cmd.Process.Pid, engine.cfg.HealthURL)
+	log.Printf("engine_lifecycle event=ready name=%q pid=%d probe=%q", engine.name, cmd.Process.Pid, healthURL)
 	return nil
 }
 
@@ -417,6 +419,10 @@ func (m *Manager) StopAll(ctx context.Context) error {
 }
 
 func (m *Manager) Stop(ctx context.Context, name string) error {
+	return m.stop(ctx, name, nil)
+}
+
+func (m *Manager) stop(ctx context.Context, name string, expected *exec.Cmd) error {
 	m.mu.Lock()
 	engine, ok := m.engines[name]
 	if !ok {
@@ -424,6 +430,10 @@ func (m *Manager) Stop(ctx context.Context, name string) error {
 		return fmt.Errorf("unknown engine %q", name)
 	}
 	cmd := engine.cmd
+	if expected != nil && cmd != expected {
+		m.mu.Unlock()
+		return nil
+	}
 	cancel := engine.cancel
 	done := engine.done
 	timeout := durationSeconds(engine.cfg.ShutdownTimeoutSeconds, defaultShutdownTimeout)
@@ -523,8 +533,11 @@ func (m *Manager) MarkFailure(name string, status Status, lastErr string) {
 	log.Printf("engine_status event=failure name=%q status=%q error=%q", name, status, lastErr)
 }
 
-func (m *Manager) waitReady(ctx context.Context, engine *engineProcess) error {
-	timeout := durationSeconds(engine.cfg.StartupTimeoutSeconds, defaultStartupTimeout)
+func (m *Manager) waitReady(ctx context.Context, engine *engineProcess, cmd *exec.Cmd) error {
+	m.mu.Lock()
+	cfg := engine.cfg
+	m.mu.Unlock()
+	timeout := durationSeconds(cfg.StartupTimeoutSeconds, defaultStartupTimeout)
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(500 * time.Millisecond)
@@ -537,11 +550,13 @@ func (m *Manager) waitReady(ctx context.Context, engine *engineProcess) error {
 		case <-deadline.C:
 			err := fmt.Errorf("engine %q health check timed out", engine.name)
 			m.mu.Lock()
-			engine.setStatusLocked(StatusFailed, err.Error())
+			if engine.cmd == cmd {
+				engine.setStatusLocked(StatusFailed, err.Error())
+			}
 			m.mu.Unlock()
 			return err
 		case <-tick.C:
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, engine.cfg.HealthURL, nil)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.HealthURL, nil)
 			if err != nil {
 				return err
 			}
@@ -550,6 +565,10 @@ func (m *Manager) waitReady(ctx context.Context, engine *engineProcess) error {
 				_ = resp.Body.Close()
 				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 					m.mu.Lock()
+					if engine.cmd != cmd {
+						m.mu.Unlock()
+						return fmt.Errorf("engine %q stopped while waiting for readiness", engine.name)
+					}
 					engine.health.Ready = true
 					engine.setStatusLocked(StatusReady, "")
 					m.mu.Unlock()

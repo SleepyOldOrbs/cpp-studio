@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	cppstudio "cpp-studio"
 )
 
 // Model is one entry in the manifest. Path is relative to the manifest root so
@@ -92,6 +94,16 @@ func Load(path string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
+	return parseManifest(data)
+}
+
+// DefaultManifest uses the same tracked catalogue as packaged configurations.
+// It supports standalone voice-design configs that omit a models block.
+func DefaultManifest() (Manifest, error) {
+	return parseManifest(cppstudio.ModelManifest)
+}
+
+func parseManifest(data []byte) (Manifest, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var m Manifest

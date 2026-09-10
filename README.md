@@ -82,11 +82,18 @@ profiles trade resident models against your card's budget.
 - **Extract** — a waveform-first sampler deck for voices. Filter to one
   speaker, mark a region or tick multiple lines, audition the result, save one
   stitched WAV, hand it to voice cloning with source/time/speaker provenance,
-  or press **Clone the cast** to mint a library voice per speaker. A configured
-  `yt-dlp` adds URL import. Transcribe and Extract share the same loaded audio,
-  transcript, diarization, decode path, and
+  or press **Clone the cast** to mint a library voice per speaker. For training
+  data, mark any number of clean ranges, label each actor and character, then
+  process, correct, and verify every resulting clip. A configured `yt-dlp` adds
+  URL import. Transcribe and Extract share the same loaded audio, transcript,
+  diarization, decode path, and
   `POST /v1/audio/transcriptions?format=segments` route, so switching tools
   does not reload or retranscribe the source.
+- **Voice LoRA training** — receives only a completely processed and
+  human-verified set from Extract. It plays the handed-off clips and exports
+  their extracted WAVs, corrected TXT transcripts, and an `audio`/`text`
+  `train.jsonl` manifest into a folder chosen by the human. This first seam is
+  browser-local dataset preparation; it does not pretend a trainer is installed.
 - **Image lab** — Stable Diffusion generation (~2 s per 512×512 resident),
   plus true vision: a VLM describes any image and speaks the description.
 - **Engine rack** — every engine has a power switch, and named VRAM profiles

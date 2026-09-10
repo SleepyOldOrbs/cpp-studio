@@ -256,6 +256,22 @@ func (s *Store) Create(name string) (Project, error) {
 	return s.createProject(name, DefaultTimelineDurationMS, nil, []Track{}, nil)
 }
 
+// checkProjectRevision is called with mu held before publishing work prepared
+// outside the mutation lock. A deleted project must never be recreated.
+func (s *Store) checkProjectRevision(id string, expected int) error {
+	project, ok, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+	if project.Revision != expected {
+		return ErrConflict
+	}
+	return nil
+}
+
 // createProject is the one publication transaction for new projects. Imports
 // add validated project-owned takes to the same staged directory before its
 // manifest and directory become visible together.
@@ -875,6 +891,7 @@ func (s *Store) prepareTracks(existing, incoming []Track, revoiceTrackIDs map[st
 			}
 			// Generated dialogue sources are server-owned. Whole-project edits
 			// may preserve the current take, but cannot introduce or replace it.
+			requestedIn, requestedOut := clip.SourceInMS, clip.SourceOutMS
 			clip.SourceID = ""
 			clip.SourceDurationMS = 0
 			clip.SourceInMS = 0
@@ -904,8 +921,8 @@ func (s *Store) prepareTracks(existing, incoming []Track, revoiceTrackIDs map[st
 				clip.BuildError = oldClip.BuildError
 				clip.SourceID = oldClip.SourceID
 				clip.SourceDurationMS = oldClip.SourceDurationMS
-				clip.SourceInMS = oldClip.SourceInMS
-				clip.SourceOutMS = oldClip.SourceOutMS
+				clip.SourceInMS = requestedIn
+				clip.SourceOutMS = requestedOut
 				clip.MediaError = oldClip.MediaError
 				clip.SourceStoryID = oldClip.SourceStoryID
 				clip.SourceStoryLineID = oldClip.SourceStoryLineID

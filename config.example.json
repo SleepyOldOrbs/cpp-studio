@@ -318,7 +318,7 @@
       "gpu": true
     },
     "diarize-sherpa": {
-      "command": "${root}\\engines\\sherpa-onnx\\sherpa-onnx-v1.13.4-win-x64-shared-MD-Release\\bin\\sherpa-onnx-offline-speaker-diarization.exe",
+      "command": "${root}\\engines\\sherpa-onnx\\sherpa-onnx-v1.13.6-win-x64-shared-MD-Release\\bin\\sherpa-onnx-offline-speaker-diarization.exe",
       "args": [
         "--segmentation.pyannote-model=${root}\\models\\speech\\analysis\\diarization\\sherpa-onnx-pyannote-segmentation-3-0\\model.onnx",
         "--embedding.model=${root}\\models\\speech\\analysis\\speaker-embedding\\nemo_en_titanet_small.onnx",

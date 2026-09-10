@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -68,7 +69,92 @@ type SynthesisRequest struct {
 	Options   SynthesisOptions `json:"options,omitempty"`
 	// Voice is the reference resolved and frozen by the owning product before
 	// native work starts. It is runtime-only and never serialized.
-	Voice *Voice `json:"-"`
+	Voice       *Voice             `json:"-"`
+	Performance *SpeechPerformance `json:"performance,omitempty"`
+}
+
+// SpeechPerformance exposes the controls supported by the expressive speech
+// models. It is separate from the durable audiobook synthesis options.
+type SpeechPerformance struct {
+	Language       string    `json:"language,omitempty"`
+	Emotion        string    `json:"emotion,omitempty"`
+	Intensity      *float64  `json:"intensity,omitempty"`
+	EmotionVector  []float64 `json:"emotion_vector,omitempty"`
+	DurationFactor *float64  `json:"duration_factor,omitempty"`
+	Style          string    `json:"style,omitempty"`
+	Pace           string    `json:"pace,omitempty"`
+	Pitch          string    `json:"pitch,omitempty"`
+	Expression     string    `json:"expression,omitempty"`
+}
+
+func ValidateSpeechPerformance(engineID string, p *SpeechPerformance) error {
+	if p == nil {
+		return nil
+	}
+	allowed := func(value string, values string) bool {
+		return value == "" || slices.Contains(strings.Split(values, "|"), value)
+	}
+	switch engineID {
+	case "index-tts2.5":
+		if !allowed(p.Language, "auto|zh|en|ja|es|ar") {
+			return fmt.Errorf("unsupported IndexTTS language")
+		}
+		if len(p.Emotion) > 500 {
+			return fmt.Errorf("emotion description cannot exceed 500 bytes")
+		}
+		if p.Intensity != nil && !finiteBetween(*p.Intensity, 0, 1) {
+			return fmt.Errorf("emotion intensity must be between 0 and 1")
+		}
+		if p.DurationFactor != nil && !finiteBetween(*p.DurationFactor, 0.5, 2) {
+			return fmt.Errorf("duration factor must be between 0.5 and 2")
+		}
+		if len(p.EmotionVector) != 0 && len(p.EmotionVector) != 8 {
+			return fmt.Errorf("emotion_vector must contain eight strengths")
+		}
+		for _, value := range p.EmotionVector {
+			if !finiteBetween(value, 0, 1) {
+				return fmt.Errorf("emotion strengths must be between 0 and 1")
+			}
+		}
+		if len(p.EmotionVector) > 0 && p.Emotion != "" {
+			return fmt.Errorf("choose an emotion description or emotion strengths")
+		}
+		if p.Style != "" || p.Pace != "" || p.Pitch != "" || p.Expression != "" {
+			return fmt.Errorf("style, pace, pitch and expression controls require Higgs")
+		}
+	case "higgs-audio":
+		if !allowed(p.Emotion, "elation|amusement|enthusiasm|determination|pride|contentment|affection|relief|contemplation|confusion|surprise|awe|longing|arousal|anger|fear|disgust|bitterness|sadness|shame|helplessness") ||
+			!allowed(p.Style, "singing|shouting|whispering") || !allowed(p.Pace, "speed_very_slow|speed_slow|speed_fast|speed_very_fast") ||
+			!allowed(p.Pitch, "pitch_low|pitch_high") || !allowed(p.Expression, "expressive_high|expressive_low") {
+			return fmt.Errorf("unsupported Higgs performance control")
+		}
+		if p.Language != "" || p.Intensity != nil || len(p.EmotionVector) > 0 || p.DurationFactor != nil {
+			return fmt.Errorf("Higgs uses named emotions and pace controls")
+		}
+	case "fireredtts3-base", "fireredtts3-instruct":
+		if !allowed(p.Language, "Arabic|Cantonese|Chinese|Czech|Dutch|English|Finnish|French|German|Greek|Hindi|Indonesian|Italian|Japanese|Korean|Polish|Portuguese|Romanian|Russian|Spanish|Thai|Turkish|Ukrainian|Vietnamese") {
+			return fmt.Errorf("unsupported FireRed language")
+		}
+		if p.Emotion != "" || p.Intensity != nil || len(p.EmotionVector) > 0 || p.DurationFactor != nil || p.Style != "" || p.Pace != "" || p.Pitch != "" || p.Expression != "" {
+			return fmt.Errorf("use Voice design to direct a FireRed voice; cloning inherits the reference performance")
+		}
+	default:
+		return fmt.Errorf("performance controls are not supported by this speech model")
+	}
+	return nil
+}
+
+func performanceSpeechText(text string, p *SpeechPerformance) string {
+	if p == nil {
+		return text
+	}
+	var prefix strings.Builder
+	for _, tag := range [][2]string{{"emotion", p.Emotion}, {"style", p.Style}, {"prosody", p.Pace}, {"prosody", p.Pitch}, {"prosody", p.Expression}} {
+		if tag[1] != "" {
+			fmt.Fprintf(&prefix, "<|%s:%s|>", tag[0], tag[1])
+		}
+	}
+	return prefix.String() + text
 }
 
 // DefaultDramaBoxOptions pins the effective release-0.5 values. Persisting
@@ -206,6 +292,38 @@ func finiteBetween(value, minimum, maximum float64) bool {
 // SpeechVoiceSpecForRequest owns the subprocess mapping for typed synthesis.
 func SpeechVoiceSpecForRequest(request SynthesisRequest, voice *Voice) Spec {
 	spec := SpeechVoiceSpecFor(request.EngineID, request.Text, voice)
+	if p := request.Performance; p != nil {
+		spec.BuildArgs = func(_, outPath string) []string {
+			text := request.Text
+			if request.EngineID == "higgs-audio" {
+				text = performanceSpeechText(text, p)
+			}
+			args := []string{"--text", speechArgumentText(request.EngineID, text), "--out", outPath}
+			if p.Language != "" {
+				args = append(args, "--request-option", "language="+p.Language)
+			}
+			if request.EngineID == "index-tts2.5" {
+				if p.Emotion != "" {
+					args = append(args, "--emotion", p.Emotion)
+				}
+				if p.Intensity != nil {
+					args = append(args, "--request-option", "emotion_alpha="+strconv.FormatFloat(*p.Intensity, 'f', -1, 64))
+				}
+				if p.DurationFactor != nil {
+					args = append(args, "--request-option", "duration_factor="+strconv.FormatFloat(*p.DurationFactor, 'f', -1, 64))
+				}
+				if len(p.EmotionVector) > 0 {
+					values := make([]string, len(p.EmotionVector))
+					for i, value := range p.EmotionVector {
+						values[i] = strconv.FormatFloat(value, 'f', -1, 64)
+					}
+					args = append(args, "--request-option", "emotion_vector="+strings.Join(values, ","))
+				}
+			}
+			return args
+		}
+		return withResidentSpeech(spec, request, voice)
+	}
 	if request.EngineID == "omnivoice" && strings.TrimSpace(request.Direction) != "" {
 		spec.BuildArgs = func(_, outPath string) []string {
 			return []string{
@@ -253,6 +371,37 @@ func MarshalSpeechServerRequest(model string, request SynthesisRequest, voice *V
 		selectedVoice = voice
 	}
 	payload := serverSpeechRequest{Model: model, Input: request.Text}
+	if p := request.Performance; p != nil {
+		if err := ValidateSpeechPerformance(request.EngineID, p); err != nil {
+			return nil, err
+		}
+		payload.Options = map[string]any{}
+		if p.Language != "" {
+			payload.Options["language"] = p.Language
+		}
+		if request.EngineID == "higgs-audio" {
+			payload.Input = performanceSpeechText(request.Text, p)
+		}
+		if request.EngineID == "index-tts2.5" {
+			if p.Emotion != "" {
+				payload.Options["emotion_text"] = p.Emotion
+				payload.Options["use_emotion_text"] = true
+			}
+			if p.Intensity != nil {
+				payload.Options["emotion_alpha"] = *p.Intensity
+			}
+			if p.DurationFactor != nil {
+				payload.Options["duration_factor"] = *p.DurationFactor
+			}
+			if len(p.EmotionVector) > 0 {
+				values := make([]string, len(p.EmotionVector))
+				for i, value := range p.EmotionVector {
+					values[i] = strconv.FormatFloat(value, 'f', -1, 64)
+				}
+				payload.Options["emotion_vector"] = strings.Join(values, ",")
+			}
+		}
+	}
 	if selectedVoice != nil {
 		payload.VoiceRef = strings.ReplaceAll(selectedVoice.RefWAVPath, `\`, "/")
 		payload.ReferenceText = selectedVoice.RefText

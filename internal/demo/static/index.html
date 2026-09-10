@@ -17,7 +17,7 @@
       <div class="topbar-status">
         <span class="status-pill unknown" id="gatewayStatus">Unknown</span>
         <button class="secondary" id="healthButton" type="button">Refresh health</button>
-        <button class="clear-all-button" id="clearAllButton" type="button">Clear all</button>
+        <button class="clear-all-button" id="clearAllButton" type="button">Reset session</button>
       </div>
       <div class="studio-nav">
         <nav class="format-nav" id="tabBar" aria-label="Studio formats">
@@ -29,22 +29,25 @@
         <nav class="utility-nav" aria-label="Studio management">
           <a class="utility-link" href="#library" data-page-link="library">Library</a>
           <a class="utility-link" href="#models" data-page-link="models">Models</a>
+          <a class="utility-link" href="#model-guide" data-page-link="model-guide">Model guide</a>
           <a class="utility-link" href="#engines" data-page-link="engines">Engines</a>
         </nav>
         <div class="subnav-deck">
           <nav class="subnav" data-parent-nav="talk-voice" aria-label="Talk and voice tools">
             <a class="subnav-link" href="#talk-voice" data-page-link="talk-voice">Overview</a>
-            <a class="subnav-link" href="#text-to-speech" data-page-link="text-to-speech">Text to speech</a>
+            <a class="subnav-link" href="#getting-started-tts" data-page-link="getting-started-tts">Getting started TTS</a>
+            <a class="subnav-link" href="#text-to-speech" data-page-link="text-to-speech">Voice chat</a>
             <a class="subnav-link" href="#transcription" data-page-link="transcription">Transcribe</a>
             <a class="subnav-link" href="#voice-cloning" data-page-link="voice-cloning">Voice cloning</a>
             <a class="subnav-link" href="#voice-design" data-page-link="voice-design">Voice design</a>
             <a class="subnav-link" href="#voice-convert" data-page-link="voice-convert">Voice convert</a>
+            <a class="subnav-link" href="#training" data-page-link="training">Training data</a>
             <a class="subnav-link" href="#audio-analysis" data-page-link="audio-analysis">Audio analysis</a>
           </nav>
           <nav class="subnav" data-parent-nav="music" aria-label="Music and sound effects tools" hidden>
             <a class="subnav-link" href="#music" data-page-link="music">Overview</a>
             <a class="subnav-link" href="#music-generation" data-page-link="music-generation">Music &amp; SFX</a>
-            <a class="subnav-link" href="#voice-separation" data-page-link="voice-separation">Audio Seperation</a>
+            <a class="subnav-link" href="#voice-separation" data-page-link="voice-separation">Voice &amp; stem separation</a>
           </nav>
           <nav class="subnav" data-parent-nav="imagery" aria-label="Imagery tools" hidden>
             <a class="subnav-link" href="#imagery" data-page-link="imagery">Overview</a>
@@ -65,12 +68,17 @@
       <header class="format-hero">
         <span class="format-kicker">Talk &amp; voice</span>
         <h2>Everything spoken, from first word to finished voice.</h2>
-        <p>Turn text into speech, transcribe recordings, build reusable voices, invent a new voice, or transform a performance.</p>
+        <p>Talk with an assistant, transcribe recordings, build reusable voices, invent a new voice, or transform a performance.</p>
       </header>
       <div class="tool-card-grid">
+        <a class="tool-card" href="#getting-started-tts" data-page-link="getting-started-tts">
+          <span class="tool-card-type">Start here</span>
+          <strong>Getting started TTS</strong>
+          <span>Choose a model, type text and tags, and press Play to hear it.</span>
+        </a>
         <a class="tool-card" href="#text-to-speech" data-page-link="text-to-speech">
-          <span class="tool-card-type">Speak</span>
-          <strong>Text to speech</strong>
+          <span class="tool-card-type">Converse</span>
+          <strong>Voice chat</strong>
           <span>Type or record a turn, generate a reply, and hear it spoken in your chosen voice.</span>
         </a>
         <a class="tool-card" href="#transcription" data-page-link="transcription">
@@ -156,7 +164,7 @@
         <a class="tool-card" href="#audiobook" data-page-link="audiobook">
           <span class="tool-card-type">Narrate</span>
           <strong>Audiobook Builder</strong>
-          <span>Turn a document into durable, resumable narration with listening and verification controls.</span>
+          <span>Narrate a document, review the audio, and resume interrupted work.</span>
         </a>
         <a class="tool-card" href="#extract" data-page-link="extract">
           <span class="tool-card-type">Keep</span>
@@ -166,13 +174,47 @@
       </div>
     </section>
 
-    <section class="module" data-page="text-to-speech" aria-label="Text to speech">
+    <section class="module" data-page="getting-started-tts" aria-label="Getting started TTS" hidden>
       <header class="module-head">
-        <h2>Text to speech</h2>
-        <span class="module-route">POST /v1/voice</span>
+        <h2>Getting started TTS</h2>
+        <span class="module-note">type → play → listen</span>
+      </header>
+      <div class="module-body model-guide">
+        <form id="quickSpeechForm" class="control-panel">
+          <label class="field" for="quickSpeechModel">
+            <span>Speech model</span>
+            <select class="text-input" id="quickSpeechModel" data-speech-models data-model-capabilities="speech" data-allow-single="true" disabled>
+              <option value="">Checking available models…</option>
+            </select>
+          </label>
+          <label class="field" for="quickSpeechText">
+            <span>Text to speak</span>
+            <textarea id="quickSpeechText" rows="6" required placeholder="Type or paste your text here. You can include tags supported by your chosen model."></textarea>
+            <small class="hint">Your words go straight to the speech model. Need emotion or sound tags? Open the <a href="#model-guide">Model guide</a>.</small>
+          </label>
+          <details id="quickSpeechPerformance" hidden><summary>Speech performance (optional)</summary><div class="workflow-step-body" data-performance-fields></div></details>
+          <div class="action-row">
+            <button class="primary" id="quickSpeechPlay" type="submit" disabled>Play</button>
+            <button class="secondary" id="quickSpeechCancel" type="button" hidden>Cancel</button>
+            <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to generate</small>
+          </div>
+          <small class="hint">Uses the model’s default voice or configured reference. To use your own voice, open <a href="#voice-cloning">Voice cloning</a>.</small>
+          <p class="hint" id="quickSpeechStatus" role="status"></p>
+          <p class="error-box" id="quickSpeechError" role="alert" hidden></p>
+        </form>
+        <div class="audio-panel" id="quickSpeechResult" hidden>
+          <div class="panel-label-row"><span id="quickSpeechResultLabel">Generated speech</span><a id="quickSpeechDownload" class="secondary-link" download="speech.wav">Save WAV</a></div>
+          <audio id="quickSpeechAudio" controls preload="metadata"></audio>
+        </div>
+      </div>
+    </section>
+
+    <section class="module" data-page="text-to-speech" aria-label="Voice chat">
+      <header class="module-head">
+        <h2>Voice chat</h2>
         <span class="module-note">record &rarr; transcribe &rarr; chat &rarr; speak</span>
       </header>
-      <div class="model-chooser" aria-label="Text to speech models">
+      <div class="model-chooser" aria-label="Voice chat models">
         <div class="model-chooser-heading">
           <span>Model chooser</span>
           <small>Only speech and reply models used by this tool</small>
@@ -180,7 +222,7 @@
         <div class="model-chooser-fields">
           <label class="model-choice">
             <span>Speech model</span>
-            <select class="text-input" id="ttsSpeechModelSelect" data-speech-models data-model-capabilities="speech" data-model-engines="audio omnivoice voxcpm2 dramabox qwen3-tts-1.7b-base qwen3-tts-1.7b-customvoice vibevoice fish-audio">
+            <select class="text-input" id="ttsSpeechModelSelect" data-speech-models data-model-capabilities="speech" data-model-engines="audio omnivoice voxcpm2 dramabox qwen3-tts-1.7b-base qwen3-tts-1.7b-customvoice vibevoice fish-audio index-tts2.5 higgs-audio fireredtts3-base fireredtts3-instruct">
               <option>Checking compatible models&hellip;</option>
             </select>
             <small>Switches the audio.cpp model that speaks the assistant reply.</small>
@@ -204,13 +246,14 @@
       </div>
       <div class="module-body workspace workflow-layout">
         <form class="control-panel workflow-steps" id="voiceForm">
+          <details id="ttsPerformanceControls" hidden><summary>Speech performance</summary><div class="workflow-step-body" data-performance-fields></div></details>
           <details class="workflow-step" open>
             <summary><span class="workflow-step-number">1</span><span><strong>Provide the message or recording</strong><small>Required: typed text, a recorded turn, or a WAV file.</small></span></summary>
             <div class="workflow-step-body">
               <label class="field">
             <span>Message</span>
             <textarea id="messageInput" rows="5" placeholder="Type a message for the assistant&hellip;"></textarea>
-            <small class="hint">Used when no WAV is loaded. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs the loop.</small>
+            <small class="hint">Used when no WAV is loaded. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> sends your message.</small>
           </label>
 
           <div class="record-row voice-record-row">
@@ -246,21 +289,21 @@
                 <select class="text-input" id="voiceSelect">
                   <option value="" selected>Studio default</option>
                 </select>
-                <small class="hint">Clone a voice below to add options here.</small>
+                <small class="hint">Add a voice in <a href="#voice-cloning">Voice cloning</a> or Voice design to use it here.</small>
               </label>
             </div>
           </details>
 
-          <details class="workflow-step">
-            <summary><span class="workflow-step-number">3</span><span><strong>Run the voice loop</strong><small>Transcribes recordings, writes the reply, and speaks it with the selected model.</small></span></summary>
+          <section class="workflow-step workflow-action-step">
+            <header class="workflow-action-heading"><span class="workflow-step-number">3</span><span><strong>Send your message</strong><small>Transcribes recordings, writes the reply, and speaks it with the selected model.</small></span></header>
             <div class="workflow-step-body">
               <div class="action-row">
-                <button class="primary" id="runButton" type="submit">Run voice loop</button>
+                <button class="primary" id="runButton" type="submit">Send and hear reply</button>
                 <button class="secondary" id="clearButton" type="button">Clear</button>
               </div>
               <p class="error-box" id="errorBox" hidden></p>
             </div>
-          </details>
+          </section>
         </form>
 
         <details class="result-panel workflow-step">
@@ -281,7 +324,7 @@
             <div class="panel-label-row">
               <span>Audio playback</span>
               <button class="plain" id="saveReplyButton" type="button" disabled>Save WAV</button>
-              <button class="plain" id="libraryReplyButton" type="button" disabled>To library</button>
+              <button class="plain" id="libraryReplyButton" type="button" disabled>Save to Library</button>
             </div>
             <audio id="replyAudio" controls></audio>
           </div>
@@ -299,8 +342,7 @@
 
     <section class="module" data-page="voice-cloning" aria-label="Voice cloning">
       <header class="module-head">
-        <h2>Voice clone</h2>
-        <span class="module-route">POST /v1/voices</span>
+        <h2>Voice cloning</h2>
         <span class="module-note">reference &rarr; transcribe &rarr; clone</span>
       </header>
       <div class="model-chooser" aria-label="Voice cloning models">
@@ -311,7 +353,7 @@
         <div class="model-chooser-fields">
           <label class="model-choice">
             <span>Cloning model</span>
-            <select class="text-input" id="cloneModelSelect" data-speech-models data-model-capabilities="voice_clone" data-model-engines="audio omnivoice dramabox qwen3-tts-1.7b-base fish-audio chatterbox-clone">
+            <select class="text-input" id="cloneModelSelect" data-speech-models data-model-capabilities="voice_clone" data-model-engines="audio omnivoice dramabox qwen3-tts-1.7b-base fish-audio chatterbox-clone index-tts2.5 higgs-audio fireredtts3-base fireredtts3-instruct">
               <option>Checking compatible models&hellip;</option>
             </select>
             <small>Only models capable of using the recorded voice reference are listed.</small>
@@ -366,8 +408,9 @@
             <label class="field">
               <span>Speak with <em id="speakVoiceLabel">the studio default voice</em></span>
               <textarea id="speakTextInput" rows="3" placeholder="Type something for the selected voice to say&hellip;"></textarea>
-              <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> speaks. Pick a voice above with &ldquo;Use in loop&rdquo;.</small>
+              <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> speaks this text exactly. Pick a voice above with &ldquo;Use voice&rdquo;.</small>
             </label>
+            <details id="clonePerformanceControls" hidden><summary>Speech performance</summary><div class="workflow-step-body" data-performance-fields></div></details>
             <div class="action-row">
               <button class="primary" id="speakButton" type="submit">Speak</button>
             </div>
@@ -375,7 +418,7 @@
               <div class="panel-label-row">
                 <span>Spoken text</span>
                 <button class="plain" id="saveSpeakButton" type="button" disabled>Save WAV</button>
-                <button class="plain" id="librarySpeakButton" type="button" disabled>To library</button>
+                <button class="plain" id="librarySpeakButton" type="button" disabled>Save to Library</button>
               </div>
               <audio id="speakAudio" controls></audio>
             </div>
@@ -386,8 +429,7 @@
 
     <section class="module" data-page="voice-design" aria-label="Voice design">
       <header class="module-head">
-        <h2>Voice designer</h2>
-        <span class="module-route">POST /v1/voices/design</span>
+        <h2>Voice design</h2>
         <span class="module-note">describe &rarr; generate &rarr; audition &rarr; save</span>
       </header>
       <div class="model-chooser" aria-label="Voice design models">
@@ -401,7 +443,7 @@
             <select class="text-input" id="designModelSelect">
               <option value="voxcpm2" selected>VoxCPM2 (realistic, 48 kHz)</option>
             </select>
-            <small id="designModelHint">VoxCPM2: realistic and flexible. OmniVoice: precision accents. Qwen3: characterful and emotive.</small>
+            <small id="designModelHint">VoxCPM2: realistic and flexible. OmniVoice: precision accents. Qwen3: characterful and emotive. FireRed: descriptive voice design (experimental).</small>
           </label>
         </div>
       </div>
@@ -426,7 +468,7 @@
             <span id="designStatus">None yet</span>
           </div>
           <div class="source-row">
-            <span class="source-label">Engine input</span>
+            <span class="source-label">Voice description used</span>
             <span id="designEngineInput">&ndash;</span>
           </div>
           <div class="audio-panel">
@@ -443,8 +485,9 @@
           </label>
           <div class="action-row">
             <button class="secondary" id="designSaveButton" type="button" disabled>Save to voice library</button>
+            <p class="hint" id="designSaveStatus" hidden></p>
           </div>
-          <small class="hint">Saving stores the audition clip as the voice's cloning reference, so the loop, speak box, and image describer can all use it.</small>
+          <small class="hint">Saves this audition as a reusable Actor Voice for compatible speech tools.</small>
         </section>
       </div>
     </section>
@@ -452,7 +495,6 @@
     <section class="module" data-page="voice-convert" aria-label="Voice conversion">
       <header class="module-head">
         <h2>Voice conversion</h2>
-        <span class="module-route">POST /v1/audio/conversions</span>
         <span class="module-note">source performance &rarr; target identity</span>
       </header>
       <div class="model-chooser" aria-label="Voice conversion models">
@@ -552,7 +594,7 @@
           <audio id="conversionOutputAudio" controls></audio>
           <div class="action-row conversion-output-actions">
             <button class="secondary" id="conversionSaveWavButton" type="button" disabled>Save WAV</button>
-            <button class="secondary" id="conversionLibraryButton" type="button" disabled>Save to library</button>
+            <button class="secondary" id="conversionLibraryButton" type="button" disabled>Save to Library</button>
           </div>
         </details>
       </div>
@@ -561,7 +603,6 @@
     <section class="module music-tool" data-page="music-generation" aria-label="Music and sound effects">
       <header class="module-head">
         <h2>Music &amp; SFX</h2>
-        <span class="module-route">POST /v1/audio/music</span>
         <span class="module-note">music now &middot; story sound later</span>
       </header>
       <div class="model-chooser" aria-label="Music and sound effects models">
@@ -693,7 +734,7 @@
           <div class="action-row music-output-actions">
             <button class="secondary" id="musicSaveWavButton" type="button" disabled>Save WAV</button>
             <button class="secondary" id="musicReuseButton" type="button" disabled>Use as source</button>
-            <button class="secondary" id="musicLibraryButton" type="button" disabled>Save to library</button>
+            <button class="secondary" id="musicLibraryButton" type="button" disabled>Save to Library</button>
           </div>
         </details>
       </div>
@@ -702,7 +743,6 @@
     <section class="module" data-page="voice-separation" aria-label="Voice and stem separation">
       <header class="module-head">
         <h2>Voice &amp; stem separation</h2>
-        <span class="module-route">POST /v1/audio/separation</span>
         <span class="module-note">mix &rarr; named WAV stems</span>
       </header>
       <div class="model-chooser" aria-label="Source separation models">
@@ -730,7 +770,6 @@
     <section class="module" data-page="audio-analysis" aria-label="Audio analysis">
       <header class="module-head">
         <h2>Audio analysis</h2>
-        <span class="module-route">POST /v1/audio/vad &middot; /diarization &middot; /alignment</span>
         <span class="module-note">speech regions &middot; speakers &middot; words</span>
       </header>
       <div class="model-chooser" aria-label="Audio analysis models">
@@ -753,7 +792,6 @@
     <section class="module" data-page="image-generation" aria-label="Image generation">
       <header class="module-head">
         <h2>Image lab</h2>
-        <span class="module-route">POST /v1/images/generations</span>
       </header>
       <div class="model-chooser" aria-label="Image generation models">
         <div class="model-chooser-heading">
@@ -824,12 +862,11 @@
             <span class="source-label">Image status</span>
             <span id="imageStatus">Idle</span>
             <button class="plain" id="saveImageButton" type="button" disabled>Save PNG</button>
-            <button class="plain" id="libraryImageButton" type="button" disabled>To library</button>
+            <button class="plain" id="libraryImageButton" type="button" disabled>Save to Library</button>
           </div>
 
           <div class="action-row">
             <button class="secondary" id="describeImageButton" type="button" disabled>Describe image</button>
-            <span class="module-route">POST /v1/images/descriptions</span>
           </div>
           <label class="field">
             <span>Vision description &middot; spoken with <em id="describeVoiceLabel">the studio default voice</em></span>
@@ -851,7 +888,6 @@
     <section class="module" data-page="story" aria-label="Podcast Generator">
       <header class="module-head">
         <h2>Podcast Generator</h2>
-        <span class="module-route">POST /v1/stories</span>
         <span class="module-note" id="storyModeNote">sources &rarr; facts &rarr; script &rarr; audio</span>
       </header>
       <div class="model-chooser" aria-label="Story models">
@@ -937,8 +973,8 @@
             </div>
           </details>
 
-          <details class="workflow-step">
-            <summary><span class="workflow-step-number">4</span><span><strong>Draft or generate</strong><small>Review a text-only draft first, or generate the finished podcast directly. Cancel remains available while generation runs.</small></span></summary>
+          <section class="workflow-step workflow-action-step">
+            <header class="workflow-action-heading"><span class="workflow-step-number">4</span><span><strong>Draft or generate</strong><small>Review a text-only draft first, or generate the finished podcast directly. Cancel remains available while generation runs.</small></span></header>
             <div class="workflow-step-body">
               <div class="action-row">
                 <button class="secondary" id="storyDraftButton" type="button">Draft podcast</button>
@@ -960,7 +996,7 @@
                 <small class="hint" id="scriptEditorHint">Edit any line's text or speaker; each line keeps its fact citations. Generate podcast produces exactly this script.</small>
               </div>
             </div>
-          </details>
+          </section>
         </form>
 
         <details class="workflow-step story-result" aria-live="polite">
@@ -1007,7 +1043,7 @@
           </div>
 
             <div class="story-library-header">
-              <span class="source-label">Retained podcasts</span>
+              <span class="source-label">Saved podcasts</span>
               <button class="secondary compact-button" id="storyLibraryButton" type="button">Refresh</button>
             </div>
             <div class="story-library" id="storyLibrary"></div>
@@ -1020,7 +1056,6 @@
     <section class="module" data-page="audiobook" aria-label="Audiobook Builder">
       <header class="module-head">
         <h2>Audiobook Builder</h2>
-        <span class="module-route">POST /v1/audiobooks</span>
         <span class="module-note">document &rarr; chunks &rarr; narration &rarr; one WAV</span>
       </header>
       <div class="model-chooser" aria-label="Audiobook models">
@@ -1098,7 +1133,7 @@
               </select>
             </label>
             <details>
-              <summary>Advanced direction escape hatch</summary>
+              <summary>Custom performance direction</summary>
               <textarea id="audiobookDirectionInput" rows="3" maxlength="500" placeholder="Leave empty to use the selected factual preset"></textarea>
               <small class="hint">Role nouns, stacked descriptions, and paralinguistic cues produce warnings. Double quotes are rejected.</small>
             </details>
@@ -1106,7 +1141,7 @@
               <input id="audiobookAcceptPromptWarnings" type="checkbox">
               <span>I reviewed and accept the prompt warnings shown in the exact preview.</span>
             </label>
-            <small class="hint">Source words remain immutable. The resolved preview shows every exact DramaBox section prompt and punctuation normalization.</small>
+            <small class="hint">Your original document stays unchanged. The preview shows the exact direction and punctuation used for each DramaBox section.</small>
             <span class="warn-box" id="audiobookDramaBoxWarning">Experimental English model: an 18.9 GB download with heavy local compute and an upstream licence. There is no per-character or API fee; measured CPU use is overnight-class, and 16 GB CUDA fit is unverified.</span>
           </div>
           <fieldset class="field" id="audiobookDramaBoxOptions" hidden>
@@ -1165,15 +1200,15 @@
             </div>
           </details>
 
-          <details class="workflow-step">
-            <summary><span class="workflow-step-number">3</span><span><strong>Resolve and narrate</strong><small>Resolve the exact request first, review it, then start or cancel narration.</small></span></summary>
+          <section class="workflow-step workflow-action-step">
+            <header class="workflow-action-heading"><span class="workflow-step-number">3</span><span><strong>Preview and narrate</strong><small>Preview the narration settings, review them, then start narration.</small></span></header>
             <div class="workflow-step-body">
               <div class="field">
             <div class="action-row">
-              <button class="secondary" id="audiobookPreviewButton" type="button">Resolve request</button>
-              <span class="hint">Required before Narrate; no job or engine invocation occurs.</span>
+              <button class="secondary" id="audiobookPreviewButton" type="button">Preview narration settings</button>
+              <span class="hint">Review this preview before Narrate. No audio is generated yet.</span>
             </div>
-            <pre id="audiobookRequestPreview" aria-live="polite">Request not resolved.</pre>
+            <pre id="audiobookRequestPreview" aria-live="polite">Narration settings have not been previewed.</pre>
           </div>
           <div class="action-row">
             <button class="primary" id="audiobookNarrateButton" type="submit" disabled>Narrate</button>
@@ -1181,7 +1216,7 @@
           </div>
               <p class="error-box" id="audiobookErrorBox" hidden></p>
             </div>
-          </details>
+          </section>
         </form>
 
         <details class="result-panel workflow-step">
@@ -1218,7 +1253,6 @@
     <section class="module audio-workspace" id="audioWorkspace" data-pages="transcription extract" aria-label="Transcribe">
       <header class="module-head">
         <h2 id="extractToolTitle">Transcribe</h2>
-        <span class="module-route">POST /v1/audio/transcriptions?format=segments</span>
         <span class="module-note" id="extractToolNote">load &rarr; transcribe &rarr; correct</span>
       </header>
       <div class="model-chooser" aria-label="Transcription models">
@@ -1243,8 +1277,12 @@
             <span>Load audio / video</span>
           </label>
           <span id="extractFileStatus">Nothing loaded</span>
-          <button class="secondary compact-button" id="extractPlayButton" type="button" aria-pressed="false" disabled>Play audio</button>
-          <button class="secondary compact-button" id="extractTranscribeButton" type="button" disabled>Transcribe</button>
+          <span id="extractToolbarActions" class="extract-primary-action-host">
+            <span id="extractPrimaryActions" class="extract-primary-actions">
+              <button class="secondary compact-button" id="extractPlayButton" type="button" aria-pressed="false" disabled>Play audio</button>
+              <button class="secondary compact-button" id="extractTranscribeButton" type="button" disabled>Transcribe</button>
+            </span>
+          </span>
           <span class="transcribe-record-controls" data-audio-workspace-mode="transcribe">
             <button class="secondary compact-button" id="transcribeRecordButton" type="button">Record microphone</button>
             <button class="plain compact-button" id="transcribeStopRecordButton" type="button" disabled>Stop</button>
@@ -1265,10 +1303,11 @@
           </div>
         </div>
         <small class="hint" data-audio-workspace-mode="transcribe">Load audio or video, then transcribe it into editable timestamped lines. The waveform stays available for seeking and listening.</small>
-        <small class="hint" data-audio-workspace-mode="extract" hidden>Browser-decoded: WAV, MP3, OGG, FLAC, and MP4/WebM audio tracks — and with an ffmpeg engine configured, anything else is converted automatically instead of refused. Drag on the waveform to mark a region; click a transcript line to jump to it.</small>
+        <small class="hint" data-audio-workspace-mode="extract" hidden>Browser-decoded: WAV, MP3, OGG, FLAC, and MP4/WebM audio tracks — and with an ffmpeg engine configured, anything else is converted automatically instead of refused. Drag on the waveform to mark a region; use the mouse wheel to zoom. With the waveform focused, Home/End and Left/Right move the playhead.</small>
 
         <div class="extract-wave-wrap">
-          <canvas id="extractCanvas" class="extract-canvas" tabindex="0" role="slider" aria-label="Audio waveform. Use Left and Right to seek; Space to play or stop." aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></canvas>
+          <canvas id="extractCanvas" class="extract-canvas" tabindex="0" role="slider" aria-label="Audio waveform. Use the mouse wheel to zoom; Home and End jump; Left and Right nudge the playhead; Space plays or stops." aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></canvas>
+          <span id="extractSelectionActions" class="extract-wave-selection-actions" aria-label="Waveform selection actions" hidden></span>
           <div class="extract-timebar"><span id="extractViewStart">0:00</span><span id="extractCursor">&ndash;</span><span id="extractViewEnd">0:00</span></div>
         </div>
 
@@ -1287,8 +1326,33 @@
           <div class="extract-selection-actions">
             <button class="plain compact-button" id="extractStopButton" type="button" disabled>Stop</button>
             <button class="primary compact-button" id="extractCloneButton" type="button" disabled>Use as clone reference</button>
-            <button class="secondary compact-button" id="extractLibraryButton" type="button" disabled>Save to library</button>
+            <button class="secondary compact-button" id="extractLibraryButton" type="button" disabled>Save to Library</button>
             <button class="secondary compact-button" id="extractCastButton" type="button" disabled>Clone the cast</button>
+          </div>
+        </section>
+        <section class="extract-selection-card" data-audio-workspace-mode="extract" aria-label="Clean speech mining" hidden>
+          <div class="extract-selection-heading">
+            <div>
+              <span class="source-label">Clean speech</span>
+              <span>Label the current waveform range, then add it to the list.</span>
+            </div>
+          </div>
+          <div class="transcribe-tool-row">
+            <label class="compact-field">
+              <span>Actor</span>
+              <input class="text-input" id="extractActorInput" type="text" maxlength="120" placeholder="Performer name">
+            </label>
+            <label class="compact-field">
+              <span>Character</span>
+              <input class="text-input" id="extractCharacterInput" type="text" maxlength="120" placeholder="Character name">
+            </label>
+            <button class="primary compact-button" id="extractAddSpeechButton" type="button" disabled>Add selection</button>
+          </div>
+          <div class="extract-timeline" id="extractSpeechList">No clean speech selected yet.</div>
+          <div class="extract-selection-actions">
+            <button class="primary compact-button" id="extractProcessSpeechButton" type="button" disabled>Process selections</button>
+            <button class="secondary compact-button" id="extractPassTrainingButton" type="button" disabled>Prepare training data</button>
+            <span id="extractProcessSpeechStatus" aria-live="polite"></span>
           </div>
         </section>
         <p class="error-box" id="extractErrorBox" hidden></p>
@@ -1340,10 +1404,26 @@
       </div>
     </section>
 
+    <section class="module" data-page="training" aria-label="Prepare training data">
+      <header class="module-head">
+        <h2>Prepare training data</h2>
+        <span class="module-note">verified speech from Extract</span>
+      </header>
+      <div class="module-body">
+        <p id="trainingSummary">No checked clips yet. In Extract, check each speech clip, then choose Prepare training data.</p>
+        <p><a class="secondary-link" href="#extract">Open Extract</a></p>
+        <div class="training-clip-list" id="trainingClipList"></div>
+        <div class="extract-selection-actions">
+          <button class="primary compact-button" id="trainingExportButton" type="button" disabled>Export training folder</button>
+          <span id="trainingExportStatus" aria-live="polite"></span>
+        </div>
+        <small class="hint">Export each extracted WAV and corrected TXT transcript, plus <code>train.jsonl</code>, for a separate training tool. Audio is exported without cleanup processing. Export before closing or resetting this page; unexported clips remain only in this browser session.</small>
+      </div>
+    </section>
+
     <section class="module" data-page="library" aria-label="Studio library">
       <header class="module-head">
         <h2>Library</h2>
-        <span class="module-route">GET /v1/library + collections</span>
         <button class="secondary compact-button" id="libraryRefreshButton" type="button">Refresh</button>
       </header>
       <div class="module-body">
@@ -1366,7 +1446,7 @@
         </div>
         <div class="library-filter-empty" id="libraryFilterEmpty" hidden>No library items match this filter.</div>
         <div class="library-list" id="libraryList">Loading saved work&hellip;</div>
-        <small class="hint">The Library gathers every durable studio collection in one place. Each item stays in its existing voice, story, audiobook, or output store on disk.</small>
+        <small class="hint">Browse your saved voices, audio, productions and images. Open an item in its tool to continue working.</small>
         <p class="error-box" id="libraryErrorBox" hidden></p>
       </div>
     </section>
@@ -1374,7 +1454,6 @@
     <section class="module" data-page="models" aria-label="Model catalog">
       <header class="module-head">
         <h2>Models</h2>
-        <span class="module-route">GET /v1/models/catalog</span>
         <button class="secondary compact-button" id="modelsVerifyButton" type="button">Verify all</button>
         <button class="secondary compact-button" id="modelsRefreshButton" type="button">Refresh</button>
       </header>
@@ -1385,10 +1464,146 @@
       </div>
     </section>
 
+    <section class="module" data-page="model-guide" aria-label="Model guide" hidden>
+      <header class="module-head">
+        <h2>Model guide</h2>
+        <span class="module-note">A quick reference for directing your models</span>
+      </header>
+      <div class="module-body model-guide">
+        <p class="guide-intro">Choose a model below for its controls and a small example. Tags belong to a particular model: copying them to another can make it read them aloud.</p>
+        <p class="hint">Try spoken-text examples in <a href="#getting-started-tts">Getting started TTS</a>: choose the matching model, paste and press Play. Index and Higgs controls are under Speech performance. Voice design descriptions belong in Voice design.</p>
+        <label class="field" for="modelGuideSearch"><span>Find a model or technique</span><input class="text-input" type="search" id="modelGuideSearch" placeholder="Try Higgs, shouting, crying, music…"></label>
+        <p class="hint">For cloning, start with clean, single-speaker audio and an accurate reference transcript. Try one short line before a longer render. Availability is shown in <a href="#models">Models</a>.</p>
+        <div class="guide-list" id="modelGuideList">
+          <details class="guide-card">
+            <summary><strong>Higgs Audio v3</strong><span>Emotion, shouting, whispering and sound effects</span></summary>
+            <div class="guide-content">
+              <p><strong>Where:</strong> Voice cloning or Voice chat → Speech performance. Select a reference voice, then choose emotion, delivery, pace, pitch and expressiveness. These settings direct the whole utterance.</p>
+              <p><strong>In spoken text:</strong> put pauses and sounds where they should occur. Pair a sound tag with its vocalisation: <code>&lt;|sfx:laughter|&gt;Haha</code>, <code>&lt;|sfx:crying|&gt;Boohoo</code>, <code>&lt;|sfx:sigh|&gt;Uh</code>. Pauses: <code>&lt;|prosody:pause|&gt;</code> or <code>&lt;|prosody:long_pause|&gt;</code>.</p>
+              <p>For shouting, choose delivery <strong>shouting</strong>; for tearful speech, try emotion <strong>sadness</strong>. Crying is a separate sound effect.</p>
+              <div class="guide-example"><span>Spoken text · try emotion “relief” and delivery “whispering”</span><pre><code>I thought I had lost you. &lt;|prosody:pause|&gt; &lt;|sfx:sigh|&gt;Uh, you are safe.</code></pre><button type="button" class="secondary compact-button" data-guide-copy>Copy example</button></div>
+              <p class="guide-links"><a href="#voice-cloning">Open Voice cloning</a> · <a href="https://huggingface.co/bosonai/higgs-tts-3-4b/blob/main/PROMPTING.md" target="_blank" rel="noopener noreferrer">Official prompting guide ↗</a></p>
+            </div>
+          </details>
+          <details class="guide-card">
+            <summary><strong>IndexTTS 2.5</strong><span>Describe an emotion or blend eight feelings</span></summary>
+            <div class="guide-content">
+              <p><strong>Where:</strong> Voice cloning or Voice chat → Speech performance. Use a reference voice. Put the direction in <strong>Emotion direction</strong>, keeping the spoken text separate.</p>
+              <p>Start with intensity <strong>0.6</strong> (range 0–1). Alternatively, clear the description and blend happy, angry, sad, afraid, disgusted, melancholic, surprised and calm. Duration <strong>1</strong> is normal; above 1 is slower (range 0.5–2). Select the language there too.</p>
+              <div class="guide-example"><span>Emotion direction</span><pre><code>Quiet sadness, holding back tears, with a little warmth.</code></pre><button type="button" class="secondary compact-button" data-guide-copy>Copy example</button></div>
+              <p class="guide-links"><a href="#voice-cloning">Open Voice cloning</a> · <a href="https://github.com/0xShug0/audio.cpp/blob/3174e6b26f11a0e39b4f150961dce98f43ba860d/docs/models/index_tts.md" target="_blank" rel="noopener noreferrer">Model guide ↗</a></p>
+            </div>
+          </details>
+          <details class="guide-card">
+            <summary><strong>FireRedTTS3 Base &amp; Instruct</strong><span>Reference performance or a described character · experimental</span></summary>
+            <div class="guide-content">
+              <p><strong>Base:</strong> use Voice cloning with a reference that already has the delivery you want. Choose language under Speech performance.</p>
+              <p><strong>Instruct:</strong> in Voice design, describe the speaker, accent, emotion and pace. Enter the words separately in the sample text, preview, then save an Actor Voice. Instruct also clones references. Studio has no FireRed inline emotion-tag control; the design configuration currently uses English.</p>
+              <div class="guide-example"><span>Voice design description</span><pre><code>A middle-aged British woman with a warm, slightly husky voice, speaking slowly with quiet relief.</code></pre><button type="button" class="secondary compact-button" data-guide-copy>Copy example</button></div>
+              <p class="guide-links"><a href="#voice-design">Open Voice design</a> · <a href="https://github.com/FireRedTeam/FireRedTTS3" target="_blank" rel="noopener noreferrer">Official guide ↗</a></p>
+            </div>
+          </details>
+          <details class="guide-card">
+            <summary><strong>Qwen3-TTS</strong><span>Base, CustomVoice and VoiceDesign have different jobs</span></summary>
+            <div class="guide-content">
+              <p><strong>Base (0.6B / 1.7B):</strong> clone an Actor Voice using reference audio and its transcript. Let the reference and sentence punctuation set the delivery.</p>
+              <p><strong>CustomVoice (1.7B):</strong> uses a configured preset speaker in Voice chat. Studio does not currently expose its separate style-instruction control.</p>
+              <p><strong>VoiceDesign (1.7B):</strong> use Voice design to describe a new voice and its emotion. Keep the words to speak in the sample field. Square-bracket sound tags are not a Studio control for Qwen.</p>
+              <div class="guide-example"><span>Voice design description</span><pre><code>A young adult man with a clear British accent, speaking softly and cautiously, as if sharing a secret.</code></pre><button type="button" class="secondary compact-button" data-guide-copy>Copy example</button></div>
+              <p class="guide-links"><a href="#voice-design">Open Voice design</a> · <a href="https://github.com/QwenLM/Qwen3-TTS" target="_blank" rel="noopener noreferrer">Official guide ↗</a></p>
+            </div>
+          </details>
+          <details class="guide-card">
+            <summary><strong>OmniVoice</strong><span>Cloning, voice attributes and nonverbal tags</span></summary>
+            <div class="guide-content">
+              <p><strong>Where:</strong> Voice cloning, Voice chat or Voice design. For design, use comma-separated attributes: gender, age, pitch, accent and optionally <code>whisper</code>. Studio filters unsupported attributes; arbitrary emotion prose is less reliable here.</p>
+              <p><strong>In spoken text:</strong> try <code>[laughter]</code>, <code>[sigh]</code>, <code>[surprise-oh]</code> or <code>[question-en]</code>. Example: <code>[sigh] I was hoping you would stay.</code></p>
+              <div class="guide-example"><span>Voice design description</span><pre><code>female, young adult, moderate pitch, whisper, british accent</code></pre><button type="button" class="secondary compact-button" data-guide-copy>Copy example</button></div>
+              <p class="guide-links"><a href="#voice-design">Open Voice design</a> · <a href="https://github.com/0xShug0/audio.cpp/blob/3174e6b26f11a0e39b4f150961dce98f43ba860d/docs/models/omnivoice.md" target="_blank" rel="noopener noreferrer">Model guide ↗</a></p>
+            </div>
+          </details>
+          <details class="guide-card">
+            <summary><strong>VoxCPM2</strong><span>Natural-language voice and delivery descriptions</span></summary>
+            <div class="guide-content">
+              <p><strong>Where:</strong> Voice design. Describe age, accent, texture, mood and pace in one focused sentence; enter the sample words separately. Studio adds the model’s parenthesised direction for you.</p>
+              <p>For direct speech in Getting started TTS, a description can prefix the spoken text in parentheses: <code>(A gentle, reassuring voice)You are safe here.</code> Preview a short sample before saving the design.</p>
+              <div class="guide-example"><span>Voice design description</span><pre><code>An older man with a low, gravelly voice, speaking slowly with gentle reassurance.</code></pre><button type="button" class="secondary compact-button" data-guide-copy>Copy example</button></div>
+              <p class="guide-links"><a href="#voice-design">Open Voice design</a> · <a href="https://github.com/OpenBMB/VoxCPM" target="_blank" rel="noopener noreferrer">Official guide ↗</a></p>
+            </div>
+          </details>
+          <details class="guide-card">
+            <summary><strong>Fish Audio S2 Pro</strong><span>Inline emotion and delivery in square brackets</span></summary>
+            <div class="guide-content">
+              <p><strong>Where:</strong> Voice cloning or Voice chat. Insert directions into the spoken text just before the affected phrase. Try <code>[whisper]</code>, <code>[angry]</code>, <code>[excited]</code>, <code>[shouting]</code>, <code>[laughing]</code>, <code>[sigh]</code> or <code>[short pause]</code>.</p>
+              <p>Use a reference close to the desired performance and words that suit the emotion. Begin with one tag; results vary with voice and wording.</p>
+              <div class="guide-example"><span>Spoken text</span><pre><code>[whisper] Keep your voice down. [short pause] [excited] I found it!</code></pre><button type="button" class="secondary compact-button" data-guide-copy>Copy example</button></div>
+              <p class="guide-links"><a href="#voice-cloning">Open Voice cloning</a> · <a href="https://github.com/fishaudio/fish-speech" target="_blank" rel="noopener noreferrer">Official tag guide ↗</a></p>
+            </div>
+          </details>
+          <details class="guide-card">
+            <summary><strong>DramaBox</strong><span>Stage directions around quoted dialogue · English, experimental</span></summary>
+            <div class="guide-content">
+              <p><strong>Where:</strong> Voice cloning; Audiobook Builder also has DramaBox performance controls. In a direct speech prompt, put dialogue in quotes and describe the performance outside them. Match the speaker description to your reference.</p>
+              <p>Write actions such as <em>She sighs deeply.</em> outside quotes. For laughter, put <code>Hahaha</code> inside quotes. Finish on the last closing quote. Keep initial experiments short.</p>
+              <div class="guide-example"><span>Spoken-text prompt</span><pre><code>A woman speaks with relief, "You came back." She laughs softly, "Hahaha, I knew you would!"</code></pre><button type="button" class="secondary compact-button" data-guide-copy>Copy example</button></div>
+              <p class="guide-links"><a href="#voice-cloning">Open Voice cloning</a> · <a href="https://github.com/resemble-ai/DramaBox#prompt-writing-guide" target="_blank" rel="noopener noreferrer">Official prompting guide ↗</a></p>
+            </div>
+          </details>
+          <details class="guide-card">
+            <summary><strong>Chatterbox &amp; VibeVoice</strong><span>Performance from reference audio</span></summary>
+            <div class="guide-content">
+              <p><strong>Chatterbox:</strong> in Voice cloning, use clean reference audio with the tone you want and plain spoken text. Voice convert changes the speaker of existing audio. This is the base model; Turbo’s <code>[laugh]</code> and similar tags are not supported Studio controls.</p>
+              <p><strong>VibeVoice 1.5B:</strong> choose it in Voice chat; the voice comes from configured speaker samples. Use <code>Speaker 1: I am glad you are here.</code> Studio does not expose its multi-speaker sample setup or a dedicated emotion control.</p>
+              <p class="guide-links"><a href="#voice-cloning">Open Voice cloning</a> · <a href="#text-to-speech">Open Voice chat</a> · <a href="https://github.com/0xShug0/audio.cpp/blob/3174e6b26f11a0e39b4f150961dce98f43ba860d/docs/tts.md" target="_blank" rel="noopener noreferrer">Model guides ↗</a></p>
+            </div>
+          </details>
+          <details class="guide-card">
+            <summary><strong>Music &amp; sound effects</strong><span>ACE-Step, Stable Audio and HeartMuLa</span></summary>
+            <div class="guide-content">
+              <p><strong>ACE-Step 1.5 Turbo:</strong> describe genre, instruments, mood and tempo in Music &amp; SFX; keep lyrics in the lyrics field.</p>
+              <p><strong>Stable Audio 3 Medium:</strong> describe the sound, texture and how it develops. <strong>Small SFX:</strong> focus on one sound event, its surroundings and distance.</p>
+              <p><strong>HeartMuLa 3B:</strong> give musical style and lyrics in their separate fields. Speech emotion tags do not serve as music controls.</p>
+              <div class="guide-example"><span>Sound-effect description · Stable Audio Small SFX</span><pre><code>A heavy wooden door creaks open slowly in a quiet stone hall, followed by a short echo.</code></pre><button type="button" class="secondary compact-button" data-guide-copy>Copy example</button></div>
+              <p class="guide-links"><a href="#music-generation">Open Music &amp; SFX</a></p>
+            </div>
+          </details>
+          <details class="guide-card">
+            <summary><strong>Transcription &amp; audio analysis</strong><span>Whisper, Qwen3-ASR, VibeVoice ASR, alignment and speaker detection</span></summary>
+            <div class="guide-content">
+              <p><strong>Whisper:</strong> Base.en is English-only; Large v3 and Turbo are multilingual. <strong>Qwen3-ASR 0.6B / 1.7B</strong> and <strong>VibeVoice ASR</strong> are alternative transcribers. Load audio, choose the model, transcribe and correct the words.</p>
+              <p><strong>Qwen3 Forced Aligner:</strong> supply the correct transcript to time its words. <strong>Silero / MarbleNet VAD:</strong> detect speech regions. <strong>Sortformer</strong> or <strong>Pyannote with TitaNet / CAM++:</strong> detect speaker turns; review the speaker assignments.</p>
+              <p>These models analyse existing sound. Shouting and crying tags do not change it.</p>
+              <p class="guide-links"><a href="#transcription">Open Transcribe</a> · <a href="#audio-analysis">Open Audio analysis</a></p>
+            </div>
+          </details>
+          <details class="guide-card">
+            <summary><strong>Voice conversion &amp; separation</strong><span>VeVo2, Chatterbox, HTDemucs and RoFormers</span></summary>
+            <div class="guide-content">
+              <p><strong>VeVo2 / Chatterbox:</strong> in Voice convert, provide source audio and a target voice reference. Choose the supported conversion route in the tool; start with a short, clean recording.</p>
+              <p><strong>HTDemucs:</strong> split a mix into vocals, drums, bass and other audio. <strong>BS-RoFormer / Mel-Band RoFormer:</strong> separate vocals from accompaniment. Use the original mix and audition the stems for leakage.</p>
+              <p>These tools take audio inputs; speech emotion tags do not direct them.</p>
+              <p class="guide-links"><a href="#voice-convert">Open Voice convert</a> · <a href="#voice-separation">Open Separation</a></p>
+            </div>
+          </details>
+          <details class="guide-card">
+            <summary><strong>Chat &amp; imagery</strong><span>Qwen3, Qwen3-VL and Stable Diffusion 1.5</span></summary>
+            <div class="guide-content">
+              <p><strong>Qwen3 4B Instruct:</strong> describe the task, relevant context and desired answer length. The speech model controls how its reply sounds.</p>
+              <p><strong>Qwen3-VL:</strong> supply an image and ask a specific visual question. Its paired projector is a supporting file, not a separate creative tool.</p>
+              <p><strong>Stable Diffusion 1.5:</strong> describe subject, composition, lighting and style in the image prompt. Reuse a seed when comparing prompt changes.</p>
+              <p class="guide-links"><a href="#text-to-speech">Open Voice chat</a> · <a href="#image-generation">Open Imagery</a></p>
+            </div>
+          </details>
+        </div>
+        <p id="modelGuideEmpty" role="status" hidden>No matching guide. Try a model name, “emotion” or “music”.</p>
+        <p id="modelGuideCopyStatus" class="hint" role="status"></p>
+        <p class="hint">Tool scope: Story Builder uses OmniVoice; Podcast Generator uses Qwen; Audiobook Builder offers Qwen or DramaBox. Selecting a model in Voice chat or Voice cloning does not change those tools. Guidance checked 10 September 2026.</p>
+      </div>
+    </section>
+
     <section class="module" data-page="engines" aria-label="Engine rack">
       <header class="module-head">
         <h2>Engine rack</h2>
-        <span class="module-route">GET /health</span>
         <span class="module-note" id="healthUpdated">No health check yet</span>
       </header>
       <div class="module-body">

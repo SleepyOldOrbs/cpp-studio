@@ -93,6 +93,28 @@ decoded source, edited transcript, cursor and selection, playback state,
 transcript exports, and extracted-audio provenance across tool switches.
 Transcribe produces words; Extract produces audio assets.
 
+## Clean speech preparation
+
+Extract owns one browser-local clean-speech pass: the human marks waveform
+ranges, labels each with the actor and character heard in that range, processes
+each range independently, corrects its transcript, and explicitly checks it.
+These are working labels, not new persisted domain aggregates.
+
+**Clean speech clip**:
+One singular marked range with actor, character, extracted WAV, corrected
+transcript, and human-check state. Draft and failed clips remain retryable only
+in the current browser session. Closing or clearing the page discards them.
+
+**Training handoff**:
+A browser-local copy of one completely processed and checked clip set. It is
+read-only and does not duplicate the waveform editor. Export writes the extracted
+clip WAVs, matching TXT transcripts, and an `audio`/`text` `train.jsonl` to a
+human-chosen folder. The exported folder is the durability boundary; cpp-studio
+does not yet own trainer installation or training runs.
+
+This flow handles speech only. Applause, laughter, Foley, ambience, and other
+non-speech sounds remain work for the existing Stable Audio tools.
+
 The Voice Library uses two related terms. An **Actor Voice** is an existing
 recorded or designed reusable voice with its own reference WAV and transcript.
 A **Character Voice** is a durable child direction beneath one Actor Voice. It

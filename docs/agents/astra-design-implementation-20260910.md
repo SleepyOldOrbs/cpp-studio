@@ -1,0 +1,62 @@
+# Design review implementation and verification
+
+Date: 2026-09-10. Review sequence: design critique, product flow audit, then UX copy. All 17 finding IDs are implemented; several IDs describe overlapping changes. This document is the current status record and supersedes intermediate implementation/testing notices in the three review reports.
+
+Publication preparation: the user subsequently authorized GitHub synchronization. Review screenshots and compact test evidence are now retained beside these reports so their links work on GitHub. Local fixture executables and runtime data remain excluded. The native-failure regression script now explicitly exits successfully after its expected failures, and a separate PowerShell process verified exit code zero; this prevents GitHub's PowerShell wrapper from propagating the intentional child-process error.
+
+**Automated verification and the final Story Builder render browser replay passed.** Source checks, automated behavior tests and browser observations are identified separately below. A source-only or test-only entry does not claim a corresponding visual interaction was completed.
+
+## Completion matrix
+
+| ID | Implemented change | Verification and limits |
+| --- | --- | --- |
+| DC-01 | Voice, Podcast and Audiobook submit steps are always visible; relevant result/error disclosures open on request/result updates. Optional settings remain collapsible. | HTML structural check and Studio UX tests passed. Browser interaction confirmed Voice chat and Audiobook result reveal; [40](astra-evidence-20260910/screenshots/40-voice-chat-result-after.png) and [52](astra-evidence-20260910/screenshots/52-audiobook-result-after.png) show the completed expanded output. [50](astra-evidence-20260910/screenshots/50-podcast-actions-after.png) shows the static Podcast action step with optional cast settings closed. Screenshots establish visible states; automatic-opening sequence is established by the interaction record and tests. |
+| DC-02 | Selection inspector hides with no selection and preserves its dragged position when hidden. | Current source checked. [44](astra-evidence-20260910/screenshots/44-builder-empty-after.png) and [48](astra-evidence-20260910/screenshots/48-empty-canvas-action-after.png) show no empty floating inspector. Root completed the populated Builder build/render replay. |
+| DC-03 | Library collections and Current work show explicit plus/minus disclosure indicators. | CSS wiring checked. [42](astra-evidence-20260910/screenshots/42-library-dates-after.png) shows collapsed Current work with plus and expanded Voices with minus. |
+| DC-04 | Missing Character Voices provide a direct, explicitly labeled new-tab link to existing voice setup. | Source verified: `/demo/#voice-cloning`, new-tab label, separate unmatched-search feedback and existing Refresh voices action. The current fixture voice library is populated; no after screenshot of this empty state was captured. |
+| DC-05 | Empty canvas offers Add dialogue track; Render is disabled with zero clips and shows the missing prerequisite. Silence clips remain valid and previous deliveries stay visible. | State regression covers empty project/track, silence content, retained master links and active mutation exclusion. [44](astra-evidence-20260910/screenshots/44-builder-empty-after.png) shows disabled Render and Add a clip guidance. The button is cropped from 44 but clearly visible in the later [48](astra-evidence-20260910/screenshots/48-empty-canvas-action-after.png); its existing handler was also checked through source/browser UI state. |
+| PA-01 | Designed-voice saving shows the returned name and an Open Library link; a new candidate or failure removes old success feedback. | Studio UX save-success/failure test passed. [41](astra-evidence-20260910/screenshots/41-voice-save-after.png) shows named confirmation; [42](astra-evidence-20260910/screenshots/42-library-dates-after.png) shows the saved voice in Library. |
+| PA-02 | Library prefers a meaningful update date, falls back to creation date, and omits unusable dates. | Regression covers missing, zero and invalid update dates plus real updates. [42](astra-evidence-20260910/screenshots/42-library-dates-after.png) shows 10/09/2026 dates instead of year one. |
+| PA-03 | Project transitions finish pending/in-flight edits before replacement; failed saves keep retryable edits. Dirty departure is guarded. | Story Builder tests cover the transition/save boundary, in-flight newer edits, failed saves and mutation exclusion during replacement. Root's invalid-name Refresh attempt retained the current draft with a visible error in [45](astra-evidence-20260910/screenshots/45-save-failure-preserved-after.png). Root also edited spoken text with actual keyboard input and Tab, navigated to Podcast, reopened Builder and verified the exact line persisted. These interaction records and tests establish the transition behavior; the screenshot alone does not prove every sequence. |
+| PA-04 | Reset session explains browser-local loss and saved-work/running-job preservation before reloading. | Browser confirmation appeared. The browser tool's dialog-dismiss operation was blocked, so browser cancellation was not claimed. Automated test proves Cancel causes no reload and Confirm reloads once, with the correct scope message. |
+| PA-05 | A real tool change starts at the top; same-tool refresh/background updates do not move the viewport or clear shared audio edits. | Studio UX regression passed. Root's scrolled Podcast-to-Audiobook transition lands at the heading/document chooser in [51](astra-evidence-20260910/screenshots/51-tool-switch-top-after.png). |
+| PA-06 | Render availability refreshes immediately after dialogue build, revoicing or Library placement releases its mutation boundary. | Five new regressions failed before the three-line fix and passed afterward, covering complete/cancelled/failed dialogue builds, revoicing and media placement. Against rebuilt v3, root completed one dialogue build and observed Render enabled without another Save/reload: [46](astra-evidence-20260910/screenshots/46-builder-build-ready-after.png). Clicking Render produced revision 1 with Latest master and a WAV link: [47](astra-evidence-20260910/screenshots/47-builder-rendered-after.png). |
+| UC-01 | Voice chat and Send and hear reply describe assistant conversation; direct speaking says it reads the supplied text exactly. | Source and HTML wiring checked; route remains `#text-to-speech`. [40](astra-evidence-20260910/screenshots/40-voice-chat-result-after.png) shows Voice chat and an assistant reply. |
+| UC-02 | Training data/Prepare training data accurately describe export preparation, state browser-session lifetime and provide Open Extract. | Static and dynamic wording checked. [53](astra-evidence-20260910/screenshots/53-training-data-after.png) shows the title, empty guidance, export scope and link. Root subsequently clicked Open Extract and verified that it opens the existing workspace. No training run or real dataset export is claimed. |
+| UC-03 | Separation spelling, voice-tool names and Save to Library labels are consistent; voice descriptions/saved collections use clearer wording. | Source cross-check found no obsolete targeted strings. Updated voice heading, description label and saving hint appear in [41](astra-evidence-20260910/screenshots/41-voice-save-after.png); Save to Library appears in [40](astra-evidence-20260910/screenshots/40-voice-chat-result-after.png). |
+| UC-04 | Narration preview and Builder actions use production language; decorative API badges are removed while routes and advanced settings remain. | HTML/JavaScript/Builder wording synchronized and current source checked. [44](astra-evidence-20260910/screenshots/44-builder-empty-after.png) shows Build dialogue, Rendered masters and project-timeline wording. [50](astra-evidence-20260910/screenshots/50-podcast-actions-after.png) and [51](astra-evidence-20260910/screenshots/51-tool-switch-top-after.png) show ordinary headers without API badges. |
+| UC-05 | Reset and save-completion wording state the actual outcome. | Same implementation/evidence as PA-01 and PA-04. [41](astra-evidence-20260910/screenshots/41-voice-save-after.png) shows the exact named success; Reset session appears throughout after captures. |
+| UC-06 | Unavailable music-model guidance points to Models without hard-coded ACE-Step identity/download size. | Source checked. [54](astra-evidence-20260910/screenshots/54-music-model-guidance-after.png) shows HeartMuLa marked not installed with the correct generic guidance. Existing model readiness/installation behavior is unchanged. |
+
+## Automated and structural verification
+
+The coordinating root verified the following. The full Go suite and vet passed after updating obsolete HTML route-badge/misspelling assertions, before the final three JavaScript completion-refresh lines for PA-06. The 21 Node tests and rebuilt-v3 browser replay include that final fix:
+
+- `go test ./... -count=1` passed; see [Go results](astra-evidence-20260910/go-tests.txt).
+- `go vet ./...` passed.
+- `node --test scripts/test-story-builder-state.cjs scripts/test-studio-ux.cjs` passed **21 tests: 15 Story Builder and 6 Studio UX**, including all five PA-06 regressions; see [Node results](astra-evidence-20260910/node-tests.txt).
+- JavaScript syntax checks and relevant diff whitespace checks passed.
+- The native-command failure PowerShell check passed when rerun with the proper wrapper. An earlier wrapper treated the simulated child command's intentionally nonzero `$LASTEXITCODE` as a test failure despite the test reporting Passed; the corrected wrapper result supersedes that misclassification.
+- Main HTML parsing confirmed balanced nesting, 366 unique IDs and all three guided submits inside their original forms, outside disclosures.
+- The embedded UI was rebuilt as `out/astra-design-20260910/runtime/studio-v3.exe` (local fixture build). A prior successful source test does not substitute for replaying a behavior against this rebuilt runtime.
+
+The earlier UX report's initial failing demo test was an intermediate presentation-assertion mismatch. It is superseded by the passing full Go test result above.
+
+## Final browser replay and evidence limits
+
+**PA-06 / populated Story Builder passed:** The rebuilt v3 runtime completed the dialogue build, immediately enabled Render, and published rendered revision 1 when clicked. Saved screenshots [46](astra-evidence-20260910/screenshots/46-builder-build-ready-after.png) and [47](astra-evidence-20260910/screenshots/47-builder-rendered-after.png) were inspected from disk and show the expected states. The later empty-project capture [48](astra-evidence-20260910/screenshots/48-empty-canvas-action-after.png) also verifies the prominent Add dialogue track action without an empty inspector.
+
+Explicit limits remain: DC-04's missing-voice link was source-verified because current fixture voices populate that area; browser Reset cancellation was blocked at the dialog tool and is covered by the automated cancellation test. Build revoice/Library-placement terminal paths are covered by the dedicated regressions, while the final browser replay exercises dialogue build followed by rendering. These evidence limits are not claims of missing implementation.
+
+## Environment and preservation
+
+Browser verification used the isolated fixture runtime at `http://127.0.0.1:52510/demo/` with synthetic media. The v3 preview is left available at port 52510 (root-verified PID 32452 at completion) with its isolated gateway configuration. No real GPU/model inference, real media-quality acceptance or accessibility review was performed. The user explicitly excluded accessibility review.
+
+Screenshots preserve the exact browser-returned JPEG bytes despite their `.png` filenames. They were inspected by content and were not edited or converted. Initial repository work was already dirty; unrelated edits were preserved. Root compared the starting and final diff sections and confirmed all 21 pre-existing tracked diffs outside the UI/test scope remain byte-equivalent after line-ending normalization. No commit or push was performed.
+
+## Review records
+
+- [Design critique and original DC findings](astra-design-critique-20260910.md)
+- [Product audit and original PA findings](astra-product-audit-20260910.md)
+- [UX copy review and exact UC replacements](astra-ux-copy-20260910.md)
+- [Secondary capture record](astra-evidence-20260910/capture-secondary.md)

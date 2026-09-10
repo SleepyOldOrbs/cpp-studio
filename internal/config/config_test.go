@@ -8,6 +8,35 @@ import (
 	"testing"
 )
 
+func TestLoadCheckedValidatesConfiguredModelManifest(t *testing.T) {
+	root := t.TempDir()
+	manifestPath := filepath.Join(root, "models.json")
+	configPath := filepath.Join(root, "config.json")
+	cfg := Config{Engines: map[string]EngineConfig{"fixture": {Command: os.Args[0], Mode: "subprocess"}}, Models: &ModelsConfig{Manifest: manifestPath}}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, contents := range []string{"", `{"models":false}`, `{"models":[]}`} {
+		if contents != "" {
+			if err := os.WriteFile(manifestPath, []byte(contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := LoadChecked(configPath)
+		if contents == `{"models":[]}` {
+			if err != nil {
+				t.Fatal(err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), "configured model manifest") {
+			t.Fatalf("contents=%q err=%v", contents, err)
+		}
+	}
+}
+
 func TestDramaBoxExamplesKeepExistingAudioAndUseSafeServerPosture(t *testing.T) {
 	repoRoot := filepath.Join("..", "..")
 	cfg, err := Load(filepath.Join(repoRoot, "config.dramabox-local.example.json"))

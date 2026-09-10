@@ -171,6 +171,7 @@ type Manager struct {
 	retryCounter       int
 	benchmarkCounter   int
 	activeID           string
+	activeProductionID string
 	creating           bool
 	cancels            map[string]context.CancelFunc
 }
@@ -531,6 +532,7 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 	}
 	jobCtx, cancel := context.WithCancel(context.Background())
 	m.activeID = id
+	m.activeProductionID = id
 	m.cancels[id] = cancel
 	if m.registry != nil {
 		m.registry.Track(id, "audiobook", func() { _ = m.Cancel(id) })
@@ -654,6 +656,7 @@ func (m *Manager) Resume(ctx context.Context, id string) (int, error) {
 	}
 	jobCtx, cancel := context.WithCancel(context.Background())
 	m.activeID = id
+	m.activeProductionID = id
 	m.cancels[id] = cancel
 	if m.registry != nil {
 		m.registry.Track(id, "audiobook", func() { _ = m.Cancel(id) })
@@ -805,6 +808,7 @@ func (m *Manager) RetrySection(ctx context.Context, id, sectionID string, mode R
 	jobID := fmt.Sprintf("retry_%s_%03d", id, m.retryCounter)
 	jobCtx, cancel := context.WithCancel(context.Background())
 	m.activeID = jobID
+	m.activeProductionID = id
 	m.cancels[jobID] = cancel
 	if m.registry != nil {
 		m.registry.Track(jobID, "audiobook-retry", func() { _ = m.Cancel(jobID) })
@@ -822,6 +826,7 @@ func (m *Manager) runSectionRetry(ctx context.Context, jobID string, manifest Ma
 		m.mu.Lock()
 		if m.activeID == jobID {
 			m.activeID = ""
+			m.activeProductionID = ""
 		}
 		delete(m.cancels, jobID)
 		m.mu.Unlock()
@@ -972,6 +977,7 @@ func (m *Manager) SelectAttempt(ctx context.Context, id, sectionID, attemptID st
 	jobID := fmt.Sprintf("render_%s_%03d", id, m.retryCounter)
 	jobCtx, cancel := context.WithCancel(context.Background())
 	m.activeID = jobID
+	m.activeProductionID = id
 	m.cancels[jobID] = cancel
 	if m.registry != nil {
 		m.registry.Track(jobID, "audiobook-render", func() { _ = m.Cancel(jobID) })
@@ -986,6 +992,7 @@ func (m *Manager) runAttemptSelection(ctx context.Context, jobID string, manifes
 		m.mu.Lock()
 		if m.activeID == jobID {
 			m.activeID = ""
+			m.activeProductionID = ""
 		}
 		delete(m.cancels, jobID)
 		m.mu.Unlock()
@@ -1098,7 +1105,7 @@ func (m *Manager) runAttemptSelection(ctx context.Context, jobID string, manifes
 func (m *Manager) Discard(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.activeID == id {
+	if m.activeProductionID == id {
 		return ErrProductionActive
 	}
 	manifest, _, err := m.store.LoadDurableWIP(id)
@@ -1124,7 +1131,7 @@ func (m *Manager) Discard(id string) error {
 func (m *Manager) Delete(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.activeID == id {
+	if m.activeProductionID == id {
 		return ErrProductionActive
 	}
 	manifest, ok, err := loadManifest(filepath.Join(m.rootDir, id, manifestFileName))
@@ -1150,6 +1157,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		m.mu.Lock()
 		if m.activeID == id {
 			m.activeID = ""
+			m.activeProductionID = ""
 		}
 		delete(m.cancels, id)
 		m.mu.Unlock()
@@ -1563,7 +1571,7 @@ func (m *Manager) List() ([]Manifest, error) {
 		out = append(out, manifest)
 	}
 	m.mu.Lock()
-	activeID := m.activeID
+	activeID := m.activeProductionID
 	m.mu.Unlock()
 	wips, err := m.store.ListWIP()
 	if err != nil {

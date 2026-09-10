@@ -61,7 +61,17 @@ func (s *Store) ExportRender(ctx context.Context, id string, expectedRevision, r
 		TempPattern: "." + exportFilename(renderRevision, format) + ".staging-*." + format,
 		Replace:     true,
 		Stage: func(path string) error {
-			if err := s.transcode(ctx, sourcePath, path, format, bitrate); err != nil {
+			// Encoding can take minutes. Other projects may mutate meanwhile;
+			// this project's revision must still match before publication.
+			err := func() error {
+				s.mu.Unlock()
+				defer s.mu.Lock()
+				return s.transcode(ctx, sourcePath, path, format, bitrate)
+			}()
+			if err != nil {
+				return err
+			}
+			if err := s.checkProjectRevision(id, expectedRevision); err != nil {
 				return err
 			}
 			return ctx.Err()
