@@ -4,6 +4,69 @@ const vm = require('node:vm');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+test('getting started TTS sends literal text to speech, labels output and retains replay when autoplay fails', async () => {
+  const calls = [];
+  const revoked = [];
+  const resultLabel = {};
+  const context = load(['playQuickSpeech'], {
+    running: false, quickSpeechController: null, AbortController,
+    quickSpeechText: { value: '  [whisper] Keep this. <|sfx:sigh|>Uh  ' },
+    quickSpeechModel: { value: 'higgs-audio', selectedIndex: 0, options: [{ textContent: 'Higgs' }] },
+    quickSpeechPlay: { disabled: false }, quickSpeechCancel: {}, quickSpeechStatus: {}, quickSpeechError: {},
+    quickSpeechResult: { hidden: true }, quickSpeechDownload: {}, quickSpeechURL: 'blob:old',
+    quickSpeechAudio: { pause() {}, load() {}, async play() { throw new Error('autoplay blocked'); } },
+    document: { getElementById() { return resultLabel; } },
+    URL: { revokeObjectURL(url) { revoked.push(url); }, createObjectURL() { return 'blob:new'; } },
+    setRunning() {}, setBusy() {}, clearBusy() {},
+    readSpeechPerformance() { return { emotion: 'relief' }; },
+    async ensureOk() {},
+    async fetch(url, options) {
+      calls.push({ url, body: JSON.parse(options.body) });
+      return { async blob() { return {}; } };
+    },
+  });
+  await context.playQuickSpeech({ preventDefault() {} });
+  assert.deepEqual(calls, [{ url: '/v1/audio/speech', body: {
+    input: '[whisper] Keep this. <|sfx:sigh|>Uh', model: 'higgs-audio', performance: { emotion: 'relief' }, format: 'wav',
+  } }]);
+  assert.equal(context.quickSpeechAudio.src, 'blob:new');
+  assert.equal(context.quickSpeechDownload.href, 'blob:new');
+  assert.deepEqual(revoked, ['blob:old']);
+  assert.equal(resultLabel.textContent, 'Generated with Higgs');
+  assert.equal(context.quickSpeechResult.hidden, false);
+  assert.match(context.quickSpeechStatus.textContent, /Press play on the audio player/);
+  assert.equal(context.quickSpeechController, null);
+  assert.equal(context.quickSpeechCancel.hidden, true);
+});
+
+test('getting started TTS reports errors and cancellation while preserving the previous result', async () => {
+  for (const cancel of [false, true]) {
+    const runningStates = [];
+    const context = load(['playQuickSpeech'], {
+      running: false, quickSpeechController: null, AbortController,
+      quickSpeechText: { value: 'Try again' },
+      quickSpeechModel: { value: 'audio', selectedIndex: 0, options: [{ textContent: 'Qwen' }] },
+      quickSpeechPlay: { disabled: false }, quickSpeechCancel: {}, quickSpeechStatus: {}, quickSpeechError: {},
+      quickSpeechResult: { hidden: false }, quickSpeechURL: 'blob:previous',
+      quickSpeechAudio: { src: 'blob:previous', pause() {} },
+      setRunning(value) { runningStates.push(value); }, setBusy() {}, clearBusy() {},
+      readSpeechPerformance() {}, async ensureOk() {},
+      async fetch() {
+        if (cancel) context.quickSpeechController.abort();
+        throw new Error('Model is unavailable');
+      },
+    });
+    await context.playQuickSpeech();
+    assert.equal(context.quickSpeechAudio.src, 'blob:previous');
+    assert.equal(context.quickSpeechResult.hidden, false);
+    assert.equal(context.quickSpeechController, null);
+    assert.equal(context.quickSpeechCancel.hidden, true);
+    assert.deepEqual(runningStates, [true, false]);
+    if (cancel) assert.equal(context.quickSpeechStatus.textContent, 'Generation cancelled.');
+    else assert.equal(context.quickSpeechError.textContent, 'Model is unavailable');
+  }
+});
+
 const source = fs.readFileSync(path.join(__dirname, '../internal/demo/static/app.js'), 'utf8');
 function load(names, values = {}) {
   const context = vm.createContext(values);
@@ -110,7 +173,7 @@ test('voice request reveals output at start and again on completion after the us
   let sawOpenAtRequest = false;
   const context = load(['revealWorkflowResult', 'performVoiceTurn'], {
     transcriptOutput: transcript, replyOutput: reply, conversation: [], voiceSelect: { value: '' }, ttsSpeechModelSelect: { value: 'audio' },
-    FormData: class { append() {} }, log() {}, ensureOk: async () => {},
+    FormData: class { append() {} }, log() {}, ensureOk: async () => {}, readSpeechPerformance: () => undefined,
     fetch: async () => { sawOpenAtRequest = step.open; step.open = false; return { json: async () => ({ transcript: 'Hello', reply: 'Welcome', audio_b64: 'wav' }) }; },
     base64ToBlob: () => ({ size: 10 }), recordExchange() {}, formatBytes: () => '10 B',
     URL: { createObjectURL: () => 'blob:test' }, activeAudioUrl: '', replyAudio: { load() {} }, saveReplyButton: {}, libraryReplyButton: {},
@@ -120,4 +183,27 @@ test('voice request reveals output at start and again on completion after the us
   assert.equal(step.open, true);
   assert.equal(transcript.value, 'Hello');
   assert.equal(reply.value, 'Welcome');
+});
+
+test('speech performance keeps zero strengths and ignores controls for other models', () => {
+  const panel = { hidden: false, querySelectorAll: () => [
+    { value: '0', type: 'number', dataset: { performance: 'intensity' }, checkValidity: () => true },
+    { value: '0.7', type: 'number', dataset: { performance: 'emotion_vector_2' }, checkValidity: () => true },
+    { value: '', type: 'text', dataset: { performance: 'emotion' } },
+  ] };
+  const context = load(['readSpeechPerformance'], { document: { getElementById: () => panel } });
+  const p = context.readSpeechPerformance('clonePerformanceControls');
+  assert.equal(p.intensity, 0);
+  assert.deepEqual(Array.from(p.emotion_vector), [0, 0, 0.7, 0, 0, 0, 0, 0]);
+  panel.hidden = true;
+  assert.equal(context.readSpeechPerformance('clonePerformanceControls'), undefined);
+});
+
+test('speech performance rejects conflicting description and blend before sending', () => {
+  const panel = { hidden: false, querySelectorAll: () => [
+    { value: 'relief', type: 'text', dataset: { performance: 'emotion' } },
+    { value: '0.7', type: 'number', dataset: { performance: 'emotion_vector_0' } },
+  ] };
+  const context = load(['readSpeechPerformance'], { document: { getElementById: () => panel } });
+  assert.throws(() => context.readSpeechPerformance('clonePerformanceControls'), /either an emotion direction or an emotion blend/);
 });

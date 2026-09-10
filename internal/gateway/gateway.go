@@ -1834,7 +1834,11 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	audio, err := r.speakWithEngine(req.Context(), selected.Engine, body.Input, clonedVoice, false)
+	if err := engine.ValidateSpeechPerformance(selected.Engine, body.Performance); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	audio, err := r.speakSynthesis(req.Context(), engine.SynthesisRequest{EngineID: selected.Engine, Text: body.Input, Performance: body.Performance}, clonedVoice, false)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -3401,13 +3405,24 @@ func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	var performance *engine.SpeechPerformance
+	if raw := req.FormValue("performance"); strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &performance); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid speech performance controls")
+			return
+		}
+	}
+	if err := engine.ValidateSpeechPerformance(selectedSpeech.Engine, performance); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	loop := voice.Loop{
 		Engines:    r.engines,
 		Chat:       r.chatOnce,
 		Transcribe: r.transcribe,
 		Speak: func(ctx context.Context, text string, v *engine.Voice) ([]byte, error) {
-			return r.speakWithEngine(ctx, selectedSpeech.Engine, text, v, false)
+			return r.speakSynthesis(ctx, engine.SynthesisRequest{EngineID: selectedSpeech.Engine, Text: text, Performance: performance}, v, false)
 		},
 	}
 	result, err := loop.Run(req.Context(), voice.Request{
@@ -3611,6 +3626,11 @@ func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
 			engineInput = prose
 		}
 		spec = engine.VoxCPMDesignSpec(engineInput, sampleText)
+	case "fireredtts3":
+		if prose != "" {
+			engineInput = prose
+		}
+		spec = engine.FireRedVoiceDesignSpec(engineInput, sampleText)
 	default:
 		writeJSONError(w, http.StatusBadRequest, "voice design model family is not supported")
 		return
@@ -5432,10 +5452,11 @@ func storyHTTPStatus(code story.ErrorCode) int {
 }
 
 type speechRequest struct {
-	Input  string `json:"input"`
-	Voice  string `json:"voice"`
-	Model  string `json:"model"`
-	Format string `json:"format"`
+	Input       string                    `json:"input"`
+	Voice       string                    `json:"voice"`
+	Model       string                    `json:"model"`
+	Format      string                    `json:"format"`
+	Performance *engine.SpeechPerformance `json:"performance,omitempty"`
 }
 
 type imageGenerationRequest struct {
@@ -5469,8 +5490,7 @@ type transcriptionResponse struct {
 type voiceDesignRequest struct {
 	Description string `json:"description"`
 	SampleText  string `json:"sample_text"`
-	// Model picks the design engine: "qwen3" (default), "omnivoice", or
-	// "voxcpm2".
+	// Model resolves a catalogued voice designer; VoxCPM2 is the default.
 	Model string `json:"model"`
 }
 

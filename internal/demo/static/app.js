@@ -2,6 +2,18 @@
   "use strict";
 
   var shell = document.querySelector(".app-shell");
+  var quickSpeechForm = document.getElementById("quickSpeechForm");
+  var quickSpeechModel = document.getElementById("quickSpeechModel");
+  var quickSpeechText = document.getElementById("quickSpeechText");
+  var quickSpeechPlay = document.getElementById("quickSpeechPlay");
+  var quickSpeechCancel = document.getElementById("quickSpeechCancel");
+  var quickSpeechStatus = document.getElementById("quickSpeechStatus");
+  var quickSpeechError = document.getElementById("quickSpeechError");
+  var quickSpeechResult = document.getElementById("quickSpeechResult");
+  var quickSpeechAudio = document.getElementById("quickSpeechAudio");
+  var quickSpeechDownload = document.getElementById("quickSpeechDownload");
+  var quickSpeechURL = "";
+  var quickSpeechController = null;
   var healthButton = document.getElementById("healthButton");
   var gatewayStatus = document.getElementById("gatewayStatus");
   var healthUpdated = document.getElementById("healthUpdated");
@@ -587,6 +599,7 @@
     var conversionBusy = Boolean(conversionRecorder && conversionRecorder.state() !== "idle");
     var musicBusy = Boolean(musicRecorder && musicRecorder.state() !== "idle");
     var busy = running || recordBusy || live || cloneBusy || conversionBusy || musicBusy || handsFree || handsFreeSetupPending;
+    quickSpeechPlay.disabled = busy || !quickSpeechModel.value || !quickSpeechText.value.trim();
     apiControls.forEach(function (control) {
       control.disabled = busy;
     });
@@ -843,8 +856,81 @@
   var DESIGN_MODELS = [
     { value: "voxcpm2", engine: "voxcpm2", label: "VoxCPM2 2B (realistic, 48 kHz)" },
     { value: "omnivoice", engine: "omnivoice", label: "OmniVoice (precision accents)" },
-    { value: "qwen3", engine: "voicedesign", label: "Qwen3-TTS 1.7B VoiceDesign (characterful)" }
+    { value: "qwen3", engine: "voicedesign", label: "Qwen3-TTS 1.7B VoiceDesign (characterful)" },
+    { value: "fireredtts3-instruct", engine: "fireredtts3-instruct", label: "FireRedTTS3 Instruct (experimental)" }
   ];
+
+  function updateSpeechPerformance(id, model) {
+    var panel = document.getElementById(id);
+    if (!panel || panel.dataset.model === model) return;
+    panel.dataset.model = model;
+    var fields = panel.querySelector("[data-performance-fields]");
+    fields.replaceChildren();
+    panel.hidden = ["index-tts2.5", "higgs-audio", "fireredtts3-base", "fireredtts3-instruct"].indexOf(model) < 0;
+    if (panel.hidden) return;
+    function field(key, label, choices, value) {
+      var wrapper = createElement("label", "field");
+      wrapper.appendChild(createElement("span", "", label));
+      var input = document.createElement(choices ? "select" : "input");
+      input.className = "text-input";
+      input.dataset.performance = key;
+      if (choices) choices.forEach(function (choice) {
+        var option = createElement("option", "", choice[1]);
+        option.value = choice[0]; input.appendChild(option);
+      });
+      else { input.type = "text"; input.maxLength = 500; }
+      input.value = value || "";
+      wrapper.appendChild(input); fields.appendChild(wrapper);
+      return input;
+    }
+    function number(key, label, value, min, max, step) {
+      var input = field(key, label, null, value);
+      input.type = "number"; input.min = min; input.max = max; input.step = step;
+      return input;
+    }
+    function choices(words) {
+      return [["", "Natural / unchanged"]].concat(words.split(" ").map(function (word) { return [word, word.replace(/_/g, " ")]; }));
+    }
+    if (model === "index-tts2.5") {
+      field("language", "Language", [["en", "English"], ["zh", "Chinese"], ["ja", "Japanese"], ["es", "Spanish"], ["ar", "Arabic"], ["auto", "Automatic"]], "en");
+      field("emotion", "Emotion direction", null, "").placeholder = "e.g. restrained anger, giving way to relief";
+      number("intensity", "Emotion intensity (0–1)", "0.6", "0", "1", "0.05");
+      number("duration_factor", "Duration multiplier (above 1 is slower)", "1", "0.5", "2", "0.1");
+      fields.appendChild(createElement("p", "hint", "Optional emotion blend: leave the direction empty and set strengths below. Unfilled strengths count as zero."));
+      ["Happy", "Angry", "Sad", "Afraid", "Disgusted", "Melancholic", "Surprised", "Calm"].forEach(function (name, i) {
+        number("emotion_vector_" + i, name + " (0–1)", "", "0", "1", "0.1");
+      });
+    } else if (model === "higgs-audio") {
+      field("emotion", "Emotion", choices("elation amusement enthusiasm determination pride contentment affection relief contemplation confusion surprise awe longing arousal anger fear disgust bitterness sadness shame helplessness"));
+      field("style", "Delivery", choices("whispering shouting singing"));
+      field("pace", "Pace", choices("speed_very_slow speed_slow speed_fast speed_very_fast"));
+      field("pitch", "Pitch", choices("pitch_low pitch_high"));
+      field("expression", "Expressiveness", choices("expressive_high expressive_low"));
+      fields.appendChild(createElement("p", "hint", "In spoken text, place <|prosody:pause|> for a pause, <|sfx:laughter|>Haha for laughter, or <|sfx:sigh|>Uh for a sigh. Delivery settings apply to the whole utterance."));
+    } else {
+      field("language", "Language", "Arabic Cantonese Chinese Czech Dutch English Finnish French German Greek Hindi Indonesian Italian Japanese Korean Polish Portuguese Romanian Russian Spanish Thai Turkish Ukrainian Vietnamese".split(" ").map(function (name) { return [name, name]; }), "English");
+      fields.appendChild(createElement("p", "hint", "Experimental. Cloning follows the reference delivery. Use FireRed Instruct in Voice design to describe emotion, character, pace and accent."));
+    }
+  }
+
+  function readSpeechPerformance(id) {
+    var panel = document.getElementById(id);
+    if (!panel || panel.hidden) return undefined;
+    var result = {}, vector = new Array(8).fill(0), hasVector = false;
+    panel.querySelectorAll("[data-performance]").forEach(function (input) {
+      if (!input.value.trim()) return;
+      if (input.checkValidity && !input.checkValidity()) throw new Error("Check the speech performance values");
+      var key = input.dataset.performance;
+      if (key.indexOf("emotion_vector_") === 0) {
+        vector[Number(key.slice(15))] = Number(input.value); hasVector = true;
+      } else result[key] = input.type === "number" ? Number(input.value) : input.value.trim();
+    });
+    if (hasVector) {
+      if (result.emotion) throw new Error("Use either an emotion direction or an emotion blend");
+      result.emotion_vector = vector;
+    }
+    return result;
+  }
 
   function catalogModelLabel(model) {
     return model.displayName || model.id;
@@ -1094,7 +1180,7 @@
           var families = (select.getAttribute("data-model-families") || "").split(/\s+/).filter(Boolean);
           var capabilities = (select.getAttribute("data-model-capabilities") || "").split(/\s+/).filter(Boolean);
           var compatible = models.filter(function (model) {
-            return engines.indexOf(model.engine) >= 0 &&
+            return (engines.length === 0 || engines.indexOf(model.engine) >= 0) &&
               (families.length === 0 || families.indexOf(model.family) >= 0) &&
               (capabilities.length === 0 || capabilities.some(function (capability) {
                 return catalogModelHasCapability(model, capability);
@@ -1145,6 +1231,10 @@
               select.value = value;
             }
           });
+          updateSpeechPerformance("ttsPerformanceControls", ttsSpeechModelSelect.value);
+          updateSpeechPerformance("clonePerformanceControls", cloneModelSelect.value);
+          updateSpeechPerformance("quickSpeechPerformance", quickSpeechModel.value);
+          syncControls();
           try {
             window.localStorage.setItem("cpp-studio-speech-model", value);
           } catch (_) {
@@ -2571,6 +2661,8 @@
       log("Speaking with cloned voice: " + (chosen ? chosen.textContent : voiceSelect.value));
     }
     form.append("speech_model", ttsSpeechModelSelect.value || "audio");
+    var performance = readSpeechPerformance("ttsPerformanceControls");
+    if (performance) form.append("performance", JSON.stringify(performance));
 
     log("POST /v1/voice");
     var response = await fetch("/v1/voice", {
@@ -3341,6 +3433,65 @@
     librarySpeakButton.disabled = true;
   }
 
+  async function playQuickSpeech(event) {
+    if (event) event.preventDefault();
+    if (running || quickSpeechController || quickSpeechPlay.disabled) return;
+    var text = quickSpeechText.value.trim();
+    var model = quickSpeechModel.value;
+    if (!text || !model) return;
+    quickSpeechError.hidden = true;
+    quickSpeechError.textContent = "";
+    var controller = new AbortController();
+    quickSpeechController = controller;
+    var modelLabel = quickSpeechModel.options[quickSpeechModel.selectedIndex].textContent;
+    setRunning(true);
+    setBusy(quickSpeechPlay, "Generating…");
+    quickSpeechCancel.hidden = false;
+    quickSpeechStatus.textContent = "Generating with " + modelLabel + "… The first run may take longer while the model loads.";
+    try {
+      var performance = readSpeechPerformance("quickSpeechPerformance");
+      quickSpeechAudio.pause();
+      var response = await fetch("/v1/audio/speech", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({ input: text, model: model, performance: performance, format: "wav" })
+      });
+      await ensureOk(response, "Text to speech");
+      var blob = await response.blob();
+      if (controller.signal.aborted) {
+        quickSpeechStatus.textContent = "Generation cancelled.";
+        return;
+      }
+      if (quickSpeechURL) URL.revokeObjectURL(quickSpeechURL);
+      quickSpeechURL = URL.createObjectURL(blob);
+      quickSpeechAudio.src = quickSpeechURL;
+      quickSpeechDownload.href = quickSpeechURL;
+      document.getElementById("quickSpeechResultLabel").textContent = "Generated with " + modelLabel;
+      quickSpeechResult.hidden = false;
+      quickSpeechAudio.load();
+      quickSpeechStatus.textContent = "Ready. Use the audio player to replay, or save the WAV.";
+      try {
+        await quickSpeechAudio.play();
+      } catch (_) {
+        quickSpeechStatus.textContent = "Ready. Press play on the audio player to listen.";
+      }
+    } catch (error) {
+      if (controller.signal.aborted) {
+        quickSpeechStatus.textContent = "Generation cancelled.";
+      } else {
+        quickSpeechError.textContent = error.message || String(error);
+        quickSpeechError.hidden = false;
+        quickSpeechStatus.textContent = "";
+      }
+    } finally {
+      quickSpeechController = null;
+      quickSpeechCancel.hidden = true;
+      clearBusy(quickSpeechPlay);
+      setRunning(false);
+    }
+  }
+
   async function speakText(event) {
     if (event) {
       event.preventDefault();
@@ -3365,6 +3516,7 @@
           input: text,
           voice: selectedVoiceId,
           model: cloneModelSelect.value || "audio",
+          performance: readSpeechPerformance("clonePerformanceControls"),
           format: "wav"
         })
       });
@@ -5634,6 +5786,12 @@
   submitOnCtrlEnter(messageInput, voiceForm);
   submitOnCtrlEnter(imagePromptInput, imageForm);
   submitOnCtrlEnter(speakTextInput, cloneSpeakForm);
+  submitOnCtrlEnter(quickSpeechText, quickSpeechForm);
+  quickSpeechText.addEventListener("input", syncControls);
+  quickSpeechForm.addEventListener("submit", playQuickSpeech);
+  quickSpeechCancel.addEventListener("click", function () {
+    if (quickSpeechController) quickSpeechController.abort();
+  });
   submitOnCtrlEnter(designDescriptionInput, designForm);
 
   storyVoiceSelect.addEventListener("change", syncControls);
@@ -5856,12 +6014,36 @@
     musicSourceRecordButton.textContent = "Recording unavailable";
   }
 
+  // The guide is static editorial content; model availability stays in the catalogue.
+  document.getElementById("modelGuideSearch").addEventListener("input", function (event) {
+    var query = event.target.value.trim().toLowerCase();
+    var count = 0;
+    document.querySelectorAll(".guide-card").forEach(function (card) {
+      card.hidden = card.textContent.toLowerCase().indexOf(query) < 0;
+      if (!card.hidden) count++;
+    });
+    document.getElementById("modelGuideEmpty").hidden = count > 0;
+  });
+  document.querySelectorAll("[data-guide-copy]").forEach(function (button) {
+    button.addEventListener("click", async function () {
+      var status = document.getElementById("modelGuideCopyStatus");
+      try {
+        await navigator.clipboard.writeText(button.parentElement.querySelector("code").textContent);
+        button.textContent = "Copied";
+        status.textContent = "Example copied. Paste it into the field named above the example.";
+        setTimeout(function () { button.textContent = "Copy example"; }, 2000);
+      } catch (error) {
+        status.textContent = "Clipboard unavailable. Select the example text and copy it manually.";
+      }
+    });
+  });
+
   // --- Studio navigation ------------------------------------------------
   var PAGES = [
-    "talk-voice", "text-to-speech", "transcription", "voice-cloning", "voice-design", "voice-convert", "training", "audio-analysis",
+    "talk-voice", "getting-started-tts", "text-to-speech", "transcription", "voice-cloning", "voice-design", "voice-convert", "training", "audio-analysis",
     "music", "music-generation", "voice-separation", "imagery", "image-generation",
     "stories-audiobooks", "audiobook", "story", "extract",
-    "library", "models", "engines"
+    "library", "models", "model-guide", "engines"
   ];
   var LEGACY_PAGES = {
     talk: "text-to-speech",
@@ -5870,6 +6052,7 @@
   };
   var PAGE_PARENT = {
     "talk-voice": "talk-voice",
+    "getting-started-tts": "talk-voice",
     "text-to-speech": "talk-voice",
     transcription: "talk-voice",
     "voice-cloning": "talk-voice",
@@ -6030,7 +6213,7 @@
   var modelsList = document.getElementById("modelsList");
 
   var MODEL_CATEGORIES = [
-    { id: "speech", title: "Text to speech & cloning", description: "Speak written text and reuse a recorded voice.", engines: ["audio", "dramabox", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-customvoice", "vibevoice", "fish-audio", "chatterbox-clone"] },
+    { id: "speech", title: "Text to speech & cloning", description: "Speak written text and reuse a recorded voice.", engines: ["audio", "dramabox", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-customvoice", "vibevoice", "fish-audio", "chatterbox-clone", "index-tts2.5", "higgs-audio", "fireredtts3-base", "fireredtts3-instruct"] },
     { id: "voice-design", title: "Voice design", description: "Create a new voice from a written description.", engines: ["voicedesign", "omnivoice", "voxcpm2"] },
     { id: "voice-conversion", title: "Voice conversion", description: "Change the speaker while preserving the performance.", engines: ["voiceconvert", "vevo2"] },
     { id: "transcription", title: "Transcription", description: "Turn speech into text and ignore unwanted silence.", engines: ["whisper", "qwen3-asr-0.6b", "qwen3-asr-1.7b", "vibevoice-asr"] },

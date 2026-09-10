@@ -249,12 +249,12 @@ func SpeechVoiceSpec(input string, voice *Voice) Spec {
 // SpeechVoiceSpecFor builds the common audio.cpp CLI contract for a named
 // speech engine. The legacy wrappers continue to select "audio".
 func SpeechVoiceSpecFor(engineName string, input string, voice *Voice) Spec {
-	text := sanitizeSpeechText(input)
+	text := speechArgumentText(engineName, input)
 	var overrides map[string]string
 	if voice != nil {
 		overrides = map[string]string{
 			"--voice-ref":      voice.RefWAVPath,
-			"--reference-text": sanitizeSpeechText(voice.RefText),
+			"--reference-text": speechArgumentText(engineName, voice.RefText),
 		}
 	}
 	spec := Spec{
@@ -295,6 +295,27 @@ func VoiceDesignSpec(instruct string, sampleText string) Spec {
 // accent, Chinese dialect) rather than free prose.
 func OmniVoiceDesignSpec(instruct string, sampleText string) Spec {
 	return instructDesignSpec("omnivoice", instruct, sampleText)
+}
+
+// FireRed uses an explicit design template rather than the common --instruct flag.
+func FireRedVoiceDesignSpec(instruct, sampleText string) Spec {
+	spec := designSpecShell("fireredtts3-instruct")
+	spec.OverrideArgs = map[string]string{"--task": "vdes"}
+	spec.BuildArgs = func(_, outPath string) []string {
+		return []string{"--request-option", "template_name=voice_design", "--request-option", "instruction=" + instruct, "--text", sampleText, "--out", outPath}
+	}
+	return spec
+}
+
+func speechArgumentText(engineName, text string) string {
+	switch engineName {
+	case "index-tts2.5", "higgs-audio", "fireredtts3-base", "fireredtts3-instruct":
+		// These integrations require audio.cpp 0.7.3, whose Windows wmain
+		// converts wide arguments to UTF-8. Preserve multilingual text.
+		return text
+	default:
+		return sanitizeSpeechText(text)
+	}
 }
 
 // VoxCPMDesignSpec invokes the "voxcpm2" engine. VoxCPM2 has no --instruct

@@ -20,7 +20,7 @@ func TestVoiceDesignResolvesCanonicalIDsAndAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"qwen3-tts-1.7b-voicedesign", "qwen3", "voicedesign", "omnivoice", "voxcpm2"} {
+	for _, id := range []string{"qwen3-tts-1.7b-voicedesign", "qwen3", "voicedesign", "omnivoice", "voxcpm2", "fireredtts3-instruct"} {
 		t.Run(id, func(t *testing.T) {
 			selected, err := manifest.Resolve(id, "voice_design", "voxcpm2")
 			if err != nil {

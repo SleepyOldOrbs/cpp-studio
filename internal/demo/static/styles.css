@@ -274,6 +274,27 @@ summary:focus-visible,
   vertical-align: 1px;
 }
 
+.model-guide {
+  max-width: 1040px;
+}
+
+.model-guide p { line-height: 1.6; }
+.model-guide a { color: var(--accent-strong); }
+.guide-intro { margin-top: 0; max-width: 75ch; }
+.guide-list { display: grid; gap: 10px; }
+.guide-card { border: 1px solid var(--line); border-radius: 8px; background: var(--well); }
+.guide-card > summary { cursor: pointer; padding: 15px 18px; line-height: 1.5; }
+.guide-card > summary strong { color: var(--ink); }
+.guide-card > summary span { display: block; margin-left: 18px; color: var(--muted); font-size: 0.85rem; }
+.guide-card[open] > summary { border-bottom: 1px solid var(--line); background: var(--accent-soft); }
+.guide-content { padding: 0 18px 8px; }
+.guide-content p { max-width: 85ch; }
+.guide-content code { font-family: var(--mono); color: var(--accent-strong); overflow-wrap: anywhere; }
+.guide-example { border-left: 3px solid var(--accent); padding: 12px 14px; background: var(--panel); }
+.guide-example > span { color: var(--muted); font-size: 0.8rem; }
+.guide-example pre { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; margin: 10px 0; min-height: 0; max-height: none; }
+.guide-links { font-size: 0.85rem; }
+
 .module-route {
   border: 1px solid var(--line-soft);
   border-radius: 5px;
