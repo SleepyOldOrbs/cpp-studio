@@ -198,8 +198,13 @@ Gateway restart.
 - `PUT /v1/story-builder-projects/{id}` — replace the editable whole-project
   state with `{"name":"New name","revision":1,"scenes":[...],"tracks":[...]}`.
   `scenes` is optional for compatibility; omission preserves the stored markers,
-  while an explicit list replaces them. Each marker has a stable `id`, optional
-  `title` and `premise`, and an ordered in-range integer `start_ms`. A successful
+  while an explicit list replaces them.
+  `dialogue_engine` selects `omnivoice` (the default for existing projects) or
+  `fish-drama3`; omission preserves the stored choice. Changing it marks dialogue
+  stale while retaining previous take files and rendered masters. Both engines use
+  each Character Voice's Actor reference and direction; Drama3 wraps the direction
+  in an inline style tag and also accepts tags in the spoken text.
+  Each marker has a stable `id`, optional `title` and `premise`, and an ordered in-range integer `start_ms`. A successful
   save increments `revision`; `tracks` is required so an older rename-only
   client cannot erase a timeline, and a stale revision returns `409`. An
   intentional replacement of an occupied Dialogue Track's Character Voice
@@ -681,6 +686,13 @@ Supported fields:
 - `voice` selects a stored Studio voice when supplied.
 - `model` resolves to one fixed configured TTS/clone engine; paths, families,
   tasks, and arbitrary native options are not accepted.
+- Drama3 also accepts `speakers`, an ordered array of up to 16 objects such as
+  `[{"voice":"saved-voice-id"},{"voice":"another-saved-voice-id"}]`. Each
+  reference must be a saved Actor Voice with a transcript. Include the matching
+  `<|speaker:0|>`, `<|speaker:1|>` tags before the dialogue. Do not also supply
+  `voice`. The gateway resolves references; client-supplied file paths and VQ
+  tokens are not accepted. This auditions one WAV and does not create a Story
+  Builder project or alter its production engine.
 
 Gateway subprocess arguments:
 
@@ -766,10 +778,17 @@ output failure returns `502`.
 
 ## POST /v1/audio/separation
 
-Accepts multipart WAV `file` plus one of `htdemucs-q8-0`,
-`bs-roformer-q8-0`, or `mel-band-roformer-q8-0`. The gateway runs the fixed
+Accepts multipart WAV `file` plus a catalogue `model` with the `separation`
+capability, including music separators, MossFormer2 and SAM Audio. The gateway runs the fixed
 configured separation engine, validates every named WAV stem, and returns
 `application/zip` as `separated-stems.zip`.
+
+For `sam-audio-small-q8-0`, `prompt` is required: a sound description of 1–1000
+UTF-8 bytes, such as `audience laughter`. The input must be a PCM WAV no longer
+than 400 seconds. SAM uses its native `s2s` task and returns `target.wav` and
+`residual.wav` at 48 kHz mono, possibly padded to a codec frame boundary.
+Other separators reject `prompt`. Start with short excerpts and listen to both
+outputs; neither SAM nor MossFormer2 establishes persistent actor identity.
 
 Studio also sends `response_format=browser`. That response is
 `multipart/form-data` with one `archive` part containing the same ZIP and one
@@ -825,11 +844,20 @@ Character Voice routes accept JSON bodies up to 64 KiB:
   `preview` metadata and `preview_audio_url`.
 - `GET /v1/character-voices/{id}/preview/audio` returns that WAV preview.
 
+Reference assignment uses multipart `PUT /v1/voices/{id}/reference` or
+`PUT /v1/character-voices/{id}/reference`, with a WAV `file` and an optional
+`transcript` (otherwise transcribed locally). The existing optional source
+provenance fields are accepted. `GET` on either URL plays the current reference.
+Character assignments override only that character; actor assignments affect
+characters that still inherit the actor reference. Earlier WAVs and manifest
+snapshots are retained. Assignments invalidate affected character previews and
+production synthesis fingerprints. Protected actors cannot be reassigned.
+
 Names are required and limited to 80 characters; directions are required and
 limited to 500; preview text is required and limited to 1000. Unknown Actor or
 Character Voice ids return `404`. Preview generation reserves the configured
-`omnivoice` engine through the normal speech seam and combines the Actor
-Voice's reference and transcript with the Character Voice direction. A busy
+`omnivoice` engine through the normal speech seam and combines the Character
+Voice's assigned or inherited reference and transcript with its direction. A busy
 engine returns `429`, an unavailable engine returns `503`, and neither failure
 creates preview metadata. A successful preview replaces the prior evaluation
 WAV. Editing direction clears the old preview; if any edit lands while a slow
@@ -958,3 +986,39 @@ Each route uses `requestTimeoutSeconds` from the engine config when set. Otherwi
 HTTP client cancellation also cancels the subprocess or upstream request context.
 
 Subprocess failure responses can include captured stdout/stderr, bounded internally to 1 MiB per stream before a `[truncated]` marker.
+
+### Create a character from a prepared clone
+
+`POST /v1/voices/{actorID}/characters` also accepts multipart form data with
+`file` (WAV), `name`, and a required `transcript`. It publishes the character and
+its own reference together and uses the recording's natural delivery. The actor
+and sibling characters are unchanged. The existing JSON name/direction creation
+path remains available for voice authoring.
+
+In Voice cloning, **Clone Voice** calls `/v1/audio/transcriptions` to prepare a
+browser-local recording/transcript pair. Step 3 creates or assigns the voice using
+that transcript; replacing the recording requires processing it again. Closing or
+reloading the page discards an unsaved prepared clone.
+
+
+Voice-cloning auditions can send multipart data to `POST /v1/audio/speech`:
+`file` (valid reference WAV, up to 32 MiB), `transcript`, `input`, `model`, optional
+`performance` JSON, and `format=wav`. A saved `voice` must not accompany an uploaded
+reference. The reference is temporary and is deleted after synthesis, including
+on failure; this request does not create or update a library voice.
+
+In cloning step 4, **Regenerate clone** re-transcribes the selected voice's reference
+and auditions the draft. **Speak** uses that draft when available. **Save to Library**
+commits the draft reference/transcript to the same actor or character using its
+reference assignment endpoint, instead of creating a generic audio asset. A voice
+that has not been regenerated is already saved by step 3. Regeneration does not
+train new model weights; it repeats reference processing and speech synthesis.
+
+## POST /v1/voices/design
+
+Generate one voice-design audition from `description` and a catalogued `model`,
+with optional `sample_text` and integer `seed` (0–2147483647). The response includes
+`reference_b64`, `preview_b64`, `transcript`, and the normalized `engine_input`.
+The Studio requests three auditions sequentially with separate seeds. Candidates
+stay in the browser until the user saves their selected reference through the
+existing actor or character creation/reference-assignment routes.

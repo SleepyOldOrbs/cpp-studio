@@ -8,7 +8,7 @@ import (
 )
 
 // CharacterSpeakFunc is the speech-generation seam used to evaluate one
-// Character Voice with its parent Actor Voice reference.
+// Character Voice with its assigned or inherited reference.
 type CharacterSpeakFunc func(context.Context, engine.SynthesisRequest, *engine.Voice) ([]byte, error)
 
 // CharacterAuthoring owns the HTTP-independent Character Voice preview flow.
@@ -34,20 +34,20 @@ func (a CharacterAuthoring) GeneratePreview(ctx context.Context, id, sampleText 
 	if !ok {
 		return CharacterVoice{}, ErrCharacterNotFound
 	}
-	actor, ok, err := a.Store.Load(character.ActorVoiceID)
+	_, ok, err = a.Store.Load(character.ActorVoiceID)
 	if err != nil {
 		return CharacterVoice{}, err
 	}
 	if !ok {
 		return CharacterVoice{}, ErrActorVoiceNotFound
 	}
-	refPath, err := a.Store.ReferencePath(actor.ID)
+	refPath, transcript, err := a.Store.ResolveReference(character.ID)
 	if err != nil {
 		return CharacterVoice{}, err
 	}
 	audio, err := a.Speak(ctx, engine.SynthesisRequest{
 		Text: sampleText, EngineID: "omnivoice", Direction: character.Direction,
-	}, &engine.Voice{RefWAVPath: refPath, RefText: actor.Transcript})
+	}, &engine.Voice{RefWAVPath: refPath, RefText: transcript})
 	if err != nil {
 		return CharacterVoice{}, err
 	}

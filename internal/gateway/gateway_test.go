@@ -5655,6 +5655,8 @@ func TestVoiceDesignBadRequest(t *testing.T) {
 		want string
 	}{
 		{name: "missing description", body: `{}`, want: "description"},
+		{name: "negative seed", body: `{"description":"warm","seed":-1}`, want: "seed"},
+		{name: "oversized seed", body: `{"description":"warm","seed":2147483648}`, want: "seed"},
 		{name: "oversized description", body: `{"description":"` + strings.Repeat("x", 501) + `"}`, want: "500"},
 	}
 	for _, tt := range tests {

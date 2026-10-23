@@ -13,6 +13,21 @@ import (
 	"cpp-studio/internal/wav"
 )
 
+func TestVADOutputJSON(t *testing.T) {
+	for _, input := range []string{"", "\n", "[]", `[{"start_sample":1600,"end_sample":3200}]`} {
+		got, err := VADOutputJSON([]byte(input))
+		if err != nil || !json.Valid(got) {
+			t.Fatalf("input %q: output %q, error %v", input, got, err)
+		}
+		if strings.TrimSpace(input) == "" && string(got) != "[]" {
+			t.Fatalf("no speech should produce an empty array: %s", got)
+		}
+	}
+	if _, err := VADOutputJSON([]byte("not JSON")); err == nil {
+		t.Fatal("malformed nonempty output must remain an error")
+	}
+}
+
 func TestSniffAudioContentType(t *testing.T) {
 	tests := []struct {
 		name string

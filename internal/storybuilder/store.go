@@ -125,10 +125,11 @@ type Track struct {
 }
 
 type VoiceIdentity struct {
-	CharacterVoiceID string
-	ActorVoiceID     string
-	Direction        string
-	Fingerprint      string
+	ReferenceReassigned bool
+	CharacterVoiceID    string
+	ActorVoiceID        string
+	Direction           string
+	Fingerprint         string
 }
 
 type CharacterVoiceResolver func(id string) (VoiceIdentity, bool, error)
@@ -161,6 +162,7 @@ type ProjectScene struct {
 }
 
 type ProjectUpdate struct {
+	DialogueEngine     *string         `json:"dialogue_engine,omitempty"`
 	Name               string          `json:"name"`
 	Revision           int             `json:"revision"`
 	TimelineDurationMS int64           `json:"timeline_duration_ms,omitempty"`
@@ -192,6 +194,7 @@ type TranscodeRenderFunc func(context.Context, string, string, string, string) e
 
 // Project is one separately saved Story Builder production.
 type Project struct {
+	DialogueEngine     string           `json:"dialogue_engine,omitempty"`
 	ID                 string           `json:"id"`
 	Name               string           `json:"name"`
 	Revision           int              `json:"revision"`
@@ -299,7 +302,7 @@ func (s *Store) createProject(name string, timelineDurationMS int64, scenes []Pr
 		if err != nil {
 			return Project{}, err
 		}
-		project := Project{ID: id, Name: name, Revision: 1, CreatedAt: now, UpdatedAt: now, TimelineDurationMS: timelineDurationMS, Scenes: cloneScenes(scenes), Tracks: tracks}
+		project := Project{ID: id, Name: name, Revision: 1, CreatedAt: now, UpdatedAt: now, TimelineDurationMS: timelineDurationMS, DialogueEngine: "omnivoice", Scenes: cloneScenes(scenes), Tracks: tracks}
 		finalDir := filepath.Join(s.rootDir, project.ID)
 		if _, err := os.Stat(finalDir); err == nil {
 			continue
@@ -363,6 +366,9 @@ func (s *Store) Get(id string) (Project, bool, error) {
 	}
 	if project.ID != id || project.Revision < 1 {
 		return Project{}, false, fmt.Errorf("decode Story Builder Project: invalid manifest identity")
+	}
+	if project.DialogueEngine == "" {
+		project.DialogueEngine = "omnivoice"
 	}
 	if err := validateRenderRevisions(project.Renders, id); err != nil {
 		return Project{}, false, err
@@ -566,6 +572,26 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
+	dialogueEngine := project.DialogueEngine
+	if update.DialogueEngine != nil {
+		dialogueEngine = strings.TrimSpace(*update.DialogueEngine)
+		if dialogueEngine != "omnivoice" && dialogueEngine != "fish-drama3" {
+			return Project{}, ErrInvalid
+		}
+	}
+	if dialogueEngine != project.DialogueEngine {
+		for i := range tracks {
+			for j := range tracks[i].Clips {
+				clip := &tracks[i].Clips[j]
+				if clip.Type != ClipTypeDialogue {
+					continue
+				}
+				clip.Status, clip.BuildError, clip.MediaError = DialogueStatusStale, "", ""
+				clip.SourceID, clip.SourceDurationMS, clip.SourceInMS, clip.SourceOutMS = "", 0, 0, 0
+				clip.SourceStoryID, clip.SourceStoryLineID, clip.SourceStoryTakeID = "", "", ""
+			}
+		}
+	}
 	if err := validateTracks(tracks, timelineDurationMS); err != nil {
 		return Project{}, err
 	}
@@ -580,6 +606,7 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 		return Project{}, ErrConflict
 	}
 	project.Name = name
+	project.DialogueEngine = dialogueEngine
 	project.TimelineDurationMS = timelineDurationMS
 	project.Scenes = scenes
 	project.Tracks = tracks

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"cpp-studio/internal/engine"
+	"cpp-studio/internal/wav"
 )
 
 // Turn is one prior exchange in the conversation.
@@ -62,10 +63,27 @@ type Loop struct {
 	Chat       ChatFunc
 	Transcribe TranscribeFunc
 	Speak      SpeakFunc
+	// Prepare reserves the turn's engines and adjusts the resident set.
+	Prepare func(context.Context, bool) (func(), error)
 }
 
 func (l *Loop) Run(ctx context.Context, req Request) (Result, error) {
 	transcript := strings.TrimSpace(req.Message)
+	if req.WAV == nil && transcript == "" {
+		return Result{}, ErrNoInput
+	}
+	if req.WAV != nil {
+		if err := wav.ValidateBytes(req.WAV); err != nil {
+			return Result{}, &engine.Error{Kind: engine.KindInvalidInput, Message: err.Error()}
+		}
+	}
+	if l.Prepare != nil {
+		release, err := l.Prepare(ctx, req.WAV != nil)
+		if err != nil {
+			return Result{}, err
+		}
+		defer release()
+	}
 	if req.WAV != nil {
 		text, err := l.transcribe(ctx, req.WAV)
 		if err != nil {

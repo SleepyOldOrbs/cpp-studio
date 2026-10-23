@@ -267,3 +267,28 @@ for (const operation of ['revoiceCharacterVoice', 'placeLibraryAudio']) {
     assert.equal(renderButton.disabled, false);
   });
 }
+
+test('dialogue engine edits invalidate takes and survive undo and concurrent saves', () => {
+  const context = vm.createContext({
+    clone: structuredClone, normalizeTracks() {}, timelineError: () => '',
+    window: { clearTimeout() {}, setTimeout: () => 1 },
+  });
+  vm.runInContext(functionSource('createEditSession') + functionSource('changeDialogueEngine') + '\nthis.session = createEditSession();', context);
+  const project = { id: 'project_drama', name: 'Drama', revision: 1, dialogue_engine: 'omnivoice', scenes: [], timeline_duration_ms: 30000,
+    tracks: [{ clips: [{ type: 'dialogue', status: 'ready', source_id: 'take_one', source_duration_ms: 1000, source_in_ms: 0, source_out_ms: 1000 }] }] };
+  const session = context.session;
+  session.upsert(project); session.open(project);
+  const oldSave = structuredClone(project), oldVersion = session.saveVersion();
+  session.edit(value => context.changeDialogueEngine(value, 'fish-drama3'));
+  session.scheduleAutosave(() => {});
+  assert.equal(session.current().dialogue_engine, 'fish-drama3');
+  assert.equal(session.current().tracks[0].clips[0].status, 'stale');
+  assert.equal(session.current().tracks[0].clips[0].source_id, '');
+  session.reconcileSaved(oldSave, oldVersion);
+  assert.equal(session.current().dialogue_engine, 'fish-drama3');
+  assert.equal(session.restore(), true);
+  assert.equal(session.current().dialogue_engine, 'omnivoice');
+  assert.equal(session.current().tracks[0].clips[0].source_id, 'take_one');
+  assert.equal(session.restore(true), true);
+  assert.equal(session.current().dialogue_engine, 'fish-drama3');
+});

@@ -10,6 +10,33 @@ import (
 	"testing"
 )
 
+type resumableRecorder struct {
+	fakeRecorder
+	resumed string
+}
+
+func (r *resumableRecorder) ResumeSuspended(_ context.Context, name string) error {
+	r.resumed = name
+	return nil
+}
+
+func TestResidentInvocationResumesSuspendedEngineBeforeRequest(t *testing.T) {
+	recorder := &resumableRecorder{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if recorder.resumed != "audio" {
+			t.Error("request arrived before engine resumed")
+		}
+		_, _ = w.Write(wav.SyntheticTone(160))
+	}))
+	defer upstream.Close()
+	runner := NewRunner(map[string]config.EngineConfig{
+		"audio": {Mode: "server", HealthURL: upstream.URL + "/health", DefaultVoiceRef: "reference.wav"},
+	}, recorder)
+	if _, err := runner.Run(context.Background(), SpeechSpec("hello")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestResidentRequestFailureDoesNotChangeProcessLifecycle(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { _, _ = w.Write(wav.SyntheticTone(200)) }))
 	defer upstream.Close()

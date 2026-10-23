@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -71,6 +72,9 @@ type SynthesisRequest struct {
 	// native work starts. It is runtime-only and never serialized.
 	Voice       *Voice             `json:"-"`
 	Performance *SpeechPerformance `json:"performance,omitempty"`
+	// References are ordered, server-resolved Actor Voices for Drama3 speaker
+	// tags. Native filesystem paths never come from the HTTP request.
+	References []Voice `json:"-"`
 }
 
 // SpeechPerformance exposes the controls supported by the expressive speech
@@ -291,7 +295,15 @@ func finiteBetween(value, minimum, maximum float64) bool {
 
 // SpeechVoiceSpecForRequest owns the subprocess mapping for typed synthesis.
 func SpeechVoiceSpecForRequest(request SynthesisRequest, voice *Voice) Spec {
-	spec := SpeechVoiceSpecFor(request.EngineID, request.Text, voice)
+	text := directedSpeechText(request)
+	spec := SpeechVoiceSpecFor(request.EngineID, text, voice)
+	if request.EngineID == "fish-drama3" && len(request.References) > 0 {
+		spec.OverrideArgs = nil
+		spec.BuildArgs = func(_, outPath string) []string {
+			return []string{"--text", text, "--request-option", "multi_reference_cond=" + drama3ReferencesJSON(request.References), "--out", outPath}
+		}
+		return withResidentSpeech(spec, request, nil)
+	}
 	if p := request.Performance; p != nil {
 		spec.BuildArgs = func(_, outPath string) []string {
 			text := request.Text
@@ -364,13 +376,44 @@ type serverSpeechRequest struct {
 	Options           map[string]any `json:"options,omitempty"`
 }
 
+var vibeVoiceSpeakerLine = regexp.MustCompile(`(?im)^\s*Speaker\s+[0-9]+\s*:`)
+
+// Apply native speech prompt syntax without changing the saved spoken text.
+func directedSpeechText(request SynthesisRequest) string {
+	if request.EngineID == "vibevoice" && !vibeVoiceSpeakerLine.MatchString(request.Text) {
+		return "Speaker 1: " + strings.Join(strings.Fields(request.Text), " ")
+	}
+	if request.EngineID == "fish-drama3" && strings.TrimSpace(request.Direction) != "" {
+		direction := strings.NewReplacer("[", "(", "]", ")").Replace(strings.TrimSpace(request.Direction))
+		return "[" + direction + "] " + request.Text
+	}
+	return request.Text
+}
+
+func drama3ReferencesJSON(voices []Voice) string {
+	type reference struct {
+		Text      string `json:"text"`
+		AudioPath string `json:"audio_path"`
+	}
+	refs := make([]reference, len(voices))
+	for i, voice := range voices {
+		refs[i] = reference{Text: fmt.Sprintf("<|speaker:%d|> %s", i, voice.RefText), AudioPath: voice.RefWAVPath}
+	}
+	data, _ := json.Marshal(refs)
+	return string(data)
+}
+
 // MarshalSpeechServerRequest owns the resident audio.cpp JSON mapping.
 func MarshalSpeechServerRequest(model string, request SynthesisRequest, voice *Voice, defaultVoice *Voice) ([]byte, error) {
 	selectedVoice := defaultVoice
 	if voice != nil {
 		selectedVoice = voice
 	}
-	payload := serverSpeechRequest{Model: model, Input: request.Text}
+	payload := serverSpeechRequest{Model: model, Input: directedSpeechText(request)}
+	if request.EngineID == "fish-drama3" && len(request.References) > 0 {
+		selectedVoice = nil
+		payload.Options = map[string]any{"multi_reference_cond": drama3ReferencesJSON(request.References)}
+	}
 	if p := request.Performance; p != nil {
 		if err := ValidateSpeechPerformance(request.EngineID, p); err != nil {
 			return nil, err

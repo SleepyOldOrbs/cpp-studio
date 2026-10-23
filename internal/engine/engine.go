@@ -205,6 +205,13 @@ func (r *Runner) RunReserved(ctx context.Context, spec Spec) (result Result, run
 		if spec.resident == nil {
 			return Result{}, &Error{Kind: KindNotConfigured, Message: fmt.Sprintf("engine %q does not support resident invocation for %s", spec.Engine, spec.Label)}
 		}
+		if manager, ok := r.recorder.(interface {
+			ResumeSuspended(context.Context, string) error
+		}); ok {
+			if err := manager.ResumeSuspended(ctx, spec.Engine); err != nil {
+				return Result{}, &Error{Kind: KindEngineFailure, Message: fmt.Sprintf("reload %s: %v", spec.Engine, err)}
+			}
+		}
 		result, err := spec.resident(ctx, r, engineCfg)
 		if err != nil {
 			// A failed HTTP request (including cancellation or bad output) is

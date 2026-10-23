@@ -16,7 +16,7 @@ import (
 
 var (
 	ErrDialogueBuildBusy    = errors.New("another Story Builder dialogue build is active")
-	ErrDialogueEngineBusy   = errors.New("engine \"audio\" is busy")
+	ErrDialogueEngineBusy   = errors.New("dialogue engine is busy")
 	ErrNoDialogueToBuild    = errors.New("no retryable dialogue to build")
 	ErrDialogueBuildMissing = errors.New("Story Builder dialogue build not found")
 	ErrDialogueBuildStopped = errors.New("Story Builder dialogue build is not active")
@@ -102,7 +102,7 @@ func (m *DialogueBuildManager) Start(ctx context.Context, projectID string, revi
 	release := func() {}
 	if m.reserveEngine != nil {
 		var ok bool
-		release, ok = m.reserveEngine(buildCtx, "audio")
+		release, ok = m.reserveEngine(buildCtx, candidates[0].EngineID)
 		if !ok {
 			cancel()
 			return DialogueBuild{}, ErrDialogueEngineBusy
@@ -188,7 +188,12 @@ func (m *DialogueBuildManager) run(ctx context.Context, build DialogueBuild, can
 			m.fail(build.ID, err)
 			return
 		}
-		audio, err := m.synthesize(ctx, input)
+		var audio []byte
+		if input.EngineID != selected.EngineID {
+			err = ErrConflict
+		} else {
+			audio, err = m.synthesize(ctx, input)
+		}
 		if ctx.Err() != nil {
 			if _, cancelErr := m.store.CancelDialogueBuild(build.ProjectID, input.ClipID); cancelErr != nil {
 				m.fail(build.ID, cancelErr)
@@ -258,6 +263,7 @@ func (m *DialogueBuildManager) cancelled(id string) {
 
 // DialogueBuildClip identifies one clip selected for a build pass.
 type DialogueBuildClip struct {
+	EngineID   string
 	ClipID     string
 	StartMS    int64
 	TrackOrder int
@@ -266,6 +272,8 @@ type DialogueBuildClip struct {
 // DialogueSynthesisInput is the current spoken content and performance identity
 // frozen when one clip enters the building state.
 type DialogueSynthesisInput struct {
+	CharacterVoiceID string
+	EngineID         string
 	ClipID           string
 	Text             string
 	ActorVoiceID     string
@@ -299,7 +307,8 @@ func (s *Store) DialogueBuildCandidates(id string, revision int) ([]DialogueBuil
 				continue
 			}
 			candidates = append(candidates, DialogueBuildClip{
-				ClipID: clip.ID, StartMS: clip.StartMS, TrackOrder: track.Order,
+				EngineID: project.DialogueEngine,
+				ClipID:   clip.ID, StartMS: clip.StartMS, TrackOrder: track.Order,
 			})
 		}
 	}
@@ -336,7 +345,8 @@ func (s *Store) BeginDialogueBuild(id, clipID string) (DialogueSynthesisInput, e
 		direction = identity.Direction
 	}
 	input := DialogueSynthesisInput{
-		ClipID: clip.ID, Text: clip.Text, ActorVoiceID: clip.ActorVoiceID,
+		EngineID: project.DialogueEngine,
+		ClipID:   clip.ID, Text: clip.Text, ActorVoiceID: clip.ActorVoiceID, CharacterVoiceID: clip.CharacterVoiceID,
 		Direction: direction, VoiceFingerprint: clip.VoiceFingerprint,
 	}
 	clip.Status = DialogueStatusBuilding
@@ -363,7 +373,7 @@ func (s *Store) CompleteDialogueBuild(id string, input DialogueSynthesisInput, a
 	if err != nil {
 		return Project{}, err
 	}
-	if clip.Status != DialogueStatusBuilding || clip.Text != input.Text || clip.ActorVoiceID != input.ActorVoiceID ||
+	if project.DialogueEngine != input.EngineID || clip.Status != DialogueStatusBuilding || clip.Text != input.Text || clip.ActorVoiceID != input.ActorVoiceID ||
 		clip.VoiceFingerprint != input.VoiceFingerprint {
 		return Project{}, ErrConflict
 	}
