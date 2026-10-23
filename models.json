@@ -439,6 +439,48 @@
       "description": "Mel-Band RoFormer vocal/source separation."
     },
     {
+      "id": "sam-audio-small-q8-0",
+      "displayName": "SAM Audio Small Q8_0 — extract a sound",
+      "engine": "sam-audio",
+      "family": "sam_audio",
+      "capabilities": ["separation"],
+      "path": "speech/separation/SAM-Audio-GGUF/sam-audio-small-q8_0.gguf",
+      "packageId": "sam_audio_small_q8_0",
+      "bytes": 2379290272,
+      "sha256": "82e7aaf7b8c458f67183a4924950dbb10ad1979a9c057f1a906c79752a4ba243",
+      "source": "https://huggingface.co/audio-cpp/SAM-Audio-GGUF/tree/d429aa7d3a8a5a41ad05d83a57177a98e596ee7f",
+      "license": "SAM License; bundled T5 Apache-2.0",
+      "description": "Describe a sound to extract. Returns target and residual at 48 kHz mono. Start with short clips; maximum 400 seconds. Use the speech-tools engine profile to free GPU memory."
+    },
+    {
+      "id": "fish-drama3-small-iq3-xxs",
+      "displayName": "Fish Audio Drama3 Small IQ3_XXS (experimental)",
+      "engine": "fish-drama3",
+      "family": "fish_drama3",
+      "capabilities": ["speech", "voice_clone"],
+      "path": "speech/tts/Drama3-small-GGUF/drama3-small-IQ3_XXS.gguf",
+      "packageId": "fish_drama3_small_iq3_xxs",
+      "bytes": 10460748576,
+      "sha256": "97d773973d756141a65432b08de76fd4bedbb44e8b98805755130e02d7fe2561",
+      "source": "https://huggingface.co/pentacoxian-dev/drama3-small-GGUF/tree/4a3078e885344bb9b24d511cec389d2726854d15",
+      "license": "Fish Audio Community License v1.0",
+      "description": "Built with Fish Audio. Compressed Drama3 for English/Japanese speech, saved-voice references and numbered speaker tags. Experimental delivery: listen for skipped words. Use the speech-tools engine profile on a 16 GB GPU."
+    },
+    {
+      "id": "mossformer2-ss-16k-f32",
+      "displayName": "MossFormer2 — two speech tracks (16 kHz)",
+      "engine": "mossformer2",
+      "family": "mossformer2",
+      "capabilities": ["separation"],
+      "path": "speech/separation/MossFormer2-GGUF/mossformer2-ss-16k-f32.gguf",
+      "packageId": "mossformer2_ss_16k_f32",
+      "bytes": 223123620,
+      "sha256": "a8cd233d4763834202506dea277760add06e4d057dd98de637286c0e01d91c54",
+      "source": "https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/44e93efae2eb896b997688768d5468e838895573/MossFormer2-GGUF",
+      "license": "Apache-2.0",
+      "description": "Separate overlapping speech into two 16 kHz mono tracks. Best tried on short clips: voices can switch tracks between chunks. Speaker numbers do not identify actors; listen to both outputs before reusing a voice clip."
+    },
+    {
       "id": "silero-vad-audiocpp",
       "displayName": "Silero VAD",
       "engine": "silero-vad",

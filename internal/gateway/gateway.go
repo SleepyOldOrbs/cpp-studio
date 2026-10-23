@@ -1810,10 +1810,52 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 	}
 
 	var body speechRequest
-	req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
-	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON request: %v", err))
-		return
+	var clonedVoice *engine.Voice
+	if strings.HasPrefix(req.Header.Get("Content-Type"), "multipart/form-data") {
+		// Audition a prepared reference without publishing it to the voice library.
+		req.Body = http.MaxBytesReader(w, req.Body, voice.MaxReferenceWAVBytes+maxJSONBodyBytes)
+		data, ok := readUploadedWAV(w, req)
+		if req.MultipartForm != nil {
+			defer req.MultipartForm.RemoveAll()
+		}
+		if !ok {
+			return
+		}
+		body.Input, body.Model, body.Format = req.FormValue("input"), req.FormValue("model"), req.FormValue("format")
+		if err := wav.ValidateBytes(data); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "reference must be a valid WAV")
+			return
+		}
+		transcript := strings.TrimSpace(req.FormValue("transcript"))
+		if transcript == "" || len(transcript) > voice.MaxVoiceTranscriptLen || len(data) > voice.MaxReferenceWAVBytes || len(body.Input) > maxJSONBodyBytes || req.FormValue("voice") != "" {
+			writeJSONError(w, http.StatusBadRequest, "provide a reference WAV and transcript, with no saved voice field")
+			return
+		}
+		if raw := req.FormValue("performance"); raw != "" {
+			if err := json.Unmarshal([]byte(raw), &body.Performance); err != nil {
+				writeJSONError(w, http.StatusBadRequest, "invalid speech performance controls")
+				return
+			}
+		}
+		path, cleanup, err := spoolUpload(bytes.NewReader(data), ".wav")
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		defer cleanup()
+		clonedVoice = &engine.Voice{RefWAVPath: path, RefText: transcript}
+	} else {
+		req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON request: %v", err))
+			return
+		}
+		var err error
+		clonedVoice, err = r.resolveVoice(body.Voice)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if strings.TrimSpace(body.Input) == "" {
 		writeJSONError(w, http.StatusBadRequest, "input is required")
@@ -1821,11 +1863,6 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 	}
 	if body.Format != "" && body.Format != "wav" {
 		writeJSONError(w, http.StatusBadRequest, "only wav format is supported")
-		return
-	}
-	clonedVoice, err := r.resolveVoice(body.Voice)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	selected, err := r.resolveCatalogModel(body.Model, "speech", "speech", engine.DefaultSpeechEngineID)
@@ -1838,7 +1875,26 @@ func (r *router) handleSpeech(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	audio, err := r.speakSynthesis(req.Context(), engine.SynthesisRequest{EngineID: selected.Engine, Text: body.Input, Performance: body.Performance}, clonedVoice, false)
+	synthesis := engine.SynthesisRequest{EngineID: selected.Engine, Text: body.Input, Performance: body.Performance}
+	if len(body.Speakers) > 0 {
+		if selected.Family != "fish_drama3" || len(body.Speakers) > 16 || body.Voice != "" {
+			writeJSONError(w, http.StatusBadRequest, "speakers requires Drama3, at most 16 saved voices, and no separate voice field")
+			return
+		}
+		for i, speaker := range body.Speakers {
+			voice, err := r.resolveVoice(speaker.Voice)
+			if err != nil || voice == nil || strings.TrimSpace(voice.RefText) == "" {
+				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("speaker %d requires a saved voice with a reference transcript", i))
+				return
+			}
+			if !strings.Contains(body.Input, fmt.Sprintf("<|speaker:%d|>", i)) {
+				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("include <|speaker:%d|> before this speaker's dialogue", i))
+				return
+			}
+			synthesis.References = append(synthesis.References, *voice)
+		}
+	}
+	audio, err := r.speakSynthesis(req.Context(), synthesis, clonedVoice, false)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -2685,13 +2741,32 @@ func (r *router) handleSeparation(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("engine %q is not configured", selected.Engine))
 		return
 	}
+	prompt := strings.TrimSpace(req.FormValue("prompt"))
+	if selected.Family == "sam_audio" {
+		if prompt == "" || len(prompt) > 1000 {
+			writeJSONError(w, http.StatusBadRequest, "SAM Audio requires a sound description of 1 to 1000 bytes")
+			return
+		}
+		duration, err := wav.Duration(data)
+		if err != nil || duration > 400*time.Second {
+			writeJSONError(w, http.StatusBadRequest, "SAM Audio requires a PCM WAV no longer than 400 seconds; choose a shorter excerpt")
+			return
+		}
+	} else if prompt != "" {
+		writeJSONError(w, http.StatusBadRequest, "a sound description is only supported by SAM Audio")
+		return
+	}
 	outDir, err := os.MkdirTemp("", "cpp-studio-stems-*")
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("create stem directory: %v", err))
 		return
 	}
 	defer os.RemoveAll(outDir)
-	if _, err := r.engines.Run(req.Context(), engine.SeparationSpec(selected.Engine, data, outDir)); err != nil {
+	spec := engine.SeparationSpec(selected.Engine, data, outDir)
+	if selected.Family == "sam_audio" {
+		spec = engine.PromptedSeparationSpec(selected.Engine, data, prompt, outDir)
+	}
+	if _, err := r.engines.Run(req.Context(), spec); err != nil {
 		writeEngineError(w, err)
 		return
 	}
@@ -2834,12 +2909,13 @@ func (r *router) handleVAD(w http.ResponseWriter, req *http.Request) {
 		writeEngineError(w, err)
 		return
 	}
-	if !json.Valid(result.Output) {
-		writeJSONError(w, http.StatusBadGateway, "voice activity engine produced invalid JSON")
+	output, err := engine.VADOutputJSON(result.Output)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(result.Output)
+	_, _ = w.Write(output)
 }
 
 func (r *router) handleForcedAlignment(w http.ResponseWriter, req *http.Request) {
@@ -3418,11 +3494,17 @@ func (r *router) handleVoice(w http.ResponseWriter, req *http.Request) {
 	}
 
 	loop := voice.Loop{
-		Engines:    r.engines,
-		Chat:       r.chatOnce,
-		Transcribe: r.transcribe,
+		Engines: r.engines,
+		Chat:    r.chatOnce,
+		Prepare: func(ctx context.Context, recorded bool) (func(), error) {
+			return voice.PrepareEngines(ctx, r.engines, r.manager, r.cfg.Engines, selectedSpeech.Engine, recorded)
+		},
+		Transcribe: func(ctx context.Context, audio []byte) (string, error) {
+			result, err := r.engines.RunReserved(ctx, engine.TranscriptionSpec(audio))
+			return string(result.Stdout), err
+		},
 		Speak: func(ctx context.Context, text string, v *engine.Voice) ([]byte, error) {
-			return r.speakSynthesis(ctx, engine.SynthesisRequest{EngineID: selectedSpeech.Engine, Text: text, Performance: performance}, v, false)
+			return r.speakSynthesis(ctx, engine.SynthesisRequest{EngineID: selectedSpeech.Engine, Text: text, Performance: performance}, v, true)
 		},
 	}
 	result, err := loop.Run(req.Context(), voice.Request{
@@ -3453,18 +3535,11 @@ func (r *router) resolveVoice(id string) (*engine.Voice, error) {
 	if id == "" || id == "default" {
 		return nil, nil
 	}
-	clone, ok, err := r.voices.Load(id)
+	refPath, transcript, err := r.voices.ResolveReference(id)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
-		return nil, fmt.Errorf("voice %q not found", id)
-	}
-	refPath, err := r.voices.ReferencePath(clone.ID)
-	if err != nil {
-		return nil, err
-	}
-	return &engine.Voice{RefWAVPath: refPath, RefText: clone.Transcript}, nil
+	return &engine.Voice{RefWAVPath: refPath, RefText: transcript}, nil
 }
 
 const (
@@ -3566,6 +3641,10 @@ func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON request: %v", err))
 		return
 	}
+	if body.Seed != nil && (*body.Seed < 0 || *body.Seed > 2147483647) {
+		writeJSONError(w, http.StatusBadRequest, "seed must be between 0 and 2147483647")
+		return
+	}
 	description := strings.TrimSpace(body.Description)
 	if description == "" {
 		writeJSONError(w, http.StatusBadRequest, "description is required")
@@ -3636,6 +3715,9 @@ func (r *router) handleVoiceDesign(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	spec.Engine = selected.Engine
+	if body.Seed != nil {
+		spec = engine.WithVoiceDesignSeed(spec, *body.Seed)
+	}
 
 	result, err := r.engines.Run(req.Context(), spec)
 	if err != nil {
@@ -3720,6 +3802,10 @@ func (r *router) handleVoices(w http.ResponseWriter, req *http.Request) {
 func (r *router) handleVoiceClone(w http.ResponseWriter, req *http.Request) {
 	tail := strings.TrimPrefix(req.URL.Path, "/v1/voices/")
 	parts := strings.Split(tail, "/")
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "reference" {
+		r.handleReferenceAssignment(w, req, parts[0])
+		return
+	}
 	if len(parts) == 1 && parts[0] != "" {
 		if !requireMethod(w, req, http.MethodDelete) {
 			return
@@ -3829,6 +3915,10 @@ type characterVoicePreviewRequest struct {
 }
 
 func (r *router) handleActorCharacterVoices(w http.ResponseWriter, req *http.Request, actorVoiceID string) {
+	if req.Method == http.MethodPost && strings.HasPrefix(req.Header.Get("Content-Type"), "multipart/form-data") {
+		r.handleClonedCharacterCreate(w, req, actorVoiceID)
+		return
+	}
 	switch req.Method {
 	case http.MethodGet:
 		characters, err := r.voices.ListCharacterVoices(actorVoiceID)
@@ -3861,6 +3951,10 @@ func (r *router) handleActorCharacterVoices(w http.ResponseWriter, req *http.Req
 func (r *router) handleCharacterVoice(w http.ResponseWriter, req *http.Request) {
 	tail := strings.Trim(strings.TrimPrefix(req.URL.Path, "/v1/character-voices/"), "/")
 	parts := strings.Split(tail, "/")
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "reference" {
+		r.handleReferenceAssignment(w, req, parts[0])
+		return
+	}
 	if len(parts) == 1 && parts[0] != "" {
 		id := parts[0]
 		switch req.Method {
@@ -4096,13 +4190,14 @@ const voiceSystemPrompt = "You are a voice assistant. Your reply will be spoken 
 // message in, the assistant reply out, via the llama server's
 // /v1/chat/completions route.
 func (r *router) chatOnce(ctx context.Context, history []voice.Turn, message string) (string, error) {
-	messages := make([]chatMessage, 0, len(history)+2)
-	messages = append(messages, chatMessage{Role: "system", Content: voiceSystemPrompt})
+	messages := make([]engine.ChatMessage, 0, len(history)+2)
+	messages = append(messages, engine.ChatMessage{Role: "system", Content: voiceSystemPrompt})
 	for _, turn := range history {
-		messages = append(messages, chatMessage{Role: turn.Role, Content: turn.Text})
+		messages = append(messages, engine.ChatMessage{Role: turn.Role, Content: turn.Text})
 	}
-	messages = append(messages, chatMessage{Role: "user", Content: message})
-	return r.llamaChat(ctx, messages)
+	messages = append(messages, engine.ChatMessage{Role: "user", Content: message})
+	result, err := r.engines.RunReserved(ctx, engine.ChatSpec("llama", messages))
+	return string(result.Stdout), err
 }
 
 // llamaChat sends one chat completion to the resident llama server.
@@ -4140,6 +4235,7 @@ type storyBuilderProjectCreateRequest struct {
 }
 
 type storyBuilderProjectUpdateRequest struct {
+	DialogueEngine     *string                      `json:"dialogue_engine"`
 	Name               string                       `json:"name"`
 	Revision           int                          `json:"revision"`
 	TimelineDurationMS int64                        `json:"timeline_duration_ms"`
@@ -4279,7 +4375,8 @@ func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Requ
 			return
 		}
 		project, err := r.storyBuilderProjects.Update(id, storybuilder.ProjectUpdate{
-			Name: body.Name, Revision: body.Revision, TimelineDurationMS: body.TimelineDurationMS,
+			DialogueEngine: body.DialogueEngine,
+			Name:           body.Name, Revision: body.Revision, TimelineDurationMS: body.TimelineDurationMS,
 			Scenes: body.Scenes, Tracks: *body.Tracks, RevoiceTrackIDs: body.RevoiceTrackIDs,
 		})
 		if err != nil {
@@ -4601,31 +4698,35 @@ func (r *router) newStoryBuilderDialogueBuildManager() *storybuilder.DialogueBui
 		Store:         r.storyBuilderProjects,
 		ReserveEngine: r.reserveStoryBuilderDialogueEngines,
 		Synthesize: func(ctx context.Context, input storybuilder.DialogueSynthesisInput) ([]byte, error) {
-			actorVoice, err := r.resolveVoice(input.ActorVoiceID)
+			voiceID := input.CharacterVoiceID
+			if voiceID == "" {
+				voiceID = input.ActorVoiceID
+			}
+			actorVoice, err := r.resolveVoice(voiceID)
 			if err != nil {
 				return nil, err
 			}
 			return r.speakSynthesis(ctx, engine.SynthesisRequest{
-				Text: input.Text, EngineID: "omnivoice", Direction: input.Direction,
+				Text: input.Text, EngineID: input.EngineID, Direction: input.Direction,
 			}, actorVoice, true)
 		},
 	})
 }
 
 // reserveStoryBuilderDialogueEngines keeps the build behind the studio-wide
-// audio gate while also owning the directed OmniVoice lane it actually invokes.
-func (r *router) reserveStoryBuilderDialogueEngines(ctx context.Context, _ string) (func(), bool) {
+// audio gate while also owning the selected character dialogue engine.
+func (r *router) reserveStoryBuilderDialogueEngines(ctx context.Context, engineID string) (func(), bool) {
 	releaseAudio, ok := r.reserveEngine(ctx, engine.DefaultSpeechEngineID)
 	if !ok {
 		return nil, false
 	}
-	releaseOmniVoice, ok := r.reserveEngine(ctx, "omnivoice")
+	releaseDialogue, ok := r.reserveEngine(ctx, engineID)
 	if !ok {
 		releaseAudio()
 		return nil, false
 	}
 	return func() {
-		releaseOmniVoice()
+		releaseDialogue()
 		releaseAudio()
 	}, true
 }
@@ -4636,10 +4737,11 @@ func (r *router) resolveStoryBuilderCharacterVoice(id string) (storybuilder.Voic
 		return storybuilder.VoiceIdentity{}, ok, err
 	}
 	return storybuilder.VoiceIdentity{
-		CharacterVoiceID: identity.CharacterVoiceID,
-		ActorVoiceID:     identity.ActorVoiceID,
-		Direction:        identity.Direction,
-		Fingerprint:      identity.Fingerprint,
+		ReferenceReassigned: identity.ReferenceReassigned,
+		CharacterVoiceID:    identity.CharacterVoiceID,
+		ActorVoiceID:        identity.ActorVoiceID,
+		Direction:           identity.Direction,
+		Fingerprint:         identity.Fingerprint,
 	}, true, nil
 }
 
@@ -5457,6 +5559,9 @@ type speechRequest struct {
 	Model       string                    `json:"model"`
 	Format      string                    `json:"format"`
 	Performance *engine.SpeechPerformance `json:"performance,omitempty"`
+	Speakers    []struct {
+		Voice string `json:"voice"`
+	} `json:"speakers,omitempty"`
 }
 
 type imageGenerationRequest struct {
@@ -5488,6 +5593,7 @@ type transcriptionResponse struct {
 }
 
 type voiceDesignRequest struct {
+	Seed        *int   `json:"seed,omitempty"`
 	Description string `json:"description"`
 	SampleText  string `json:"sample_text"`
 	// Model resolves a catalogued voice designer; VoxCPM2 is the default.

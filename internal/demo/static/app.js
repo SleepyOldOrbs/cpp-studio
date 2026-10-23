@@ -14,13 +14,18 @@
   var quickSpeechDownload = document.getElementById("quickSpeechDownload");
   var quickSpeechURL = "";
   var quickSpeechController = null;
+  var drama3Speakers = document.getElementById("drama3Speakers");
+  var drama3SpeakerRows = document.getElementById("drama3SpeakerRows");
+  var drama3AddSpeaker = document.getElementById("drama3AddSpeaker");
   var healthButton = document.getElementById("healthButton");
   var gatewayStatus = document.getElementById("gatewayStatus");
   var healthUpdated = document.getElementById("healthUpdated");
   var healthBody = document.getElementById("healthBody");
   var engineRack = document.getElementById("engineRack");
   var voiceForm = document.getElementById("voiceForm");
-  var messageInput = document.getElementById("messageInput");
+  var voiceInputTabs = Array.prototype.slice.call(document.querySelectorAll("[data-voice-input]"));
+  var voiceInputMode = "record";
+  var voiceInputSources = {};
   var recordButton = document.getElementById("recordButton");
   var liveButton = document.getElementById("liveButton");
   var handsFreeButton = document.getElementById("handsFreeButton");
@@ -35,6 +40,7 @@
   var clearButton = document.getElementById("clearButton");
   var clearLogButton = document.getElementById("clearLogButton");
   var transcriptOutput = document.getElementById("transcriptOutput");
+  var voiceTranscriptField = document.getElementById("voiceTranscriptField");
   var replyOutput = document.getElementById("replyOutput");
   var replyAudio = document.getElementById("replyAudio");
   var saveReplyButton = document.getElementById("saveReplyButton");
@@ -119,7 +125,23 @@
   var cloneErrorBox = document.getElementById("cloneErrorBox");
   var cloneVuLevel = document.getElementById("cloneVuLevel");
   var voiceLibraryButton = document.getElementById("voiceLibraryButton");
-  var voiceLibrary = document.getElementById("voiceLibrary");
+  var cloneDestinationSelect = document.getElementById("cloneDestinationSelect");
+  var cloneTryVoiceSelect = document.getElementById("cloneTryVoiceSelect");
+  var cloneProcessStatus = document.getElementById("cloneProcessStatus");
+  var cloneTranscript = document.getElementById("cloneTranscript");
+  var cloneSpeakError = document.getElementById("cloneSpeakError");
+  var librarySpeakButton = document.getElementById("librarySpeakButton");
+  var cloneRegenerateButton = document.getElementById("cloneRegenerateButton");
+  var cloneAuditionStatus = document.getElementById("cloneAuditionStatus");
+  var cloneAuditionDraft = null;
+  var clonePrepared = null;
+  var cloneSourceRevision = 0;
+  var cloneReferenceURL = "";
+  var cloneActorSelect = document.getElementById("cloneActorSelect");
+  var cloneCharacterSelect = document.getElementById("cloneCharacterSelect");
+  var cloneAssignButton = document.getElementById("cloneAssignButton");
+  var cloneAssignStatus = document.getElementById("cloneAssignStatus");
+  var cloneAssignError = document.getElementById("cloneAssignError");
   var clonePreviewAudio = document.getElementById("clonePreviewAudio");
   var ttsSpeechModelSelect = document.getElementById("ttsSpeechModelSelect");
   var cloneModelSelect = document.getElementById("cloneModelSelect");
@@ -131,7 +153,14 @@
   var designStatus = document.getElementById("designStatus");
   var designEngineInput = document.getElementById("designEngineInput");
   var saveDesignWavButton = document.getElementById("saveDesignWavButton");
-  var designAudio = document.getElementById("designAudio");
+  var designCandidateRadios = Array.from(document.querySelectorAll('input[name="designCandidate"]'));
+  var designCandidateAudios = Array.from(document.querySelectorAll("[data-design-audio]"));
+  var designCandidateStatuses = Array.from(document.querySelectorAll("[data-design-candidate-status]"));
+  var designGenerationStatus = document.getElementById("designGenerationStatus");
+  var designDestinationSelect = document.getElementById("designDestinationSelect");
+  var designActorSelect = document.getElementById("designActorSelect");
+  var designCharacterSelect = document.getElementById("designCharacterSelect");
+  var designSaveError = document.getElementById("designSaveError");
   var designNameInput = document.getElementById("designNameInput");
   var designSaveButton = document.getElementById("designSaveButton");
   var designSaveStatus = document.getElementById("designSaveStatus");
@@ -156,11 +185,8 @@
   var conversionSourceStatus = document.getElementById("conversionSourceStatus");
   var conversionSourceVu = document.getElementById("conversionSourceVu");
   var conversionTargetAudio = document.getElementById("conversionTargetAudio");
-  var conversionTargetInput = document.getElementById("conversionTargetInput");
-  var conversionTargetRecordButton = document.getElementById("conversionTargetRecordButton");
-  var conversionTargetClearButton = document.getElementById("conversionTargetClearButton");
   var conversionTargetStatus = document.getElementById("conversionTargetStatus");
-  var conversionTargetVu = document.getElementById("conversionTargetVu");
+  var conversionTargetActorSelect = document.getElementById("conversionTargetActorSelect");
   var conversionTargetVoiceSelect = document.getElementById("conversionTargetVoiceSelect");
   var conversionSubmitButton = document.getElementById("conversionSubmitButton");
   var conversionErrorBox = document.getElementById("conversionErrorBox");
@@ -168,6 +194,12 @@
   var conversionOutputStatus = document.getElementById("conversionOutputStatus");
   var conversionSaveWavButton = document.getElementById("conversionSaveWavButton");
   var conversionLibraryButton = document.getElementById("conversionLibraryButton");
+  var conversionSaveDestinationSelect = document.getElementById("conversionSaveDestinationSelect");
+  var conversionSaveActorSelect = document.getElementById("conversionSaveActorSelect");
+  var conversionSaveCharacterSelect = document.getElementById("conversionSaveCharacterSelect");
+  var conversionSaveNameInput = document.getElementById("conversionSaveNameInput");
+  var conversionSaveStatus = document.getElementById("conversionSaveStatus");
+  var conversionSaveError = document.getElementById("conversionSaveError");
 
   var musicForm = document.getElementById("musicForm");
   var musicModelSelect = document.getElementById("musicModelSelect");
@@ -210,6 +242,8 @@
   var separationForm = document.getElementById("separationForm");
   var separationModelSelect = document.getElementById("separationModelSelect");
   var separationModelHint = document.getElementById("separationModelHint");
+  var separationPromptField = document.getElementById("separationPromptField");
+  var separationPromptInput = document.getElementById("separationPromptInput");
   var separationFileInput = document.getElementById("separationFileInput");
   var separationSubmitButton = document.getElementById("separationSubmitButton");
   var separationStatus = document.getElementById("separationStatus");
@@ -223,6 +257,9 @@
   var analysisFileInput = document.getElementById("analysisFileInput");
   var analysisTranscriptField = document.getElementById("analysisTranscriptField");
   var analysisTranscriptInput = document.getElementById("analysisTranscriptInput");
+  var analysisTranscribeControls = document.getElementById("analysisTranscribeControls");
+  var analysisTranscribeButton = document.getElementById("analysisTranscribeButton");
+  var analysisTranscribeStatus = document.getElementById("analysisTranscribeStatus");
   var analysisLanguageField = document.getElementById("analysisLanguageField");
   var analysisLanguageInput = document.getElementById("analysisLanguageInput");
   var analysisSubmitButton = document.getElementById("analysisSubmitButton");
@@ -260,6 +297,7 @@
   var running = false;
   var recording = false;
   var live = false;
+  var liveTransitionPending = false;
   var handsFree = false;
   var handsFreeSetupPending = false;
   var hfState = "off";
@@ -297,12 +335,12 @@
   var describeAudioUrl = "";
   var designAudioUrl = "";
   var designCandidate = null;
+  var designCandidates = [];
   var conversionSourceFile = null;
-  var conversionTargetFile = null;
   var conversionSourceUrl = "";
-  var conversionTargetUrl = "";
   var conversionOutputUrl = "";
   var conversionOutputBlob = null;
+  var conversionOutputTranscript = "";
   var conversionRecorder = null;
   var conversionModelReady = false;
   var musicSourceFile = null;
@@ -328,7 +366,6 @@
     wavInput,
     runButton,
     clearButton,
-    messageInput,
     imagePromptInput,
     imageSizeInput,
     imageSeedInput,
@@ -598,7 +635,8 @@
     var cloneBusy = Boolean(cloneRecorder && cloneRecorder.state() !== "idle");
     var conversionBusy = Boolean(conversionRecorder && conversionRecorder.state() !== "idle");
     var musicBusy = Boolean(musicRecorder && musicRecorder.state() !== "idle");
-    var busy = running || recordBusy || live || cloneBusy || conversionBusy || musicBusy || handsFree || handsFreeSetupPending;
+    var busy = running || recordBusy || live || liveTransitionPending || cloneBusy || conversionBusy || musicBusy || handsFree || handsFreeSetupPending;
+    voiceInputTabs.forEach(function (tab) { tab.disabled = busy; });
     quickSpeechPlay.disabled = busy || !quickSpeechModel.value || !quickSpeechText.value.trim();
     apiControls.forEach(function (control) {
       control.disabled = busy;
@@ -606,22 +644,63 @@
     if (activeStoryID) {
       storyGenerateButton.disabled = true;
     }
-    recordButton.disabled = running || live || handsFree || handsFreeSetupPending || cloneBusy || (!recordBusy && !canRecord());
-    liveButton.disabled = running || recordBusy || handsFree || handsFreeSetupPending || cloneBusy || (!live && !canRecord());
+    recordButton.disabled = running || live || liveTransitionPending || handsFree || handsFreeSetupPending || cloneBusy || (!recordBusy && !canRecord());
+    liveButton.disabled = running || liveTransitionPending || recordBusy || handsFree || handsFreeSetupPending || cloneBusy || (!live && !canRecord());
     cloneRecordButton.disabled = running || live || handsFree || handsFreeSetupPending || recordBusy || (!cloneBusy && !canRecord());
-    handsFreeButton.disabled = running || recordBusy || live || cloneBusy || (!handsFree && !handsFreeSetupPending && !canRecord());
+    handsFreeButton.disabled = running || recordBusy || live || liveTransitionPending || cloneBusy || (!handsFree && !handsFreeSetupPending && !canRecord());
     describeImageButton.disabled = busy || imagePreview.hidden || !imagePreview.src;
-    designSaveButton.disabled = busy || !designCandidate;
+    syncDesignAssignment(busy);
     storyDraftButton.disabled = busy || Boolean(activeStoryID);
     syncConversionControls();
     syncMusicControls();
     syncAudioServiceControls();
+    syncCloneAssignment(busy);
   }
 
   function setRunning(value) {
     running = value;
     shell.setAttribute("aria-busy", value ? "true" : "false");
     syncControls();
+  }
+
+  function selectVoiceInput(tab) {
+    if (tab.disabled || tab.dataset.voiceInput === voiceInputMode) return;
+    // Keep each transcript with its source, never submit a hidden tab's WAV.
+    voiceInputSources[voiceInputMode] = { file: activeWavFile, label: wavStatus.textContent, transcript: transcriptOutput.value };
+    voiceInputMode = tab.dataset.voiceInput;
+    var source = voiceInputSources[voiceInputMode];
+    activeWavFile = source ? source.file : null;
+    wavStatus.textContent = source ? source.label : "None";
+    wavSaveButton.disabled = !activeWavFile;
+    transcriptOutput.value = source ? source.transcript || "" : "";
+    transcriptOutput.placeholder = voiceInputMode === "live" ? "Your words appear here as you speak" :
+      voiceInputMode === "hands-free" ? "Your words appear here after each pause" :
+      voiceInputMode === "wav" ? "Send your WAV file to see its transcript here" :
+      "Send your recording to see its transcript here";
+    voiceInputTabs.forEach(function (item) {
+      var selected = item === tab;
+      item.setAttribute("aria-selected", selected ? "true" : "false");
+      item.tabIndex = selected ? 0 : -1;
+      document.getElementById(item.getAttribute("aria-controls")).hidden = !selected;
+    });
+    document.getElementById(tab.getAttribute("aria-controls")).appendChild(voiceTranscriptField);
+    var automatic = voiceInputMode === "hands-free";
+    document.getElementById("voiceInputMeter").hidden = voiceInputMode === "wav";
+    document.getElementById("voiceWavSource").hidden = automatic;
+    document.getElementById("voiceSendStep").hidden = automatic;
+    document.getElementById("handsFreeTranscriptHint").hidden = !automatic;
+    clearError();
+  }
+
+  function setVoiceTranscript(text, mode) {
+    if (mode === voiceInputMode) {
+      transcriptOutput.value = text;
+    } else {
+      // A stopped hands-free turn may finish after the user switches tabs.
+      var source = voiceInputSources[mode] || { file: null, label: "None" };
+      source.transcript = text;
+      voiceInputSources[mode] = source;
+    }
   }
 
   function recordLabel() {
@@ -694,6 +773,7 @@
 
   function setActiveWav(file, source) {
     activeWavFile = file;
+    if (source !== "live") transcriptOutput.value = "";
     wavStatus.textContent = source + ": " + file.name + " (" + formatBytes(file.size) + ")";
     wavSaveButton.disabled = false;
     log("WAV ready from " + source + ": " + file.name + ", " + formatBytes(file.size));
@@ -701,6 +781,7 @@
 
   function clearActiveWav() {
     activeWavFile = null;
+    transcriptOutput.value = "";
     wavInput.value = "";
     wavStatus.textContent = "None";
     wavSaveButton.disabled = true;
@@ -1089,6 +1170,7 @@
       option.value = model.id;
       option.dataset.family = model.family || "";
       option.dataset.capabilities = (model.capabilities || []).join(" ");
+      option.dataset.description = model.description || "Ready.";
       option.disabled = !usable;
       select.appendChild(option);
     });
@@ -1234,6 +1316,7 @@
           updateSpeechPerformance("ttsPerformanceControls", ttsSpeechModelSelect.value);
           updateSpeechPerformance("clonePerformanceControls", cloneModelSelect.value);
           updateSpeechPerformance("quickSpeechPerformance", quickSpeechModel.value);
+          drama3Speakers.hidden = quickSpeechModel.value !== "fish-drama3";
           syncControls();
           try {
             window.localStorage.setItem("cpp-studio-speech-model", value);
@@ -1285,6 +1368,7 @@
     var hasDiarize = Boolean(data.engines && (data.engines.diarize || data.engines["diarize-sherpa"]));
     extractDiarizeButton.hidden = !hasDiarize;
     document.getElementById("extractSpeakersInput").hidden = !hasDiarize;
+    document.getElementById("extractSpeakersHint").hidden = !hasDiarize;
     // Same rule for the URL importer: no yt-dlp binary configured, no row.
     document.getElementById("extractImportRow").hidden = !(data.engines && data.engines.ytdlp);
     // And with an ffmpeg engine, a file the browser refuses is recoverable
@@ -2640,11 +2724,10 @@
   // error surfacing. options:
   //   file       - File to submit (wins over message)
   //   message    - typed text when there is no file
-  //   onAccepted - called right after the exchange is recorded, before
-  //                the reply audio is staged (the form path clears its
-  //                inputs here)
   async function performVoiceTurn(options) {
+    var inputMode = voiceInputMode;
     revealWorkflowResult(transcriptOutput);
+    revealWorkflowResult(replyOutput);
     var form = new FormData();
     if (options.file) {
       form.append("file", options.file, options.file.name || "input.wav");
@@ -2671,17 +2754,15 @@
     });
     await ensureOk(response, "Voice loop");
     var data = await response.json();
-    transcriptOutput.value = data.transcript || "";
+    setVoiceTranscript(data.transcript || "", inputMode);
     replyOutput.value = data.reply || "";
-    revealWorkflowResult(transcriptOutput);
+    if (inputMode === voiceInputMode) revealWorkflowResult(transcriptOutput);
+    revealWorkflowResult(replyOutput);
     if (!data.audio_b64) {
       throw new Error("Voice loop returned no audio");
     }
     var speech = base64ToBlob(data.audio_b64, "audio/wav");
     recordExchange(data.transcript || "", data.reply || "");
-    if (options.onAccepted) {
-      options.onAccepted();
-    }
     log("Voice loop complete: " + formatBytes(speech.size) + " WAV");
 
     activeAudioUrl = URL.createObjectURL(speech);
@@ -2696,29 +2777,19 @@
     if (event) {
       event.preventDefault();
     }
+    if (voiceInputMode === "hands-free") return;
     clearError();
     revealWorkflowResult(transcriptOutput);
     setRunning(true);
     setBusy(runButton, "Running...");
     try {
       resetOutputs();
-      var text = "";
       if (!activeWavFile) {
-        text = messageInput.value.trim();
-        if (!text) {
-          throw new Error("Record audio, choose a WAV, or type a message");
-        }
+        throw new Error(voiceInputMode === "wav" ? "Choose a WAV file first" :
+          voiceInputMode === "live" ? "Start live transcription and stop to keep a recording first" :
+          "Record audio first");
       }
-      await performVoiceTurn({
-        file: activeWavFile,
-        message: text,
-        onAccepted: function () {
-          // The turn is in the conversation now; clear the inputs so the
-          // next recording or message is a fresh follow-up.
-          clearActiveWav();
-          messageInput.value = "";
-        }
-      });
+      await performVoiceTurn({ file: activeWavFile });
       try {
         await replyAudio.play();
       } catch (error) {
@@ -2736,6 +2807,7 @@
     var message = error && error.message ? error.message : String(error);
     cloneErrorBox.textContent = message;
     cloneErrorBox.hidden = false;
+    revealWorkflowResult(cloneErrorBox);
     log("Error: " + message, "error");
   }
 
@@ -2752,6 +2824,11 @@
   function setCloneWav(file, source, provenance) {
     cloneWavFile = file;
     cloneWavSource = provenance || null;
+    resetPreparedClone();
+    cloneReferenceURL = URL.createObjectURL(file);
+    clonePreviewAudio.src = cloneReferenceURL;
+    clonePreviewAudio.load();
+    cloneProcessStatus.textContent = "Reference ready. Select Clone Voice to process it.";
     var status = source + ": " + file.name + " (" + formatBytes(file.size) + ")";
     if (provenance && provenance.name) {
       status += " · from " + provenance.name;
@@ -2764,15 +2841,35 @@
     }
     cloneWavStatus.textContent = status;
     cloneWavSaveButton.disabled = false;
+    cloneAssignStatus.textContent = "";
+    syncCloneAssignment();
     log("Reference WAV ready from " + source + ": " + file.name + ", " + formatBytes(file.size));
   }
 
+  function resetPreparedClone() {
+    cloneSourceRevision++;
+    clonePrepared = null;
+    cloneTranscript.value = "";
+    document.getElementById("cloneTranscriptField").hidden = true;
+    cloneAssignStatus.textContent = "";
+    cloneAssignError.hidden = true;
+    clearCloneError();
+    clonePreviewAudio.pause();
+    clonePreviewAudio.removeAttribute("src");
+    clonePreviewAudio.load();
+    if (cloneReferenceURL) URL.revokeObjectURL(cloneReferenceURL);
+    cloneReferenceURL = "";
+  }
+
   function clearCloneWav() {
+    resetPreparedClone();
+    cloneProcessStatus.textContent = "Choose a recording to begin.";
     cloneWavFile = null;
     cloneWavSource = null;
     cloneWavInput.value = "";
     cloneWavStatus.textContent = "None";
     cloneWavSaveButton.disabled = true;
+    syncCloneAssignment();
   }
 
   function transcriptSnippet(text) {
@@ -2854,7 +2951,7 @@
     return item;
   }
 
-  function renderCharacterVoiceGroup(actor) {
+  function renderCharacterVoiceGroup(actor, selectedCharacterID) {
     var group = createElement("section", "character-voice-group");
     group.setAttribute("aria-label", "Character Voices for " + (actor.name || actor.id));
     var head = createElement("div", "character-voice-group-head");
@@ -2868,7 +2965,7 @@
 
     var list = createElement("ul", "character-voice-list");
     (actor.character_voices || []).forEach(function (character) {
-      list.appendChild(renderCharacterVoice(character));
+      if (character.id === selectedCharacterID) list.appendChild(renderCharacterVoice(character));
     });
     if (!actor.character_voices || actor.character_voices.length === 0) {
       list.appendChild(createElement("li", "character-voice-empty", "No Character Voices yet"));
@@ -2903,57 +3000,133 @@
   }
 
   function renderVoiceLibrary(voices) {
-    voiceLibrary.textContent = "";
-    if (!voices || voices.length === 0) {
-      voiceLibrary.appendChild(createElement("span", "voice-library-empty", "No Actor Voices yet"));
-      return;
-    }
-    voices.forEach(function (clone) {
-      var item = createElement("article", "voice-item actor-voice-item" + (clone.id === selectedVoiceId ? " selected" : ""));
-      item.appendChild(createElement("span", "voice-kind-label", "Actor Voice"));
-      var head = createElement("div", "voice-item-head");
-      head.appendChild(createElement("span", "voice-item-name", clone.name || clone.id));
-      head.appendChild(createElement("span", "voice-item-detail", clone.created_at ? new Date(clone.created_at).toLocaleString() : ""));
-      item.appendChild(head);
-      item.appendChild(createElement("p", "voice-item-transcript", clone.transcript || ""));
-      if (clone.source && clone.source.name) {
-        // Where this voice came from. A voice outlives its clip, so this is
-        // the only place the question can still be answered.
-        var from = "From " + clone.source.name;
-        if (clone.source.speaker) {
-          from += " · speaker " + clone.source.speaker;
-        }
-        if (clone.source.end_sec) {
-          from += " · " + fmtTime(clone.source.start_sec || 0) + "–" + fmtTime(clone.source.end_sec);
-        }
-        item.appendChild(createElement("p", "voice-item-source", from));
-      }
-
-      var actions = createElement("div", "voice-item-actions");
-      var useButton = createElement("button", "secondary compact-button", clone.id === selectedVoiceId ? "In use" : "Use voice");
-      useButton.type = "button";
-      useButton.addEventListener("click", function () {
-        selectVoice(clone.id === selectedVoiceId ? "" : clone.id);
-      });
-      var playButton = createElement("button", "secondary compact-button", "Play");
-      playButton.type = "button";
-      bindAudioToggleButton(clonePreviewAudio, playButton, clone.audio_url, "Play", "Pause");
-      actions.appendChild(useButton);
-      actions.appendChild(playButton);
-      if (clone.protected) {
-        actions.appendChild(createElement("span", "voice-item-lock", "Protected"));
-      } else {
-        var deleteButton = createElement("button", "plain compact-button", "Delete");
-        deleteButton.type = "button";
-        deleteButton.addEventListener("click", function () {
-          deleteVoice(clone.id, clone.name);
-        });
-        actions.appendChild(deleteButton);
-      }
-      item.appendChild(actions);
-      item.appendChild(renderCharacterVoiceGroup(clone));
-      voiceLibrary.appendChild(item);
+    var previousActor = cloneActorSelect.value;
+    var previousCharacter = cloneCharacterSelect.value;
+    cloneActorSelect.textContent = "";
+    var emptyActor = createElement("option", "", "Choose an actor");
+    emptyActor.value = "";
+    cloneActorSelect.appendChild(emptyActor);
+    (voices || []).forEach(function (actor) {
+      var option = createElement("option", "", actor.name || actor.id);
+      option.value = actor.id;
+      cloneActorSelect.appendChild(option);
     });
+    cloneActorSelect.value = previousActor;
+    if (!cloneActorSelect.value) cloneActorSelect.value = "";
+    cloneCharacterSelect.textContent = "";
+    var actorOption = createElement("option", "", "Choose a character");
+    actorOption.value = "";
+    cloneCharacterSelect.appendChild(actorOption);
+    var chosenActor = (voices || []).find(function (actor) { return actor.id === cloneActorSelect.value; });
+    ((chosenActor && chosenActor.character_voices) || []).forEach(function (character) {
+      var option = createElement("option", "", character.name);
+      option.value = character.id;
+      cloneCharacterSelect.appendChild(option);
+    });
+    cloneCharacterSelect.value = previousCharacter;
+    if (!cloneCharacterSelect.value) cloneCharacterSelect.value = "";
+    cloneCharacterSelect.disabled = !chosenActor || !(chosenActor.character_voices || []).length;
+    syncCloneAssignment();
+    var previousTry = cloneTryVoiceSelect.value;
+    cloneTryVoiceSelect.textContent = "";
+    var placeholder = createElement("option", "", "Choose a saved voice");
+    placeholder.value = "";
+    cloneTryVoiceSelect.appendChild(placeholder);
+    (voices || []).forEach(function (actor) {
+      var option = createElement("option", "", actor.name || actor.id);
+      option.value = actor.id;
+      cloneTryVoiceSelect.appendChild(option);
+      (actor.character_voices || []).forEach(function (character) {
+        var child = createElement("option", "", (actor.name || actor.id) + " — " + character.name);
+        child.value = character.id;
+        cloneTryVoiceSelect.appendChild(child);
+      });
+    });
+    cloneTryVoiceSelect.value = previousTry;
+    if (!cloneTryVoiceSelect.value) cloneTryVoiceSelect.value = "";
+    updateSpeakVoiceLabel();
+    syncCloneAssignment();
+  }
+
+  function syncCloneAssignment(busy) {
+    var mode = cloneDestinationSelect.value;
+    var creating = mode === "new-actor" || mode === "new-character";
+    var actor = libraryVoices.find(function (voice) { return voice.id === cloneActorSelect.value; });
+    var character = actor && (actor.character_voices || []).find(function (voice) { return voice.id === cloneCharacterSelect.value; });
+    var ready = clonePrepared && clonePrepared.file === cloneWavFile;
+    var unavailable = Boolean(busy || running || cloneRecording);
+    var locked = unavailable || !ready;
+    cloneSaveButton.disabled = unavailable || !cloneWavFile;
+    cloneDestinationSelect.disabled = locked;
+    cloneActorSelect.disabled = locked;
+    cloneCharacterSelect.disabled = Boolean(locked || !actor || !(actor.character_voices || []).length);
+    cloneNameInput.disabled = locked;
+    cloneTryVoiceSelect.disabled = unavailable;
+    speakButton.disabled = unavailable || !cloneTryVoiceSelect.value || !speakTextInput.value.trim();
+    cloneRegenerateButton.disabled = speakButton.disabled;
+    var auditionActor = libraryVoices.find(function (voice) { return voice.id === cloneTryVoiceSelect.value; });
+    librarySpeakButton.disabled = unavailable || !cloneTryVoiceSelect.value || Boolean(auditionActor && auditionActor.protected);
+    document.getElementById("cloneActorField").hidden = mode === "new-actor";
+    document.getElementById("cloneCharacterField").hidden = mode !== "character";
+    document.getElementById("cloneNameField").hidden = !creating;
+    document.getElementById("cloneNameLabel").textContent = mode === "new-character" ? "New character name" : "New actor name";
+    cloneAssignButton.disabled = Boolean(locked || (creating && !cloneNameInput.value.trim()) ||
+      (mode !== "new-actor" && !actor) || (mode === "character" && !character) || (mode === "actor" && actor && actor.protected));
+    if (!cloneAssignButton.dataset.idleText) {
+      cloneAssignButton.textContent = creating ? (mode === "new-actor" ? "Create actor" : "Create character") : "Assign clone";
+    }
+    document.getElementById("cloneAssignHint").textContent = !ready
+      ? "Process your recording with Clone Voice in step 2 first."
+      : mode === "new-actor" ? "Save this clone as a new actor in your voice library."
+      : mode === "new-character" ? "Create a character under the selected actor, with its own cloned voice."
+      : mode === "character" ? "Changes only the selected character's voice. The actor and other characters keep their voices."
+      : actor && actor.protected ? "This actor is protected. Choose another actor or create a new one."
+      : "Replaces the actor's reference. Characters that inherit this actor's voice will use it too.";
+  }
+
+  async function assignCloneReference() {
+    if (cloneAssignButton.disabled || !clonePrepared || clonePrepared.file !== cloneWavFile) return;
+    var mode = cloneDestinationSelect.value;
+    var actorID = cloneActorSelect.value;
+    var characterID = cloneCharacterSelect.value;
+    var creating = mode === "new-actor" || mode === "new-character";
+    var targetName = creating ? cloneNameInput.value.trim() : mode === "character"
+      ? cloneCharacterSelect.selectedOptions[0].textContent : cloneActorSelect.selectedOptions[0].textContent;
+    var prepared = clonePrepared;
+    var form = new FormData();
+    form.append("file", prepared.file, prepared.file.name || "reference.wav");
+    form.append("transcript", prepared.transcript);
+    if (creating) form.append("name", targetName);
+    appendCloneSource(form, prepared.source);
+    cloneAssignError.hidden = true;
+    cloneAssignStatus.textContent = "";
+    setRunning(true);
+    setBusy(cloneAssignButton, "Saving...");
+    try {
+      var url = mode === "new-actor" ? "/v1/voices"
+        : mode === "new-character" ? "/v1/voices/" + encodeURIComponent(actorID) + "/characters"
+        : mode === "character" ? "/v1/character-voices/" + encodeURIComponent(characterID) + "/reference"
+        : "/v1/voices/" + encodeURIComponent(actorID) + "/reference";
+      var response = await fetch(url, { method: creating ? "POST" : "PUT", body: form });
+      await ensureOk(response, "Save clone");
+      var result = await response.json();
+      await refreshVoices(true);
+      cloneTryVoiceSelect.value = creating ? result.id : mode === "character" ? characterID : actorID;
+      cloneAuditionDraft = { voiceID: cloneTryVoiceSelect.value, file: prepared.file, transcript: prepared.transcript, source: prepared.source, pending: false };
+      clearSpeakAudio();
+      cloneAuditionStatus.textContent = "Clone saved. Speak to try it, or regenerate to try again.";
+      updateSpeakVoiceLabel();
+      cloneAssignStatus.textContent = (creating ? "Created " : "Clone assigned to ") + targetName + (mode === "character" ? " only." : ".") + " Try it in step 4.";
+      revealWorkflowResult(cloneAssignStatus);
+      log(cloneAssignStatus.textContent);
+    } catch (error) {
+      cloneAssignError.textContent = error.message;
+      cloneAssignError.hidden = false;
+      revealWorkflowResult(cloneAssignError);
+    } finally {
+      clearBusy(cloneAssignButton);
+      setRunning(false);
+    }
   }
 
   function renderVoiceSelect(voices) {
@@ -3265,8 +3438,14 @@
       }
       libraryVoices = voices;
       renderVoiceLibrary(voices);
+      renderDesignDestinations();
+      renderConversionDestinations();
       renderVoiceSelect(voices);
       renderCastVoiceSelects();
+      drama3SpeakerRows.querySelectorAll("select").forEach(function (select) {
+        fillVoiceOptions(select, select.value);
+        select.options[0].textContent = "Choose a saved voice";
+      });
     } catch (error) {
       setCloneError(error);
     } finally {
@@ -3275,36 +3454,42 @@
   }
 
   async function saveClone(event) {
-    if (event) {
-      event.preventDefault();
-    }
+    if (event) event.preventDefault();
+    if (running || cloneRecording) return;
     clearCloneError();
     if (!cloneWavFile) {
       setCloneError(new Error("Record or choose a reference WAV first"));
       return;
     }
+    var reference = cloneWavFile;
+    var revision = cloneSourceRevision;
+    var source = cloneWavSource;
+    clonePrepared = null;
+    cloneTranscript.value = "";
+    document.getElementById("cloneTranscriptField").hidden = true;
+    cloneAssignStatus.textContent = "";
+    cloneProcessStatus.textContent = "Transcribing your reference...";
     setRunning(true);
-    setBusy(cloneSaveButton, "Transcribing & saving...");
+    setBusy(cloneSaveButton, "Cloning...");
     try {
       var form = new FormData();
-      form.append("file", cloneWavFile, cloneWavFile.name || "reference.wav");
-      var name = cloneNameInput.value.trim();
-      if (name) {
-        form.append("name", name);
-      }
-      appendCloneSource(form, cloneWavSource);
-      log("POST /v1/voices");
-      var response = await fetch("/v1/voices", { method: "POST", body: form });
-      await ensureOk(response, "Voice clone");
-      var clone = await response.json();
-      log("Voice saved: " + clone.name + " — \"" + transcriptSnippet(clone.transcript) + "\"");
-      clearCloneWav();
-      cloneNameInput.value = "";
-      selectedVoiceId = clone.id;
-      persistSelectedVoice();
-      await refreshVoices(true);
+      form.append("file", reference, reference.name || "reference.wav");
+      var response = await fetch("/v1/audio/transcriptions", { method: "POST", body: form });
+      await ensureOk(response, "Clone Voice");
+      var data = await response.json();
+      if (revision !== cloneSourceRevision) return;
+      var transcript = String(data.text || "").trim();
+      if (!transcript) throw new Error("No speech was detected. Try a clearer recording.");
+      clonePrepared = { file: reference, transcript: transcript, source: source };
+      cloneTranscript.value = transcript;
+      document.getElementById("cloneTranscriptField").hidden = false;
+      cloneProcessStatus.textContent = "Clone ready. Choose where to save it in step 3.";
+      revealWorkflowResult(cloneProcessStatus);
     } catch (error) {
-      setCloneError(error);
+      if (revision === cloneSourceRevision) {
+        cloneProcessStatus.textContent = "Could not process this reference. You can try again.";
+        setCloneError(error);
+      }
     } finally {
       clearBusy(cloneSaveButton);
       setRunning(false);
@@ -3337,6 +3522,10 @@
     await ensureOk(response, "Character Voice create");
     var character = await response.json();
     await refreshVoices(true);
+    cloneActorSelect.value = actorVoiceID;
+    renderVoiceLibrary(libraryVoices);
+    cloneCharacterSelect.value = character.id;
+    renderVoiceLibrary(libraryVoices);
     return character;
   }
 
@@ -3418,7 +3607,8 @@
   function updateSpeakVoiceLabel() {
     var chosen = voiceSelect.options[voiceSelect.selectedIndex];
     var label = voiceSelect.value && chosen ? chosen.textContent : "the studio default voice";
-    speakVoiceLabel.textContent = label;
+    var audition = cloneTryVoiceSelect.options[cloneTryVoiceSelect.selectedIndex];
+    speakVoiceLabel.textContent = cloneTryVoiceSelect.value && audition ? "— " + audition.textContent : "";
     describeVoiceLabel.textContent = label;
   }
 
@@ -3430,8 +3620,34 @@
     speakAudio.removeAttribute("src");
     speakAudio.load();
     saveSpeakButton.disabled = true;
-    librarySpeakButton.disabled = true;
   }
+
+  function syncDrama3SpeakerLabels() {
+    var rows = drama3SpeakerRows.children;
+    Array.prototype.forEach.call(rows, function (row, index) {
+      row.querySelector("span").textContent = "Speaker " + index + " · <|speaker:" + index + "|>";
+      row.querySelector("button").textContent = "Remove speaker " + index;
+    });
+    drama3AddSpeaker.disabled = rows.length >= 16;
+  }
+
+  drama3AddSpeaker.addEventListener("click", function () {
+    if (drama3SpeakerRows.children.length >= 16) return;
+    var row = createElement("div", "action-row");
+    var label = createElement("label", "field");
+    label.appendChild(createElement("span", "", ""));
+    var select = createElement("select", "text-input");
+    fillVoiceOptions(select, "");
+    select.options[0].textContent = "Choose a saved voice";
+    label.appendChild(select);
+    row.appendChild(label);
+    var remove = createElement("button", "secondary", "Remove");
+    remove.type = "button";
+    remove.addEventListener("click", function () { row.remove(); syncDrama3SpeakerLabels(); });
+    row.appendChild(remove);
+    drama3SpeakerRows.appendChild(row);
+    syncDrama3SpeakerLabels();
+  });
 
   async function playQuickSpeech(event) {
     if (event) event.preventDefault();
@@ -3450,12 +3666,20 @@
     quickSpeechStatus.textContent = "Generating with " + modelLabel + "… The first run may take longer while the model loads.";
     try {
       var performance = readSpeechPerformance("quickSpeechPerformance");
+      var speakers;
+      if (model === "fish-drama3" && drama3SpeakerRows.children.length) {
+        speakers = Array.prototype.map.call(drama3SpeakerRows.querySelectorAll("select"), function (select, index) {
+          if (!select.value) throw new Error("Choose a saved voice for speaker " + index);
+          if (text.indexOf("<|speaker:" + index + "|>") < 0) throw new Error("Include <|speaker:" + index + "|> before that speaker's dialogue.");
+          return { voice: select.value };
+        });
+      }
       quickSpeechAudio.pause();
       var response = await fetch("/v1/audio/speech", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
-        body: JSON.stringify({ input: text, model: model, performance: performance, format: "wav" })
+        body: JSON.stringify({ input: text, model: model, performance: performance, speakers: speakers, format: "wav" })
       });
       await ensureOk(response, "Text to speech");
       var blob = await response.blob();
@@ -3492,142 +3716,269 @@
     }
   }
 
+  async function requestCloneSpeech(text, voiceID, draft) {
+    var options = { method: "POST" };
+    var model = cloneModelSelect.value || "audio";
+    var performance = readSpeechPerformance("clonePerformanceControls");
+    if (draft && draft.voiceID === voiceID) {
+      var form = new FormData();
+      form.append("file", draft.file, draft.file.name || "reference.wav");
+      form.append("transcript", draft.transcript);
+      form.append("input", text);
+      form.append("model", model);
+      form.append("format", "wav");
+      if (performance) form.append("performance", JSON.stringify(performance));
+      options.body = form;
+    } else {
+      options.headers = { "Content-Type": "application/json" };
+      options.body = JSON.stringify({ input: text, voice: voiceID, model: model, performance: performance, format: "wav" });
+    }
+    var response = await fetch("/v1/audio/speech", options);
+    await ensureOk(response, "Speak");
+    return response.blob();
+  }
+
+  async function presentCloneSpeech(blob) {
+    revealWorkflowResult(speakAudio);
+    clearSpeakAudio();
+    speakAudioUrl = URL.createObjectURL(blob);
+    speakAudio.src = speakAudioUrl;
+    speakAudio.load();
+    saveSpeakButton.disabled = false;
+    try { await speakAudio.play(); } catch (_) { log("Spoken audio playback is ready"); }
+  }
+
   async function speakText(event) {
-    if (event) {
-      event.preventDefault();
-    }
-    clearCloneError();
+    if (event) event.preventDefault();
+    if (running || speakButton.disabled) return;
+    cloneSpeakError.hidden = true;
+    cloneSpeakError.textContent = "";
     var text = speakTextInput.value.trim();
-    if (!text) {
-      setCloneError(new Error("Type something for the voice to say"));
-      return;
-    }
+    var voiceID = cloneTryVoiceSelect.value;
+    if (!text || !voiceID) return;
     setRunning(true);
     setBusy(speakButton, "Speaking...");
     try {
-      clearSpeakAudio();
-      log("POST /v1/audio/speech" + (selectedVoiceId ? " with voice " + selectedVoiceId : ""));
-      var response = await fetch("/v1/audio/speech", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          input: text,
-          voice: selectedVoiceId,
-          model: cloneModelSelect.value || "audio",
-          performance: readSpeechPerformance("clonePerformanceControls"),
-          format: "wav"
-        })
-      });
-      await ensureOk(response, "Speak");
-      var blob = await response.blob();
-      log("Spoken text ready: " + formatBytes(blob.size) + " WAV");
-      speakAudioUrl = URL.createObjectURL(blob);
-      speakAudio.src = speakAudioUrl;
-      speakAudio.load();
-      saveSpeakButton.disabled = false;
-      librarySpeakButton.disabled = false;
-      try {
-        await speakAudio.play();
-      } catch (error) {
-        log("Spoken audio playback is ready");
-      }
+      var blob = await requestCloneSpeech(text, voiceID, cloneAuditionDraft);
+      await presentCloneSpeech(blob);
     } catch (error) {
-      setCloneError(error);
+      cloneSpeakError.textContent = error.message;
+      cloneSpeakError.hidden = false;
+      revealWorkflowResult(cloneSpeakError);
     } finally {
       clearBusy(speakButton);
       setRunning(false);
     }
   }
 
-  function setDesignError(error) {
+  async function regenerateClone() {
+    if (running || cloneRegenerateButton.disabled) return;
+    var voiceID = cloneTryVoiceSelect.value;
+    var text = speakTextInput.value.trim();
+    if (!voiceID || !text) return;
+    cloneSpeakError.hidden = true;
+    cloneAuditionStatus.textContent = "Reprocessing the reference and generating a fresh preview...";
+    setRunning(true);
+    setBusy(cloneRegenerateButton, "Regenerating...");
+    try {
+      var previous = cloneAuditionDraft && cloneAuditionDraft.voiceID === voiceID ? cloneAuditionDraft : null;
+      var file = previous && previous.file;
+      if (!file) {
+        var prefix = voiceID.indexOf("character_") === 0 ? "/v1/character-voices/" : "/v1/voices/";
+        var referenceResponse = await fetch(prefix + encodeURIComponent(voiceID) + "/reference", { cache: "no-store" });
+        await ensureOk(referenceResponse, "Load clone reference");
+        file = new File([await referenceResponse.blob()], "reference.wav", { type: "audio/wav" });
+      }
+      var form = new FormData();
+      form.append("file", file, file.name || "reference.wav");
+      var response = await fetch("/v1/audio/transcriptions", { method: "POST", body: form });
+      await ensureOk(response, "Regenerate clone");
+      var data = await response.json();
+      var transcript = String(data.text || "").trim();
+      if (!transcript) throw new Error("No speech was detected in the reference. Record or upload a clearer sample in step 2.");
+      var draft = { voiceID: voiceID, file: file, transcript: transcript, source: previous && previous.source, pending: true };
+      var blob = await requestCloneSpeech(text, voiceID, draft);
+      cloneAuditionDraft = draft;
+      await presentCloneSpeech(blob);
+      cloneAuditionStatus.textContent = "Regenerated clone ready to try. Select Save to Library to update this voice.";
+    } catch (error) {
+      cloneSpeakError.textContent = error.message;
+      cloneSpeakError.hidden = false;
+      revealWorkflowResult(cloneSpeakError);
+      cloneAuditionStatus.textContent = "Regeneration failed. Your saved voice and previous preview are unchanged.";
+    } finally {
+      clearBusy(cloneRegenerateButton);
+      setRunning(false);
+    }
+  }
+
+  async function saveAuditionClone() {
+    if (running || librarySpeakButton.disabled) return;
+    var draft = cloneAuditionDraft;
+    if (!draft || draft.voiceID !== cloneTryVoiceSelect.value || !draft.pending) {
+      cloneAuditionStatus.textContent = "This clone is already saved in your voice library.";
+      return;
+    }
+    cloneSpeakError.hidden = true;
+    setRunning(true);
+    setBusy(librarySpeakButton, "Saving...");
+    try {
+      var form = new FormData();
+      form.append("file", draft.file, draft.file.name || "reference.wav");
+      form.append("transcript", draft.transcript);
+      appendCloneSource(form, draft.source);
+      var prefix = draft.voiceID.indexOf("character_") === 0 ? "/v1/character-voices/" : "/v1/voices/";
+      var response = await fetch(prefix + encodeURIComponent(draft.voiceID) + "/reference", { method: "PUT", body: form });
+      await ensureOk(response, "Save clone");
+      draft.pending = false;
+      await refreshVoices(true);
+      cloneAuditionStatus.textContent = "Clone saved to the selected " + (prefix.indexOf("character-voices") >= 0 ? "character only." : "actor. Characters inheriting this actor's voice will use it too.");
+    } catch (error) {
+      cloneSpeakError.textContent = error.message;
+      cloneSpeakError.hidden = false;
+      revealWorkflowResult(cloneSpeakError);
+      cloneAuditionStatus.textContent = "Clone not saved. Your regenerated preview is still available to retry.";
+    } finally {
+      clearBusy(librarySpeakButton);
+      setRunning(false);
+    }
+  }
+
+  function setDesignError(error, saving) {
     showDesignSaveStatus();
     var message = error && error.message ? error.message : String(error);
-    designErrorBox.textContent = message;
-    designErrorBox.hidden = false;
+    var box = saving ? designSaveError : designErrorBox;
+    box.textContent = message;
+    box.hidden = false;
+    revealWorkflowResult(box);
     log("Error: " + message, "error");
   }
 
   function clearDesignError() {
-    designErrorBox.textContent = "";
-    designErrorBox.hidden = true;
+    [designErrorBox, designSaveError].forEach(function (box) { box.textContent = ""; box.hidden = true; });
+  }
+
+  function selectDesignCandidate(index) {
+    designCandidate = designCandidates[index] || null;
+    designAudioUrl = designCandidate ? designCandidate.url : "";
+    designCandidateRadios.forEach(function (radio, i) { radio.checked = Boolean(designCandidate && i === index); });
+    designStatus.textContent = designCandidate ? "Candidate " + (index + 1) + " — " + designCandidate.model : "None yet";
+    designEngineInput.textContent = designCandidate ? designCandidate.engineInput : "–";
+    saveDesignWavButton.disabled = !designCandidate;
+    showDesignSaveStatus();
+    syncDesignAssignment();
   }
 
   function clearDesignCandidate() {
-    showDesignSaveStatus();
-    designCandidate = null;
-    designStatus.textContent = "None yet";
-    designEngineInput.textContent = "–";
-    if (designAudioUrl) {
-      URL.revokeObjectURL(designAudioUrl);
-      designAudioUrl = "";
-    }
-    designAudio.removeAttribute("src");
-    designAudio.load();
-    saveDesignWavButton.disabled = true;
-    syncControls();
+    designCandidateAudios.forEach(function (audio) { audio.pause(); audio.removeAttribute("src"); audio.load(); });
+    designCandidates.forEach(function (candidate) { if (candidate) URL.revokeObjectURL(candidate.url); });
+    designCandidates = [];
+    designCandidateRadios.forEach(function (radio) { radio.disabled = true; });
+    designCandidateStatuses.forEach(function (status) { status.textContent = "Waiting to generate."; });
+    selectDesignCandidate(-1);
   }
 
   async function generateDesign(event) {
-    if (event) {
-      event.preventDefault();
-    }
+    if (event) event.preventDefault();
+    if (running) return;
     clearDesignError();
     var description = designDescriptionInput.value.trim();
-    if (!description) {
-      setDesignError(new Error("Describe the voice you want first"));
-      return;
-    }
+    if (!description) { setDesignError(new Error("Describe the voice you want first")); return; }
+    var model = designModelSelect.value || "voxcpm2";
     setRunning(true);
-    setBusy(designGenerateButton, "Designing...");
     try {
       clearDesignCandidate();
-      var model = designModelSelect.value || "voxcpm2";
-      log("POST /v1/voices/design (" + model + "): " + description);
-      var response = await fetch("/v1/voices/design", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ description: description, model: model })
-      });
-      await ensureOk(response, "Voice design");
-      var data = await response.json();
-      if (!data.reference_b64 || !data.preview_b64) {
-        throw new Error("Voice design returned no audio");
+      revealWorkflowResult(designStatus);
+      for (var i = 0; i < 3; i++) {
+        setBusy(designGenerateButton, "Generating " + (i + 1) + " of 3...");
+        designGenerationStatus.textContent = "Generating candidate " + (i + 1) + " of 3.";
+        designCandidateStatuses[i].textContent = "Generating...";
+        try {
+          var seed = crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff;
+          var response = await fetch("/v1/voices/design", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ description: description, model: model, seed: seed })
+          });
+          await ensureOk(response, "Voice design");
+          var data = await response.json();
+          if (!data.reference_b64 || !data.preview_b64) throw new Error("Voice design returned no audio");
+          var preview = base64ToBlob(data.preview_b64, "audio/wav");
+          var candidate = {
+            description: data.description || description, model: data.model || model,
+            engineInput: data.engine_input || description,
+            reference: base64ToBlob(data.reference_b64, "audio/wav"),
+            transcript: data.transcript || "", preview: preview, url: URL.createObjectURL(preview)
+          };
+          designCandidates[i] = candidate;
+          designCandidateAudios[i].src = candidate.url;
+          designCandidateAudios[i].load();
+          designCandidateRadios[i].disabled = false;
+          designCandidateStatuses[i].textContent = "Ready to listen.";
+          if (!designCandidate) selectDesignCandidate(i);
+          revealWorkflowResult(designStatus);
+        } catch (error) {
+          designCandidateStatuses[i].textContent = "Failed: " + error.message;
+          log("Candidate " + (i + 1) + " failed: " + error.message, "error");
+        }
       }
-      designCandidate = {
-        description: data.description || description,
-        model: data.model || model,
-        reference: base64ToBlob(data.reference_b64, "audio/wav"),
-        transcript: data.transcript || ""
-      };
-      designStatus.textContent = "\"" + designCandidate.description + "\" via " + designCandidate.model;
-      designEngineInput.textContent = data.engine_input || designCandidate.description;
-      if (data.engine_input && data.engine_input !== designCandidate.description) {
-        log("Description adapted for " + designCandidate.model + ": " + data.engine_input);
-      }
-      if (!designNameInput.value.trim()) {
-        designNameInput.value = designCandidate.description.slice(0, 80);
-      }
-      var preview = base64ToBlob(data.preview_b64, "audio/wav");
-      log("Designed voice ready: " + formatBytes(preview.size) + " WAV audition");
-      designAudioUrl = URL.createObjectURL(preview);
-      designAudio.src = designAudioUrl;
-      designAudio.load();
-      saveDesignWavButton.disabled = false;
-      try {
-        await designAudio.play();
-      } catch (error) {
-        log("Voice audition playback is ready");
-      }
-    } catch (error) {
-      setDesignError(error);
+      var count = designCandidates.filter(Boolean).length;
+      designGenerationStatus.textContent = count + " of 3 candidates ready." + (count < 3 ? " Generate again to try a fresh set." : " Compare them in step 3.");
+      if (!count) setDesignError(new Error("No candidates could be generated. See the candidate messages in step 3."));
     } finally {
       clearBusy(designGenerateButton);
       setRunning(false);
     }
+  }
+
+  function renderDesignDestinations() {
+    var actorID = designActorSelect.value;
+    var characterID = designCharacterSelect.value;
+    designActorSelect.replaceChildren();
+    var empty = createElement("option", "", "Choose an actor");
+    empty.value = "";
+    designActorSelect.appendChild(empty);
+    libraryVoices.forEach(function (actor) {
+      var option = createElement("option", "", actor.name || actor.id);
+      option.value = actor.id;
+      designActorSelect.appendChild(option);
+    });
+    designActorSelect.value = actorID;
+    designCharacterSelect.replaceChildren();
+    empty = createElement("option", "", "Choose a character");
+    empty.value = "";
+    designCharacterSelect.appendChild(empty);
+    var actor = libraryVoices.find(function (voice) { return voice.id === designActorSelect.value; });
+    ((actor && actor.character_voices) || []).forEach(function (character) {
+      var option = createElement("option", "", character.name);
+      option.value = character.id;
+      designCharacterSelect.appendChild(option);
+    });
+    designCharacterSelect.value = characterID;
+    syncDesignAssignment();
+  }
+
+  function syncDesignAssignment(busy) {
+    var mode = designDestinationSelect.value;
+    var creating = mode === "new-actor" || mode === "new-character";
+    var actor = libraryVoices.find(function (voice) { return voice.id === designActorSelect.value; });
+    var character = actor && (actor.character_voices || []).find(function (voice) { return voice.id === designCharacterSelect.value; });
+    var locked = Boolean(busy || running || !designCandidate);
+    designDestinationSelect.disabled = locked;
+    designActorSelect.disabled = locked;
+    designCharacterSelect.disabled = Boolean(locked || !actor || !(actor.character_voices || []).length);
+    designNameInput.disabled = locked;
+    document.getElementById("designActorField").hidden = mode === "new-actor";
+    document.getElementById("designCharacterField").hidden = mode !== "character";
+    document.getElementById("designNameField").hidden = !creating;
+    document.getElementById("designNameLabel").textContent = mode === "new-character" ? "New character name" : "New actor name";
+    designSaveButton.disabled = Boolean(locked || (creating && !designNameInput.value.trim()) ||
+      (mode !== "new-actor" && !actor) || (mode === "character" && !character) || (mode === "actor" && actor && actor.protected));
+    document.getElementById("designSaveHint").textContent = !designCandidate ? "Select a generated candidate first."
+      : mode === "new-actor" ? "Save the selected candidate as a new actor in your voice library."
+      : mode === "new-character" ? "Create a character under this actor with its own designed voice."
+      : mode === "character" ? "Changes only the selected character's voice. The actor and other characters keep their voices."
+      : actor && actor.protected ? "This actor is protected. Choose another actor or create a new one."
+      : "Replaces the actor's reference. Characters that inherit this actor's voice will use it too.";
   }
 
   function showDesignSaveStatus(name) {
@@ -3641,32 +3992,40 @@
   }
 
   async function saveDesign() {
+    if (running || designSaveButton.disabled || !designCandidate) return;
     clearDesignError();
     showDesignSaveStatus();
-    if (!designCandidate) {
-      setDesignError(new Error("Generate a voice first"));
-      return;
-    }
+    var mode = designDestinationSelect.value;
+    var creating = mode === "new-actor" || mode === "new-character";
+    var actorID = designActorSelect.value;
+    var characterID = designCharacterSelect.value;
+    var candidate = designCandidate;
+    var name = creating ? designNameInput.value.trim() : mode === "character"
+      ? designCharacterSelect.selectedOptions[0].textContent : designActorSelect.selectedOptions[0].textContent;
     setRunning(true);
     setBusy(designSaveButton, "Saving...");
     try {
       var form = new FormData();
-      form.append("file", new File([designCandidate.reference], "designed-voice.wav", { type: "audio/wav" }));
-      var name = designNameInput.value.trim() || designCandidate.description.slice(0, 80);
-      form.append("name", name);
-      form.append("transcript", designCandidate.transcript);
-      log("POST /v1/voices (designed voice)");
-      var response = await fetch("/v1/voices", { method: "POST", body: form });
+      form.append("file", new File([candidate.reference], "designed-voice.wav", { type: "audio/wav" }));
+      if (creating) form.append("name", name);
+      form.append("transcript", candidate.transcript);
+      var url = mode === "new-actor" ? "/v1/voices"
+        : mode === "new-character" ? "/v1/voices/" + encodeURIComponent(actorID) + "/characters"
+        : mode === "character" ? "/v1/character-voices/" + encodeURIComponent(characterID) + "/reference"
+        : "/v1/voices/" + encodeURIComponent(actorID) + "/reference";
+      var response = await fetch(url, { method: creating ? "POST" : "PUT", body: form });
       await ensureOk(response, "Voice save");
-      var clone = await response.json();
-      log("Designed voice saved to the library: " + clone.name);
-      showDesignSaveStatus(clone.name);
-      selectedVoiceId = clone.id;
-      persistSelectedVoice();
-      designNameInput.value = "";
+      var saved = await response.json();
+      if (mode === "new-actor" || mode === "actor") {
+        selectedVoiceId = creating ? saved.id : actorID;
+        persistSelectedVoice();
+      }
       await refreshVoices(true);
+      showDesignSaveStatus(name);
+      revealWorkflowResult(designSaveStatus);
+      log("Designed voice saved: " + name);
     } catch (error) {
-      setDesignError(error);
+      setDesignError(error, true);
     } finally {
       clearBusy(designSaveButton);
       setRunning(false);
@@ -4050,12 +4409,123 @@
     conversionErrorBox.hidden = true;
   }
 
+  function renderConversionDestinations() {
+    var actorID = conversionSaveActorSelect.value;
+    var characterID = conversionSaveCharacterSelect.value;
+    conversionSaveActorSelect.replaceChildren();
+    var empty = createElement("option", "", "Choose an actor");
+    empty.value = "";
+    conversionSaveActorSelect.appendChild(empty);
+    libraryVoices.forEach(function (actor) {
+      var option = createElement("option", "", actor.name || actor.id);
+      option.value = actor.id;
+      conversionSaveActorSelect.appendChild(option);
+    });
+    conversionSaveActorSelect.value = actorID;
+    conversionSaveCharacterSelect.replaceChildren();
+    empty = createElement("option", "", "Choose a character");
+    empty.value = "";
+    conversionSaveCharacterSelect.appendChild(empty);
+    var actor = libraryVoices.find(function (voice) { return voice.id === conversionSaveActorSelect.value; });
+    ((actor && actor.character_voices) || []).forEach(function (character) {
+      var option = createElement("option", "", character.name);
+      option.value = character.id;
+      conversionSaveCharacterSelect.appendChild(option);
+    });
+    conversionSaveCharacterSelect.value = characterID;
+    syncConversionAssignment();
+  }
+
+  function syncConversionAssignment(busy) {
+    var mode = conversionSaveDestinationSelect.value;
+    var creating = mode === "new-actor" || mode === "new-character";
+    var actor = libraryVoices.find(function (voice) { return voice.id === conversionSaveActorSelect.value; });
+    var character = actor && (actor.character_voices || []).find(function (voice) { return voice.id === conversionSaveCharacterSelect.value; });
+    var locked = Boolean(busy || running || !conversionOutputBlob);
+    conversionSaveDestinationSelect.disabled = locked;
+    conversionSaveActorSelect.disabled = locked;
+    conversionSaveCharacterSelect.disabled = Boolean(locked || !actor || !(actor.character_voices || []).length);
+    conversionSaveNameInput.disabled = locked;
+    document.getElementById("conversionSaveActorField").hidden = mode === "new-actor";
+    document.getElementById("conversionSaveCharacterField").hidden = mode !== "character";
+    document.getElementById("conversionSaveNameField").hidden = !creating;
+    document.getElementById("conversionSaveNameLabel").textContent = mode === "new-character" ? "New character name" : "New actor name";
+    conversionLibraryButton.disabled = Boolean(locked || (creating && !conversionSaveNameInput.value.trim()) ||
+      (mode !== "new-actor" && !actor) || (mode === "character" && !character) || (mode === "actor" && actor && actor.protected));
+    document.getElementById("conversionSaveHint").textContent = !conversionOutputBlob ? "Convert a performance first."
+      : mode === "new-actor" ? "Save the converted performance as a new actor in your voice library."
+      : mode === "new-character" ? "Create a character under this actor with its own converted voice."
+      : mode === "character" ? "Changes only the selected character's voice. The actor and other characters keep their voices."
+      : actor && actor.protected ? "This actor is protected. Choose another actor or create a new one."
+      : "Replaces the actor's reference. Characters that inherit this actor's voice will use it too.";
+  }
+
+  function showConversionSaveStatus(name) {
+    conversionSaveStatus.replaceChildren();
+    conversionSaveStatus.hidden = !name;
+    if (!name) return;
+    conversionSaveStatus.appendChild(document.createTextNode("Saved “" + name + "” to your voice library. "));
+    var link = createElement("a", "", "Open Library");
+    link.href = "#library";
+    conversionSaveStatus.appendChild(link);
+  }
+
+  async function saveConversionVoice() {
+    if (running || conversionLibraryButton.disabled || !conversionOutputBlob) return;
+    conversionSaveError.hidden = true;
+    showConversionSaveStatus();
+    var result = conversionOutputBlob;
+    var mode = conversionSaveDestinationSelect.value;
+    var creating = mode === "new-actor" || mode === "new-character";
+    var actorID = conversionSaveActorSelect.value;
+    var characterID = conversionSaveCharacterSelect.value;
+    var name = creating ? conversionSaveNameInput.value.trim() : mode === "character"
+      ? conversionSaveCharacterSelect.selectedOptions[0].textContent : conversionSaveActorSelect.selectedOptions[0].textContent;
+    setRunning(true);
+    setBusy(conversionLibraryButton, "Saving...");
+    try {
+      if (!conversionOutputTranscript) {
+        var transcriptionForm = new FormData();
+        transcriptionForm.append("file", result, "converted-voice.wav");
+        var transcriptionResponse = await fetch("/v1/audio/transcriptions", { method: "POST", body: transcriptionForm });
+        await ensureOk(transcriptionResponse, "Converted voice transcription");
+        var transcription = await transcriptionResponse.json();
+        conversionOutputTranscript = String(transcription.text || "").trim();
+        if (!conversionOutputTranscript) throw new Error("No words were detected in this result. Try a clearer performance before saving a voice.");
+      }
+      var form = new FormData();
+      form.append("file", result, "converted-voice.wav");
+      form.append("transcript", conversionOutputTranscript);
+      if (creating) form.append("name", name);
+      var url = mode === "new-actor" ? "/v1/voices"
+        : mode === "new-character" ? "/v1/voices/" + encodeURIComponent(actorID) + "/characters"
+        : mode === "character" ? "/v1/character-voices/" + encodeURIComponent(characterID) + "/reference"
+        : "/v1/voices/" + encodeURIComponent(actorID) + "/reference";
+      var response = await fetch(url, { method: creating ? "POST" : "PUT", body: form });
+      await ensureOk(response, "Converted voice save");
+      await refreshVoices(true);
+      showConversionSaveStatus(name);
+      revealWorkflowResult(conversionSaveStatus);
+      log("Converted voice saved: " + name);
+    } catch (error) {
+      conversionSaveError.textContent = error && error.message ? error.message : String(error);
+      conversionSaveError.hidden = false;
+      revealWorkflowResult(conversionSaveError);
+    } finally {
+      clearBusy(conversionLibraryButton);
+      setRunning(false);
+    }
+  }
+
   function clearConversionOutput() {
     if (conversionOutputUrl) {
       URL.revokeObjectURL(conversionOutputUrl);
       conversionOutputUrl = "";
     }
     conversionOutputBlob = null;
+    conversionOutputTranscript = "";
+    showConversionSaveStatus();
+    conversionSaveError.hidden = true;
     conversionOutputAudio.removeAttribute("src");
     conversionOutputAudio.load();
     conversionOutputStatus.textContent = "Your converted performance will appear here.";
@@ -4063,69 +4533,43 @@
     conversionLibraryButton.disabled = true;
   }
 
-  function setConversionFile(kind, file, source) {
-    var isSource = kind === "source";
-    var oldUrl = isSource ? conversionSourceUrl : conversionTargetUrl;
-    if (oldUrl) {
-      URL.revokeObjectURL(oldUrl);
-    }
-    var url = URL.createObjectURL(file);
-    var audio = isSource ? conversionSourceAudio : conversionTargetAudio;
-    var status = isSource ? conversionSourceStatus : conversionTargetStatus;
-    if (isSource) {
-      conversionSourceFile = file;
-      conversionSourceUrl = url;
-    } else {
-      conversionTargetFile = file;
-      conversionTargetUrl = url;
-      conversionTargetVoiceSelect.value = "";
-    }
-    audio.src = url;
-    audio.load();
-    status.textContent = source + " · " + file.name + " · " + formatBytes(file.size);
+  function setConversionFile(file, source) {
+    if (conversionSourceUrl) URL.revokeObjectURL(conversionSourceUrl);
+    conversionSourceFile = file;
+    conversionSourceUrl = URL.createObjectURL(file);
+    conversionSourceAudio.src = conversionSourceUrl;
+    conversionSourceAudio.load();
+    conversionSourceStatus.textContent = source + " · " + file.name + " · " + formatBytes(file.size);
     clearConversionOutput();
     clearConversionError();
     syncConversionControls();
-    log("Voice conversion " + kind + " ready from " + source + ": " + file.name);
+    log("Voice conversion performance ready from " + source + ": " + file.name);
   }
 
-  function clearConversionFile(kind) {
-    var isSource = kind === "source";
-    var url = isSource ? conversionSourceUrl : conversionTargetUrl;
-    var audio = isSource ? conversionSourceAudio : conversionTargetAudio;
-    var input = isSource ? conversionSourceInput : conversionTargetInput;
-    if (url) {
-      URL.revokeObjectURL(url);
-    }
-    audio.removeAttribute("src");
-    audio.load();
-    input.value = "";
-    if (isSource) {
-      conversionSourceFile = null;
-      conversionSourceUrl = "";
-      conversionSourceStatus.textContent = "Record or load the performance to convert.";
-    } else {
-      conversionTargetFile = null;
-      conversionTargetUrl = "";
-      conversionTargetVoiceSelect.value = "";
-      conversionTargetStatus.textContent = "Use a clean target sample or select a saved voice.";
-    }
+  function clearConversionFile() {
+    if (conversionSourceUrl) URL.revokeObjectURL(conversionSourceUrl);
+    conversionSourceFile = null;
+    conversionSourceUrl = "";
+    conversionSourceAudio.removeAttribute("src");
+    conversionSourceAudio.load();
+    conversionSourceInput.value = "";
+    conversionSourceStatus.textContent = "Record or load the performance to convert.";
     clearConversionOutput();
     syncConversionControls();
   }
 
-  async function normalizeConversionUpload(kind, file) {
+  async function normalizeConversionUpload(file) {
     if (!file) {
       return;
     }
-    var name = file.name || (kind + ".wav");
-    var status = kind === "source" ? conversionSourceStatus : conversionTargetStatus;
+    var name = file.name || "source.wav";
+    var status = conversionSourceStatus;
     try {
       if (!/\.wav$/i.test(name) && !/wav/i.test(file.type || "")) {
         status.textContent = "Converting " + name + " to WAV…";
       }
-      var normalized = await normalizeToolAudio(file, kind + ".wav", "");
-      setConversionFile(kind, normalized.file, normalized.source);
+      var normalized = await normalizeToolAudio(file, "source.wav", "");
+      setConversionFile(normalized.file, normalized.source);
     } catch (error) {
       status.textContent = "Could not load " + name;
       setConversionError(error);
@@ -4133,20 +4577,49 @@
   }
 
   function renderConversionTargetVoices(voices) {
-    var previous = conversionTargetVoiceSelect.value;
-    conversionTargetVoiceSelect.textContent = "";
-    var fresh = createElement("option", "", "New recording or upload");
+    var previousActor = conversionTargetActorSelect.value;
+    var previousVoice = conversionTargetVoiceSelect.value;
+    conversionTargetActorSelect.replaceChildren();
+    var fresh = createElement("option", "", "Choose an actor");
     fresh.value = "";
-    conversionTargetVoiceSelect.appendChild(fresh);
-    (voices || []).forEach(function (voice) {
-      var option = createElement("option", "", voice.name || voice.id);
-      option.value = voice.id;
+    conversionTargetActorSelect.appendChild(fresh);
+    (voices || []).forEach(function (actor) {
+      var option = createElement("option", "", actor.name || actor.id);
+      option.value = actor.id;
+      conversionTargetActorSelect.appendChild(option);
+    });
+    conversionTargetActorSelect.value = previousActor;
+    var actor = (voices || []).find(function (voice) { return voice.id === conversionTargetActorSelect.value; });
+    conversionTargetVoiceSelect.replaceChildren();
+    var own = createElement("option", "", actor ? "Actor's own voice" : "Choose an actor first");
+    own.value = actor ? actor.id : "";
+    conversionTargetVoiceSelect.appendChild(own);
+    ((actor && actor.character_voices) || []).forEach(function (character) {
+      var option = createElement("option", "", character.name);
+      option.value = character.id;
       conversionTargetVoiceSelect.appendChild(option);
     });
-    conversionTargetVoiceSelect.value = previous;
-    if (conversionTargetVoiceSelect.value !== previous) {
-      conversionTargetVoiceSelect.value = "";
+    var stillAvailable = actor && (previousVoice === actor.id || (actor.character_voices || []).some(function (character) { return character.id === previousVoice; }));
+    conversionTargetVoiceSelect.value = stillAvailable ? previousVoice : own.value;
+    document.getElementById("conversionTargetCharacterField").hidden = !actor;
+    if (conversionTargetVoiceSelect.value !== previousVoice) selectConversionTargetVoice();
+    else syncConversionControls();
+  }
+
+  function selectConversionTargetVoice() {
+    var actor = libraryVoices.find(function (voice) { return voice.id === conversionTargetActorSelect.value; });
+    var id = conversionTargetVoiceSelect.value;
+    var character = actor && (actor.character_voices || []).find(function (voice) { return voice.id === id; });
+    if (actor && (id === actor.id || character)) {
+      conversionTargetAudio.src = character ? "/v1/character-voices/" + encodeURIComponent(id) + "/reference" : actor.audio_url;
+      conversionTargetStatus.textContent = "Saved voice · " + (actor.name || actor.id) + (character ? " — " + character.name : " (actor's own voice)");
+    } else {
+      conversionTargetAudio.removeAttribute("src");
+      conversionTargetStatus.textContent = "Choose an actor and voice from your library.";
     }
+    conversionTargetAudio.load();
+    clearConversionOutput();
+    clearConversionError();
     syncConversionControls();
   }
 
@@ -4156,9 +4629,6 @@
     }
     var studioBusy = running || voiceRecorder.state() !== "idle" || live || cloneRecorder.state() !== "idle" ||
       (musicRecorder && musicRecorder.state() !== "idle") || handsFree || handsFreeSetupPending;
-    var conversionMetadata = conversionRecorder && conversionRecorder.metadata();
-    var capturingSource = conversionRecorder && conversionRecorder.state() !== "idle" && conversionMetadata.kind === "source";
-    var capturingTarget = conversionRecorder && conversionRecorder.state() !== "idle" && conversionMetadata.kind === "target";
     var captureBusy = Boolean(conversionRecorder && conversionRecorder.state() !== "idle");
     var modelOption = conversionModelSelect.options[conversionModelSelect.selectedIndex];
     var isVevo = modelOption && modelOption.dataset.family === "vevo2";
@@ -4172,25 +4642,21 @@
     conversionTargetTextField.hidden = !editing;
     conversionTargetTextInput.required = editing;
     conversionSourceInput.disabled = studioBusy || captureBusy;
-    conversionTargetInput.disabled = studioBusy || captureBusy || Boolean(conversionTargetVoiceSelect.value);
-    conversionTargetVoiceSelect.disabled = studioBusy || captureBusy;
-    conversionSourceRecordButton.disabled = studioBusy || capturingTarget || (!captureBusy && !canRecord());
-    conversionTargetRecordButton.disabled = studioBusy || capturingSource || Boolean(conversionTargetVoiceSelect.value) || (!captureBusy && !canRecord());
+    conversionTargetActorSelect.disabled = studioBusy || captureBusy;
+    conversionTargetVoiceSelect.disabled = studioBusy || captureBusy || !conversionTargetActorSelect.value;
+    conversionSourceRecordButton.disabled = studioBusy || (!captureBusy && !canRecord());
     conversionSourceClearButton.disabled = studioBusy || captureBusy || !conversionSourceFile;
-    conversionTargetClearButton.disabled = studioBusy || captureBusy || (!conversionTargetFile && !conversionTargetVoiceSelect.value);
     conversionRouteSelect.disabled = studioBusy || captureBusy || !isVevo;
     conversionTargetTextInput.disabled = studioBusy || captureBusy || !editing;
-    conversionSubmitButton.disabled = studioBusy || captureBusy || !conversionModelReady || !conversionSourceFile || (!conversionTargetFile && !conversionTargetVoiceSelect.value) || (editing && !conversionTargetTextInput.value.trim());
+    conversionSubmitButton.disabled = studioBusy || captureBusy || !conversionModelReady || !conversionSourceFile || !conversionTargetVoiceSelect.value || (editing && !conversionTargetTextInput.value.trim());
     conversionSaveWavButton.disabled = studioBusy || !conversionOutputBlob;
-    conversionLibraryButton.disabled = studioBusy || !conversionOutputBlob;
+    syncConversionAssignment(studioBusy || captureBusy);
   }
 
   conversionRecorder = createRecorder({
-    vu: function (metadata) { return metadata.kind === "source" ? conversionSourceVu : conversionTargetVu; },
-    minimumSamples: function (current, metadata) {
-      return metadata.kind === "source" ? Math.floor(current.sampleRate / 4) : current.sampleRate;
-    },
-    filename: function (metadata) { return metadata.kind + "-voice.wav"; },
+    vu: function () { return conversionSourceVu; },
+    minimumSamples: function (current) { return Math.floor(current.sampleRate / 4); },
+    filename: function () { return "source-voice.wav"; },
     onState: function (state, current, metadata) {
       var button = metadata && metadata.button;
       var status = metadata && metadata.status;
@@ -4201,15 +4667,15 @@
       }
       if (status) {
         status.textContent = state === "pending" ? "Opening the microphone…" :
-          state === "active" ? (metadata.kind === "source" ? "Recording the performance…" : "Recording the target voice…") :
+          state === "active" ? "Recording the performance…" :
             state === "finishing" ? "Finishing recording…" : status.textContent;
       }
       syncControls();
     },
-    onAccepted: function (file, metadata) { setConversionFile(metadata.kind, file, "microphone"); },
+    onAccepted: function (file) { setConversionFile(file, "microphone"); },
     onTooShort: function (metadata) {
-      metadata.status.textContent = metadata.kind === "source" ? "Performance recording was too short." : "Target voice recording was too short.";
-      setConversionError(new Error(metadata.kind === "source" ? "The performance recording is too short" : "The target voice needs at least one second of speech"));
+      metadata.status.textContent = "Performance recording was too short.";
+      setConversionError(new Error("The performance recording is too short"));
     },
     onCancelled: function (metadata) { metadata.status.textContent = "Recording cancelled."; },
     onError: function (error, metadata) {
@@ -4218,9 +4684,9 @@
     }
   });
 
-  async function startConversionRecording(kind, event) {
-    var button = kind === "source" ? conversionSourceRecordButton : conversionTargetRecordButton;
-    var status = kind === "source" ? conversionSourceStatus : conversionTargetStatus;
+  async function startConversionRecording(event) {
+    var button = conversionSourceRecordButton;
+    var status = conversionSourceStatus;
     if (event && button.setPointerCapture && event.pointerId !== undefined) {
       button.setPointerCapture(event.pointerId);
     }
@@ -4232,7 +4698,7 @@
     if (running || conversionRecorder.state() !== "idle") {
       return;
     }
-    await conversionRecorder.start({ kind: kind, button: button, status: status });
+    await conversionRecorder.start({ button: button, status: status });
   }
 
   async function stopConversionRecording() {
@@ -4246,7 +4712,7 @@
       setConversionError(new Error("Install a compatible voice-conversion model first"));
       return;
     }
-    if (!conversionSourceFile || (!conversionTargetFile && !conversionTargetVoiceSelect.value)) {
+    if (!conversionSourceFile || !conversionTargetVoiceSelect.value) {
       setConversionError(new Error("Add both a performance and a target voice"));
       return;
     }
@@ -4262,11 +4728,7 @@
         form.append("target_text", conversionTargetTextInput.value.trim());
       }
       form.append("source", conversionSourceFile, conversionSourceFile.name || "source.wav");
-      if (conversionTargetFile) {
-        form.append("target", conversionTargetFile, conversionTargetFile.name || "target.wav");
-      } else {
-        form.append("target_voice", conversionTargetVoiceSelect.value);
-      }
+      form.append("target_voice", conversionTargetVoiceSelect.value);
       log("POST /v1/audio/conversions " + conversionModelSelect.value);
       var response = await fetch("/v1/audio/conversions", { method: "POST", body: form });
       await ensureOk(response, "Voice conversion");
@@ -4409,6 +4871,7 @@
     var isACE = !modelOption || modelOption.dataset.family === "ace_step";
     var sourceAllowed = isACE && musicModeSelect.value !== "text2music";
     var required = isACE && musicRouteNeedsSource(musicModeSelect.value);
+    document.getElementById("musicModeField").hidden = !modelOption || modelOption.dataset.family !== "ace_step";
     musicModeSelect.disabled = studioBusy || captureBusy || !isACE;
     musicPromptInput.disabled = studioBusy || captureBusy;
     musicLyricsInput.disabled = studioBusy || captureBusy;
@@ -4572,11 +5035,25 @@
 
   function syncAudioServiceControls() {
     if (separationForm) {
-      separationSubmitButton.disabled = running || separationModelSelect.disabled || !separationFileInput.files.length;
+      var separationOption = separationModelSelect.options[separationModelSelect.selectedIndex];
+      if (separationOption && !separationOption.disabled) {
+        separationModelHint.textContent = separationOption.dataset.description || "Ready.";
+      }
+      var prompted = Boolean(separationOption && separationOption.dataset.family === "sam_audio");
+      separationPromptField.hidden = !prompted;
+      separationPromptInput.required = prompted;
+      separationSubmitButton.disabled = running || separationModelSelect.disabled || !separationFileInput.files.length || (prompted && !separationPromptInput.value.trim());
     }
     if (analysisForm) {
       var option = analysisModelSelect.options[analysisModelSelect.selectedIndex];
+      if (option && !option.disabled) analysisModelHint.textContent = option.dataset.description || "Ready.";
+      analysisModelSelect.disabled = running || !option || option.disabled;
       var forced = option && (option.dataset.capabilities || "").split(" ").indexOf("forced_alignment") >= 0;
+      analysisTranscribeControls.hidden = !forced;
+      analysisTranscribeButton.disabled = running || !forced || analysisModelSelect.disabled || !analysisFileInput.files.length;
+      analysisFileInput.disabled = running;
+      analysisTranscriptInput.disabled = running;
+      analysisLanguageInput.disabled = running;
       analysisTranscriptField.hidden = !forced;
       analysisLanguageField.hidden = !forced;
       analysisTranscriptInput.required = forced;
@@ -4639,6 +5116,7 @@
       var file = separationFileInput.files[0];
       form.append("file", file, file.name || "mixture.wav");
       form.append("model", separationModelSelect.value);
+      if (!separationPromptField.hidden) form.append("prompt", separationPromptInput.value.trim());
       form.append("response_format", "browser");
       var response = await fetch("/v1/audio/separation", { method: "POST", body: form });
       await ensureOk(response, "Source separation");
@@ -4662,10 +5140,50 @@
     }
   }
 
+  async function prepareAnalysisAudio(file) {
+    // Decode at the models' required rate, then downmix and encode PCM16.
+    var context = new window.OfflineAudioContext(1, 1, 16000);
+    var decoded = await context.decodeAudioData(await file.arrayBuffer());
+    var mono = new Float32Array(decoded.length);
+    for (var channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+      var samples = decoded.getChannelData(channel);
+      for (var i = 0; i < mono.length; i += 1) mono[i] += samples[i] / decoded.numberOfChannels;
+    }
+    return new File([encodeWav(mono, decoded.sampleRate)], "analysis-16k.wav", { type: "audio/wav" });
+  }
+
+  async function transcribeAnalysisFile() {
+    if (running || analysisTranscribeButton.disabled || !analysisFileInput.files.length) return;
+    var file = analysisFileInput.files[0];
+    var previousText = analysisTranscriptInput.value;
+    setRunning(true);
+    setBusy(analysisTranscribeButton, "Transcribing...");
+    analysisTranscribeStatus.textContent = "Transcribing the uploaded file...";
+    try {
+      var audio = await prepareAnalysisAudio(file);
+      var form = new FormData();
+      form.append("file", audio, audio.name);
+      var response = await fetch("/v1/audio/transcriptions", { method: "POST", body: form });
+      await ensureOk(response, "Audio transcription");
+      var result = await response.json();
+      if (analysisFileInput.files[0] !== file || analysisTranscriptInput.value !== previousText) return;
+      var text = String(result.text || "").trim();
+      if (!text) throw new Error("No speech was detected. Check the recording or enter the transcript manually.");
+      analysisTranscriptInput.value = text;
+      analysisTranscribeStatus.textContent = "Transcript ready. Check and correct the words before alignment.";
+    } catch (error) {
+      if (analysisFileInput.files[0] === file) analysisTranscribeStatus.textContent = "Transcription failed: " + (error.message || error);
+    } finally {
+      clearBusy(analysisTranscribeButton);
+      setRunning(false);
+      syncAudioServiceControls();
+    }
+  }
+
   async function runAudioAnalysis(event) {
     event.preventDefault();
     var option = analysisModelSelect.options[analysisModelSelect.selectedIndex];
-    if (!option || !analysisFileInput.files.length) return;
+    if (running || !option || !analysisFileInput.files.length) return;
     var capabilities = (option.dataset.capabilities || "").split(" ");
     var endpoint = capabilities.indexOf("forced_alignment") >= 0 ? "/v1/audio/alignment" :
       (capabilities.indexOf("diarization") >= 0 ? "/v1/audio/diarization" : "/v1/audio/vad");
@@ -4674,7 +5192,7 @@
     analysisOutput.textContent = "Analyzing…";
     try {
       var form = new FormData();
-      var file = analysisFileInput.files[0];
+      var file = await prepareAnalysisAudio(analysisFileInput.files[0]);
       form.append("file", file, file.name || "analysis.wav");
       form.append("model", analysisModelSelect.value);
       if (endpoint === "/v1/audio/alignment") {
@@ -4789,9 +5307,20 @@
 
   function initVariantSelect(select, engineName, wrapper, hooks) {
     var lastVariants = [];
+    var fixedValue = document.getElementById(select.id + "Value");
+    var modelHint = document.getElementById(select.id + "Hint");
     function render(variants) {
       lastVariants = variants;
       select.textContent = "";
+      if (fixedValue) {
+        var single = variants.length === 1;
+        fixedValue.hidden = !single;
+        fixedValue.textContent = single ? variants[0].label : "";
+        select.hidden = single;
+        if (modelHint) modelHint.textContent = single
+          ? "Writes the reply. One reply model is configured."
+          : "Writes the reply. Switching loads the selected model.";
+      }
       if (variants.length === 0) {
         select.appendChild(createElement("option", "", "No compatible model configured"));
         select.disabled = true;
@@ -5140,7 +5669,7 @@
       }
       await ensureOk(response, "Live transcription");
       var data = await response.json();
-      transcriptOutput.value = data.text || "";
+      setVoiceTranscript(data.text || "", "live");
       liveFailures = 0;
     } catch (error) {
       liveFailures += 1;
@@ -5155,7 +5684,7 @@
   }
 
   async function startLive() {
-    if (live || running || recording || voiceRecorder.isPending()) {
+    if (live || liveTransitionPending || running || recording || voiceRecorder.isPending()) {
       return;
     }
     if (!canRecord()) {
@@ -5163,7 +5692,8 @@
       return;
     }
     clearError();
-    liveButton.disabled = true;
+    liveTransitionPending = true;
+    syncControls();
     var stream = null;
     var audioContext = null;
     var source = null;
@@ -5209,7 +5739,6 @@
       processor.connect(audioContext.destination);
 
       resetOutputs();
-      clearActiveWav();
       liveCapture = capture;
       liveFailures = 0;
       liveStartedAt = Date.now();
@@ -5241,6 +5770,9 @@
       liveCapture = null;
       setLive(false);
       setError(error);
+    } finally {
+      liveTransitionPending = false;
+      syncControls();
     }
   }
 
@@ -5252,6 +5784,7 @@
     liveCapture = null;
     capture.active = false;
     stopLiveTimers();
+    liveTransitionPending = true;
     setLive(false);
     resetVuLevel();
     liveButton.disabled = true;
@@ -5278,6 +5811,7 @@
       await transcribeLiveTake(capture, true);
       log("Live take ready: " + (capture.length / capture.sampleRate).toFixed(1) + "s");
     } finally {
+      liveTransitionPending = false;
       syncControls();
     }
   }
@@ -5486,7 +6020,7 @@
       if (!handsFree || token !== hfSessionToken) {
         return;
       }
-      transcriptOutput.value = transcript;
+      setVoiceTranscript(transcript, "hands-free");
       hfSetState("submitting", "Thinking…");
       await performVoiceTurn({ message: transcript });
       if (!handsFree || token !== hfSessionToken) {
@@ -5552,6 +6086,7 @@
     }
     clearError();
     handsFreeSetupPending = true;
+    var setupToken = hfSessionToken;
     syncControls();
     var stream = null;
     var audioContext = null;
@@ -5586,6 +6121,10 @@
         processEvent.outputBuffer.getChannelData(0).fill(0);
       };
 
+      if (setupToken !== hfSessionToken || !handsFreeSetupPending) {
+        await cleanupRecorderResources(capture);
+        return;
+      }
       source.connect(processor);
       processor.connect(audioContext.destination);
 
@@ -5660,7 +6199,7 @@
 
   function clearAll() {
     clearActiveWav();
-    messageInput.value = "";
+    voiceInputSources = {};
     resetOutputs();
     log("Cleared workspace");
   }
@@ -5693,6 +6232,22 @@
     refreshHealth(false);
   });
   voiceForm.addEventListener("submit", runVoiceLoop);
+  voiceInputTabs.forEach(function (tab, index) {
+    tab.addEventListener("click", function () { selectVoiceInput(tab); });
+    tab.addEventListener("keydown", function (event) {
+      var next = index;
+      if (event.key === "ArrowRight") next = (index + 1) % voiceInputTabs.length;
+      else if (event.key === "ArrowLeft") next = (index + voiceInputTabs.length - 1) % voiceInputTabs.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = voiceInputTabs.length - 1;
+      else return;
+      event.preventDefault();
+      if (!voiceInputTabs[next].disabled) {
+        selectVoiceInput(voiceInputTabs[next]);
+        voiceInputTabs[next].focus();
+      }
+    });
+  });
   imageForm.addEventListener("submit", generateImage);
   imageSeedClearButton.addEventListener("click", function () {
     imageSeedInput.value = "";
@@ -5715,7 +6270,7 @@
   attachEncodeChips(cloneWavSaveButton, "reference", function () { return Promise.resolve(cloneWavFile); });
   attachEncodeChips(saveSpeakButton, "spoken-text", wavFromSrc(speakAudio));
   attachEncodeChips(saveDescriptionButton, "description", wavFromSrc(describeAudio));
-  attachEncodeChips(saveDesignWavButton, "voice-design", wavFromSrc(designAudio));
+  attachEncodeChips(saveDesignWavButton, "voice-design", function () { return designCandidate && designCandidate.preview; });
   attachEncodeChips(saveStoryButton, "story", wavFromSrc(storyAudio));
   attachEncodeChips(conversionSaveWavButton, "voice-conversion", function () { return Promise.resolve(conversionOutputBlob); });
   storyForm.addEventListener("submit", startStory);
@@ -5783,7 +6338,6 @@
   });
   imageSizeInput.addEventListener("input", syncSizePresets);
 
-  submitOnCtrlEnter(messageInput, voiceForm);
   submitOnCtrlEnter(imagePromptInput, imageForm);
   submitOnCtrlEnter(speakTextInput, cloneSpeakForm);
   submitOnCtrlEnter(quickSpeechText, quickSpeechForm);
@@ -5846,11 +6400,50 @@
   recordButton.addEventListener("lostpointercapture", stopRecording);
 
   cloneForm.addEventListener("submit", saveClone);
+  cloneDestinationSelect.addEventListener("change", function () {
+    cloneAssignStatus.textContent = "";
+    cloneAssignError.hidden = true;
+    syncCloneAssignment();
+  });
+  cloneNameInput.addEventListener("input", function () { syncCloneAssignment(); });
+  cloneTryVoiceSelect.addEventListener("change", function () {
+    clearSpeakAudio();
+    cloneSpeakError.hidden = true;
+    cloneAuditionStatus.textContent = cloneAuditionDraft && cloneAuditionDraft.voiceID === cloneTryVoiceSelect.value && cloneAuditionDraft.pending
+      ? "This voice has an unsaved regenerated clone. Speak to try it, then Save to Library."
+      : "";
+    updateSpeakVoiceLabel();
+    syncCloneAssignment();
+  });
+  cloneRegenerateButton.addEventListener("click", regenerateClone);
+  speakTextInput.addEventListener("input", function () { syncCloneAssignment(); });
+  cloneActorSelect.addEventListener("change", function () {
+    cloneCharacterSelect.value = "";
+    cloneAssignStatus.textContent = "";
+    renderVoiceLibrary(libraryVoices);
+  });
+  cloneCharacterSelect.addEventListener("change", function () {
+    cloneAssignStatus.textContent = "";
+    renderVoiceLibrary(libraryVoices);
+  });
+  cloneAssignButton.addEventListener("click", assignCloneReference);
   designForm.addEventListener("submit", generateDesign);
   designSaveButton.addEventListener("click", saveDesign);
+  designDestinationSelect.addEventListener("change", function () { showDesignSaveStatus(); syncDesignAssignment(); });
+  designActorSelect.addEventListener("change", function () { designCharacterSelect.value = ""; showDesignSaveStatus(); renderDesignDestinations(); });
+  designCharacterSelect.addEventListener("change", function () { showDesignSaveStatus(); syncDesignAssignment(); });
+  designNameInput.addEventListener("input", function () { showDesignSaveStatus(); syncDesignAssignment(); });
+  designCandidateRadios.forEach(function (radio, index) {
+    radio.addEventListener("change", function () { selectDesignCandidate(index); });
+  });
+  designCandidateAudios.forEach(function (audio) {
+    audio.addEventListener("play", function () {
+      designCandidateAudios.forEach(function (other) { if (other !== audio) other.pause(); });
+    });
+  });
   saveDesignWavButton.addEventListener("click", function () {
-    if (designAudio.src) {
-      downloadURL(designAudio.src, "designed-voice.wav");
+    if (designAudioUrl) {
+      downloadURL(designAudioUrl, "designed-voice.wav");
     }
   });
   cloneSpeakForm.addEventListener("submit", speakText);
@@ -5880,42 +6473,15 @@
 
   conversionForm.addEventListener("submit", runVoiceConversion);
   conversionSourceInput.addEventListener("change", function () {
-    normalizeConversionUpload("source", conversionSourceInput.files && conversionSourceInput.files[0]);
+    normalizeConversionUpload(conversionSourceInput.files && conversionSourceInput.files[0]);
   });
-  conversionTargetInput.addEventListener("change", function () {
-    normalizeConversionUpload("target", conversionTargetInput.files && conversionTargetInput.files[0]);
-  });
-  conversionSourceClearButton.addEventListener("click", function () { clearConversionFile("source"); });
-  conversionTargetClearButton.addEventListener("click", function () { clearConversionFile("target"); });
-  conversionSourceRecordButton.addEventListener("pointerdown", function (event) { startConversionRecording("source", event); });
+  conversionSourceClearButton.addEventListener("click", function () { clearConversionFile(); });
+  conversionSourceRecordButton.addEventListener("pointerdown", function (event) { startConversionRecording(event); });
   conversionSourceRecordButton.addEventListener("pointerup", stopConversionRecording);
   conversionSourceRecordButton.addEventListener("pointercancel", stopConversionRecording);
   conversionSourceRecordButton.addEventListener("lostpointercapture", stopConversionRecording);
-  conversionTargetRecordButton.addEventListener("pointerdown", function (event) { startConversionRecording("target", event); });
-  conversionTargetRecordButton.addEventListener("pointerup", stopConversionRecording);
-  conversionTargetRecordButton.addEventListener("pointercancel", stopConversionRecording);
-  conversionTargetRecordButton.addEventListener("lostpointercapture", stopConversionRecording);
-  conversionTargetVoiceSelect.addEventListener("change", function () {
-    if (conversionTargetUrl) {
-      URL.revokeObjectURL(conversionTargetUrl);
-      conversionTargetUrl = "";
-    }
-    conversionTargetFile = null;
-    conversionTargetInput.value = "";
-    var selected = libraryVoices.find(function (voice) { return voice.id === conversionTargetVoiceSelect.value; });
-    if (selected) {
-      conversionTargetAudio.src = selected.audio_url;
-      conversionTargetAudio.load();
-      conversionTargetStatus.textContent = "Saved voice · " + (selected.name || selected.id);
-    } else {
-      conversionTargetAudio.removeAttribute("src");
-      conversionTargetAudio.load();
-      conversionTargetStatus.textContent = "Use a clean target sample or select a saved voice.";
-    }
-    clearConversionOutput();
-    clearConversionError();
-    syncConversionControls();
-  });
+  conversionTargetActorSelect.addEventListener("change", function () { renderConversionTargetVoices(libraryVoices); });
+  conversionTargetVoiceSelect.addEventListener("change", selectConversionTargetVoice);
   conversionModelSelect.addEventListener("change", function () {
     clearConversionOutput();
     syncConversionControls();
@@ -5928,15 +6494,11 @@
       downloadURL(conversionOutputUrl, "voice-conversion.wav");
     }
   });
-  conversionLibraryButton.addEventListener("click", function () {
-    if (conversionOutputUrl) {
-      saveToLibrary("audio", "Voice conversion " + new Date().toLocaleString(), conversionOutputUrl, {
-        source: "voice-conversion",
-        model: conversionModelSelect.value,
-        target_voice: conversionTargetVoiceSelect.value || "uploaded-reference"
-      }, conversionLibraryButton);
-    }
-  });
+  conversionLibraryButton.addEventListener("click", saveConversionVoice);
+  conversionSaveDestinationSelect.addEventListener("change", function () { showConversionSaveStatus(); syncConversionAssignment(); });
+  conversionSaveActorSelect.addEventListener("change", function () { conversionSaveCharacterSelect.value = ""; showConversionSaveStatus(); renderConversionDestinations(); });
+  conversionSaveCharacterSelect.addEventListener("change", function () { showConversionSaveStatus(); syncConversionAssignment(); });
+  conversionSaveNameInput.addEventListener("input", function () { showConversionSaveStatus(); syncConversionAssignment(); });
 
   musicForm.addEventListener("submit", runMusicGeneration);
   musicModeSelect.addEventListener("change", syncMusicMode);
@@ -5993,8 +6555,15 @@
     syncAudioServiceControls();
   });
   separationModelSelect.addEventListener("change", syncAudioServiceControls);
+  separationPromptInput.addEventListener("input", syncAudioServiceControls);
   analysisForm.addEventListener("submit", runAudioAnalysis);
-  analysisFileInput.addEventListener("change", syncAudioServiceControls);
+  analysisFileInput.addEventListener("change", function () {
+    analysisTranscriptInput.value = "";
+    analysisTranscribeStatus.textContent = "Generate a transcript, then check and correct the words before alignment.";
+    analysisOutput.textContent = "No analysis yet.";
+    syncAudioServiceControls();
+  });
+  analysisTranscribeButton.addEventListener("click", transcribeAnalysisFile);
   analysisModelSelect.addEventListener("change", syncAudioServiceControls);
   analysisTranscriptInput.addEventListener("input", syncAudioServiceControls);
   analysisLanguageInput.addEventListener("input", syncAudioServiceControls);
@@ -6007,9 +6576,7 @@
     cloneRecordButton.disabled = true;
     cloneRecordButton.textContent = "Recording unavailable";
     conversionSourceRecordButton.disabled = true;
-    conversionTargetRecordButton.disabled = true;
     conversionSourceRecordButton.textContent = "Recording unavailable";
-    conversionTargetRecordButton.textContent = "Recording unavailable";
     musicSourceRecordButton.disabled = true;
     musicSourceRecordButton.textContent = "Recording unavailable";
   }
@@ -6081,6 +6648,12 @@
   var extractToolbarActions = document.getElementById("extractToolbarActions");
   var extractPrimaryActions = document.getElementById("extractPrimaryActions");
   var extractSelectionActions = document.getElementById("extractSelectionActions");
+  var transcribePlaybackControls = document.getElementById("transcribePlaybackControls");
+  var transcribeActions = document.getElementById("transcribeActions");
+  var extractSpeakerControls = document.getElementById("extractSpeakerControls");
+  var extractSpeakerHost = document.getElementById("extractSpeakerHost");
+  var transcribeTranscriptStep = document.getElementById("transcribeTranscriptStep");
+  var transcribeAdjustStep = document.getElementById("transcribeAdjustStep");
 
   function activePageFromHash() {
     var name = (window.location.hash || "").replace(/^#/, "");
@@ -6110,11 +6683,22 @@
     }
     if (extractPrimaryActions) {
       (mode === "extract" ? extractSelectionActions : extractToolbarActions).appendChild(extractPrimaryActions);
+      (mode === "extract" ? extractPrimaryActions : transcribePlaybackControls).prepend(extractPlayButton);
     }
+    (mode === "extract" ? extractSpeakerHost : transcribeActions).appendChild(extractSpeakerControls);
+    if (mode === "extract") {
+      // Extract hides the numbered headings, so their contents must stay accessible.
+      document.querySelectorAll("#audioWorkspace details.transcribe-step").forEach(function (step) { step.open = true; });
+      transcribeTranscriptStep.before(transcribeAdjustStep);
+    }
+    else transcribeTranscriptStep.after(transcribeAdjustStep);
     if (mode === "transcribe") {
       extractSelectionActions.hidden = true;
     }
     extractTranscribeButton.textContent = mode === "extract" ? "Transcribe selection" : "Transcribe";
+    extractTranscribeButton.classList.toggle("primary", mode === "transcribe");
+    extractTranscribeButton.classList.toggle("secondary", mode === "extract");
+    extractTranscribeButton.classList.toggle("compact-button", mode === "extract");
     audioWorkspaceModeSections.forEach(function (section) {
       section.hidden = section.getAttribute("data-audio-workspace-mode") !== mode;
     });
@@ -6213,12 +6797,12 @@
   var modelsList = document.getElementById("modelsList");
 
   var MODEL_CATEGORIES = [
-    { id: "speech", title: "Text to speech & cloning", description: "Speak written text and reuse a recorded voice.", engines: ["audio", "dramabox", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-customvoice", "vibevoice", "fish-audio", "chatterbox-clone", "index-tts2.5", "higgs-audio", "fireredtts3-base", "fireredtts3-instruct"] },
+    { id: "speech", title: "Text to speech & cloning", description: "Speak written text and reuse a recorded voice.", engines: ["audio", "dramabox", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-customvoice", "vibevoice", "fish-audio", "fish-drama3", "chatterbox-clone", "index-tts2.5", "higgs-audio", "fireredtts3-base", "fireredtts3-instruct"] },
     { id: "voice-design", title: "Voice design", description: "Create a new voice from a written description.", engines: ["voicedesign", "omnivoice", "voxcpm2"] },
     { id: "voice-conversion", title: "Voice conversion", description: "Change the speaker while preserving the performance.", engines: ["voiceconvert", "vevo2"] },
     { id: "transcription", title: "Transcription", description: "Turn speech into text and ignore unwanted silence.", engines: ["whisper", "qwen3-asr-0.6b", "qwen3-asr-1.7b", "vibevoice-asr"] },
     { id: "diarization", title: "Audio analysis", description: "Find speech, speakers, and aligned words.", engines: ["diarize", "diarize-sherpa", "silero-vad", "marblenet-vad", "forced-aligner"] },
-    { id: "music", title: "Music, SFX & separation", description: "Create, reshape, and separate music and sound.", engines: ["music", "stable-audio-medium", "stable-audio-sfx", "heartmula", "htdemucs", "bs-roformer", "mel-band-roformer"] },
+    { id: "music", title: "Music, SFX & separation", description: "Create, reshape, and separate music and sound.", engines: ["music", "stable-audio-medium", "stable-audio-sfx", "heartmula", "htdemucs", "bs-roformer", "mel-band-roformer", "mossformer2", "sam-audio"] },
     { id: "imagery", title: "Imagery", description: "Generate images and understand their contents.", engines: ["sd", "vision"] },
     { id: "language", title: "Language & writing", description: "Power conversations, stories, and writing assistance.", engines: ["llama"] },
     { id: "other", title: "Other models", description: "Models without a studio task grouping yet.", engines: [] }
@@ -7479,9 +8063,7 @@
   var transcribeRecordButton = document.getElementById("transcribeRecordButton");
   var transcribeStopRecordButton = document.getElementById("transcribeStopRecordButton");
   var transcribeRecordVu = document.getElementById("transcribeRecordVu");
-  var transcribeRenameFrom = document.getElementById("transcribeRenameFrom");
-  var transcribeRenameTo = document.getElementById("transcribeRenameTo");
-  var transcribeRenameButton = document.getElementById("transcribeRenameButton");
+  var transcribeSpeakerCards = document.getElementById("transcribeSpeakerCards");
   var transcribeSearchInput = document.getElementById("transcribeSearchInput");
   var transcribeSearchStatus = document.getElementById("transcribeSearchStatus");
   var transcribeSearchPrevious = document.getElementById("transcribeSearchPrevious");
@@ -7524,6 +8106,8 @@
       cursor: 0,          // playhead position when no region is marked
       region: null,       // {start, end} seconds
       segments: [],       // {start, end, text, speaker}
+      speakerLabels: [],  // stable colour slots, including renamed declared speakers
+      detectedSpeakers: [],
       checked: {},        // segment index -> true: multi-segment selection
       speechClips: [],    // clean labelled ranges waiting to be processed
       nextSpeechClipID: 1,
@@ -7543,6 +8127,8 @@
         this.cursor = 0;
         this.region = null;
         this.segments = [];
+        this.speakerLabels = [];
+        this.detectedSpeakers = [];
         this.checked = {};
         this.speechClips = [];
         this.nextSpeechClipID = 1;
@@ -7553,6 +8139,7 @@
       },
       replaceTranscript: function (segments) {
         this.segments = segments || [];
+        this.detectedSpeakers = [];
         this.checked = {};
         this.filter = "";
         this.selectedRow = -1;
@@ -7903,28 +8490,109 @@
     transcribeSearchMatches = [];
     transcribeSearchIndex = -1;
     transcribeSearchInput.value = "";
-    transcribeRenameTo.value = "";
+    transcribeSpeakerCards.dataset.speakers = "";
+    transcribeSpeakerCards.textContent = "";
+  }
+
+  function speakerColor(name) {
+    var index = ex.speakerLabels.indexOf(name);
+    if (index < 0) {
+      var letterIndex = /^[A-Z]$/.test(name) ? name.charCodeAt(0) - 65 : -1;
+      index = letterIndex >= 0 && !ex.speakerLabels[letterIndex] ? letterIndex : ex.speakerLabels.length;
+      ex.speakerLabels[index] = name;
+    }
+    return "hsl(" + ((205 + index * 137.508) % 360).toFixed(1) + ", 70%, 68%)";
+  }
+
+  function workspaceSpeakers() {
+    var names = taggedSpeakers().concat(ex.detectedSpeakers);
+    var count = Number(document.getElementById("extractSpeakersInput").value);
+    if (Number.isInteger(count) && count >= 1 && count <= 26) {
+      for (var i = 0; i < count; i++) {
+        if (!ex.speakerLabels[i]) ex.speakerLabels[i] = String.fromCharCode(65 + i);
+        names.push(ex.speakerLabels[i]);
+      }
+    }
+    names = names.filter(function (name, index) { return name && names.indexOf(name) === index; });
+    names.forEach(speakerColor);
+    return names.sort(function (a, b) { return ex.speakerLabels.indexOf(a) - ex.speakerLabels.indexOf(b); });
+  }
+
+  function speakerTagNames() {
+    var names = workspaceSpeakers();
+    if (!ex.detectedSpeakers.length && !Number(document.getElementById("extractSpeakersInput").value)) {
+      for (var i = 0; i < 3; i++) {
+        var name = ex.speakerLabels[i] || String.fromCharCode(65 + i);
+        if (names.indexOf(name) < 0) names.push(name);
+      }
+    }
+    return names;
+  }
+
+  function renameWorkspaceSpeaker(from, to) {
+    to = String(to || "").trim();
+    if (!to || to === from) return;
+    if (workspaceSpeakers().indexOf(to) >= 0) {
+      extractError("That speaker name is already in use. Choose a different name.");
+      return;
+    }
+    speakerColor(from);
+    var changed = ex.renameSpeaker(from, to);
+    ex.speakerLabels[ex.speakerLabels.indexOf(from)] = to;
+    ex.detectedSpeakers = ex.detectedSpeakers.map(function (name) { return name === from ? to : name; });
+    if (ex.filter === from) ex.setFilter(to);
+    extractTranscribeStatus.textContent = changed ? "Renamed " + changed + " segment" + (changed === 1 ? "" : "s") : "Speaker renamed";
+    renderExtractFilter();
+    refreshTranscribeSearch(false);
+    drawExtractWave();
+  }
+
+  function renderSpeakerCards() {
+    var speakers = workspaceSpeakers();
+    var key = JSON.stringify(speakers);
+    if (transcribeSpeakerCards.dataset.speakers === key) return;
+    var drafts = Object.create(null);
+    transcribeSpeakerCards.querySelectorAll("input").forEach(function (input) { drafts[input.dataset.speaker] = input.value; });
+    transcribeSpeakerCards.dataset.speakers = key;
+    transcribeSpeakerCards.textContent = "";
+    if (!speakers.length) {
+      transcribeSpeakerCards.textContent = "Detect speakers or enter a speaker count above to add speaker boxes.";
+      return;
+    }
+    speakers.forEach(function (speaker) {
+      var card = createElement("div", "speaker-card");
+      card.dataset.speaker = speaker;
+      card.style.setProperty("--speaker-color", speakerColor(speaker));
+      var label = createElement("label", "field");
+      label.appendChild(createElement("span", "speaker-card-name", "Speaker " + speaker));
+      var input = createElement("input", "text-input");
+      input.type = "text";
+      input.maxLength = 80;
+      input.placeholder = "New speaker name";
+      input.dataset.speaker = speaker;
+      input.value = drafts[speaker] || "";
+      label.appendChild(input);
+      card.appendChild(label);
+      var button = createElement("button", "secondary compact-button", "Rename throughout");
+      button.type = "button";
+      function syncRename() { button.disabled = !input.value.trim() || input.value.trim() === speaker; }
+      input.addEventListener("input", syncRename);
+      button.addEventListener("click", function () {
+        flushAudioWorkspaceEdit();
+        renameWorkspaceSpeaker(speaker, input.value);
+      });
+      input.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") { event.preventDefault(); if (!button.disabled) button.click(); }
+      });
+      syncRename();
+      card.appendChild(button);
+      transcribeSpeakerCards.appendChild(card);
+    });
   }
 
   function syncTranscribeTools() {
     var hasSegments = ex.segments.length > 0;
-    var previousSpeaker = transcribeRenameFrom.value;
-    var speakers = taggedSpeakers();
-    transcribeRenameFrom.textContent = "";
-    if (!speakers.length) {
-      transcribeRenameFrom.appendChild(createElement("option", "", "No speakers yet"));
-    } else {
-      speakers.forEach(function (speaker) {
-        var option = createElement("option", "", speaker);
-        option.value = speaker;
-        transcribeRenameFrom.appendChild(option);
-      });
-      transcribeRenameFrom.value = speakers.indexOf(previousSpeaker) >= 0 ? previousSpeaker : speakers[0];
-    }
-    transcribeRenameFrom.disabled = !speakers.length;
-    transcribeRenameTo.disabled = !speakers.length;
-    transcribeRenameButton.disabled = !speakers.length || !transcribeRenameTo.value.trim() ||
-      transcribeRenameTo.value.trim() === transcribeRenameFrom.value;
+    renderSpeakerCards();
     transcribeSearchInput.disabled = !hasSegments;
     transcriptExportButtons.forEach(function (button) { button.disabled = !hasSegments; });
 
@@ -8038,22 +8706,11 @@
 
   transcribeRecordButton.addEventListener("click", startTranscribeRecording);
   transcribeStopRecordButton.addEventListener("click", stopTranscribeRecording);
-  transcribeRenameFrom.addEventListener("change", syncTranscribeTools);
-  transcribeRenameTo.addEventListener("input", syncTranscribeTools);
-  transcribeRenameButton.addEventListener("click", function () {
+  document.getElementById("extractSpeakersInput").addEventListener("input", function () {
     flushAudioWorkspaceEdit();
-    var from = transcribeRenameFrom.value;
-    var to = transcribeRenameTo.value.trim();
-    var changed = ex.renameSpeaker(from, to);
-    if (changed) {
-      if (ex.filter === from) {
-        ex.setFilter(to);
-      }
-      transcribeRenameTo.value = "";
-      extractTranscribeStatus.textContent = "Renamed " + changed + " segment" + (changed === 1 ? "" : "s");
-      renderExtractFilter();
-      refreshTranscribeSearch(false);
-    }
+    renderExtractFilter();
+    renderExtractTimeline();
+    drawExtractWave();
   });
   transcribeSearchInput.addEventListener("input", function () {
     transcribeSearchIndex = -1;
@@ -8253,6 +8910,26 @@
     extractSelectionActions.style.left = Math.round(left) + "px";
   }
 
+  function drawSpeakerRegions(g, width, height) {
+    var duration = ex.view.end - ex.view.start;
+    if (duration <= 0) return;
+    ex.segments.forEach(function (segment) {
+      if (!segment.speaker || segment.end <= ex.view.start || segment.start >= ex.view.end) return;
+      var x = (Math.max(segment.start, ex.view.start) - ex.view.start) / duration * width;
+      var end = (Math.min(segment.end, ex.view.end) - ex.view.start) / duration * width;
+      if (end <= x) return;
+      g.save();
+      g.fillStyle = speakerColor(segment.speaker);
+      g.globalAlpha = 0.18;
+      g.fillRect(x, 0, end - x, height);
+      g.globalAlpha = 1;
+      g.fillRect(x, 0, end - x, 3);
+      g.font = "11px sans-serif";
+      if (end - x > 20) g.fillText(segment.speaker, x + 5, 16, end - x - 10);
+      g.restore();
+    });
+  }
+
   function drawExtractWave() {
     var dpr = window.devicePixelRatio || 1;
     var cssWidth = extractCanvas.clientWidth || extractCanvas.parentElement.clientWidth || 600;
@@ -8276,6 +8953,8 @@
     var startSample = Math.floor(viewStart * ex.rate);
     var samplesPerPx = Math.max(1, Math.floor((viewLen * ex.rate) / cssWidth));
     var mid = cssHeight / 2;
+
+    drawSpeakerRegions(g, cssWidth, cssHeight);
 
     // Region shading under the waveform.
     ex.speechClips.forEach(function (clip, index) {
@@ -8338,7 +9017,7 @@
         return;
       }
       var sx = ((segment.start - viewStart) / viewLen) * cssWidth;
-      g.fillStyle = segment.speaker ? "#ffbe73" : "#333c49";
+      g.fillStyle = segment.speaker ? speakerColor(segment.speaker) : "#333c49";
       g.fillRect(sx, 0, 2, segment.speaker ? 14 : 8);
     });
 
@@ -8371,6 +9050,10 @@
     extractCanvas.setAttribute("aria-valuetext", fmtTime(Math.min(ex.duration, Math.max(0, ex.cursor || 0))));
     positionExtractSelectionActions();
   }
+
+  extractCanvas.closest("details").addEventListener("toggle", function (event) {
+    if (event.currentTarget.open) drawExtractWave();
+  });
 
   window.addEventListener("resize", function () {
     if (ex.samples && ["extract", "transcription"].indexOf(activePageFromHash()) >= 0) {
@@ -8849,6 +9532,8 @@
     extractPlayButton.textContent = ex.playback
       ? (mode === "segment" ? "Pause segment" : mode === "extract" ? "Pause selection" : "Pause audio")
       : (ex.mode === "extract" ? "Play selection" : "Play audio");
+    extractPlayButton.setAttribute("aria-label", extractPlayButton.textContent);
+    extractPlayButton.title = extractPlayButton.textContent;
     extractPlayButton.setAttribute("aria-pressed", ex.playback ? "true" : "false");
     extractStopButton.disabled = !ex.playback && !ex.pausedPlayback;
     document.querySelectorAll(".extract-segment-play").forEach(function (button) {
@@ -9024,7 +9709,7 @@
     var file = new File([blob], extractClipName().replace(/[:]/g, ".") + ".wav", { type: "audio/wav" });
     setCloneWav(file, "the Extractor", ex.selectionProvenance());
     window.location.hash = "#voices";
-    cloneNameInput.focus();
+    cloneSaveButton.focus();
     log("Extractor clip sent to voice clone: " + file.name);
   });
 
@@ -9177,6 +9862,7 @@
         drawExtractWave();
       }
       extractTranscribeStatus.textContent = ex.segments.length + " segments";
+      revealWorkflowResult(extractTimeline);
       renderExtractFilter();
       log("Extractor transcribed " + ex.sourceName + ": " + ex.segments.length + " segments");
     } catch (err) {
@@ -9210,6 +9896,7 @@
       var row = createElement("div", "extract-segment" + (index === ex.selectedRow ? " selected" : "") +
         (ex.checked[index] ? " checked" : "") + searchClass);
       row.tabIndex = 0;
+      if (segment.speaker) row.style.setProperty("--speaker-color", speakerColor(segment.speaker));
       var head = createElement("div", "extract-segment-head");
       var tick = document.createElement("input");
       tick.type = "checkbox";
@@ -9256,16 +9943,10 @@
       });
       head.appendChild(segmentPlay);
       var tags = createElement("span", "extract-segment-tags");
-      // Offer every speaker present plus the manual defaults, so detected
-      // clusters (D, E, ...) can be corrected by hand too.
-      var tagNames = taggedSpeakers();
-      ["A", "B", "C"].forEach(function (n) {
-        if (tagNames.indexOf(n) < 0) {
-          tagNames.push(n);
-        }
-      });
-      tagNames.sort().forEach(function (name) {
+      var tagNames = speakerTagNames();
+      tagNames.forEach(function (name) {
         var tag = createElement("button", "plain tag-button" + (segment.speaker === name ? " active" : ""), name);
+        tag.style.setProperty("--speaker-color", speakerColor(name));
         tag.type = "button";
         tag.addEventListener("click", function (event) {
           event.stopPropagation();
@@ -9310,7 +9991,8 @@
       });
       row.addEventListener("keydown", function (event) {
         if (event.key === "1" || event.key === "2" || event.key === "3") {
-          tagExtractSegment(index, ["A", "B", "C"][Number(event.key) - 1]);
+          var name = tagNames[Number(event.key) - 1];
+          if (name) tagExtractSegment(index, name);
           event.preventDefault();
         }
       });
@@ -9461,7 +10143,7 @@
     });
     speakers.sort();
     extractFilterRow.textContent = "";
-    ["", "A", "B", "C"].concat(speakers).forEach(function (name, index, all) {
+    [""].concat(speakerTagNames()).forEach(function (name, index, all) {
       if (all.indexOf(name) !== index) {
         return; // dedupe: manual defaults vs detected clusters
       }
@@ -9574,6 +10256,13 @@
       }
       var payload = await response.json();
       var spans = payload.spans || [];
+      ex.detectedSpeakers = [];
+      spans.forEach(function (span) {
+        if (/^[A-Z]$/.test(span.speaker)) {
+          span.speaker = ex.speakerLabels[span.speaker.charCodeAt(0) - 65] || span.speaker;
+        }
+        if (span.speaker && ex.detectedSpeakers.indexOf(span.speaker) < 0) ex.detectedSpeakers.push(span.speaker);
+      });
       // Assign each transcript line the speaker whose span overlaps it most;
       // lines with no meaningful overlap keep their manual tag.
       var tagged = 0;
@@ -9616,7 +10305,6 @@
   var libraryFilterClearButton = document.getElementById("libraryFilterClearButton");
   var libraryFilterEmpty = document.getElementById("libraryFilterEmpty");
   var libraryReplyButton = document.getElementById("libraryReplyButton");
-  var librarySpeakButton = document.getElementById("librarySpeakButton");
   var libraryImageButton = document.getElementById("libraryImageButton");
   var jobsPollTimer = null;
   var libraryFilterOpenState = null;
@@ -9684,10 +10372,7 @@
     var text = replyOutput.value || "Voice reply";
     saveToLibrary("audio", text.slice(0, 110), replyAudio.src, { source: "voice-loop", text: text }, libraryReplyButton);
   });
-  librarySpeakButton.addEventListener("click", function () {
-    var text = speakTextInput.value || "Spoken text";
-    saveToLibrary("audio", text.slice(0, 110), speakAudio.src, { source: "speak", text: text }, librarySpeakButton);
-  });
+  librarySpeakButton.addEventListener("click", saveAuditionClone);
   libraryImageButton.addEventListener("click", function () {
     var text = imagePromptInput.value || "Generated image";
     saveToLibrary("image", text.slice(0, 110), imagePreview.src, { source: "image-lab", text: text }, libraryImageButton);

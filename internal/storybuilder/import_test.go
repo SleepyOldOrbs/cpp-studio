@@ -143,6 +143,19 @@ func TestStoryImporterPreviewsMappingsAndPublishesIndependentProject(t *testing.
 	if len(updated.Scenes) != 2 || updated.Scenes[1].ID != "crossing" {
 		t.Fatalf("track-only update dropped imported scenes: %+v", updated.Scenes)
 	}
+	changedVoice := identities["character_mara"]
+	changedVoice.ReferenceReassigned = true
+	identities["character_mara"] = changedVoice
+	reimported, err := importer.Import(manifest.ID, StoryImportRequest{Mappings: []StorySpeakerMapping{
+		{SpeakerID: "mara", CharacterVoiceID: "character_mara"},
+		{SpeakerID: "jon", CharacterVoiceID: "character_jon"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clip := reimported.Tracks[0].Clips[0]; clip.Status != DialogueStatusStale || clip.SourceID != "" {
+		t.Fatal("take made with a reassigned voice was incorrectly reused")
+	}
 }
 
 func TestStoryImporterDoesNotPublishPartialProjectWhenManifestWriteFails(t *testing.T) {

@@ -62,8 +62,8 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "Hands-free updates this Transcript") {
 		t.Fatalf("expected Talk-page hands-free transcript hint, got %q", body)
 	}
-	if !strings.Contains(body, "voice-record-row") {
-		t.Fatalf("expected single-row voice transport marker, got %q", body)
+	if !strings.Contains(body, "voice-input-tabs") {
+		t.Fatalf("expected voice input tabs marker, got %q", body)
 	}
 	if !strings.Contains(body, "storyLibraryButton") {
 		t.Fatalf("expected story library marker, got %q", body)
@@ -119,7 +119,7 @@ func TestHandlerServesIndex(t *testing.T) {
 	if !strings.Contains(body, "extractImportRow") {
 		t.Fatalf("expected URL importer marker, got %q", body)
 	}
-	if !strings.Contains(body, `<section class="transcribe-desk-tools" aria-label="Transcript tools">`) {
+	if !strings.Contains(body, `<details class="transcribe-step workflow-step" id="transcribeAdjustStep" aria-label="Transcript tools" open>`) {
 		t.Fatalf("expected speaker rename tools to be shared by Transcribe and Extract")
 	}
 	if !strings.Contains(body, `<div class="transcribe-tool-row" data-audio-workspace-mode="transcribe">`) {
@@ -296,7 +296,7 @@ func TestHandlerServesIndex(t *testing.T) {
 		"openTranscribeButton",
 		"transcribeRecordButton",
 		"transcribeStopRecordButton",
-		"transcribeRenameButton",
+		"transcribeSpeakerCards",
 		"transcribeSearchInput",
 		"extractSelectionDuration",
 		"extractSelectionSpeakers",
@@ -602,10 +602,10 @@ func TestHandlerServesAssets(t *testing.T) {
 			needle:      ".model-chooser",
 		},
 		{
-			name:        "css voice transport row",
+			name:        "css voice input tabs",
 			path:        "/styles.css",
 			contentType: "text/css",
-			needle:      ".voice-record-row",
+			needle:      ".voice-input-tabs",
 		},
 		{
 			name:        "javascript catalog model controls",

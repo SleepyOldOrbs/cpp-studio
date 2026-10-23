@@ -61,7 +61,7 @@ const (
 // SpeechEngineAllowsTextOnly reports whether a resident speech server may
 // omit voice_ref. Qwen requires a configured reference; DramaBox does not.
 func SpeechEngineAllowsTextOnly(engineName string) bool {
-	return engineName == DramaBoxSpeechEngineID
+	return engineName == DramaBoxSpeechEngineID || engineName == "fish-drama3"
 }
 
 // Voice identifies a cloned voice reference for speech synthesis: the
@@ -309,7 +309,7 @@ func FireRedVoiceDesignSpec(instruct, sampleText string) Spec {
 
 func speechArgumentText(engineName, text string) string {
 	switch engineName {
-	case "index-tts2.5", "higgs-audio", "fireredtts3-base", "fireredtts3-instruct":
+	case "index-tts2.5", "higgs-audio", "fireredtts3-base", "fireredtts3-instruct", "fish-drama3", "vibevoice":
 		// These integrations require audio.cpp 0.7.3, whose Windows wmain
 		// converts wide arguments to UTF-8. Preserve multilingual text.
 		return text
@@ -361,6 +361,16 @@ func designSpecShell(engineName string) Spec {
 			return nil
 		},
 	}
+}
+
+// WithVoiceDesignSeed gives each audition a separate sampling seed while
+// leaving the engine-specific design prompt and reference handling intact.
+func WithVoiceDesignSeed(spec Spec, seed int) Spec {
+	buildArgs := spec.BuildArgs
+	spec.BuildArgs = func(inPath, outPath string) []string {
+		return append(buildArgs(inPath, outPath), "--seed", strconv.Itoa(seed))
+	}
+	return spec
 }
 
 // TranscriptionSpec invokes the "whisper" engine: -f <wav path>. The input
@@ -427,6 +437,17 @@ func SeparationSpec(engineName string, wavBytes []byte, outDir string) Spec {
 	}
 }
 
+// PromptedSeparationSpec maps SAM Audio's s2s task to the same named-stem
+// delivery contract. The prompt is text; callers cannot supply native options.
+func PromptedSeparationSpec(engineName string, wavBytes []byte, prompt, outDir string) Spec {
+	spec := SeparationSpec(engineName, wavBytes, outDir)
+	spec.OverrideArgs = map[string]string{"--task": "s2s"}
+	spec.BuildArgs = func(inPath, outPath string) []string {
+		return []string{"--audio", inPath, "--text", prompt, "--out-dir", outPath}
+	}
+	return spec
+}
+
 // VADSpec returns audio.cpp's JSON speech regions as Result.Output.
 func VADSpec(engineName string, wavBytes []byte) Spec {
 	return Spec{
@@ -442,6 +463,18 @@ func VADSpec(engineName string, wavBytes []byte) Spec {
 			return []string{"--audio", inPath, "--segments-out", outPath}
 		},
 	}
+}
+
+// VADOutputJSON handles audio.cpp's successful no-speech result: the CLI
+// leaves the output file empty when there are no segments to write.
+func VADOutputJSON(output []byte) ([]byte, error) {
+	if len(bytes.TrimSpace(output)) == 0 {
+		return []byte("[]"), nil
+	}
+	if !json.Valid(output) {
+		return nil, fmt.Errorf("voice activity engine produced invalid JSON")
+	}
+	return output, nil
 }
 
 // ForcedAlignmentSpec maps an exact transcript and language to word JSON

@@ -78,6 +78,12 @@ unit behind `POST /v1/voice`. Takes the engine seam and a `ChatFunc` as
 injected dependencies, so the whole loop is testable without native binaries.
 The browser demo only records, uploads, and plays.
 
+Each Voice Loop turn reserves the configured engine slots before changing the
+resident set. It retains llama and the selected speech engine, plus whisper for
+recorded input, and suspends other idle residents. A suspended resident reloads
+on its next invocation; an explicit operator stop remains stopped. Reservations
+last through the complete turn, so other active work prevents preparation.
+
 ## Browser Recorder (`internal/demo/static/app.js`)
 
 Owns microphone permission and setup, stop-during-setup cancellation, sample
@@ -118,8 +124,14 @@ non-speech sounds remain work for the existing Stable Audio tools.
 The Voice Library uses two related terms. An **Actor Voice** is an existing
 recorded or designed reusable voice with its own reference WAV and transcript.
 A **Character Voice** is a durable child direction beneath one Actor Voice. It
-stores identity and performance direction, but never duplicates the parent's
-reference WAV. Its optional generated preview is replaceable evaluation data,
+stores identity and performance direction and inherits the parent's reference
+unless the user explicitly assigns a recording to that Character Voice. That
+override changes only the selected character. Reference assignments retain
+previous WAVs and manifest snapshots, update synthesis fingerprints, and clear
+the selected character's generated preview. Inherited previews and revisions are
+invalidated on read against the actor's committed reference timestamp, so a failed
+actor-reference publication leaves child manifests and previews unchanged.
+Its optional generated preview is replaceable evaluation data,
 not a Library asset or production take.
 
 ## Story (`internal/story`)
@@ -177,9 +189,13 @@ Store then validates and copies one immutable WAV into the selected project's
 that copy for later placements. A dialogue build selects stale, failed, and
 orphaned building clips in timeline order; treating building clips as retryable
 recovers an invocation whose final status could not be saved. The build holds
-both the shared `audio` gate and the directed
-`omnivoice` Engine Reservation for the build, resolves the current Character
-Voice direction into OmniVoice synthesis, and stores each successful result as an immutable project-owned WAV
+both the shared `audio` gate and the selected dialogue engine's reservation for
+the build. The project's `dialogue_engine` defaults to `omnivoice` for existing
+manifests and also supports `fish-drama3`. Both resolve the Character Voice's Actor
+reference and direction; the engine module maps Drama3 direction to an inline
+style tag. Changing engine invalidates current dialogue without deleting old
+takes or masters, and an in-flight build cannot publish across that change.
+The build stores each successful result as an immutable project-owned WAV
 under `takes`. Each completed take is attached by an atomic manifest replacement
 before the next clip starts, so a later failure does not discard earlier work.
 Generated take identities and source metadata are server-owned. Clips expose a

@@ -29,11 +29,12 @@ const (
 // transcript the TTS engine conditions on. Protected voices refuse
 // deletion — for curated voices that should survive library housekeeping.
 type Clone struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Transcript string    `json:"transcript"`
-	CreatedAt  time.Time `json:"created_at"`
-	Protected  bool      `json:"protected,omitempty"`
+	Reference  *SavedReference `json:"reference,omitempty"`
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	Transcript string          `json:"transcript"`
+	CreatedAt  time.Time       `json:"created_at"`
+	Protected  bool            `json:"protected,omitempty"`
 	// Source says where this voice came from, when the studio knows: the
 	// recording, the seconds inside it, and the speaker tag. A voice
 	// outlives every clip it was cut from, so the one place this can be
@@ -315,22 +316,8 @@ func (s *Store) List() ([]Clone, error) {
 // ReferencePath returns the absolute path of a voice's reference WAV, for
 // handing to the speech engine and for serving playback.
 func (s *Store) ReferencePath(id string) (string, error) {
-	if err := validateVoiceID(id); err != nil {
-		return "", err
-	}
-	path := filepath.Join(s.rootDir, id, referenceWAVName)
-	file, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return "", fmt.Errorf("voice reference not found")
-	}
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	if err := wav.ValidateHeader(file); err != nil {
-		return "", fmt.Errorf("voice reference is not a valid WAV")
-	}
-	return filepath.Abs(path)
+	path, _, err := s.ResolveReference(id)
+	return path, err
 }
 
 func (s *Store) Delete(id string) error {

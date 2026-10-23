@@ -19,6 +19,7 @@
   const buildStatus = byID("storyBuilderBuildStatus");
   const buildButton = byID("storyBuilderBuildButton");
   const buildCancelButton = byID("storyBuilderBuildCancelButton");
+  const dialogueEngineInput = byID("storyBuilderDialogueEngine");
   const renderStatus = byID("storyBuilderRenderStatus");
   const renderButton = byID("storyBuilderRenderButton");
   const latestMaster = byID("storyBuilderLatestMaster");
@@ -151,11 +152,12 @@
     const mutations = new Map();
 
     const current = () => projects.find((project) => project.id === currentID) || null;
-    const snapshot = (project) => ({ scenes: clone(project.scenes), tracks: clone(project.tracks), timeline_duration_ms: project.timeline_duration_ms });
+    const snapshot = (project) => ({ scenes: clone(project.scenes), tracks: clone(project.tracks), timeline_duration_ms: project.timeline_duration_ms, dialogue_engine: project.dialogue_engine });
     const applySnapshot = (project, value) => {
       project.scenes = clone(value.scenes);
       project.tracks = clone(value.tracks);
       project.timeline_duration_ms = value.timeline_duration_ms;
+      project.dialogue_engine = value.dialogue_engine;
       normalizeTracks(project);
     };
     const pruneSelection = () => {
@@ -266,6 +268,7 @@
           if (!changedDuringSave) project.timeline_duration_ms = saved.timeline_duration_ms;
           project.scenes = changedDuringSave ? project.scenes : clone(saved.scenes || []);
           project.name = changedDuringSave ? project.name : saved.name;
+          if (!changedDuringSave) project.dialogue_engine = saved.dialogue_engine;
           if (!changedDuringSave) project.tracks = clone(saved.tracks);
           projects = [project, ...projects.filter((item) => item.id !== project.id)];
           if (changedDuringSave) saveAgain = true;
@@ -297,6 +300,7 @@
   const editSession = createEditSession();
 
   function normalizeTracks(project) {
+    project.dialogue_engine = project.dialogue_engine || "omnivoice";
     project.scenes = Array.isArray(project.scenes) ? project.scenes : [];
     project.tracks = Array.isArray(project.tracks) ? project.tracks : [];
     project.tracks.forEach((track, index) => {
@@ -494,6 +498,9 @@
   }
 
   function updateBuildControls() {
+    const project = currentProject();
+    dialogueEngineInput.value = project?.dialogue_engine || "omnivoice";
+    dialogueEngineInput.disabled = serverMutationPending();
     const count = dialogueBuildableCount();
     buildButton.disabled = Boolean(editSession.mutation("dialogueBuild") || !count);
     buildButton.textContent = count ? `Build dialogue (${count})` : "Build dialogue";
@@ -506,6 +513,43 @@
   function setBuildStatus(message, state = "") {
     buildStatus.textContent = message;
     buildStatus.dataset.state = state;
+  }
+
+  async function refreshDialogueEngines() {
+    try {
+      const catalog = await request("/v1/models/catalog");
+      const seen = new Set();
+      for (const model of catalog.models || []) {
+        if (!["omnivoice", "fish-drama3"].includes(model.engine) || !model.capabilities?.includes("voice_clone") || seen.has(model.engine)) continue;
+        seen.add(model.engine);
+        let option = Array.from(dialogueEngineInput.options).find((item) => item.value === model.engine);
+        if (!option) {
+          option = document.createElement("option");
+          option.value = model.engine;
+          dialogueEngineInput.append(option);
+        }
+        option.textContent = model.displayName;
+        option.disabled = !model.present || !model.configured;
+        if (option.disabled) option.textContent += " (unavailable)";
+      }
+      updateBuildControls();
+    } catch (error) {
+      setBuildStatus(`Could not load dialogue engines: ${error.message}`, "failed");
+    }
+  }
+
+  function changeDialogueEngine(project, engineID) {
+    if (project.dialogue_engine === engineID) return;
+    project.dialogue_engine = engineID;
+    project.tracks.forEach((track) => track.clips.forEach((clip) => {
+      if (clip.type !== "dialogue") return;
+      clip.status = "stale";
+      clip.build_error = "";
+      clip.media_error = "";
+      clip.source_id = "";
+      clip.source_duration_ms = clip.source_in_ms = clip.source_out_ms = 0;
+      clip.source_story_id = clip.source_story_line_id = clip.source_story_take_id = "";
+    }));
   }
 
   function setRenderStatus(message, state = "") {
@@ -1648,6 +1692,7 @@
     const payload = {
       name: project.name,
       revision: project.revision,
+      dialogue_engine: project.dialogue_engine || "omnivoice",
       timeline_duration_ms: project.timeline_duration_ms,
       tracks,
       revoice_track_ids: [track.id],
@@ -2011,6 +2056,7 @@
     const payload = {
       name: requestedName,
       revision: project.revision,
+      dialogue_engine: project.dialogue_engine || "omnivoice",
       timeline_duration_ms: project.timeline_duration_ms,
       scenes: clone(project.scenes || []),
       tracks: clone(project.tracks),
@@ -2200,6 +2246,10 @@
   });
   playheadInput.addEventListener("change", () => seekTimeline(Number(playheadInput.value)));
   buildButton.addEventListener("click", () => buildStaleDialogue());
+  dialogueEngineInput.addEventListener("change", () => {
+    const engineID = dialogueEngineInput.value;
+    acceptTimelineEdit((project) => changeDialogueEngine(project, engineID));
+  });
   buildCancelButton.addEventListener("click", () => cancelDialogueBuild());
   renderButton.addEventListener("click", () => renderMaster());
   saveButton.addEventListener("click", () => saveProject());
@@ -2267,4 +2317,5 @@
   refreshProjects();
   refreshVoiceLibrary();
   refreshDeliveryFormats();
+  refreshDialogueEngines();
 })();

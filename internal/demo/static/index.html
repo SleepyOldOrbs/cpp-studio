@@ -13,7 +13,6 @@
         <h1>cpp&#8209;studio</h1>
         <p class="tagline">local studio console</p>
       </div>
-      <div class="engine-rack" id="engineRack" aria-live="polite" aria-label="Engine status"></div>
       <div class="topbar-status">
         <span class="status-pill unknown" id="gatewayStatus">Unknown</span>
         <button class="secondary" id="healthButton" type="button">Refresh health</button>
@@ -41,8 +40,8 @@
             <a class="subnav-link" href="#voice-cloning" data-page-link="voice-cloning">Voice cloning</a>
             <a class="subnav-link" href="#voice-design" data-page-link="voice-design">Voice design</a>
             <a class="subnav-link" href="#voice-convert" data-page-link="voice-convert">Voice convert</a>
-            <a class="subnav-link" href="#training" data-page-link="training">Training data</a>
             <a class="subnav-link" href="#audio-analysis" data-page-link="audio-analysis">Audio analysis</a>
+            <a class="subnav-link" href="#training" data-page-link="training">Training data</a>
           </nav>
           <nav class="subnav" data-parent-nav="music" aria-label="Music and sound effects tools" hidden>
             <a class="subnav-link" href="#music" data-page-link="music">Overview</a>
@@ -192,6 +191,16 @@
             <textarea id="quickSpeechText" rows="6" required placeholder="Type or paste your text here. You can include tags supported by your chosen model."></textarea>
             <small class="hint">Your words go straight to the speech model. Need emotion or sound tags? Open the <a href="#model-guide">Model guide</a>.</small>
           </label>
+          <details id="drama3Speakers" open hidden>
+            <summary>Drama3 voices (optional)</summary>
+            <div class="workflow-step-body">
+              <p class="hint">Built with Fish Audio. This experimental Small model supports English and Japanese. For dialogue, add saved voices in order and put &lt;|speaker:0|&gt;, &lt;|speaker:1|&gt; before their lines. Tags such as [laughs] may affect delivery; listen for skipped words.</p>
+              <p class="hint">For GPU memory, choose the <strong>speech-tools</strong> profile in <a href="#engines">Engines</a> before generating. Return to chat afterwards.</p>
+              <div id="drama3SpeakerRows"></div>
+              <button class="secondary" id="drama3AddSpeaker" type="button">Add speaker</button>
+              <small class="hint">No rows uses the configured reference. Saved voices are managed in <a href="#voice-cloning">Voice cloning</a>.</small>
+            </div>
+          </details>
           <details id="quickSpeechPerformance" hidden><summary>Speech performance (optional)</summary><div class="workflow-step-body" data-performance-fields></div></details>
           <div class="action-row">
             <button class="primary" id="quickSpeechPlay" type="submit" disabled>Play</button>
@@ -217,23 +226,24 @@
       <div class="model-chooser" aria-label="Voice chat models">
         <div class="model-chooser-heading">
           <span>Model chooser</span>
-          <small>Only speech and reply models used by this tool</small>
+          <small>Loads the models needed for each turn</small>
         </div>
         <div class="model-chooser-fields">
           <label class="model-choice">
             <span>Speech model</span>
-            <select class="text-input" id="ttsSpeechModelSelect" data-speech-models data-model-capabilities="speech" data-model-engines="audio omnivoice voxcpm2 dramabox qwen3-tts-1.7b-base qwen3-tts-1.7b-customvoice vibevoice fish-audio index-tts2.5 higgs-audio fireredtts3-base fireredtts3-instruct">
+            <select class="text-input" id="ttsSpeechModelSelect" data-speech-models data-model-capabilities="speech" data-model-engines="audio omnivoice voxcpm2 dramabox qwen3-tts-1.7b-base qwen3-tts-1.7b-customvoice vibevoice fish-audio fish-drama3 index-tts2.5 higgs-audio fireredtts3-base fireredtts3-instruct">
               <option>Checking compatible models&hellip;</option>
             </select>
-            <small>Switches the audio.cpp model that speaks the assistant reply.</small>
+            <small>Speaks the reply. Other idle engines unload when you send a message.</small>
           </label>
-          <label class="model-choice" id="chatModelField">
-            <span>Reply model</span>
-            <select class="text-input" id="chatModelSelect" disabled>
+          <div class="model-choice" id="chatModelField">
+            <span id="chatModelLabel">Reply model</span>
+            <span class="model-fixed-value" id="chatModelSelectValue" aria-labelledby="chatModelLabel" hidden></span>
+            <select class="text-input" id="chatModelSelect" aria-labelledby="chatModelLabel" disabled>
               <option>Checking available models&hellip;</option>
             </select>
-            <small>Shared with story writing. Switching reloads the llama.cpp server.</small>
-          </label>
+            <small id="chatModelSelectHint">Writes the reply. Shared with story writing.</small>
+          </div>
         </div>
         <div class="warn-box model-chooser-warning" id="chatModelWarn" hidden>
           <span id="chatModelWarnText"></span>
@@ -248,35 +258,56 @@
         <form class="control-panel workflow-steps" id="voiceForm">
           <details id="ttsPerformanceControls" hidden><summary>Speech performance</summary><div class="workflow-step-body" data-performance-fields></div></details>
           <details class="workflow-step" open>
-            <summary><span class="workflow-step-number">1</span><span><strong>Provide the message or recording</strong><small>Required: typed text, a recorded turn, or a WAV file.</small></span></summary>
+            <summary><span class="workflow-step-number">1</span><span><strong>Record or choose audio</strong><small>Use the microphone or choose a WAV file.</small></span></summary>
             <div class="workflow-step-body">
-              <label class="field">
-            <span>Message</span>
-            <textarea id="messageInput" rows="5" placeholder="Type a message for the assistant&hellip;"></textarea>
-            <small class="hint">Used when no WAV is loaded. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> sends your message.</small>
-          </label>
-
-          <div class="record-row voice-record-row">
-            <button class="record-button" id="recordButton" type="button" aria-pressed="false">Push to record</button>
-            <button class="live-button" id="liveButton" type="button" aria-pressed="false">Live transcribe</button>
-            <button class="live-button hf-button" id="handsFreeButton" type="button" aria-pressed="false">Hands-free</button>
-            <label class="file-button">
-              <input id="wavInput" type="file" accept=".wav,audio/wav,audio/x-wav">
-              <span>Choose WAV</span>
-            </label>
-          </div>
-          <div class="vu-meter" aria-hidden="true"><i id="vuLevel"></i></div>
-          <div class="source-row hf-status" id="handsFreeStatus" aria-live="polite" hidden>
-            <span class="source-label">Hands-free</span>
-            <span id="handsFreeStateText">Off</span>
-          </div>
-          <small class="hint">Live transcribe streams your mic to whisper every few seconds; stop to keep the take as the WAV source. Hands-free keeps the mic open — a pause writes your turn into Transcript, the reply plays, then it listens again; whisper large-v3-turbo (picker in Extract) keeps turns snappy.</small>
-
-              <div class="source-row">
-            <span class="source-label">WAV source</span>
-            <span id="wavStatus">None</span>
-            <button class="plain" id="wavSaveButton" type="button" disabled>Save WAV</button>
-            <button class="plain icon-button" id="wavClearButton" type="button" title="Remove WAV" aria-label="Remove WAV">&times;</button>
+              <div class="voice-input-tabs" role="tablist" aria-label="Voice chat input">
+                <button id="voiceRecordTab" type="button" role="tab" aria-selected="true" aria-controls="voiceRecordPanel" data-voice-input="record">Push to record</button>
+                <button id="voiceLiveTab" type="button" role="tab" aria-selected="false" aria-controls="voiceLivePanel" data-voice-input="live" tabindex="-1">Live transcription</button>
+                <button id="voiceHandsFreeTab" type="button" role="tab" aria-selected="false" aria-controls="voiceHandsFreePanel" data-voice-input="hands-free" tabindex="-1">Hands-free</button>
+                <button id="voiceWavTab" type="button" role="tab" aria-selected="false" aria-controls="voiceWavPanel" data-voice-input="wav" tabindex="-1">Choose WAV</button>
+              </div>
+              <div class="voice-input-panel" id="voiceRecordPanel" role="tabpanel" aria-labelledby="voiceRecordTab">
+                <p class="hint">Hold the button while you speak, then release to stop. Send the recording when you are ready to hear a reply.</p>
+                <div class="record-row">
+                  <button class="record-button" id="recordButton" type="button" aria-pressed="false">Push to record</button>
+                </div>
+                <label class="field" id="voiceTranscriptField">
+                  <span>Transcript</span>
+                  <textarea id="transcriptOutput" rows="5" readonly aria-live="polite" placeholder="Send your recording to see its transcript here"></textarea>
+                  <small class="hint" id="handsFreeTranscriptHint" hidden>Hands-free updates this Transcript after each pause, before generating the reply.</small>
+                </label>
+              </div>
+              <div class="voice-input-panel" id="voiceLivePanel" role="tabpanel" aria-labelledby="voiceLiveTab" hidden>
+                <p class="hint">Start the microphone to see your words in Transcript as you speak. Stop to keep the recording, then send it to hear a reply.</p>
+                <div class="record-row">
+                  <button class="live-button" id="liveButton" type="button" aria-pressed="false">Live transcribe</button>
+                </div>
+              </div>
+              <div class="voice-input-panel" id="voiceHandsFreePanel" role="tabpanel" aria-labelledby="voiceHandsFreeTab" hidden>
+                <p class="hint">Start hands-free and speak naturally. A pause sends your turn automatically; after the reply plays, the microphone listens again. Stop hands-free when you are finished.</p>
+                <div class="record-row">
+                  <button class="live-button hf-button" id="handsFreeButton" type="button" aria-pressed="false">Hands-free</button>
+                </div>
+                <div class="source-row hf-status" id="handsFreeStatus" aria-live="polite" hidden>
+                  <span class="source-label">Hands-free</span>
+                  <span id="handsFreeStateText">Off</span>
+                </div>
+              </div>
+              <div class="voice-input-panel" id="voiceWavPanel" role="tabpanel" aria-labelledby="voiceWavTab" hidden>
+                <p class="hint">Choose an existing WAV recording, then send it to transcribe the message and hear a reply. No microphone is needed.</p>
+                <div class="record-row">
+                  <label class="file-button">
+                    <input id="wavInput" type="file" accept=".wav,audio/wav,audio/x-wav" aria-label="Choose WAV">
+                    <span>Choose WAV</span>
+                  </label>
+                </div>
+              </div>
+              <div class="vu-meter" id="voiceInputMeter" aria-hidden="true"><i id="vuLevel"></i></div>
+              <div class="source-row" id="voiceWavSource">
+                <span class="source-label">WAV source</span>
+                <span id="wavStatus">None</span>
+                <button class="plain" id="wavSaveButton" type="button" disabled>Save WAV</button>
+                <button class="plain icon-button" id="wavClearButton" type="button" title="Remove WAV" aria-label="Remove WAV">&times;</button>
               </div>
             </div>
           </details>
@@ -294,27 +325,21 @@
             </div>
           </details>
 
-          <section class="workflow-step workflow-action-step">
-            <header class="workflow-action-heading"><span class="workflow-step-number">3</span><span><strong>Send your message</strong><small>Transcribes recordings, writes the reply, and speaks it with the selected model.</small></span></header>
+          <details class="workflow-step" id="voiceSendStep" open>
+            <summary class="workflow-action-heading"><span class="workflow-step-number">3</span><span><strong>Send your message</strong><small>Transcribes recordings, writes the reply, and speaks it with the selected model.</small></span></summary>
             <div class="workflow-step-body">
               <div class="action-row">
                 <button class="primary" id="runButton" type="submit">Send and hear reply</button>
                 <button class="secondary" id="clearButton" type="button">Clear</button>
               </div>
-              <p class="error-box" id="errorBox" hidden></p>
             </div>
-          </section>
+          </details>
+          <p class="error-box" id="errorBox" role="alert" hidden></p>
         </form>
 
         <details class="result-panel workflow-step">
-          <summary><span class="workflow-step-number">4</span><span><strong>Review and play the result</strong><small>Read the transcript and reply, then play or save the generated audio.</small></span></summary>
+          <summary><span class="workflow-step-number">4</span><span><strong>Review and play the reply</strong><small>Read the assistant's reply, then play or save the generated audio.</small></span></summary>
           <div class="workflow-step-body">
-            <label class="field">
-            <span>Transcript</span>
-            <textarea id="transcriptOutput" rows="5" readonly aria-live="polite" placeholder="Whisper transcript appears here"></textarea>
-            <small class="hint">Hands-free updates this Transcript after each pause, before generating the reply.</small>
-          </label>
-
           <label class="field">
             <span>Assistant reply</span>
             <textarea id="replyOutput" rows="7" readonly placeholder="Assistant reply appears here"></textarea>
@@ -345,85 +370,112 @@
         <h2>Voice cloning</h2>
         <span class="module-note">reference &rarr; transcribe &rarr; clone</span>
       </header>
-      <div class="model-chooser" aria-label="Voice cloning models">
-        <div class="model-chooser-heading">
-          <span>Model chooser</span>
-          <small>Only models that can reuse a recorded voice</small>
-        </div>
-        <div class="model-chooser-fields">
-          <label class="model-choice">
-            <span>Cloning model</span>
-            <select class="text-input" id="cloneModelSelect" data-speech-models data-model-capabilities="voice_clone" data-model-engines="audio omnivoice dramabox qwen3-tts-1.7b-base fish-audio chatterbox-clone index-tts2.5 higgs-audio fireredtts3-base fireredtts3-instruct">
-              <option>Checking compatible models&hellip;</option>
-            </select>
-            <small>Only models capable of using the recorded voice reference are listed.</small>
-          </label>
-        </div>
-      </div>
-      <div class="module-body workspace">
-        <form class="control-panel" id="cloneForm">
-          <label class="field">
-            <span>Voice name</span>
-            <input class="text-input" id="cloneNameInput" type="text" maxlength="80" placeholder="e.g. James">
-          </label>
-
-          <div class="record-row">
-            <button class="record-button" id="cloneRecordButton" type="button" aria-pressed="false">Push to record reference</button>
-            <label class="file-button">
-              <input id="cloneWavInput" type="file" accept=".wav,audio/wav,audio/x-wav">
-              <span>Choose WAV</span>
+      <div class="module-body workspace workflow-steps clone-workflow">
+        <details class="workflow-step" aria-labelledby="cloneModelTitle" open>
+          <summary class="workflow-action-heading"><span class="workflow-step-number">1</span><span><strong id="cloneModelTitle">Choose the model</strong></span></summary>
+          <div class="workflow-step-body">
+            <label class="model-choice">
+              <span>Cloning model</span>
+              <select class="text-input" id="cloneModelSelect" data-speech-models data-model-capabilities="voice_clone" data-model-engines="audio omnivoice dramabox qwen3-tts-1.7b-base fish-audio fish-drama3 chatterbox-clone index-tts2.5 higgs-audio fireredtts3-base fireredtts3-instruct">
+                <option>Checking compatible models&hellip;</option>
+              </select>
+              <small>Only models capable of using the recorded voice reference are listed.</small>
             </label>
           </div>
-          <div class="vu-meter" aria-hidden="true"><i id="cloneVuLevel"></i></div>
-          <small class="hint">Give 5&ndash;15 seconds of clean, natural speech. Saving transcribes the reference with whisper, then stores the voice.</small>
+        </details>
+        <form id="cloneForm" aria-labelledby="cloneReferenceTitle">
+          <details class="workflow-step" open>
+            <summary class="workflow-action-heading"><span class="workflow-step-number">2</span><span><strong id="cloneReferenceTitle">Record and clone your voice</strong><small>Record a reference or choose a WAV file, then process it with Clone Voice.</small></span></summary>
+            <div class="workflow-step-body">
+              <div class="record-row">
+                <button class="record-button" id="cloneRecordButton" type="button" aria-pressed="false">Push to record reference</button>
+                <label class="file-button">
+                  <input id="cloneWavInput" type="file" accept=".wav,audio/wav,audio/x-wav">
+                  <span>Choose WAV</span>
+                </label>
+              </div>
+              <div class="vu-meter" aria-hidden="true"><i id="cloneVuLevel"></i></div>
+              <small class="hint">Give 5&ndash;15 seconds of clean, natural speech. Clone Voice transcribes the reference; choose where to save it in step 3.</small>
 
-          <div class="source-row">
-            <span class="source-label">Reference</span>
-            <span id="cloneWavStatus">None</span>
-            <button class="plain" id="cloneWavSaveButton" type="button" disabled>Save WAV</button>
-            <button class="plain icon-button" id="cloneWavClearButton" type="button" title="Remove reference" aria-label="Remove reference">&times;</button>
-          </div>
+              <div class="source-row">
+                <span class="source-label">Reference</span>
+                <span id="cloneWavStatus">None</span>
+                <button class="plain" id="cloneWavSaveButton" type="button" disabled>Save WAV</button>
+                <button class="plain icon-button" id="cloneWavClearButton" type="button" title="Remove reference" aria-label="Remove reference">&times;</button>
+              </div>
 
-          <div class="action-row">
-            <button class="primary" id="cloneSaveButton" type="submit">Save voice</button>
-          </div>
+              <div class="audio-panel">
+                <div class="panel-label-row">
+                  <span>Reference playback</span>
+                </div>
+                <audio id="clonePreviewAudio" controls></audio>
+              </div>
+              <div class="action-row">
+                <button class="primary" id="cloneSaveButton" type="submit">Clone Voice</button>
+              </div>
 
-          <p class="error-box" id="cloneErrorBox" hidden></p>
+              <p class="hint" id="cloneProcessStatus" role="status">Choose a recording to begin.</p>
+              <label class="field" id="cloneTranscriptField" hidden><span>Reference transcript</span><textarea id="cloneTranscript" rows="3" readonly></textarea></label>
+              <p class="error-box" id="cloneErrorBox" role="alert" hidden></p>
+            </div>
+          </details>
         </form>
 
-        <section class="result-panel">
-          <div class="story-library-header">
-            <span class="source-label">Voice library</span>
+        <details class="workflow-step" aria-labelledby="cloneLibraryTitle" open>
+          <summary class="workflow-action-heading">
+            <span class="workflow-step-number">3</span><span><strong id="cloneLibraryTitle">Save your clone</strong></span>
             <button class="secondary compact-button" id="voiceLibraryButton" type="button">Refresh</button>
-          </div>
-          <div class="voice-library" id="voiceLibrary"></div>
-          <div class="audio-panel">
-            <div class="panel-label-row">
-              <span>Reference playback</span>
-            </div>
-            <audio id="clonePreviewAudio" controls></audio>
-          </div>
-
-          <form class="speak-form" id="cloneSpeakForm">
-            <label class="field">
-              <span>Speak with <em id="speakVoiceLabel">the studio default voice</em></span>
-              <textarea id="speakTextInput" rows="3" placeholder="Type something for the selected voice to say&hellip;"></textarea>
-              <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> speaks this text exactly. Pick a voice above with &ldquo;Use voice&rdquo;.</small>
+          </summary>
+          <div class="result-panel workflow-step-body">
+            <label class="field"><span>What would you like to do?</span>
+              <select class="text-input" id="cloneDestinationSelect" disabled>
+                <option value="new-actor">Create a new actor</option>
+                <option value="new-character">Create a new character under an actor</option>
+                <option value="actor">Assign to an existing actor</option>
+                <option value="character">Assign to an existing character</option>
+              </select>
             </label>
-            <details id="clonePerformanceControls" hidden><summary>Speech performance</summary><div class="workflow-step-body" data-performance-fields></div></details>
-            <div class="action-row">
-              <button class="primary" id="speakButton" type="submit">Speak</button>
+            <div class="clone-library-choices">
+              <label class="field" id="cloneActorField" hidden><span>Actor</span><select class="text-input" id="cloneActorSelect" disabled><option value="">Choose an actor</option></select></label>
+              <label class="field" id="cloneCharacterField" hidden><span>Character</span><select class="text-input" id="cloneCharacterSelect" disabled><option value="">Choose a character</option></select></label>
+              <label class="field" id="cloneNameField"><span id="cloneNameLabel">New actor name</span><input class="text-input" id="cloneNameInput" type="text" maxlength="80" placeholder="e.g. James" disabled></label>
             </div>
-            <div class="audio-panel">
-              <div class="panel-label-row">
-                <span>Spoken text</span>
-                <button class="plain" id="saveSpeakButton" type="button" disabled>Save WAV</button>
-                <button class="plain" id="librarySpeakButton" type="button" disabled>Save to Library</button>
+            <small class="hint" id="cloneAssignHint">Process your recording with Clone Voice in step 2 first.</small>
+            <div class="action-row"><button class="primary" type="button" id="cloneAssignButton" disabled>Create actor</button></div>
+            <p class="hint" id="cloneAssignStatus" role="status"></p>
+            <p class="error-box" id="cloneAssignError" role="alert" hidden></p>
+          </div>
+        </details>
+
+        <details class="workflow-step" aria-labelledby="cloneTryTitle" open>
+          <summary class="workflow-action-heading"><span class="workflow-step-number">4</span><span><strong id="cloneTryTitle">Try a saved voice</strong><small>Choose an actor or character and hear your text in their voice.</small></span></summary>
+          <div class="workflow-step-body">
+            <form class="speak-form" id="cloneSpeakForm">
+              <label class="field"><span>Saved voice</span><select class="text-input" id="cloneTryVoiceSelect" required><option value="">Choose a saved voice</option></select></label>
+              <label class="field">
+                <span>Text to speak <em id="speakVoiceLabel"></em></span>
+                <textarea id="speakTextInput" rows="3" placeholder="Type something for the selected voice to say&hellip;"></textarea>
+                <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> speaks this text exactly.</small>
+              </label>
+              <details id="clonePerformanceControls" hidden><summary>Speech performance</summary><div class="workflow-step-body" data-performance-fields></div></details>
+              <div class="action-row clone-audition-actions">
+                <button class="primary" id="speakButton" type="submit">Speak</button>
+                <button class="primary" id="cloneRegenerateButton" type="button" disabled>Regenerate clone</button>
+                <button class="primary" id="librarySpeakButton" type="button" disabled>Save to Library</button>
               </div>
-              <audio id="speakAudio" controls></audio>
-            </div>
-          </form>
-        </section>
+              <small class="hint">Speak reads your text. Regenerate reprocesses the reference and creates a fresh preview. Save updates this actor or character's clone.</small>
+              <p class="hint" id="cloneAuditionStatus" role="status"></p>
+              <div class="audio-panel">
+                <div class="panel-label-row">
+                  <span>Spoken text</span>
+                  <button class="plain" id="saveSpeakButton" type="button" disabled>Save WAV</button>
+                </div>
+                <audio id="speakAudio" controls></audio>
+              </div>
+              <p class="error-box" id="cloneSpeakError" role="alert" hidden></p>
+            </form>
+          </div>
+        </details>
       </div>
     </section>
 
@@ -432,12 +484,10 @@
         <h2>Voice design</h2>
         <span class="module-note">describe &rarr; generate &rarr; audition &rarr; save</span>
       </header>
-      <div class="model-chooser" aria-label="Voice design models">
-        <div class="model-chooser-heading">
-          <span>Model chooser</span>
-          <small>Only models that design voices from a description</small>
-        </div>
-        <div class="model-chooser-fields">
+      <div class="module-body workflow-steps">
+        <details class="workflow-step" open>
+          <summary><span class="workflow-step-number">1</span><span><strong>Pick your model</strong><small>Choose a model that designs voices from a description.</small></span></summary>
+          <div class="workflow-step-body">
           <label class="model-choice">
             <span>Design model</span>
             <select class="text-input" id="designModelSelect">
@@ -445,50 +495,64 @@
             </select>
             <small id="designModelHint">VoxCPM2: realistic and flexible. OmniVoice: precision accents. Qwen3: characterful and emotive. FireRed: descriptive voice design (experimental).</small>
           </label>
-        </div>
-      </div>
-      <div class="module-body workspace">
-        <form class="control-panel" id="designForm">
-          <label class="field">
-            <span>Describe a voice</span>
-            <textarea id="designDescriptionInput" rows="3" maxlength="500" placeholder="e.g. High pitched, singing voice &mdash; or &mdash; Deep gravelly cowboy&hellip;"></textarea>
-            <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> generates. The voice is invented from your words &mdash; no recording needed.</small>
-          </label>
-
-          <div class="action-row">
-            <button class="primary" id="designGenerateButton" type="submit">Generate voice</button>
           </div>
-
-          <p class="error-box" id="designErrorBox" hidden></p>
-        </form>
-
-        <section class="result-panel">
-          <div class="source-row">
-            <span class="source-label">Candidate</span>
-            <span id="designStatus">None yet</span>
-          </div>
-          <div class="source-row">
-            <span class="source-label">Voice description used</span>
-            <span id="designEngineInput">&ndash;</span>
-          </div>
-          <div class="audio-panel">
-            <div class="panel-label-row">
-              <span>Voice audition</span>
-              <button class="plain" id="saveDesignWavButton" type="button" disabled>Save WAV</button>
+        </details>
+        <form id="designForm">
+          <details class="workflow-step" open>
+            <summary><span class="workflow-step-number">2</span><span><strong>Describe a voice and generate candidates</strong><small>Describe the voice you want, then create three alternatives to compare.</small></span></summary>
+            <div class="workflow-step-body">
+              <label class="field"><span>Describe a voice</span>
+                <textarea id="designDescriptionInput" rows="3" maxlength="500" placeholder="e.g. High pitched, singing voice &mdash; or &mdash; Deep gravelly cowboy&hellip;"></textarea>
+                <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> generates three candidates, one at a time. No recording needed.</small>
+              </label>
+              <div class="action-row"><button class="primary" id="designGenerateButton" type="submit">Generate 3 candidates</button></div>
+              <p class="hint" id="designGenerationStatus" role="status"></p>
+              <p class="error-box" id="designErrorBox" role="alert" hidden></p>
             </div>
-            <audio id="designAudio" controls></audio>
+          </details>
+        </form>
+        <details class="workflow-step" open>
+          <summary><span class="workflow-step-number">3</span><span><strong>Listen, choose and save</strong><small>Compare the candidates, select your favourite, then save it as an actor or character.</small></span></summary>
+          <div class="workflow-step-body">
+            <div class="design-candidates" id="designCandidates" role="group" aria-label="Voice candidates">
+              <article class="design-candidate-card">
+                <label><input type="radio" name="designCandidate" value="0" disabled> Candidate 1</label>
+                <audio id="designAudio" data-design-audio controls></audio>
+                <small class="hint" data-design-candidate-status>Not generated yet.</small>
+              </article>
+              <article class="design-candidate-card">
+                <label><input type="radio" name="designCandidate" value="1" disabled> Candidate 2</label>
+                <audio id="designAudio2" data-design-audio controls></audio>
+                <small class="hint" data-design-candidate-status>Not generated yet.</small>
+              </article>
+              <article class="design-candidate-card">
+                <label><input type="radio" name="designCandidate" value="2" disabled> Candidate 3</label>
+                <audio id="designAudio3" data-design-audio controls></audio>
+                <small class="hint" data-design-candidate-status>Not generated yet.</small>
+              </article>
+            </div>
+            <div class="source-row"><span class="source-label">Selected candidate</span><span id="designStatus">None yet</span></div>
+            <div class="source-row"><span class="source-label">Voice description used</span><span id="designEngineInput">&ndash;</span></div>
+            <div class="panel-label-row"><span>Download selected audition</span><button class="plain" id="saveDesignWavButton" type="button" disabled>Save WAV</button></div>
+            <label class="field"><span>What would you like to do?</span>
+              <select class="text-input" id="designDestinationSelect" disabled>
+                <option value="new-actor">Create a new actor (person)</option>
+                <option value="new-character">Create a new character under an actor</option>
+                <option value="actor">Assign to an existing actor</option>
+                <option value="character">Assign to an existing character</option>
+              </select>
+            </label>
+            <div class="clone-library-choices">
+              <label class="field" id="designActorField" hidden><span>Actor</span><select class="text-input" id="designActorSelect" disabled><option value="">Choose an actor</option></select></label>
+              <label class="field" id="designCharacterField" hidden><span>Character</span><select class="text-input" id="designCharacterSelect" disabled><option value="">Choose a character</option></select></label>
+              <label class="field" id="designNameField"><span id="designNameLabel">New actor name</span><input class="text-input" id="designNameInput" type="text" maxlength="80" placeholder="e.g. Gravelly cowboy" disabled></label>
+            </div>
+            <small class="hint" id="designSaveHint">Select a generated candidate first.</small>
+            <div class="action-row"><button class="primary" id="designSaveButton" type="button" disabled>Save to voice library</button></div>
+            <p class="hint" id="designSaveStatus" role="status" hidden></p>
+            <p class="error-box" id="designSaveError" role="alert" hidden></p>
           </div>
-
-          <label class="field">
-            <span>Voice name</span>
-            <input class="text-input" id="designNameInput" type="text" maxlength="80" placeholder="e.g. Gravelly cowboy">
-          </label>
-          <div class="action-row">
-            <button class="secondary" id="designSaveButton" type="button" disabled>Save to voice library</button>
-            <p class="hint" id="designSaveStatus" hidden></p>
-          </div>
-          <small class="hint">Saves this audition as a reusable Actor Voice for compatible speech tools.</small>
-        </section>
+        </details>
       </div>
     </section>
 
@@ -524,14 +588,16 @@
                   <p>Keep these words, timing, and expression.</p>
                 </div>
               </summary>
-              <audio id="conversionSourceAudio" controls></audio>
-              <div class="conversion-button-row">
-                <button class="record-button" id="conversionSourceRecordButton" type="button">Hold to record</button>
-                <label class="secondary file-button">Choose audio<input id="conversionSourceInput" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.mp4,.webm"></label>
-                <button class="plain" id="conversionSourceClearButton" type="button" disabled>Clear</button>
-              </div>
-              <div class="vu"><span id="conversionSourceVu"></span></div>
-              <small class="hint" id="conversionSourceStatus">Record or load the performance to convert.</small>
+              <div class="workflow-step-body conversion-deck-body">
+                <audio id="conversionSourceAudio" controls></audio>
+                <div class="conversion-button-row">
+                  <button class="record-button" id="conversionSourceRecordButton" type="button">Hold to record</button>
+                  <label class="secondary file-button">Choose audio<input id="conversionSourceInput" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.mp4,.webm"></label>
+                  <button class="plain" id="conversionSourceClearButton" type="button" disabled>Clear</button>
+                </div>
+                <div class="vu"><span id="conversionSourceVu"></span></div>
+                <small class="hint" id="conversionSourceStatus">Record or load the performance to convert.</small>
+                </div>
             </details>
 
             <div class="conversion-bridge" aria-hidden="true">
@@ -547,54 +613,80 @@
                   <p>Choose the identity the performance becomes.</p>
                 </div>
               </summary>
-              <label class="field conversion-library-choice">
-                <span>Saved voice</span>
-                <select class="text-input" id="conversionTargetVoiceSelect">
-                  <option value="">New recording or upload</option>
-                </select>
-              </label>
-              <audio id="conversionTargetAudio" controls></audio>
-              <div class="conversion-button-row">
-                <button class="record-button" id="conversionTargetRecordButton" type="button">Hold to record</button>
-                <label class="secondary file-button">Choose audio<input id="conversionTargetInput" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a,.mp4,.webm"></label>
-                <button class="plain" id="conversionTargetClearButton" type="button" disabled>Clear</button>
-              </div>
-              <div class="vu"><span id="conversionTargetVu"></span></div>
-              <small class="hint" id="conversionTargetStatus">Use a clean target sample or select a saved voice.</small>
+              <div class="workflow-step-body conversion-deck-body">
+                <div class="conversion-library-choice">
+                  <label class="field"><span>Actor</span>
+                    <select class="text-input" id="conversionTargetActorSelect"><option value="">Choose an actor</option></select>
+                  </label>
+                  <label class="field" id="conversionTargetCharacterField" hidden><span>Voice</span>
+                    <select class="text-input" id="conversionTargetVoiceSelect"><option value="">Choose an actor first</option></select>
+                  </label>
+                </div>
+                <audio id="conversionTargetAudio" controls></audio>
+                <small class="hint" id="conversionTargetStatus">Choose an actor and voice from your library.</small>
+                </div>
             </details>
           </div>
 
-          <div class="conversion-route-controls">
-            <label class="field">
-              <span>Operation</span>
-              <select class="text-input" id="conversionRouteSelect">
-                <option value="style_preserved_vc">Voice conversion</option>
-                <option value="style_preserved_svc">Singing voice conversion</option>
-                <option value="editing">Speech editing</option>
-              </select>
-            </label>
-            <label class="field" id="conversionTargetTextField" hidden>
-              <span>Replacement text</span>
-              <textarea id="conversionTargetTextInput" rows="2" maxlength="4000" placeholder="The exact new words for the edited performance"></textarea>
-            </label>
-          </div>
-
-          <div class="error-box" id="conversionErrorBox" role="alert" hidden></div>
-          <button class="primary conversion-submit" id="conversionSubmitButton" type="submit" disabled>Convert voice</button>
+          <details class="conversion-deck workflow-step" aria-labelledby="conversionOperationTitle" open>
+            <summary class="conversion-deck-head">
+              <span class="conversion-step">3</span>
+              <div>
+                <h3 id="conversionOperationTitle">Choose the operation</h3>
+                <p>Choose an available operation and set its options.</p>
+              </div>
+            </summary>
+            <div class="workflow-step-body conversion-deck-body">
+              <div class="conversion-route-controls">
+                <label class="field">
+                  <span>Operation</span>
+                  <select class="text-input" id="conversionRouteSelect">
+                    <option value="style_preserved_vc">Voice conversion</option>
+                    <option value="style_preserved_svc">Singing voice conversion</option>
+                    <option value="editing">Speech editing</option>
+                  </select>
+                </label>
+                <label class="field" id="conversionTargetTextField" hidden>
+                  <span>Replacement text</span>
+                  <textarea id="conversionTargetTextInput" rows="2" maxlength="4000" placeholder="The exact new words for the edited performance"></textarea>
+                </label>
+              </div>
+              <div class="error-box" id="conversionErrorBox" role="alert" hidden></div>
+              <button class="primary conversion-submit" id="conversionSubmitButton" type="submit" disabled>Convert voice</button>
+            </div>
+          </details>
         </form>
 
         <details class="conversion-output workflow-step" aria-labelledby="conversionOutputTitle">
           <summary class="conversion-output-head">
-            <span class="conversion-step">3</span>
+            <span class="conversion-step">4</span>
             <div>
               <h3 id="conversionOutputTitle">Result</h3>
               <p id="conversionOutputStatus">Your converted performance will appear here.</p>
             </div>
           </summary>
-          <audio id="conversionOutputAudio" controls></audio>
-          <div class="action-row conversion-output-actions">
-            <button class="secondary" id="conversionSaveWavButton" type="button" disabled>Save WAV</button>
-            <button class="secondary" id="conversionLibraryButton" type="button" disabled>Save to Library</button>
+          <div class="workflow-step-body conversion-deck-body">
+            <audio id="conversionOutputAudio" controls></audio>
+            <div class="action-row conversion-output-actions">
+              <button class="secondary" id="conversionSaveWavButton" type="button" disabled>Save WAV</button>
+            </div>
+            <label class="field"><span>What would you like to do?</span>
+              <select class="text-input" id="conversionSaveDestinationSelect" disabled>
+                <option value="new-actor">Create a new actor (person)</option>
+                <option value="new-character">Create a new character under an actor</option>
+                <option value="actor">Assign to an existing actor</option>
+                <option value="character">Assign to an existing character</option>
+              </select>
+            </label>
+            <div class="clone-library-choices">
+              <label class="field" id="conversionSaveActorField" hidden><span>Actor</span><select class="text-input" id="conversionSaveActorSelect" disabled><option value="">Choose an actor</option></select></label>
+              <label class="field" id="conversionSaveCharacterField" hidden><span>Character</span><select class="text-input" id="conversionSaveCharacterSelect" disabled><option value="">Choose a character</option></select></label>
+              <label class="field" id="conversionSaveNameField"><span id="conversionSaveNameLabel">New actor name</span><input class="text-input" id="conversionSaveNameInput" type="text" maxlength="80" placeholder="e.g. New voice" disabled></label>
+            </div>
+            <small class="hint" id="conversionSaveHint">Convert a performance first.</small>
+            <div class="action-row"><button class="primary" id="conversionLibraryButton" type="button" disabled>Save to voice library</button></div>
+            <p class="hint" id="conversionSaveStatus" role="status" hidden></p>
+            <p class="error-box" id="conversionSaveError" role="alert" hidden></p>
           </div>
         </details>
       </div>
@@ -618,7 +710,7 @@
             </select>
             <small id="musicModelHint">Only locally installed audio.cpp music models are selectable.</small>
           </label>
-          <label class="model-choice">
+          <label class="model-choice" id="musicModeField" hidden>
             <span>Operation</span>
             <select class="text-input" id="musicModeSelect">
               <option value="text2music">Create from a brief</option>
@@ -753,7 +845,8 @@
       </div>
       <div class="module-body audio-service-workspace">
         <form id="separationForm" class="audio-service-form">
-          <label class="field"><span>44.1 kHz WAV mixture</span><input id="separationFileInput" type="file" accept=".wav,audio/wav" required></label>
+          <label class="field"><span>WAV recording</span><input id="separationFileInput" type="file" accept=".wav,audio/wav" required></label>
+          <label class="field" id="separationPromptField" hidden><span>Sound to extract</span><input class="text-input" id="separationPromptInput" type="text" maxlength="1000" placeholder="e.g. a man speaking, audience laughter, a ringing bell"><small class="hint">SAM returns the target sound and the remaining audio. Start with a short excerpt (maximum 400 seconds). Choose the speech-tools profile in <a href="#engines">Engines</a> to free GPU memory.</small></label>
           <button class="primary" id="separationSubmitButton" type="submit" disabled>Separate and download ZIP</button>
           <small class="hint" id="separationStatus">The ZIP contains every named WAV stem produced by the selected model.</small>
         </form>
@@ -780,7 +873,11 @@
       </div>
       <div class="module-body audio-service-workspace">
         <form id="analysisForm" class="audio-service-form">
-          <label class="field"><span>16 kHz PCM WAV</span><input id="analysisFileInput" type="file" accept=".wav,audio/wav" required></label>
+          <label class="field"><span>WAV file</span><input id="analysisFileInput" type="file" accept=".wav,audio/wav" required><small class="hint">A copy is converted to 16 kHz mono for analysis. Your original file stays unchanged.</small></label>
+          <div id="analysisTranscribeControls" hidden>
+            <button class="secondary" id="analysisTranscribeButton" type="button" disabled>Transcribe uploaded file</button>
+            <p class="hint" id="analysisTranscribeStatus" role="status">Generate a transcript, then check and correct the words before alignment.</p>
+          </div>
           <label class="field" id="analysisTranscriptField" hidden><span>Exact transcript</span><textarea id="analysisTranscriptInput" rows="4" maxlength="32768" placeholder="The exact words spoken in the recording"></textarea></label>
           <label class="field" id="analysisLanguageField" hidden><span>Language</span><input class="text-input" id="analysisLanguageInput" type="text" maxlength="40" value="English"></label>
           <button class="primary" id="analysisSubmitButton" type="submit" disabled>Analyze audio</button>
@@ -973,8 +1070,8 @@
             </div>
           </details>
 
-          <section class="workflow-step workflow-action-step">
-            <header class="workflow-action-heading"><span class="workflow-step-number">4</span><span><strong>Draft or generate</strong><small>Review a text-only draft first, or generate the finished podcast directly. Cancel remains available while generation runs.</small></span></header>
+          <details class="workflow-step" open>
+            <summary class="workflow-action-heading"><span class="workflow-step-number">4</span><span><strong>Draft or generate</strong><small>Review a text-only draft first, or generate the finished podcast directly. Cancel remains available while generation runs.</small></span></summary>
             <div class="workflow-step-body">
               <div class="action-row">
                 <button class="secondary" id="storyDraftButton" type="button">Draft podcast</button>
@@ -996,7 +1093,7 @@
                 <small class="hint" id="scriptEditorHint">Edit any line's text or speaker; each line keeps its fact citations. Generate podcast produces exactly this script.</small>
               </div>
             </div>
-          </section>
+          </details>
         </form>
 
         <details class="workflow-step story-result" aria-live="polite">
@@ -1200,8 +1297,8 @@
             </div>
           </details>
 
-          <section class="workflow-step workflow-action-step">
-            <header class="workflow-action-heading"><span class="workflow-step-number">3</span><span><strong>Preview and narrate</strong><small>Preview the narration settings, review them, then start narration.</small></span></header>
+          <details class="workflow-step" open>
+            <summary class="workflow-action-heading"><span class="workflow-step-number">3</span><span><strong>Preview and narrate</strong><small>Preview the narration settings, review them, then start narration.</small></span></summary>
             <div class="workflow-step-body">
               <div class="field">
             <div class="action-row">
@@ -1216,7 +1313,7 @@
           </div>
               <p class="error-box" id="audiobookErrorBox" hidden></p>
             </div>
-          </section>
+          </details>
         </form>
 
         <details class="result-panel workflow-step">
@@ -1271,45 +1368,60 @@
         </div>
       </div>
       <div class="module-body">
-        <div class="extract-toolbar">
-          <label class="file-button">
-            <input id="extractFileInput" type="file" accept=".wav,.mp3,.ogg,.flac,.m4a,.mp4,.webm,audio/*,video/mp4,video/webm">
-            <span>Load audio / video</span>
-          </label>
-          <span id="extractFileStatus">Nothing loaded</span>
-          <span id="extractToolbarActions" class="extract-primary-action-host">
-            <span id="extractPrimaryActions" class="extract-primary-actions">
-              <button class="secondary compact-button" id="extractPlayButton" type="button" aria-pressed="false" disabled>Play audio</button>
-              <button class="secondary compact-button" id="extractTranscribeButton" type="button" disabled>Transcribe</button>
-            </span>
-          </span>
-          <span class="transcribe-record-controls" data-audio-workspace-mode="transcribe">
-            <button class="secondary compact-button" id="transcribeRecordButton" type="button">Record microphone</button>
-            <button class="plain compact-button" id="transcribeStopRecordButton" type="button" disabled>Stop</button>
-            <span class="vu-meter compact-vu" aria-hidden="true"><i id="transcribeRecordVu"></i></span>
-          </span>
-          <input class="text-input compact-number" id="extractSpeakersInput" type="number" min="2" max="26" placeholder="auto" title="Number of speakers, if you know it" hidden>
-          <button class="secondary compact-button" id="extractDiarizeButton" type="button" disabled hidden>Detect speakers</button>
-          <span class="extract-zoom" data-audio-workspace-mode="extract">
-            <button class="plain compact-button" id="extractZoomOutButton" type="button" disabled>&minus;</button>
-            <button class="plain compact-button" id="extractZoomInButton" type="button" disabled>+</button>
-            <button class="plain compact-button" id="extractZoomFitButton" type="button" disabled>Fit</button>
-          </span>
-        </div>
-        <div data-audio-workspace-mode="extract" hidden>
-          <div class="extract-import" id="extractImportRow" hidden>
-            <input class="text-input" id="extractURLInput" type="url" placeholder="Paste a URL — yt-dlp fetches the audio">
-            <button class="secondary compact-button" id="extractImportButton" type="button">Import</button>
-          </div>
-        </div>
-        <small class="hint" data-audio-workspace-mode="transcribe">Load audio or video, then transcribe it into editable timestamped lines. The waveform stays available for seeking and listening.</small>
-        <small class="hint" data-audio-workspace-mode="extract" hidden>Browser-decoded: WAV, MP3, OGG, FLAC, and MP4/WebM audio tracks — and with an ffmpeg engine configured, anything else is converted automatically instead of refused. Drag on the waveform to mark a region; use the mouse wheel to zoom. With the waveform focused, Home/End and Left/Right move the playhead.</small>
+        <details class="transcribe-step workflow-step" aria-label="Load or record audio" open>
+          <summary class="workflow-action-heading transcribe-step-heading" data-audio-workspace-mode="transcribe">
+            <span class="workflow-step-number">1</span><strong>Load or record audio</strong>
+          </summary>
+          <div class="transcribe-step-body">
+            <div class="extract-toolbar">
+              <label class="file-button">
+                <input id="extractFileInput" type="file" accept=".wav,.mp3,.ogg,.flac,.m4a,.mp4,.webm,audio/*,video/mp4,video/webm">
+                <span>Load audio / video</span>
+              </label>
+              <span class="transcribe-record-controls" data-audio-workspace-mode="transcribe">
+                <button class="secondary compact-button" id="transcribeRecordButton" type="button">Record microphone</button>
+                <button class="plain compact-button" id="transcribeStopRecordButton" type="button" disabled>Stop</button>
+                <span class="vu-meter compact-vu" aria-hidden="true"><i id="transcribeRecordVu"></i></span>
+              </span>
+              <span id="extractFileStatus">Nothing loaded</span>
+              <span id="extractSpeakerHost" data-audio-workspace-mode="extract" hidden></span>
+              <span class="extract-zoom" data-audio-workspace-mode="extract">
+                <button class="plain compact-button" id="extractZoomOutButton" type="button" disabled>&minus;</button>
+                <button class="plain compact-button" id="extractZoomInButton" type="button" disabled>+</button>
+                <button class="plain compact-button" id="extractZoomFitButton" type="button" disabled>Fit</button>
+              </span>
+            </div>
+            <div data-audio-workspace-mode="extract" hidden>
+              <div class="extract-import" id="extractImportRow" hidden>
+                <input class="text-input" id="extractURLInput" type="url" placeholder="Paste a URL — yt-dlp fetches the audio">
+                <button class="secondary compact-button" id="extractImportButton" type="button">Import</button>
+              </div>
+            </div>
+            <small class="hint" data-audio-workspace-mode="transcribe">Load audio or video, then transcribe it into editable timestamped lines. The waveform stays available for seeking and listening.</small>
+            <small class="hint" data-audio-workspace-mode="extract" hidden>Browser-decoded: WAV, MP3, OGG, FLAC, and MP4/WebM audio tracks — and with an ffmpeg engine configured, anything else is converted automatically instead of refused. Drag on the waveform to mark a region; use the mouse wheel to zoom. With the waveform focused, Home/End and Left/Right move the playhead.</small>
 
-        <div class="extract-wave-wrap">
-          <canvas id="extractCanvas" class="extract-canvas" tabindex="0" role="slider" aria-label="Audio waveform. Use the mouse wheel to zoom; Home and End jump; Left and Right nudge the playhead; Space plays or stops." aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></canvas>
-          <span id="extractSelectionActions" class="extract-wave-selection-actions" aria-label="Waveform selection actions" hidden></span>
-          <div class="extract-timebar"><span id="extractViewStart">0:00</span><span id="extractCursor">&ndash;</span><span id="extractViewEnd">0:00</span></div>
-        </div>
+            <div id="transcribePlaybackControls" data-audio-workspace-mode="transcribe">
+              <button class="secondary compact-button" id="extractPlayButton" type="button" aria-label="Play audio" title="Play audio" aria-pressed="false" disabled>Play audio</button>
+            </div>
+            <div class="extract-wave-wrap">
+              <canvas id="extractCanvas" class="extract-canvas" tabindex="0" role="slider" aria-label="Audio waveform. Use the mouse wheel to zoom; Home and End jump; Left and Right nudge the playhead; Space plays or stops." aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></canvas>
+              <span id="extractSelectionActions" class="extract-wave-selection-actions" aria-label="Waveform selection actions" hidden></span>
+              <div class="extract-timebar"><span id="extractViewStart">0:00</span><span id="extractCursor">&ndash;</span><span id="extractViewEnd">0:00</span></div>
+            </div>
+            <div class="transcribe-actions" id="transcribeActions" data-audio-workspace-mode="transcribe">
+              <span id="extractToolbarActions" class="extract-primary-action-host">
+                <span id="extractPrimaryActions" class="extract-primary-actions">
+                  <button class="primary" id="extractTranscribeButton" type="button" disabled>Transcribe</button>
+                </span>
+              </span>
+              <span class="extract-speaker-controls" id="extractSpeakerControls">
+                <input class="text-input compact-number" id="extractSpeakersInput" type="number" min="2" max="26" placeholder="auto" aria-label="Number of speakers" aria-describedby="extractSpeakersHint" title="Number of speakers, if you know it" hidden>
+                <small class="hint speaker-count-hint" id="extractSpeakersHint" hidden>Enter the number of speakers if you know it.<br>Leave blank to detect automatically.</small>
+                <button class="secondary compact-button" id="extractDiarizeButton" type="button" disabled hidden>Detect speakers</button>
+              </span>
+            </div>
+          </div>
+        </details>
 
         <section class="extract-selection-card" data-audio-workspace-mode="extract" aria-label="Selected audio result" hidden>
           <div class="extract-selection-heading">
@@ -1357,46 +1469,47 @@
         </section>
         <p class="error-box" id="extractErrorBox" hidden></p>
 
-        <section class="transcribe-desk-tools" aria-label="Transcript tools">
-          <div class="transcribe-tool-row">
-            <label class="compact-field">
-              <span>Rename speaker</span>
-              <select class="text-input" id="transcribeRenameFrom" disabled><option>No speakers yet</option></select>
-            </label>
-            <label class="compact-field">
-              <span>New name</span>
-              <input class="text-input" id="transcribeRenameTo" type="text" maxlength="80" placeholder="Speaker name" disabled>
-            </label>
-            <button class="secondary compact-button" id="transcribeRenameButton" type="button" disabled>Rename throughout</button>
+        <details class="transcribe-step workflow-step" id="transcribeTranscriptStep" aria-label="Transcript" open>
+          <summary class="story-library-header workflow-action-heading transcribe-step-heading">
+            <span class="workflow-step-number" data-audio-workspace-mode="transcribe">2</span>
+            <strong>Transcript</strong>
+            <span id="extractTranscribeStatus"></span>
+            <span data-audio-workspace-mode="extract" hidden><span class="extract-filter" id="extractFilterRow" hidden></span></span>
+          </summary>
+          <div class="transcribe-step-body">
+            <div class="extract-timeline" id="extractTimeline">No transcript yet &mdash; load a file and press Transcribe.</div>
+            <small class="hint" data-audio-workspace-mode="transcribe">Correct the text directly, and use the speaker buttons to fix who said each line. Rename speakers and download your transcript below.</small>
+            <small class="hint" data-audio-workspace-mode="extract" hidden>Detect speakers tags every line automatically; A / B / C (or keys 1 / 2 / 3 after clicking a line) fix anything it got wrong. Filter to one speaker to hunt their cleanest run.</small>
           </div>
-          <div class="transcribe-tool-row" data-audio-workspace-mode="transcribe">
-            <label class="transcribe-search-field">
-              <span class="source-label">Search transcript</span>
-              <input class="text-input" id="transcribeSearchInput" type="search" placeholder="Words or speaker" disabled>
-            </label>
-            <span id="transcribeSearchStatus" aria-live="polite">No matches</span>
-            <button class="plain compact-button" id="transcribeSearchPrevious" type="button" disabled>Previous</button>
-            <button class="plain compact-button" id="transcribeSearchNext" type="button" disabled>Next</button>
-            <button class="plain compact-button" id="transcribeSearchClear" type="button" disabled>Clear</button>
-          </div>
-          <div class="transcribe-tool-row transcribe-export-row" data-audio-workspace-mode="transcribe" aria-label="Transcript downloads">
-            <span class="source-label">Download edited transcript</span>
-            <button class="secondary compact-button" type="button" data-transcript-format="txt" disabled>TXT</button>
-            <button class="secondary compact-button" type="button" data-transcript-format="md" disabled>Markdown</button>
-            <button class="secondary compact-button" type="button" data-transcript-format="srt" disabled>SRT</button>
-            <button class="secondary compact-button" type="button" data-transcript-format="vtt" disabled>WebVTT</button>
-            <button class="secondary compact-button" type="button" data-transcript-format="json" disabled>JSON</button>
-          </div>
-        </section>
+        </details>
 
-        <div class="story-library-header">
-          <span class="source-label">Transcript</span>
-          <span id="extractTranscribeStatus"></span>
-          <span data-audio-workspace-mode="extract" hidden><span class="extract-filter" id="extractFilterRow" hidden></span></span>
-        </div>
-        <div class="extract-timeline" id="extractTimeline">No transcript yet &mdash; load a file and press Transcribe.</div>
-        <small class="hint" data-audio-workspace-mode="transcribe">Correct the text directly, and use Detect speakers plus the speaker buttons to fix who said each line.</small>
-        <small class="hint" data-audio-workspace-mode="extract" hidden>Detect speakers tags every line automatically; A / B / C (or keys 1 / 2 / 3 after clicking a line) fix anything it got wrong. Filter to one speaker to hunt their cleanest run.</small>
+        <details class="transcribe-step workflow-step" id="transcribeAdjustStep" aria-label="Transcript tools" open>
+          <summary class="workflow-action-heading transcribe-step-heading" data-audio-workspace-mode="transcribe">
+            <span class="workflow-step-number">3</span><strong>Adjust and export</strong>
+          </summary>
+          <div class="transcribe-desk-tools">
+            <div class="speaker-cards" id="transcribeSpeakerCards" aria-label="Speakers">Detect speakers or enter a speaker count above to add speaker boxes.</div>
+            <div class="transcribe-tool-row" data-audio-workspace-mode="transcribe">
+              <label class="transcribe-search-field">
+                <span class="source-label">Search transcript</span>
+                <input class="text-input" id="transcribeSearchInput" type="search" placeholder="Words or speaker" disabled>
+              </label>
+              <span id="transcribeSearchStatus" aria-live="polite">No matches</span>
+              <button class="plain compact-button" id="transcribeSearchPrevious" type="button" disabled>Previous</button>
+              <button class="plain compact-button" id="transcribeSearchNext" type="button" disabled>Next</button>
+              <button class="plain compact-button" id="transcribeSearchClear" type="button" disabled>Clear</button>
+            </div>
+            <div class="transcribe-tool-row transcribe-export-row" data-audio-workspace-mode="transcribe" aria-label="Transcript downloads">
+              <span class="source-label">Download edited transcript</span>
+              <button class="secondary compact-button" type="button" data-transcript-format="txt" disabled>TXT</button>
+              <button class="secondary compact-button" type="button" data-transcript-format="md" disabled>Markdown</button>
+              <button class="secondary compact-button" type="button" data-transcript-format="srt" disabled>SRT</button>
+              <button class="secondary compact-button" type="button" data-transcript-format="vtt" disabled>WebVTT</button>
+              <button class="secondary compact-button" type="button" data-transcript-format="json" disabled>JSON</button>
+            </div>
+          </div>
+        </details>
+
         <div class="audio-workspace-switch">
           <button class="secondary compact-button" id="openExtractButton" data-audio-workspace-mode="transcribe" type="button">Open in Extract</button>
           <button class="secondary compact-button" id="openTranscribeButton" data-audio-workspace-mode="extract" type="button" hidden>Open in Transcribe</button>
@@ -1607,6 +1720,7 @@
         <span class="module-note" id="healthUpdated">No health check yet</span>
       </header>
       <div class="module-body">
+        <div class="engine-rack" id="engineRack" aria-live="polite" aria-label="Engine status"></div>
         <div class="profiles-row" id="profilesRow" hidden>
           <span class="source-label">VRAM profiles</span>
           <span id="profilesButtons"></span>

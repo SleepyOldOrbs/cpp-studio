@@ -143,6 +143,30 @@ func TestLoopRejectsEmptyInput(t *testing.T) {
 	}
 }
 
+func TestLoopPreparationValidatesInputAndReleasesAfterFailure(t *testing.T) {
+	loop, _ := testLoop(t)
+	prepared, released := 0, 0
+	loop.Prepare = func(_ context.Context, recorded bool) (func(), error) {
+		prepared++
+		return func() { released++ }, nil
+	}
+	loop.Chat = func(context.Context, []Turn, string) (string, error) { return "", errors.New("chat failed") }
+	for _, req := range []Request{{}, {WAV: []byte("not WAV")}} {
+		if _, err := loop.Run(context.Background(), req); err == nil {
+			t.Fatal("expected invalid input")
+		}
+	}
+	if prepared != 0 {
+		t.Fatal("prepared engines before validating input")
+	}
+	if _, err := loop.Run(context.Background(), Request{Message: "hello"}); err == nil {
+		t.Fatal("expected chat failure")
+	}
+	if prepared != 1 || released != 1 {
+		t.Fatalf("prepared %d, released %d", prepared, released)
+	}
+}
+
 func TestLoopPropagatesChatFailure(t *testing.T) {
 	loop, fake := testLoop(t)
 	loop.Chat = func(ctx context.Context, history []Turn, message string) (string, error) {

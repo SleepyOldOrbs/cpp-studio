@@ -82,7 +82,8 @@ type engineProcess struct {
 	// activeExtra holds the remedy arguments the current variant was
 	// loaded with, so re-selecting the same variant without them is a
 	// restart, not a no-op.
-	activeExtra []string
+	activeExtra    []string
+	resumeOnDemand bool
 }
 
 func NewManager(cfg config.Config) *Manager {
@@ -341,6 +342,7 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	}
 
 	engine.setStatusLocked(StatusStarting, "")
+	engine.resumeOnDemand = false
 	log.Printf("engine_lifecycle event=start name=%q mode=%q command=%q", engine.name, engine.cfg.Mode, engine.cfg.Command)
 	// The child's lifetime belongs to the manager, never to the caller: a
 	// request-scoped ctx is canceled when its HTTP handler returns, which
@@ -419,7 +421,38 @@ func (m *Manager) StopAll(ctx context.Context) error {
 }
 
 func (m *Manager) Stop(ctx context.Context, name string) error {
+	m.mu.Lock()
+	if engine := m.engines[name]; engine != nil {
+		engine.resumeOnDemand = false
+	}
+	m.mu.Unlock()
 	return m.stop(ctx, name, nil)
+}
+
+// Suspend frees an idle resident for Voice chat. Its next invocation may reload
+// it; an explicit Stop instead leaves it stopped until manually started.
+func (m *Manager) Suspend(ctx context.Context, name string) error {
+	if err := m.Stop(ctx, name); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if engine := m.engines[name]; engine != nil && engine.health.Status == StatusStopped {
+		engine.resumeOnDemand = true
+	}
+	return nil
+}
+
+// ResumeSuspended is called with the engine invocation reservation held.
+func (m *Manager) ResumeSuspended(ctx context.Context, name string) error {
+	m.mu.Lock()
+	engine := m.engines[name]
+	resume := engine != nil && engine.resumeOnDemand && engine.health.Status == StatusStopped
+	m.mu.Unlock()
+	if resume {
+		return m.Start(ctx, name)
+	}
+	return nil
 }
 
 func (m *Manager) stop(ctx context.Context, name string, expected *exec.Cmd) error {

@@ -481,7 +481,42 @@ summary:focus-visible,
 }
 
 .module[data-page="voice-cloning"] .workspace {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.clone-workflow .workflow-action-heading > button {
+  margin-left: auto;
+}
+
+.clone-workflow .workflow-action-heading:has(> button)::after {
+  margin-left: 0;
+}
+
+#cloneForm .record-row > * {
+  flex: 1 1 220px;
+  min-width: 0;
+  min-height: 42px;
+}
+
+#cloneForm .record-row > :not(.recording) {
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+#cloneForm .record-row > :hover:not(.recording) {
+  border-color: var(--accent);
+}
+
+.clone-library-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 12px;
+}
+
+#voiceLibrary {
+  max-height: none;
+  overflow: visible;
 }
 
 .field {
@@ -602,21 +637,51 @@ textarea[readonly] {
   flex-wrap: wrap;
 }
 
-/* The voice-loop controls are one compact transport strip. Grid ignores the
-   generous flex bases used by record controls elsewhere, so Choose WAV stays
-   beside the three live controls at the workspace's normal two-column width. */
-.voice-record-row {
+.voice-input-tabs {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
 }
 
-.voice-record-row > .record-button,
-.voice-record-row > .live-button,
-.voice-record-row > .file-button {
-  width: 100%;
-  height: 40px;
+.voice-input-tabs [role="tab"] {
   min-width: 0;
+  padding: 9px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: #7e8896;
+  font-size: 0.85rem;
+}
+
+.voice-input-tabs [role="tab"]:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+
+.voice-input-tabs [aria-selected="true"] {
+  border-color: var(--line);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.voice-input-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.voice-input-panel > .hint {
+  margin: 0;
+}
+
+.voice-input-panel .record-row {
+  max-width: 420px;
+}
+
+.voice-input-panel .file-button {
+  width: 100%;
 }
 
 .record-button {
@@ -1954,6 +2019,11 @@ pre {
 .format-tab[data-parent-link="imagery"] { --channel: #63b8d1; }
 .format-tab[data-parent-link="stories-audiobooks"] { --channel: #df8275; }
 
+.format-tab:not(.active),
+.subnav-link:not(.active) {
+  color: #7e8896;
+}
+
 .format-tab:hover,
 .utility-link:hover,
 .subnav-link:hover {
@@ -2378,7 +2448,7 @@ html[data-studio-format="stories-audiobooks"] {
 
 .conversion-route-controls {
   grid-template-columns: minmax(220px, 0.45fr) minmax(280px, 1fr);
-  margin-top: 16px;
+  align-items: start;
 }
 
 .audio-service-workspace {
@@ -2466,8 +2536,8 @@ html[data-studio-format="stories-audiobooks"] {
   }
 }
 
-@media (max-width: 440px) {
-  .voice-record-row {
+@media (max-width: 560px) {
+  .voice-input-tabs {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -2944,6 +3014,115 @@ details[open] > .library-group-summary::after {
 
 /* --- Shared Transcribe / Extract audio workspace ------------------------ */
 
+.audio-workspace-transcribe .transcribe-step {
+  margin-bottom: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--well);
+}
+
+.audio-workspace-transcribe .transcribe-step-heading {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--format-soft);
+}
+
+.transcribe-step-heading #extractTranscribeStatus {
+  margin-left: auto;
+}
+
+.audio-workspace-transcribe .transcribe-step:not([open]) > summary {
+  border-bottom: 0;
+  background: transparent;
+}
+
+.audio-workspace-extract .transcribe-step {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.audio-workspace-transcribe .transcribe-step-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.audio-workspace-transcribe .transcribe-desk-tools {
+  margin: 0;
+  padding: 14px;
+  border: 0;
+}
+
+.audio-workspace-transcribe .extract-toolbar,
+.audio-workspace-transcribe .extract-wave-wrap {
+  margin: 0;
+}
+
+.transcribe-actions,
+.extract-speaker-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.audio-workspace-transcribe #transcribeRecordButton {
+  min-height: 40px;
+  padding: 0 14px;
+  font-size: 0.85rem;
+}
+
+.speaker-count-hint {
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.audio-workspace-transcribe #extractTranscribeButton {
+  min-width: 200px;
+  min-height: 44px;
+  padding: 0 28px;
+  font-size: 0.95rem;
+}
+
+.audio-workspace-transcribe #extractPlayButton {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 34px;
+  padding: 0;
+  font-size: 0;
+}
+
+.audio-workspace-transcribe #extractPlayButton::before {
+  content: "";
+  width: 0;
+  height: 0;
+  margin-left: 3px;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  border-left: 11px solid currentColor;
+}
+
+.audio-workspace-transcribe #extractPlayButton[aria-pressed="true"]::before {
+  width: 12px;
+  height: 14px;
+  margin: 0;
+  border: 0;
+  border-left: 4px solid currentColor;
+  border-right: 4px solid currentColor;
+}
+
 .audio-workspace-switch {
   display: flex;
   justify-content: flex-end;
@@ -2970,6 +3149,38 @@ details[open] > .library-group-summary::after {
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   background: var(--well);
+}
+
+.speaker-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.speaker-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-top: 3px solid var(--speaker-color);
+  border-radius: 7px;
+  background: var(--panel);
+}
+
+.speaker-card .speaker-card-name {
+  color: var(--speaker-color);
+  overflow-wrap: anywhere;
+}
+
+.extract-segment[style*="--speaker-color"] {
+  border-left: 3px solid var(--speaker-color);
+}
+
+.extract-segment-tags .tag-button.active {
+  background: var(--speaker-color, var(--accent));
+  border-color: var(--speaker-color, var(--accent));
 }
 
 .transcribe-tool-row .compact-field {
@@ -3274,11 +3485,14 @@ details[open] > .library-group-summary::after {
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.1em;
-  color: var(--accent-strong);
+  color: var(--speaker-color, var(--accent-strong));
 }
 
 .extract-segment-tags {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 70%;
   gap: 3px;
   margin-left: auto;
 }
@@ -3347,8 +3561,23 @@ details[open] > .library-group-summary::after {
   align-content: start;
   border: 1px solid var(--line-soft);
   border-radius: 8px;
-  padding: 14px;
+  padding: 18px;
   background: var(--well);
+}
+
+.conversion-input-grid > .conversion-deck[open] {
+  align-self: stretch;
+}
+
+.conversion-deck-body {
+  gap: 16px;
+  padding: 18px 0 2px;
+}
+
+.conversion-library-choice {
+  display: grid;
+  gap: 16px;
+  margin-top: 1px;
 }
 
 .conversion-deck-head,
@@ -3421,7 +3650,7 @@ details[open] > .library-group-summary::after {
 .conversion-button-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 7px;
+  gap: 10px;
 }
 
 .conversion-button-row > * {
@@ -3431,10 +3660,6 @@ details[open] > .library-group-summary::after {
 
 .conversion-button-row .record-button {
   flex: none;
-}
-
-.conversion-library-choice {
-  margin-top: 1px;
 }
 
 .conversion-workspace .vu {
@@ -3506,3 +3731,19 @@ details[open] > .library-group-summary::after {
     justify-content: center;
   }
 }
+
+/* Three equal actions keep audition, regeneration and committing a clone distinct. */
+.clone-audition-actions > button {
+  flex: 1 1 180px;
+  min-height: 42px;
+}
+
+/* Compare generated voices without hiding the alternatives. */
+.module[data-page="voice-design"] .module-body { display: grid; gap: 12px; }
+.design-candidates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.design-candidate-card { display: grid; gap: 12px; min-width: 0; padding: 14px; border: 1px solid var(--line-soft); border-radius: 8px; }
+.design-candidate-card:has(input:checked) { border-color: var(--format-accent); background: var(--format-soft); }
+.design-candidate-card label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.design-candidate-card input { accent-color: var(--format-accent); }
+.design-candidate-card audio { width: 100%; min-width: 0; }
+@media (max-width: 800px) { .design-candidates { grid-template-columns: 1fr; } }

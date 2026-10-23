@@ -314,9 +314,8 @@ async page => {
 
   const editedText = 'Edited second fixture line';
   await page.locator('.extract-segment-text').nth(1).fill(editedText);
-  await page.locator('#transcribeRenameFrom').selectOption('A');
-  await page.locator('#transcribeRenameTo').fill('Narrator');
-  await page.locator('#transcribeRenameButton').click();
+  await page.locator('.speaker-card[data-speaker="A"] input').fill('Narrator');
+  await page.locator('.speaker-card[data-speaker="A"] button').click();
   const renamedSpeakers = await page.locator('.extract-segment-speaker').allTextContents();
   assert(JSON.stringify(renamedSpeakers) === JSON.stringify(['Narrator', 'Narrator', 'B']),
     'whole-speaker rename changed the wrong segments: ' + JSON.stringify(renamedSpeakers));
@@ -418,10 +417,9 @@ async page => {
     'Audio Workspace interface lost mode, source, or transcript ordering on Transcribe to Extract');
   assert(await page.locator('#extractCloneButton').isVisible(), 'Extract did not expose clone-reference action');
   assert(await page.locator('#extractLibraryButton').isVisible(), 'Extract did not expose Library clip action');
-  assert(await page.locator('#transcribeRenameFrom').isVisible(), 'Extract did not expose speaker rename controls');
-  await page.locator('#transcribeRenameFrom').selectOption('Narrator');
-  await page.locator('#transcribeRenameTo').fill('Host');
-  await page.locator('#transcribeRenameButton').click();
+  assert(await page.locator('#transcribeSpeakerCards').isVisible(), 'Extract did not expose speaker rename controls');
+  await page.locator('.speaker-card[data-speaker="Narrator"] input').fill('Host');
+  await page.locator('.speaker-card[data-speaker="Narrator"] button').click();
   const extractRenamedSpeakers = await page.locator('.extract-segment-speaker').allTextContents();
   assert(JSON.stringify(extractRenamedSpeakers) === JSON.stringify(['Host', 'Host', 'B']),
     'Extract speaker rename changed the wrong segments: ' + JSON.stringify(extractRenamedSpeakers));
@@ -466,7 +464,7 @@ async page => {
   const labelledWorkspace = await page.evaluate(() => window.__cppStudioAudioWorkspace.snapshot());
   assert(labelledWorkspace.segments[0].speaker === 'Kenneth Williams',
     'clean speech actor did not replace the provisional transcript speaker');
-  assert((await page.locator('#transcribeRenameFrom option').allTextContents()).includes('Kenneth Williams'),
+  assert(await page.locator('.speaker-card[data-speaker="Kenneth Williams"]').isVisible(),
     'clean speech actor did not appear in the transcript rename control');
   assert(await page.locator('#extractTimeline .extract-segment').first().locator('.tag-button.active').filter({ hasText: /^Kenneth Williams$/ }).isVisible(),
     'clean speech actor was not shown as the active transcript speaker');

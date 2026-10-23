@@ -194,6 +194,10 @@ h2 { font-size: 1rem; }
 }
 
 .new-project-row { display: grid; grid-template-columns: 1fr auto; gap: .45rem; }
+.dialogue-engine-field { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; padding: .75rem 1rem; border-bottom: 1px solid var(--line); }
+.dialogue-engine-field label { font-size: .8rem; font-weight: 700; }
+.dialogue-engine-field select { max-width: 100%; padding: .5rem; color: var(--text); background: #0f151e; border: 1px solid var(--line); border-radius: .4rem; }
+.dialogue-engine-field span { flex: 1 1 22rem; color: var(--muted); font-size: .75rem; }
 input { width: 100%; padding: .62rem .7rem; border: 1px solid var(--line); border-radius: .4rem; color: var(--text); background: #0f151e; }
 button { padding: .55rem .75rem; }
 .new-project-row button, #storyBuilderSaveButton { color: #1b1205; border-color: var(--accent); background: var(--accent); font-weight: 800; }

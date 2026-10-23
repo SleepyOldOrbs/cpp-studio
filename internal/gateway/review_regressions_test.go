@@ -30,11 +30,15 @@ func TestVoiceDesignResolvesCanonicalIDsAndAliases(t *testing.T) {
 			fake := engine.NewFake()
 			fake.Handle(selected.Engine, func(spec engine.Spec) (engine.Result, error) {
 				called = true
+				args := strings.Join(spec.BuildArgs("", "preview.wav"), " ")
+				if !strings.Contains(args, "--seed 12345") {
+					t.Fatalf("candidate seed missing: %s", args)
+				}
 				return engine.Result{Output: wav.SyntheticTone(200)}, nil
 			})
 			r := &router{catalog: manifest, engines: fake, cfg: config.Config{Engines: map[string]config.EngineConfig{selected.Engine: {Mode: "subprocess"}}}}
 			rec := httptest.NewRecorder()
-			r.handleVoiceDesign(rec, httptest.NewRequest(http.MethodPost, "/v1/voices/design", strings.NewReader(`{"description":"Warm voice","model":"`+id+`"}`)))
+			r.handleVoiceDesign(rec, httptest.NewRequest(http.MethodPost, "/v1/voices/design", strings.NewReader(`{"description":"Warm voice","model":"`+id+`","seed":12345}`)))
 			if rec.Code != http.StatusOK || !called {
 				t.Fatalf("status=%d called=%v body=%s", rec.Code, called, rec.Body.String())
 			}

@@ -151,7 +151,7 @@ func (i *StoryImporter) Import(storyID string, request StoryImportRequest) (Proj
 			VoiceFingerprint: identity.Fingerprint, SourceStoryID: manifest.ID,
 			SourceStoryLineID: line.ID, SourceStoryTakeID: line.CurrentTake,
 		}
-		if hasTake && currentTake.Text == line.Text && currentTake.VoiceID == member.VoiceID &&
+		if hasTake && !identity.ReferenceReassigned && currentTake.Text == line.Text && currentTake.VoiceID == member.VoiceID &&
 			member.VoiceID != "" && identity.ActorVoiceID == member.VoiceID {
 			data, loadErr := i.stories.LoadRetainedTake(manifest.ID, line.ID, currentTake.ID)
 			if loadErr == nil && wav.ValidateBytes(data) == nil {
