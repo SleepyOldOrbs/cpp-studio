@@ -14,6 +14,7 @@ import (
 // SavedReference is an explicitly assigned recording. Characters without one
 // continue to inherit their actor's reference.
 type SavedReference struct {
+	UpdatedAt  time.Time          `json:"updated_at,omitempty"`
 	File       string             `json:"file"`
 	Transcript string             `json:"transcript"`
 	Source     *CloneSource       `json:"source,omitempty"`
@@ -90,7 +91,7 @@ func (s *Store) AssignReference(id, transcript string, audio []byte, source *Clo
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
-	ref := &SavedReference{File: fmt.Sprintf("reference-%d.wav", now.UnixNano()), Transcript: transcript, Source: source, Analysis: analyzeReference(audio, s.vad)}
+	ref := &SavedReference{UpdatedAt: now, File: fmt.Sprintf("reference-%d.wav", now.UnixNano()), Transcript: transcript, Source: source, Analysis: analyzeReference(audio, s.vad)}
 	var manifest string
 	var updated any
 	if strings.HasPrefix(id, "character_") {
@@ -128,21 +129,8 @@ func (s *Store) AssignReference(id, transcript string, audio []byte, source *Clo
 			ref.Source = actor.Source
 		}
 		actor.Reference, actor.Transcript, actor.Source, actor.Analysis = ref, transcript, ref.Source, ref.Analysis
-		// Inherited previews no longer describe this actor's new recording.
-		// Update their revision even without a preview to reject in-flight work.
-		characters, err := s.listCharacterVoices(id, false)
-		if err != nil {
-			return err
-		}
-		for _, character := range characters {
-			if character.Reference != nil {
-				continue
-			}
-			character.Preview, character.UpdatedAt = nil, now
-			if err := writeCharacterManifestAtomic(s.characterManifestPath(character.ID), character); err != nil {
-				return err
-			}
-		}
+		// Inherited previews are invalidated on read against this committed
+		// reference revision. Do not mutate children before publication succeeds.
 		manifest, updated = filepath.Join(s.rootDir, id, "manifest.json"), actor
 	}
 	previous, err := os.ReadFile(manifest)

@@ -191,6 +191,18 @@ func (s *Store) LoadCharacterVoice(id string) (CharacterVoice, bool, error) {
 	if character.ID != id || !validCharacterVoiceID(character.ID) || validateVoiceID(character.ActorVoiceID) != nil {
 		return CharacterVoice{}, false, fmt.Errorf("decode Character Voice: invalid identity")
 	}
+	if character.Reference == nil {
+		actor, ok, err := s.load(character.ActorVoiceID)
+		if err != nil {
+			return CharacterVoice{}, false, err
+		}
+		// One atomic actor-manifest publication invalidates inherited previews
+		// and rejects in-flight synthesis through the existing revision check.
+		if ok && actor.Reference != nil && actor.Reference.UpdatedAt.After(character.UpdatedAt) {
+			character.Preview = nil
+			character.UpdatedAt = actor.Reference.UpdatedAt
+		}
+	}
 	if character.Preview != nil {
 		character.Preview.FileName = previewFileName(character.Preview.UpdatedAt)
 	}

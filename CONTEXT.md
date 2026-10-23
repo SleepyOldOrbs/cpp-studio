@@ -128,7 +128,10 @@ stores identity and performance direction and inherits the parent's reference
 unless the user explicitly assigns a recording to that Character Voice. That
 override changes only the selected character. Reference assignments retain
 previous WAVs and manifest snapshots, update synthesis fingerprints, and clear
-the selected character's generated preview. Its optional generated preview is replaceable evaluation data,
+the selected character's generated preview. Inherited previews and revisions are
+invalidated on read against the actor's committed reference timestamp, so a failed
+actor-reference publication leaves child manifests and previews unchanged.
+Its optional generated preview is replaceable evaluation data,
 not a Library asset or production take.
 
 ## Story (`internal/story`)

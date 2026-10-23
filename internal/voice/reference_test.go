@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"cpp-studio/internal/engine"
@@ -114,6 +115,129 @@ func TestReferenceAssignmentFailurePreservesCurrentReference(t *testing.T) {
 	current, text, err := store.ResolveReference(actor.ID)
 	if err != nil || current != path || text != "original" {
 		t.Fatal("failed assignment changed the reference")
+	}
+}
+
+func TestFailedActorAssignmentPreservesInheritedPreviews(t *testing.T) {
+	for _, stage := range []string{"backup", "wav", "manifest"} {
+		t.Run(stage, func(t *testing.T) {
+			store := NewStore(t.TempDir())
+			audio := wav.SyntheticTone(1600)
+			actor, err := store.Save("Actor", "original words", audio, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			child, err := store.CreateCharacterVoice(actor.ID, "Child", "calm")
+			if err != nil {
+				t.Fatal(err)
+			}
+			child, err = store.SaveCharacterPreview(child.ID, "sample", audio, child.UpdatedAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest := store.characterManifestPath(child.ID)
+			before, err := os.ReadFile(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			previewPath, err := store.CharacterPreviewPath(child.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store.writeFileAtomic = func(path string, data []byte) error {
+				name := filepath.Base(path)
+				if (stage == "backup" && strings.HasPrefix(name, "reference-before-")) ||
+					(stage == "wav" && strings.HasSuffix(name, ".wav")) ||
+					(stage == "manifest" && name == "manifest.json") {
+					return errors.New("injected publication failure")
+				}
+				return writeVoiceFileAtomic(path, data)
+			}
+			if err := store.AssignReference(actor.ID, "replacement", wav.SyntheticTone(3200), nil); err == nil {
+				t.Fatal("expected failure")
+			}
+			_, transcript, err := store.ResolveReference(actor.ID)
+			if err != nil || transcript != "original words" {
+				t.Fatalf("old reference: %q %v", transcript, err)
+			}
+			after, err := os.ReadFile(manifest)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("failed assignment changed child manifest")
+			}
+			// Verify the same state survives reopening the store, not just in-memory reads.
+			reopened := NewStore(store.rootDir)
+			saved, _, err := reopened.LoadCharacterVoice(child.ID)
+			if err != nil || saved.Preview == nil || !saved.UpdatedAt.Equal(child.UpdatedAt) {
+				t.Fatalf("child preview/revision changed: %+v %v", saved, err)
+			}
+			currentPath, err := reopened.CharacterPreviewPath(child.ID)
+			if err != nil || currentPath != previewPath {
+				t.Fatalf("preview inaccessible: %s %v", currentPath, err)
+			}
+		})
+	}
+}
+
+func TestCommittedActorReferenceInvalidatesInheritedPreviewRevisions(t *testing.T) {
+	store := NewStore(t.TempDir())
+	audio := wav.SyntheticTone(1600)
+	actor, err := store.Save("Actor", "original", audio, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var children []CharacterVoice
+	for _, name := range []string{"Previewed", "In flight", "Override"} {
+		child, err := store.CreateCharacterVoice(actor.ID, name, "calm")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name == "Override" {
+			if err := store.AssignReference(child.ID, "own reference", audio, nil); err != nil {
+				t.Fatal(err)
+			}
+			child, _, err = store.LoadCharacterVoice(child.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if name != "In flight" {
+			child, err = store.SaveCharacterPreview(child.ID, "sample", audio, child.UpdatedAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		children = append(children, child)
+	}
+	if err := store.AssignReference(actor.ID, "replacement", wav.SyntheticTone(3200), nil); err != nil {
+		t.Fatal(err)
+	}
+	store = NewStore(store.rootDir)
+	for _, before := range children {
+		after, _, err := store.LoadCharacterVoice(before.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if before.Reference != nil {
+			if after.Preview == nil || !after.UpdatedAt.Equal(before.UpdatedAt) {
+				t.Fatal("changed independent character preview")
+			}
+			continue
+		}
+		if after.Preview != nil || !after.UpdatedAt.After(before.UpdatedAt) {
+			t.Fatal("inherited preview/revision was not invalidated")
+		}
+		if _, err := store.CharacterPreviewPath(before.ID); !errors.Is(err, ErrCharacterPreviewNotFound) {
+			t.Fatalf("stale preview is accessible: %v", err)
+		}
+		if _, err := store.SaveCharacterPreview(before.ID, "old in-flight result", audio, before.UpdatedAt); !errors.Is(err, ErrCharacterVoiceChanged) {
+			t.Fatalf("stale synthesis accepted: %v", err)
+		}
+		if _, err := store.SaveCharacterPreview(before.ID, "fresh result", audio, after.UpdatedAt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewStore(store.rootDir).CharacterPreviewPath(before.ID); err != nil {
+			t.Fatalf("fresh preview inaccessible after reopen: %v", err)
+		}
 	}
 }
 

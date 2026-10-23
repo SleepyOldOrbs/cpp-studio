@@ -4871,6 +4871,7 @@
     var isACE = !modelOption || modelOption.dataset.family === "ace_step";
     var sourceAllowed = isACE && musicModeSelect.value !== "text2music";
     var required = isACE && musicRouteNeedsSource(musicModeSelect.value);
+    document.getElementById("musicModeField").hidden = !modelOption || modelOption.dataset.family !== "ace_step";
     musicModeSelect.disabled = studioBusy || captureBusy || !isACE;
     musicPromptInput.disabled = studioBusy || captureBusy;
     musicLyricsInput.disabled = studioBusy || captureBusy;
