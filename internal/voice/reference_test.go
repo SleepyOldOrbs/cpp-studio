@@ -3,6 +3,7 @@ package voice
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -175,6 +176,40 @@ func TestFailedActorAssignmentPreservesInheritedPreviews(t *testing.T) {
 				t.Fatalf("preview inaccessible: %s %v", currentPath, err)
 			}
 		})
+	}
+}
+
+func TestCharacterReferenceRevisionReadDoesNotMigrateActor(t *testing.T) {
+	store := NewStore(t.TempDir())
+	actor, err := store.Save("Actor", "original", wav.SyntheticTone(1600), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := store.CreateCharacterVoice(actor.ID, "Child", "calm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Legacy actors have no analysis. Reading a child must not trigger a
+	// migration write that could overwrite a concurrent actor assignment.
+	actor.Analysis = nil
+	data, err := json.Marshal(actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.rootDir, actor.ID, "manifest.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store.writeFileAtomic = func(string, []byte) error {
+		t.Error("character read attempted a manifest write")
+		return errors.New("unexpected write")
+	}
+	if _, ok, err := store.LoadCharacterVoice(child.ID); err != nil || !ok {
+		t.Fatalf("load legacy actor's child: %v %v", ok, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(data, after) {
+		t.Fatal("character read changed actor manifest")
 	}
 }
 

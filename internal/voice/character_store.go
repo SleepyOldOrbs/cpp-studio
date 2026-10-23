@@ -192,13 +192,21 @@ func (s *Store) LoadCharacterVoice(id string) (CharacterVoice, bool, error) {
 		return CharacterVoice{}, false, fmt.Errorf("decode Character Voice: invalid identity")
 	}
 	if character.Reference == nil {
-		actor, ok, err := s.load(character.ActorVoiceID)
-		if err != nil {
-			return CharacterVoice{}, false, err
+		// Read only: s.load can migrate legacy manifests and requires the store
+		// lock, while this loader is also called by mutations holding that lock.
+		actorData, err := os.ReadFile(filepath.Join(s.rootDir, character.ActorVoiceID, "manifest.json"))
+		if err != nil && !os.IsNotExist(err) {
+			return CharacterVoice{}, false, fmt.Errorf("read actor reference revision: %w", err)
+		}
+		var actor Clone
+		if err == nil {
+			if err := json.Unmarshal(actorData, &actor); err != nil {
+				return CharacterVoice{}, false, fmt.Errorf("decode actor reference revision: %w", err)
+			}
 		}
 		// One atomic actor-manifest publication invalidates inherited previews
 		// and rejects in-flight synthesis through the existing revision check.
-		if ok && actor.Reference != nil && actor.Reference.UpdatedAt.After(character.UpdatedAt) {
+		if actor.Reference != nil && actor.Reference.UpdatedAt.After(character.UpdatedAt) {
 			character.Preview = nil
 			character.UpdatedAt = actor.Reference.UpdatedAt
 		}
