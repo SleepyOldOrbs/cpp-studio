@@ -1,6 +1,6 @@
 # Audiobook chapter planning Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Show the book's chapter structure and audition its actual text before committing to narration.
 
@@ -35,9 +35,9 @@
 
 **Initial rules:** TXT is one chapter. Markdown splits at top-level ATX headings (`# ` outside fenced code); preceding text is **Introduction**. EPUB uses readable spine documents in order, with first heading as title or **Chapter N** fallback. An EPUB spine document can contain multiple literary chapters: present this as an explicit initial limitation, not inferred structure. Headings remain spoken text. Do not offer manual chapter editing in this slice.
 
-- [ ] Write `TestExtractDocumentChapters` table cases for all three formats, empty input, fenced Markdown, multibyte names, BOM/CRLF, front matter and missing EPUB titles. Assert ordered non-overlapping valid byte ranges and no lost narratable text.
-- [ ] Run `go test ./internal/audiobook -run TestExtractDocumentChapters`; establish failure, implement extraction using current parsing/size limits, then require PASS.
-- [ ] Run `go test ./internal/audiobook` to protect the old extraction contract. Review and commit.
+- [x] Write `TestExtractDocumentChapters` table cases for all three formats, empty input, fenced Markdown, multibyte names, BOM/CRLF, front matter and missing EPUB titles. Assert ordered non-overlapping valid byte ranges and no lost narratable text.
+- [x] Run `go test ./internal/audiobook -run TestExtractDocumentChapters`; establish failure, implement extraction using current parsing/size limits, then require PASS.
+- [x] Run `go test ./internal/audiobook` to protect the old extraction contract. Review and commit.
 
 ## 2B — One preview plan, saved with production and render boundaries
 
@@ -47,11 +47,11 @@
 
 Persist the plan on new manifests. Plan sections/chunks within chapter boundaries for new productions only. Record `ChapterBoundary{ChapterID string; StartSample, EndSample int64}` and sample rate with each rendered artifact/revision; boundaries refer to the actual joined master and account for the existing crossfade. Use the first contributing sample of each new chapter as its marker; end each navigation interval at the next marker, last at total samples. Legacy artifacts without recorded boundaries remain explicitly unchaptered. Chapter/section-policy identity changes apply only to the new planning policy.
 
-- [ ] Add tests for preview/Create agreement, stale digest rejection, two-chapter Qwen and DramaBox production using fixture synthesis, chapter-boundary crossfades, and unchanged resume fingerprints for legacy WIP.
-- [ ] Run `go test ./internal/audiobook ./internal/gateway`; establish new-case failures, then implement plan persistence and boundary recording in each existing narration branch. Do not add retry/resume features to the simpler branch.
-- [ ] Add the chapter list, source excerpt, word count, resolved narrator and listening estimate to preview. Make the estimate visibly approximate; clear it when relevant inputs change. Show no generation-time estimate without measured evidence.
-- [ ] Run the Go packages and `node --test scripts/test-studio-ux.cjs`. Verify a two-chapter fixture through preview, generation and reopen; retry/select a DramaBox section and confirm the next render records recalculated boundaries.
-- [ ] Review and commit the complete plan-to-production slice.
+- [x] Add tests for preview/Create agreement, stale digest rejection, two-chapter Qwen and DramaBox production using fixture synthesis, chapter-boundary crossfades, and unchanged resume fingerprints for legacy WIP.
+- [x] Run `go test ./internal/audiobook ./internal/gateway`; establish new-case failures, then implement plan persistence and boundary recording in each existing narration branch. Do not add retry/resume features to the simpler branch.
+- [x] Add the chapter list, source excerpt, word count, resolved narrator and listening estimate to preview. Make the estimate visibly approximate; clear it when relevant inputs change. Show no generation-time estimate without measured evidence.
+- [x] Run the Go packages and `node --test scripts/test-studio-ux.cjs`. Verify a two-chapter fixture through preview, generation and reopen; retry/select a DramaBox section and confirm the next render records recalculated boundaries.
+- [x] Review and commit the complete plan-to-production slice.
 
 ## 2C — Audition a real passage
 
@@ -59,8 +59,8 @@ Persist the plan on new manifests. Plan sections/chunks within chapter boundarie
 
 **Interface:** add `AuditionDocument(ctx context.Context, document DocumentRequest, chapterID string) (string, error)` to the service, returning an existing job-registry ID. Re-extract the document server-side and choose the chapter's first synthesis-sized passage using the same planner and request resolution as production. Show the exact excerpt before generation. Keep preview audio in bounded temporary job storage; do not create a saved Audiobook or Library asset. Use the existing cancellation and engine reservation mechanisms.
 
-- [ ] Add tests asserting the synthesizer receives the displayed source passage/resolved voice/settings, never the voice's generic preview text; cover missing chapter, busy engine, cancel and failure cleanup.
-- [ ] Run `go test ./internal/audiobook ./internal/gateway`; establish failures, implement the audition action/player and explicit regeneration after settings change, then require PASS.
-- [ ] Demonstrate a short real-engine audition and cancellation. Reopen the Library and confirm audition did not create a phantom book. Review and commit.
+- [x] Add tests asserting the synthesizer receives the displayed source passage/resolved voice/settings, never the voice's generic preview text; cover missing chapter, busy engine, cancel and failure cleanup.
+- [x] Run `go test ./internal/audiobook ./internal/gateway`; establish failures, implement the audition action/player and explicit regeneration after settings change, then require PASS.
+- [x] Demonstrate a short real-engine audition and cancellation. Reopen the Library and confirm audition did not create a phantom book. Review and commit.
 
 **Stage gate:** Import, inspect, audition and narrate a two-chapter document. The saved production exposes its chapter plan, and its render contains accurate boundaries for stage 3. Old books remain readable and old durable work resumes.

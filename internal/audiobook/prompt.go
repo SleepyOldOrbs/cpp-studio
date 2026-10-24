@@ -138,10 +138,14 @@ func BuildStructuredDramaBoxPrompt(spec DramaBoxPromptSpec, source string) (stri
 // allocating seeds or durable work, then renders exactly what each native call
 // will receive.
 func PreviewDramaBoxPromptSections(spec DramaBoxPromptSpec, source string) ([]PromptSectionPreview, error) {
+	return PreviewDramaBoxDocumentSections(spec, source, nil)
+}
+
+func PreviewDramaBoxDocumentSections(spec DramaBoxPromptSpec, source string, plan *DocumentPlan) ([]PromptSectionPreview, error) {
 	if source == "" {
 		return []PromptSectionPreview{}, nil
 	}
-	ranges, err := buildDramaBoxRanges(source)
+	ranges, err := documentSectionRanges(source, plan)
 	if err != nil {
 		return nil, err
 	}

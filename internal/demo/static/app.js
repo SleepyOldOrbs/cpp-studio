@@ -7188,6 +7188,14 @@
   var audiobookOptionsJSON = document.getElementById("audiobookOptionsJSON");
   var audiobookPreviewButton = document.getElementById("audiobookPreviewButton");
   var audiobookRequestPreview = document.getElementById("audiobookRequestPreview");
+  var audiobookChapterPlan = document.getElementById("audiobookChapterPlan");
+  var audiobookDocumentPlan = null;
+  var audiobookAuditionAudio = document.getElementById("audiobookAuditionAudio");
+  var audiobookAuditionStatus = document.getElementById("audiobookAuditionStatus");
+  var audiobookAuditionCancel = document.getElementById("audiobookAuditionCancel");
+  var audiobookAuditionJobId = "";
+  var audiobookAuditionPending = false;
+  var audiobookAuditionCancelled = false;
   var audiobookNarrateButton = document.getElementById("audiobookNarrateButton");
   var audiobookCancelButton = document.getElementById("audiobookCancelButton");
   var audiobookErrorBox = document.getElementById("audiobookErrorBox");
@@ -7269,8 +7277,12 @@
   }
 
   function invalidateAudiobookPreview() {
+    clearAudiobookAudition();
     audiobookResolvedKey = "";
 	audiobookResolvedDirection = "";
+    audiobookDocumentPlan = null;
+    audiobookChapterPlan.textContent = "";
+    audiobookChapterPlan.hidden = true;
     audiobookRequestPreview.textContent = "Settings changed. Preview them again before narration.";
     showMatchingAudiobookBenchmark();
     syncAudiobookEngineControls();
@@ -7299,8 +7311,12 @@
 	  audiobookPromptWarningAcceptance.hidden = true;
 	  audiobookPromptWarningsPending = false;
 	}
-	audiobookNarrateButton.disabled = audiobookBusy || Boolean(audiobookBenchmarkJobId) || !available || audiobookBenchmarkBlocked ||
+	audiobookNarrateButton.disabled = audiobookBusy || audiobookAuditionPending || Boolean(audiobookAuditionJobId) || Boolean(audiobookBenchmarkJobId) || !available || audiobookBenchmarkBlocked ||
 	  (audiobookPromptWarningsPending && !audiobookAcceptPromptWarnings.checked) || audiobookResolvedKey !== audiobookRequestKey();
+    audiobookAuditionCancel.hidden = !audiobookAuditionPending && !audiobookAuditionJobId;
+    audiobookChapterPlan.querySelectorAll("[data-audiobook-audition]").forEach(function (button) {
+      button.disabled = audiobookBusy || audiobookAuditionPending || Boolean(audiobookAuditionJobId) || Boolean(audiobookBenchmarkJobId) || !available || audiobookResolvedKey !== audiobookRequestKey() || (audiobookPromptWarningsPending && !audiobookAcceptPromptWarnings.checked);
+    });
   }
 
   // Health is the source of truth for what the operator configured. Keep the
@@ -7343,7 +7359,38 @@
   });
 	audiobookAcceptPromptWarnings.addEventListener("change", syncAudiobookEngineControls);
 
-  audiobookPreviewButton.addEventListener("click", async function () {
+  function audiobookListeningEstimate(seconds) {
+    return seconds < 60 ? Math.max(1, Math.round(seconds)) + " seconds" : Math.round(seconds / 60) + " minutes";
+  }
+
+  function renderAudiobookChapterPlan(container, plan, narrator, canAudition) {
+    container.textContent = "";
+    container.hidden = !plan;
+    if (!plan) { return; }
+    container.appendChild(createElement("h3", "", "Chapter plan"));
+    container.appendChild(createElement("p", "", plan.chapters.length + " chapters · " + plan.wordCount + " words · approximately " + audiobookListeningEstimate(plan.estimatedListeningSeconds) + " listening"));
+    container.appendChild(createElement("p", "hint", "Narrator: " + narrator + ". Listening length is approximate; it is not a generation-time estimate."));
+    var list = createElement("ol", "audiobook-chapters");
+    (plan.chapters || []).forEach(function (chapter) {
+      var item = createElement("li", "");
+      item.appendChild(createElement("strong", "", chapter.title));
+      item.appendChild(createElement("p", "hint", chapter.wordCount + " words · approximately " + audiobookListeningEstimate(chapter.estimatedListeningSeconds)));
+      item.appendChild(createElement("blockquote", "", chapter.excerpt));
+      if (canAudition) {
+        var audition = createElement("button", "secondary compact-button", "Audition this passage");
+        audition.type = "button";
+        audition.dataset.audiobookAudition = chapter.id;
+        audition.addEventListener("click", function () { auditionAudiobookChapter(chapter.id); });
+        item.appendChild(audition);
+      }
+      list.appendChild(item);
+    });
+    container.appendChild(list);
+    container.appendChild(createElement("p", "hint", "TXT uses one chapter; Markdown uses top-level headings; EPUB uses its reading-order documents. Headings remain in the narration."));
+  }
+
+  async function previewAudiobookDocument() {
+    var requestedKey = audiobookRequestKey();
     audiobookErrorBox.hidden = true;
     audiobookPreviewButton.disabled = true;
     audiobookRequestPreview.textContent = "Preparing narration preview…";
@@ -7382,21 +7429,133 @@
         throw new Error(await readErrorBody(response));
       }
       var preview = await response.json();
+      if (requestedKey !== audiobookRequestKey()) { return; }
 	  audiobookResolvedDirection = preview.direction || "";
 	  var promptWarnings = preview.prompt && preview.prompt.warnings || [];
 	  audiobookPromptWarningsPending = Boolean(promptWarnings.length);
 	  audiobookPromptWarningAcceptance.hidden = !promptWarnings.length;
-      audiobookResolvedKey = audiobookRequestKey();
+      audiobookResolvedKey = requestedKey;
+      audiobookDocumentPlan = preview.plan || null;
+      var narrator = audiobookVoiceSelect.selectedOptions[0];
+      renderAudiobookChapterPlan(audiobookChapterPlan, audiobookDocumentPlan, narrator ? narrator.textContent : preview.voice, true);
       audiobookRequestPreview.textContent = JSON.stringify(preview, null, 2);
     } catch (err) {
+      if (requestedKey !== audiobookRequestKey()) { return; }
       audiobookResolvedKey = "";
+      audiobookDocumentPlan = null;
+      renderAudiobookChapterPlan(audiobookChapterPlan, null, "");
       audiobookRequestPreview.textContent = "Could not preview narration settings. Check the error below and try again.";
       audiobookErrorBox.textContent = err.message;
       audiobookErrorBox.hidden = false;
     } finally {
       syncAudiobookEngineControls();
     }
-  });
+  }
+  audiobookPreviewButton.addEventListener("click", previewAudiobookDocument);
+
+  function audiobookDocumentForm(file) {
+    var form = new FormData();
+    form.append("file", file, file.name);
+    form.append("engine", audiobookEngineSelect.value);
+    form.append("voice", audiobookVoiceSelect.value);
+    if (audiobookDocumentPlan) { form.append("planDigest", audiobookDocumentPlan.digest); }
+    if (audiobookEngineSelect.value === "dramabox") {
+      form.append("promptSpec", JSON.stringify(audiobookPromptSpec()));
+      form.append("acceptPromptWarnings", String(audiobookAcceptPromptWarnings.checked));
+      form.append("options", audiobookOptionsText());
+      form.append("verification", audiobookVerificationSelect.value);
+    }
+    return form;
+  }
+
+  function clearAudiobookAudition() {
+    audiobookAuditionCancelled = true;
+    audiobookAuditionAudio.pause();
+    audiobookAuditionAudio.removeAttribute("src");
+    audiobookAuditionAudio.load();
+    audiobookAuditionAudio.hidden = true;
+    audiobookAuditionStatus.textContent = "";
+    if (audiobookAuditionJobId) {
+      cancelAudiobookAudition();
+    }
+  }
+
+  async function cancelAudiobookAudition() {
+    var id = audiobookAuditionJobId;
+    if (!id) { return true; }
+    try {
+      var response = await fetch("/v1/jobs/" + encodeURIComponent(id) + "/cancel", { method: "POST" });
+      if (!response.ok) {
+        // A completed job can win the cancellation race. Confirm that it is
+        // terminal before releasing the UI's handle to its reservation.
+        if (response.status !== 409) { throw new Error("Cancellation unavailable"); }
+        var status = await fetch("/v1/jobs/" + encodeURIComponent(id));
+        if (!status.ok) { throw new Error("Status unavailable"); }
+        var job = await status.json();
+        if (["complete", "cancelled", "failed"].indexOf(job.status) < 0) { throw new Error("Audition is still running"); }
+      }
+      if (audiobookAuditionJobId === id) { audiobookAuditionJobId = ""; }
+      audiobookAuditionStatus.textContent = "Audition cancelled.";
+      return true;
+    } catch (_) {
+      audiobookAuditionStatus.textContent = "Could not confirm cancellation. Use Cancel audition to retry.";
+      return false;
+    } finally {
+      syncAudiobookEngineControls();
+    }
+  }
+
+  async function auditionAudiobookChapter(chapterID) {
+    var requestedKey = audiobookRequestKey();
+    var file = audiobookFileInput.files && audiobookFileInput.files[0];
+    if (audiobookAuditionPending || audiobookAuditionJobId || !file || !audiobookDocumentPlan || audiobookResolvedKey !== requestedKey) { return; }
+    var finished = false;
+    clearAudiobookAudition();
+    audiobookAuditionCancelled = false;
+    audiobookAuditionPending = true;
+    audiobookAuditionStatus.textContent = "Generating the displayed passage…";
+    syncAudiobookEngineControls();
+    try {
+      var form = audiobookDocumentForm(file);
+      form.append("chapterId", chapterID);
+      var response = await fetch("/v1/audiobooks/audition", { method: "POST", body: form });
+      if (!response.ok) { throw new Error(await readErrorBody(response)); }
+      var created = await response.json();
+      audiobookAuditionJobId = created.id;
+      while (true) {
+        if (requestedKey !== audiobookRequestKey() || audiobookAuditionCancelled) {
+          await cancelAudiobookAudition();
+          return;
+        }
+        var status = await fetch("/v1/jobs/" + encodeURIComponent(created.id));
+        if (!status.ok) { throw new Error(await readErrorBody(status)); }
+        var job = await status.json();
+        if (requestedKey !== audiobookRequestKey() || audiobookAuditionCancelled) {
+          await cancelAudiobookAudition();
+          return;
+        }
+        if (job.status === "complete") {
+          finished = true;
+          audiobookAuditionAudio.src = job.result.audioUrl;
+          audiobookAuditionAudio.hidden = false;
+          audiobookAuditionAudio.load();
+          audiobookAuditionStatus.textContent = "Passage ready. Press play to listen. Temporary audio is replaced by the next audition.";
+          return;
+        }
+        if (job.status === "cancelled") { finished = true; audiobookAuditionStatus.textContent = "Audition cancelled."; return; }
+        if (job.status === "failed") { finished = true; throw new Error(job.error || "Audition failed"); }
+        await new Promise(function (resolve) { setTimeout(resolve, 500); });
+      }
+    } catch (err) {
+      var stopped = finished || await cancelAudiobookAudition();
+      if (requestedKey === audiobookRequestKey()) { audiobookAuditionStatus.textContent = "Audition failed: " + err.message + (stopped ? "" : ". Use Cancel audition to retry."); }
+    } finally {
+      if (finished) { audiobookAuditionJobId = ""; }
+      audiobookAuditionPending = false;
+      syncAudiobookEngineControls();
+    }
+  }
+  audiobookAuditionCancel.addEventListener("click", clearAudiobookAudition);
 
   function renderAudiobookVoices(voices) {
     var previous = audiobookVoiceSelect.value;
@@ -7713,20 +7872,9 @@
       audiobookErrorBox.hidden = false;
       return;
     }
-    var form = new FormData();
-    form.append("file", file, file.name);
+    var form = audiobookDocumentForm(file);
     if (audiobookTitleInput.value.trim()) {
       form.append("title", audiobookTitleInput.value.trim());
-    }
-    if (audiobookVoiceSelect.value) {
-      form.append("voice", audiobookVoiceSelect.value);
-    }
-    form.append("engine", audiobookEngineSelect.value);
-    if (audiobookEngineSelect.value === "dramabox") {
-	  form.append("promptSpec", JSON.stringify(audiobookPromptSpec()));
-	  form.append("acceptPromptWarnings", String(audiobookAcceptPromptWarnings.checked));
-      form.append("options", audiobookOptionsText());
-      form.append("verification", audiobookVerificationSelect.value);
     }
     setAudiobookBusy(true);
     audiobookStatus.textContent = "Uploading…";
@@ -7939,6 +8087,15 @@
     item.appendChild(details);
   }
 
+  function audiobookSavedNarrator(book) {
+    var id = book.voiceId || (book.synthesisIdentity && book.synthesisIdentity.voice && book.synthesisIdentity.voice.id) || "";
+    if (id && id !== "default") {
+      var option = Array.prototype.find.call(audiobookVoiceSelect.options, function (voice) { return voice.value === id; });
+      return option ? option.textContent : id + " (saved voice)";
+    }
+    return book.engine === "dramabox" ? "DramaBox text-only voice" : "Studio default";
+  }
+
   function renderAudiobookCard(book, interrupted) {
     var item = createElement("div", "story-library-item" + (interrupted ? " is-interrupted" : ""));
     item.appendChild(createElement("div", "story-library-title", book.title || book.id));
@@ -7949,6 +8106,14 @@
       meta += " · " + Math.floor(book.durationSeconds / 60) + "m" + (book.durationSeconds % 60) + "s";
     }
     item.appendChild(createElement("div", "story-library-meta", meta));
+    if (book.documentPlan) {
+      var chapterDetails = createElement("details", "");
+      chapterDetails.appendChild(createElement("summary", "", book.documentPlan.chapters.length + " chapters"));
+      var chapterContent = createElement("div", "");
+      renderAudiobookChapterPlan(chapterContent, book.documentPlan, audiobookSavedNarrator(book));
+      chapterDetails.appendChild(chapterContent);
+      item.appendChild(chapterDetails);
+    }
     appendVerificationDetail(item, book);
     if (interrupted) {
       item.appendChild(createElement("div", "story-library-detail", "Interrupted · completed sections are retained"));

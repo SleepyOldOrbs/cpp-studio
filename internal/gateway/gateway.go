@@ -243,6 +243,8 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/audiobooks", r.handleAudiobooks)
 	mux.HandleFunc("/v1/audiobooks/preview", r.handleAudiobookPreview)
 	mux.HandleFunc("/v1/audiobooks/preview-document", r.handleAudiobookDocumentPreview)
+	mux.HandleFunc("/v1/audiobooks/audition", r.handleAudiobookDocumentPreview)
+	mux.HandleFunc("/v1/audiobooks/auditions/", r.handleAudiobookAuditionAudio)
 	mux.HandleFunc("/v1/audiobooks/benchmark", r.handleAudiobookBenchmark)
 	mux.HandleFunc("/v1/audiobooks/benchmark/results", r.handleAudiobookBenchmarkResults)
 	mux.HandleFunc("/v1/audiobooks/benchmark/results/", r.handleAudiobookBenchmarkResult)
@@ -1321,6 +1323,7 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		bookRequest, err := audiobook.NormalizeRequest(audiobook.Request{
+			PlanDigest:           strings.TrimSpace(req.FormValue("planDigest")),
 			Title:                title,
 			VoiceID:              voiceID,
 			EngineID:             req.FormValue("engine"),
@@ -1453,10 +1456,11 @@ func (r *router) handleAudiobookDocumentPreview(w http.ResponseWriter, req *http
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	resolved, err := r.audiobooks.PreviewDocument(req.Context(), audiobook.DocumentRequest{
+	document := audiobook.DocumentRequest{
 		Filename: header.Filename,
 		Data:     data,
 		Request: audiobook.Request{
+			PlanDigest:           strings.TrimSpace(req.FormValue("planDigest")),
 			VoiceID:              strings.TrimSpace(req.FormValue("voice")),
 			EngineID:             req.FormValue("engine"),
 			Direction:            req.FormValue("direction"),
@@ -1465,12 +1469,43 @@ func (r *router) handleAudiobookDocumentPreview(w http.ResponseWriter, req *http
 			OptionsJSON:          req.FormValue("options"),
 			Verification:         audiobook.VerificationMode(strings.TrimSpace(req.FormValue("verification"))),
 		},
-	})
+	}
+	if req.URL.Path == "/v1/audiobooks/audition" {
+		id, err := r.audiobooks.AuditionDocument(req.Context(), document, req.FormValue("chapterId"))
+		if err != nil {
+			writeAudiobookError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": id, "statusUrl": "/v1/jobs/" + id})
+		return
+	}
+	resolved, err := r.audiobooks.PreviewDocument(req.Context(), document)
 	if err != nil {
 		writeAudiobookPreviewError(w, err)
 		return
 	}
 	writeAudiobookPreview(w, resolved)
+}
+
+func (r *router) handleAudiobookAuditionAudio(w http.ResponseWriter, req *http.Request) {
+	if !requireMethod(w, req, http.MethodGet) {
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(req.URL.Path, "/v1/audiobooks/auditions/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] != "audio" {
+		http.NotFound(w, req)
+		return
+	}
+	audio, err := r.audiobooks.AuditionAudio(parts[0])
+	if err != nil {
+		writeAudiobookError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(audio)
 }
 
 func writeAudiobookPreviewError(w http.ResponseWriter, err error) {
@@ -1501,7 +1536,7 @@ func writeAudiobookPreview(w http.ResponseWriter, resolved audiobook.ResolvedReq
 			writeAudiobookPreviewError(w, err)
 			return
 		}
-		promptSections, err = audiobook.PreviewDramaBoxPromptSections(resolved.Request.PromptSpec, resolved.Request.Text)
+		promptSections, err = audiobook.PreviewDramaBoxDocumentSections(resolved.Request.PromptSpec, resolved.Request.Text, resolved.Plan)
 		if err != nil {
 			writeAudiobookPreviewError(w, err)
 			return
@@ -1513,6 +1548,7 @@ func writeAudiobookPreview(w http.ResponseWriter, resolved audiobook.ResolvedReq
 		}
 	}
 	response := map[string]any{
+		"plan":                     resolved.Plan,
 		"engine":                   resolved.Engine.ID,
 		"engineFingerprint":        resolved.Engine.Fingerprint,
 		"model":                    resolved.Engine.ModelID,

@@ -41,6 +41,7 @@ type VoiceIdentity struct {
 // durable sections can belong to the same audiobook production. Section seeds
 // are deliberately excluded and enter each checkpoint fingerprint instead.
 type SynthesisIdentity struct {
+	PlanDigest           string             `json:"planDigest,omitempty"`
 	Fingerprint          string             `json:"fingerprint"`
 	SourceSHA256         string             `json:"sourceSha256"`
 	Engine               EngineIdentity     `json:"engine"`
@@ -58,6 +59,7 @@ type ResolveVoiceFunc func(ctx context.Context, voiceID string) (VoiceIdentity, 
 // ResolvedRequest is a normalized request plus the runtime identities frozen
 // by the Manager before planning or engine reservation.
 type ResolvedRequest struct {
+	Plan    *DocumentPlan
 	Request Request
 	Engine  EngineIdentity
 	Voice   VoiceIdentity
@@ -76,6 +78,9 @@ func buildSynthesisIdentity(req Request, resolvedEngine EngineIdentity, resolved
 		Options:              options,
 		SectionPolicyVersion: CurrentSectionPolicyVersion,
 		PromptPolicyVersion:  CurrentPromptPolicyVersion,
+	}
+	if req.documentPlan != nil {
+		identity.PlanDigest = req.documentPlan.Digest
 	}
 
 	h := sha256.New()
@@ -98,6 +103,10 @@ func buildSynthesisIdentity(req Request, resolvedEngine EngineIdentity, resolved
 	add(engine.CompactOptionsJSON(identity.Options))
 	add(strconv.Itoa(identity.SectionPolicyVersion))
 	add(strconv.Itoa(identity.PromptPolicyVersion))
+	if identity.PlanDigest != "" {
+		add("chapter-plan")
+		add(identity.PlanDigest)
+	}
 	identity.Fingerprint = hex.EncodeToString(h.Sum(nil))
 	return identity
 }

@@ -208,6 +208,20 @@ func inspectPCMFile(path string) (filePCM, error) {
 	return result, nil
 }
 
+// PCMFramesFile inspects the WAV header without loading its audio into memory.
+// Frames count positions in time; a frame contains one sample per channel.
+func PCMFramesFile(path string) (Format, int64, error) {
+	info, err := inspectPCMFile(path)
+	if err != nil {
+		return Format{}, 0, err
+	}
+	align := uint64(info.format.Channels) * uint64(info.format.BitsPerSample) / 8
+	if info.format.SampleRate == 0 || align == 0 {
+		return Format{}, 0, fmt.Errorf("invalid PCM format")
+	}
+	return info.format, int64(info.size / align), nil
+}
+
 func readPCM(path string, section filePCM) ([]byte, error) {
 	if section.size > uint64(maxInt()) {
 		return nil, fmt.Errorf("section is too large for this process")

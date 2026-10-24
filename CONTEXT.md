@@ -299,6 +299,16 @@ A Synthesis identity is the immutable combination of source, engine, model,
 voice, direction, request options, and production policies that determines
 whether generated speech belongs to the same Audiobook production.
 
+New document productions freeze an editorial Chapter Plan with canonical UTF-8
+source ranges and a digest of the resolved narration identity. TXT is one chapter,
+Markdown splits at top-level headings outside code fences, and EPUB follows its
+readable spine documents. Synthesis sections and chunks stay within chapters.
+Each render records chapter navigation intervals from its actual PCM sample
+counts, including joins and padding; a replacement take gets new render timings.
+Legacy work keeps its original partition and fingerprint. Passage audition uses
+the displayed source excerpt through the same narration resolution and reservation
+path, retaining only one bounded temporary WAV without creating a production.
+
 ## Audiobook lifecycle
 
 Resume continues an interrupted Audiobook production only under its original

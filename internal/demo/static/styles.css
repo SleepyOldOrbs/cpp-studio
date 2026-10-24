@@ -3747,3 +3747,7 @@ details[open] > .library-group-summary::after {
 .design-candidate-card input { accent-color: var(--format-accent); }
 .design-candidate-card audio { width: 100%; min-width: 0; }
 @media (max-width: 800px) { .design-candidates { grid-template-columns: 1fr; } }
+
+.audiobook-chapters { padding-left: 24px; }
+.audiobook-chapters li { padding: 12px 0; border-top: 1px solid var(--line-soft); }
+.audiobook-chapters blockquote { margin: 8px 0; padding-left: 12px; border-left: 2px solid var(--line-soft); white-space: pre-wrap; overflow-wrap: anywhere; }
