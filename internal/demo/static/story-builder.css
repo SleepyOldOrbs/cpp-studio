@@ -426,3 +426,7 @@ dialog a { color: var(--accent); }
   .track-header { position: static; border-right: 0; border-bottom: 1px solid var(--line); }
   .clip-editor, .clip-editor.audio-clip { width: 27rem; min-width: 27rem; grid-template-columns: 1fr 6rem 6rem; }
 }
+.project-pronunciation { grid-column: 1 / -1; min-width: 0; }
+.project-pronunciation p { overflow-wrap: anywhere; }
+.pronunciation-text { white-space: pre-wrap; }
+.pronunciation-text mark { background: #ecd596; color: #211b11; padding: .1em; }

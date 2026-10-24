@@ -7,6 +7,7 @@ package audiobook
 import (
 	"archive/zip"
 	"bytes"
+	"cpp-studio/internal/pronunciation"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -31,13 +32,15 @@ const ChapterExtractionPolicyVersion = 1
 
 // Chapter describes canonical source bytes, independently of synthesis units.
 type Chapter struct {
-	ID                        string `json:"id"`
-	Title                     string `json:"title"`
-	StartByte                 int    `json:"startByte"`
-	EndByte                   int    `json:"endByte"`
-	WordCount                 int    `json:"wordCount,omitempty"`
-	EstimatedListeningSeconds int    `json:"estimatedListeningSeconds,omitempty"`
-	Excerpt                   string `json:"excerpt,omitempty"`
+	SpokenExcerpt             string                    `json:"spokenExcerpt,omitempty"`
+	PronunciationPreview      *pronunciation.Resolution `json:"pronunciationPreview,omitempty"`
+	ID                        string                    `json:"id"`
+	Title                     string                    `json:"title"`
+	StartByte                 int                       `json:"startByte"`
+	EndByte                   int                       `json:"endByte"`
+	WordCount                 int                       `json:"wordCount,omitempty"`
+	EstimatedListeningSeconds int                       `json:"estimatedListeningSeconds,omitempty"`
+	Excerpt                   string                    `json:"excerpt,omitempty"`
 }
 
 type ExtractedDocument struct {

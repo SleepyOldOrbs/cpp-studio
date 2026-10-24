@@ -1,6 +1,7 @@
 package audiobook
 
 import (
+	"cpp-studio/internal/pronunciation"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -139,6 +140,42 @@ func BuildStructuredDramaBoxPrompt(spec DramaBoxPromptSpec, source string) (stri
 // will receive.
 func PreviewDramaBoxPromptSections(spec DramaBoxPromptSpec, source string) ([]PromptSectionPreview, error) {
 	return PreviewDramaBoxDocumentSections(spec, source, nil)
+}
+
+func evaluateRequestPrompt(req Request) (PromptEvaluation, error) {
+	text := req.Text
+	if req.Pronunciation != nil {
+		var err error
+		text, err = pronunciation.Resolve(req.Text, req.Language, req.Pronunciation.Rules)
+		if err != nil {
+			return PromptEvaluation{}, err
+		}
+	}
+	return EvaluateDramaBoxPrompt(req.PromptSpec, text)
+}
+
+func PreviewRequestPrompt(req Request) (PromptEvaluation, []PromptSectionPreview, error) {
+	evaluation, err := evaluateRequestPrompt(req)
+	if err != nil {
+		return evaluation, nil, err
+	}
+	if req.Pronunciation == nil {
+		sections, err := PreviewDramaBoxDocumentSections(req.PromptSpec, req.Text, req.documentPlan)
+		return evaluation, sections, err
+	}
+	sections, err := planCorrectedSections(req, nil)
+	if err != nil {
+		return evaluation, nil, err
+	}
+	previews := make([]PromptSectionPreview, 0, len(sections))
+	for _, section := range sections {
+		prompt, err := BuildStructuredDramaBoxPrompt(req.PromptSpec, section.SpokenText)
+		if err != nil {
+			return evaluation, nil, err
+		}
+		previews = append(previews, PromptSectionPreview{StartByte: section.StartByte, EndByte: section.EndByte, GeneratedPrompt: prompt})
+	}
+	return evaluation, previews, nil
 }
 
 func PreviewDramaBoxDocumentSections(spec DramaBoxPromptSpec, source string, plan *DocumentPlan) ([]PromptSectionPreview, error) {

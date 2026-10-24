@@ -27,6 +27,7 @@
         </nav>
         <nav class="utility-nav" aria-label="Studio management">
           <a class="utility-link" href="#library" data-page-link="library">Library</a>
+          <a class="utility-link" href="#pronunciation" data-page-link="pronunciation">Pronunciation</a>
           <a class="utility-link" href="#models" data-page-link="models">Models</a>
           <a class="utility-link" href="#model-guide" data-page-link="model-guide">Model guide</a>
           <a class="utility-link" href="#engines" data-page-link="engines">Engines</a>
@@ -1305,6 +1306,12 @@
               <button class="secondary" id="audiobookPreviewButton" type="button">Preview chapter plan</button>
               <span class="hint">Review this preview before Narrate. No audio is generated yet.</span>
             </div>
+            <details><summary>Pronunciation corrections</summary>
+              <p>Choose a language, then apply saved rules to this new production. Later dictionary edits do not change this snapshot.</p>
+              <label>Language code <input id="audiobookPronunciationLanguage" type="text" maxlength="35" placeholder="en"></label>
+              <div class="action-row"><button id="audiobookApplyPronunciation" type="button" class="secondary">Apply pronunciation rules</button><button id="audiobookClearPronunciation" type="button" class="secondary">Use original text</button><a href="#pronunciation">Manage rules</a></div>
+              <p id="audiobookPronunciationStatus" role="status">Original text. No rules applied.</p>
+            </details>
             <section id="audiobookChapterPlan" aria-live="polite" hidden></section>
             <div class="action-row"><span id="audiobookAuditionStatus" class="hint" role="status"></span><button id="audiobookAuditionCancel" class="secondary" type="button" hidden>Cancel audition</button></div>
             <audio id="audiobookAuditionAudio" controls hidden></audio>
@@ -1534,6 +1541,32 @@
           <span id="trainingExportStatus" aria-live="polite"></span>
         </div>
         <small class="hint">Export each extracted WAV and corrected TXT transcript, plus <code>train.jsonl</code>, for a separate training tool. Audio is exported without cleanup processing. Export before closing or resetting this page; unexported clips remain only in this browser session.</small>
+      </div>
+    </section>
+
+    <section class="module" data-page="pronunciation" aria-label="Pronunciation corrections">
+      <header class="module-head"><h2>Pronunciation corrections</h2></header>
+      <div class="module-body">
+        <p>Respell recurring names and phrases for narration. Matching is case-sensitive, uses whole words, and runs once. Apply saved rules explicitly in Audiobook or Story Builder; saved productions keep their own snapshot.</p>
+        <fieldset id="pronunciationEditor" class="pronunciation-editor" disabled>
+        <div id="pronunciationRules" class="pronunciation-rules"></div>
+        <div class="extract-selection-actions">
+          <button id="pronunciationAdd" class="secondary" type="button">Add rule</button>
+          <button id="pronunciationSave" class="primary" type="button">Save rules</button>
+          <button id="pronunciationExport" class="secondary" type="button">Export saved JSON</button>
+        </div>
+        <details><summary>Import JSON</summary>
+          <label>Rules JSON <input type="file" id="pronunciationImportFile" accept=".json,application/json"></label>
+          <label>Import mode <select id="pronunciationImportMode"><option value="">Choose…</option><option value="merge">Merge new rules (conflicts are rejected)</option><option value="replace">Replace all saved rules</option></select></label>
+          <button id="pronunciationImport" class="secondary" type="button">Import and save</button>
+        </details>
+        </fieldset>
+        <button id="pronunciationReload" class="secondary" type="button">Reload saved rules / discard edits</button>
+        <label>Preview language code <input id="pronunciationLanguage" type="text" placeholder="en" maxlength="35"></label>
+        <label>Original text <textarea id="pronunciationSource" rows="3">James visited New York.</textarea></label>
+        <button id="pronunciationPreview" class="secondary" type="button">Preview current edits</button>
+        <div id="pronunciationPreviewResult" class="pronunciation-preview"></div>
+        <p id="pronunciationStatus" role="status" aria-live="polite"></p>
       </div>
     </section>
 

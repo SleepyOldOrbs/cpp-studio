@@ -19,6 +19,7 @@ import (
 
 	"cpp-studio/internal/engine"
 	"cpp-studio/internal/jobs"
+	"cpp-studio/internal/pronunciation"
 	"cpp-studio/internal/wav"
 )
 
@@ -93,6 +94,8 @@ type ManagerOptions struct {
 // Request carries narration intent. NormalizeRequest and Submit validate and
 // normalize its engine and direction before any job starts.
 type Request struct {
+	Pronunciation        *pronunciation.Snapshot
+	Language             string
 	PlanDigest           string
 	documentPlan         *DocumentPlan
 	Title                string
@@ -327,6 +330,19 @@ func IsRequestError(err error) bool {
 // touching the document. It is shared by the HTTP boundary and Manager so
 // direct callers receive the same validation.
 func NormalizeRequest(req Request) (Request, error) {
+	var snapshotErr error
+	req.Pronunciation, snapshotErr = pronunciation.ValidateSnapshot(req.Pronunciation)
+	if snapshotErr != nil {
+		return Request{}, requestErrorf("%v", snapshotErr)
+	}
+	if req.Pronunciation != nil {
+		req.Language, snapshotErr = pronunciation.Language(req.Language)
+		if snapshotErr != nil || req.Language == "" {
+			return Request{}, requestErrorf("choose an explicit pronunciation language code")
+		}
+	} else {
+		req.Language = ""
+	}
 	req.EngineID = strings.ToLower(strings.TrimSpace(req.EngineID))
 	if req.EngineID == "" {
 		req.EngineID = DefaultEngineID
@@ -352,7 +368,7 @@ func NormalizeRequest(req Request) (Request, error) {
 			req.PromptSpec = DramaBoxPromptSpec{SpeakerPhrase: DefaultSpeakerPhrase, AdvancedDirection: req.Direction}
 			req.AcceptPromptWarnings = true
 		}
-		evaluation, err := EvaluateDramaBoxPrompt(req.PromptSpec, req.Text)
+		evaluation, err := evaluateRequestPrompt(req)
 		if err != nil {
 			return Request{}, err
 		}
@@ -454,7 +470,7 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 	}
 	var promptEvaluation PromptEvaluation
 	if req.EngineID == DramaBoxEngineID {
-		promptEvaluation, err = EvaluateDramaBoxPrompt(req.PromptSpec, req.Text)
+		promptEvaluation, err = evaluateRequestPrompt(req)
 		if err != nil {
 			return "", 0, err
 		}
@@ -493,7 +509,12 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 		return "", 0, err
 	}
 	if req.EngineID == DramaBoxEngineID {
-		sections, err := planDocumentSections(req.Text, req.documentPlan, m.seedSource)
+		var sections []Section
+		if req.Pronunciation != nil {
+			sections, err = planCorrectedSections(req, m.seedSource)
+		} else {
+			sections, err = planDocumentSections(req.Text, req.documentPlan, m.seedSource)
+		}
 		if err != nil {
 			return "", 0, fmt.Errorf("plan DramaBox sections: %w", err)
 		}
@@ -501,6 +522,7 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 		createdAt := m.now()
 		options := req.Options
 		manifest := Manifest{
+			Pronunciation: req.Pronunciation, Language: req.Language,
 			DocumentPlan:  cloneDocumentPlan(req.documentPlan),
 			SchemaVersion: CurrentManifestSchemaVersion, ID: id, Title: title,
 			VoiceID: req.VoiceID, EngineID: req.EngineID, Direction: req.Direction,
@@ -518,10 +540,18 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 		initial = &manifest
 		units = make([]narrationUnit, len(sections))
 		for i := range sections {
-			units[i] = narrationUnit{text: req.Text[sections[i].StartByte:sections[i].EndByte], seed: sections[i].Seed, section: &manifest.Sections[i], chapterID: sections[i].ChapterID}
+			units[i] = narrationUnit{text: spokenSection(req.Text, sections[i]), seed: sections[i].Seed, section: &manifest.Sections[i], chapterID: sections[i].ChapterID}
 		}
 	} else {
-		if req.documentPlan != nil {
+		if req.Pronunciation != nil {
+			sections, err := planCorrectedSections(req, nil)
+			if err != nil {
+				return "", 0, err
+			}
+			for _, section := range sections {
+				units = append(units, narrationUnit{text: section.SpokenText, chapterID: section.ChapterID})
+			}
+		} else if req.documentPlan != nil {
 			for _, chapter := range req.documentPlan.Chapters {
 				for _, chunk := range chapterTextChunks(req.Text[chapter.StartByte:chapter.EndByte], DefaultChunkChars) {
 					units = append(units, narrationUnit{text: chunk, chapterID: chapter.ID})
@@ -639,6 +669,7 @@ func (m *Manager) Resume(ctx context.Context, id string) (int, error) {
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
 		EngineID: manifest.EngineID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec,
 		AcceptPromptWarnings: true, Options: *manifest.ResolvedOptions,
+		Pronunciation: manifest.Pronunciation, Language: manifest.Language,
 		Verification: manifestVerificationMode(manifest), documentPlan: cloneDocumentPlan(manifest.DocumentPlan),
 	})
 	if err != nil {
@@ -671,7 +702,7 @@ func (m *Manager) Resume(ctx context.Context, id string) (int, error) {
 		}
 		units[i] = narrationUnit{
 			chapterID: section.ChapterID,
-			text:      source[section.StartByte:section.EndByte], seed: section.Seed,
+			text:      spokenSection(source, *section), seed: section.Seed,
 			section: section, audio: trustedPath,
 		}
 	}
@@ -718,6 +749,7 @@ func (m *Manager) Restart(ctx context.Context, id string) (string, int, error) {
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
 		EngineID: manifest.EngineID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec,
 		AcceptPromptWarnings: true, Options: *manifest.ResolvedOptions,
+		Pronunciation: manifest.Pronunciation, Language: manifest.Language,
 		Verification: manifestVerificationMode(manifest), documentPlan: cloneDocumentPlan(manifest.DocumentPlan),
 	})
 }
@@ -746,6 +778,7 @@ func (m *Manager) CanResume(ctx context.Context, id string) error {
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
 		EngineID: manifest.EngineID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec,
 		AcceptPromptWarnings: true, Options: *manifest.ResolvedOptions,
+		Pronunciation: manifest.Pronunciation, Language: manifest.Language,
 		Verification: manifestVerificationMode(manifest), documentPlan: cloneDocumentPlan(manifest.DocumentPlan),
 	})
 	if err != nil {
@@ -820,6 +853,7 @@ func (m *Manager) RetrySection(ctx context.Context, id, sectionID string, mode R
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
 		EngineID: manifest.EngineID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec,
 		AcceptPromptWarnings: true, Options: *manifest.ResolvedOptions,
+		Pronunciation: manifest.Pronunciation, Language: manifest.Language,
 		Verification: manifestVerificationMode(manifest), documentPlan: cloneDocumentPlan(manifest.DocumentPlan),
 	})
 	if err != nil {
@@ -849,7 +883,7 @@ func (m *Manager) RetrySection(ctx context.Context, id, sectionID string, mode R
 	if m.registry != nil {
 		m.registry.Track(jobID, "audiobook-retry", func() { _ = m.Cancel(jobID) })
 	}
-	sectionText := source[section.StartByte:section.EndByte]
+	sectionText := spokenSection(source, *section)
 	go m.runSectionRetry(jobCtx, jobID, manifest, sectionIndex, sectionText, req, resolved.Voice, mode, requestedSeed, parent.ID, parent.AudioSHA256, release)
 	return jobID, nil
 }
@@ -1363,6 +1397,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		return
 	}
 	manifest := Manifest{
+		Pronunciation: req.Pronunciation, Language: req.Language,
 		DocumentPlan:         cloneDocumentPlan(req.documentPlan),
 		ID:                   id,
 		Title:                title,
@@ -1408,7 +1443,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		m.finishRunError(id, initial, "audiobook narration was cancelled", true)
 		return
 	}
-	if req.documentPlan != nil {
+	if req.documentPlan != nil || req.Pronunciation != nil {
 		manifest.SourceFile = sourceFileName
 	}
 	err = m.save(manifest, stitched, req.Text)

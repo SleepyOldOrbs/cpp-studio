@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"cpp-studio/internal/engine"
+	"cpp-studio/internal/pronunciation"
 )
 
 // CurrentManifestSchemaVersion is written by new durable Audiobook productions.
@@ -100,6 +101,8 @@ type ChapterBoundary struct {
 // Section binds a stable canonical-source byte range to its durable outputs.
 // Its output fields project the selected Attempt once attempts are recorded.
 type Section struct {
+	SpokenText            string        `json:"spokenText,omitempty"`
+	SpokenSHA256          string        `json:"spokenSha256,omitempty"`
 	ChapterID             string        `json:"chapterId,omitempty"`
 	ID                    string        `json:"id"`
 	StartByte             int64         `json:"startByte"`
@@ -129,37 +132,39 @@ type VerificationSummary struct {
 // Manifest describes either a legacy finished audiobook or a versioned durable
 // Audiobook production. Versioned-only fields are omitted for legacy manifests.
 type Manifest struct {
-	Exports                  []ExportRecord       `json:"exports,omitempty"`
-	Metadata                 *BookMetadata        `json:"metadata,omitempty"`
-	Cover                    *BookCover           `json:"cover,omitempty"`
-	SampleRate               uint32               `json:"sampleRate,omitempty"`
-	ChapterBoundaries        []ChapterBoundary    `json:"chapterBoundaries,omitempty"`
-	DocumentPlan             *DocumentPlan        `json:"documentPlan,omitempty"`
-	SchemaVersion            int                  `json:"schemaVersion,omitempty"`
-	ID                       string               `json:"id"`
-	Title                    string               `json:"title"`
-	VoiceID                  string               `json:"voiceId,omitempty"`
-	EngineID                 string               `json:"engine,omitempty"`
-	Direction                string               `json:"direction,omitempty"`
-	PromptSpec               DramaBoxPromptSpec   `json:"promptSpec,omitempty"`
-	PromptWarnings           []PromptWarning      `json:"promptWarnings,omitempty"`
-	AIGenerated              bool                 `json:"aiGenerated,omitempty"`
-	Watermark                string               `json:"watermark,omitempty"`
-	BenchmarkProfileIdentity string               `json:"benchmarkProfileIdentity,omitempty"`
-	Chunks                   int                  `json:"chunks"`
-	DurationSeconds          int                  `json:"durationSeconds"`
-	CreatedAt                time.Time            `json:"createdAt"`
-	ArtifactURL              string               `json:"artifactUrl"`
-	Status                   ProductionStatus     `json:"status,omitempty"`
-	SourceFile               string               `json:"sourceFile,omitempty"`
-	SourceSHA256             string               `json:"sourceSha256,omitempty"`
-	SynthesisFingerprint     string               `json:"synthesisFingerprint,omitempty"`
-	SectionPolicyVersion     int                  `json:"sectionPolicyVersion,omitempty"`
-	PromptPolicyVersion      int                  `json:"promptPolicyVersion,omitempty"`
-	Sections                 []Section            `json:"sections,omitempty"`
-	Verification             *VerificationSummary `json:"verification,omitempty"`
-	ResolvedOptions          *SynthesisOptions    `json:"resolvedOptions,omitempty"`
-	SynthesisIdentity        *SynthesisIdentity   `json:"synthesisIdentity,omitempty"`
-	RenderRevisions          []RenderRevision     `json:"renderRevisions,omitempty"`
-	CurrentRenderID          string               `json:"currentRenderId,omitempty"`
+	Pronunciation            *pronunciation.Snapshot `json:"pronunciation,omitempty"`
+	Language                 string                  `json:"language,omitempty"`
+	Exports                  []ExportRecord          `json:"exports,omitempty"`
+	Metadata                 *BookMetadata           `json:"metadata,omitempty"`
+	Cover                    *BookCover              `json:"cover,omitempty"`
+	SampleRate               uint32                  `json:"sampleRate,omitempty"`
+	ChapterBoundaries        []ChapterBoundary       `json:"chapterBoundaries,omitempty"`
+	DocumentPlan             *DocumentPlan           `json:"documentPlan,omitempty"`
+	SchemaVersion            int                     `json:"schemaVersion,omitempty"`
+	ID                       string                  `json:"id"`
+	Title                    string                  `json:"title"`
+	VoiceID                  string                  `json:"voiceId,omitempty"`
+	EngineID                 string                  `json:"engine,omitempty"`
+	Direction                string                  `json:"direction,omitempty"`
+	PromptSpec               DramaBoxPromptSpec      `json:"promptSpec,omitempty"`
+	PromptWarnings           []PromptWarning         `json:"promptWarnings,omitempty"`
+	AIGenerated              bool                    `json:"aiGenerated,omitempty"`
+	Watermark                string                  `json:"watermark,omitempty"`
+	BenchmarkProfileIdentity string                  `json:"benchmarkProfileIdentity,omitempty"`
+	Chunks                   int                     `json:"chunks"`
+	DurationSeconds          int                     `json:"durationSeconds"`
+	CreatedAt                time.Time               `json:"createdAt"`
+	ArtifactURL              string                  `json:"artifactUrl"`
+	Status                   ProductionStatus        `json:"status,omitempty"`
+	SourceFile               string                  `json:"sourceFile,omitempty"`
+	SourceSHA256             string                  `json:"sourceSha256,omitempty"`
+	SynthesisFingerprint     string                  `json:"synthesisFingerprint,omitempty"`
+	SectionPolicyVersion     int                     `json:"sectionPolicyVersion,omitempty"`
+	PromptPolicyVersion      int                     `json:"promptPolicyVersion,omitempty"`
+	Sections                 []Section               `json:"sections,omitempty"`
+	Verification             *VerificationSummary    `json:"verification,omitempty"`
+	ResolvedOptions          *SynthesisOptions       `json:"resolvedOptions,omitempty"`
+	SynthesisIdentity        *SynthesisIdentity      `json:"synthesisIdentity,omitempty"`
+	RenderRevisions          []RenderRevision        `json:"renderRevisions,omitempty"`
+	CurrentRenderID          string                  `json:"currentRenderId,omitempty"`
 }

@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"cpp-studio/internal/engine"
+	"cpp-studio/internal/pronunciation"
 )
 
 const CurrentPromptPolicyVersion = 2
@@ -41,16 +42,18 @@ type VoiceIdentity struct {
 // durable sections can belong to the same audiobook production. Section seeds
 // are deliberately excluded and enter each checkpoint fingerprint instead.
 type SynthesisIdentity struct {
-	PlanDigest           string             `json:"planDigest,omitempty"`
-	Fingerprint          string             `json:"fingerprint"`
-	SourceSHA256         string             `json:"sourceSha256"`
-	Engine               EngineIdentity     `json:"engine"`
-	Voice                VoiceIdentity      `json:"voice"`
-	Direction            string             `json:"direction,omitempty"`
-	PromptSpec           DramaBoxPromptSpec `json:"promptSpec,omitempty"`
-	Options              SynthesisOptions   `json:"options"`
-	SectionPolicyVersion int                `json:"sectionPolicyVersion"`
-	PromptPolicyVersion  int                `json:"promptPolicyVersion"`
+	Pronunciation        *pronunciation.Snapshot `json:"pronunciation,omitempty"`
+	Language             string                  `json:"language,omitempty"`
+	PlanDigest           string                  `json:"planDigest,omitempty"`
+	Fingerprint          string                  `json:"fingerprint"`
+	SourceSHA256         string                  `json:"sourceSha256"`
+	Engine               EngineIdentity          `json:"engine"`
+	Voice                VoiceIdentity           `json:"voice"`
+	Direction            string                  `json:"direction,omitempty"`
+	PromptSpec           DramaBoxPromptSpec      `json:"promptSpec,omitempty"`
+	Options              SynthesisOptions        `json:"options"`
+	SectionPolicyVersion int                     `json:"sectionPolicyVersion"`
+	PromptPolicyVersion  int                     `json:"promptPolicyVersion"`
 }
 
 type ResolveEngineFunc func(ctx context.Context, engineID string) (EngineIdentity, error)
@@ -70,6 +73,7 @@ func buildSynthesisIdentity(req Request, resolvedEngine EngineIdentity, resolved
 	options := req.Options
 	options.Seed = 0
 	identity := SynthesisIdentity{
+		Pronunciation: req.Pronunciation, Language: req.Language,
 		SourceSHA256:         hex.EncodeToString(sourceSum[:]),
 		Engine:               resolvedEngine,
 		Voice:                resolvedVoice,
@@ -106,6 +110,12 @@ func buildSynthesisIdentity(req Request, resolvedEngine EngineIdentity, resolved
 	if identity.PlanDigest != "" {
 		add("chapter-plan")
 		add(identity.PlanDigest)
+	}
+	if identity.Pronunciation != nil {
+		add("pronunciation")
+		add(identity.Pronunciation.Fingerprint)
+		add(strconv.Itoa(identity.Pronunciation.PolicyVersion))
+		add(identity.Language)
 	}
 	identity.Fingerprint = hex.EncodeToString(h.Sum(nil))
 	return identity

@@ -3754,3 +3754,11 @@ details[open] > .library-group-summary::after {
 .audiobook-details-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; margin: 12px 0; }
 .audiobook-cover { width: 100px; height: 150px; object-fit: contain; }
 @media (max-width: 800px) { .audiobook-details-grid { grid-template-columns: 1fr; } }
+.pronunciation-rule { display: grid; grid-template-columns: 1fr 1fr minmax(9rem, .6fr) auto; gap: .75rem; align-items: end; padding: .75rem 0; border-bottom: 1px solid var(--border); }
+.pronunciation-rule label { min-width: 0; }
+.pronunciation-rule input { width: 100%; box-sizing: border-box; }
+.pronunciation-preview { margin-top: 1rem; }
+.pronunciation-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.pronunciation-text mark { background: #ecd596; color: #211b11; padding: .1em; }
+@media (max-width: 800px) { .pronunciation-rule { grid-template-columns: 1fr; } }
+.pronunciation-editor { border: 0; margin: 0; padding: 0; min-width: 0; }

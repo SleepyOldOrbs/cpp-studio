@@ -26,6 +26,9 @@ func (m *Manager) AuditionDocument(ctx context.Context, document DocumentRequest
 	for _, chapter := range resolved.Plan.Chapters {
 		if chapter.ID == chapterID {
 			passage = chapter.Excerpt
+			if resolved.Request.Pronunciation != nil {
+				passage = chapter.SpokenExcerpt
+			}
 			break
 		}
 	}
@@ -34,7 +37,7 @@ func (m *Manager) AuditionDocument(ctx context.Context, document DocumentRequest
 	}
 	request := resolved.Request
 	if request.EngineID == DramaBoxEngineID {
-		evaluation, err := EvaluateDramaBoxPrompt(request.PromptSpec, request.Text)
+		evaluation, err := evaluateRequestPrompt(request)
 		if err != nil {
 			return "", err
 		}

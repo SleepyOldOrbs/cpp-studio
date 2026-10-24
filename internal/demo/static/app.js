@@ -6610,7 +6610,7 @@
     "talk-voice", "getting-started-tts", "text-to-speech", "transcription", "voice-cloning", "voice-design", "voice-convert", "training", "audio-analysis",
     "music", "music-generation", "voice-separation", "imagery", "image-generation",
     "stories-audiobooks", "audiobook", "story", "extract",
-    "library", "models", "model-guide", "engines"
+    "library", "pronunciation", "models", "model-guide", "engines"
   ];
   var LEGACY_PAGES = {
     talk: "text-to-speech",
@@ -6780,6 +6780,110 @@
   document.getElementById("openTranscribeButton").addEventListener("click", function () {
     window.location.hash = "transcription";
   });
+
+  // --- Pronunciation dictionary ----------------------------------------
+  var pronunciationLoaded = false;
+  var pronunciationDirty = false;
+  var pronunciationLoading = false;
+  var pronunciationRules = document.getElementById("pronunciationRules");
+  var pronunciationStatus = document.getElementById("pronunciationStatus");
+
+  function pronunciationSegments(text, spans, key) {
+    var bytes = new TextEncoder().encode(text), decoder = new TextDecoder(), cursor = 0, parts = [];
+    (spans || []).forEach(function (span) {
+      var start = span[key + "Start"], end = span[key + "End"];
+      if (start > cursor) parts.push({ text: decoder.decode(bytes.slice(cursor, start)), matched: false });
+      parts.push({ text: decoder.decode(bytes.slice(start, end)), matched: true }); cursor = end;
+    });
+    if (cursor < bytes.length) parts.push({ text: decoder.decode(bytes.slice(cursor)), matched: false });
+    return parts;
+  }
+
+  function renderPronunciationPreview(container, result) {
+    container.replaceChildren();
+    [ ["Original", "source"], ["Spoken", "spoken"] ].forEach(function (pair) {
+      var label = document.createElement("strong"); label.textContent = pair[0]; container.appendChild(label);
+      var text = document.createElement("p"); text.className = "pronunciation-text";
+      pronunciationSegments(result[pair[1]], result.substitutions, pair[1]).forEach(function (part) {
+        var node = document.createElement(part.matched ? "mark" : "span"); node.textContent = part.text; text.appendChild(node);
+      }); container.appendChild(text);
+    });
+  }
+
+  function appendPronunciationRule(rule) {
+    var row = document.createElement("div"); row.className = "pronunciation-rule";
+    [["term", "Original word or phrase", 120], ["replacement", "Spoken respelling", 240], ["language", "Language code (blank: all)", 35]].forEach(function (field) {
+      var label = document.createElement("label"); label.textContent = field[1];
+      var input = document.createElement("input"); input.type = "text"; input.dataset.ruleField = field[0]; input.maxLength = field[2]; input.value = rule[field[0]] || "";
+      input.addEventListener("input", function () { pronunciationDirty = true; }); label.appendChild(input); row.appendChild(label);
+    });
+    var remove = document.createElement("button"); remove.type = "button"; remove.className = "secondary"; remove.textContent = "Remove rule";
+    remove.addEventListener("click", function () { row.remove(); pronunciationDirty = true; }); row.appendChild(remove); pronunciationRules.appendChild(row);
+  }
+
+  function currentPronunciationRules() {
+    return Array.from(pronunciationRules.children).map(function (row) {
+      var rule = {}; row.querySelectorAll("[data-rule-field]").forEach(function (input) { rule[input.dataset.ruleField] = input.value; }); return rule;
+    });
+  }
+
+  function syncPronunciationEditor() {
+    document.getElementById("pronunciationEditor").disabled = pronunciationLoading || !pronunciationLoaded;
+    document.getElementById("pronunciationReload").disabled = pronunciationLoading;
+  }
+
+  function setPronunciationDocument(doc) {
+    pronunciationRules.replaceChildren(); doc.rules.forEach(appendPronunciationRule); pronunciationLoaded = true; pronunciationDirty = false;
+    pronunciationStatus.textContent = doc.rules.length + " saved rules. Existing productions keep their own rules.";
+  }
+
+  async function loadPronunciationRules(force) {
+    if (pronunciationLoading || (!force && pronunciationLoaded)) return;
+    pronunciationLoading = true; syncPronunciationEditor();
+    try {
+      var response = await fetch("/v1/pronunciation"); await ensureOk(response); var doc = await response.json();
+      setPronunciationDocument(doc);
+    } catch (error) { pronunciationStatus.textContent = error.message + ". Reload saved rules before editing."; }
+    finally { pronunciationLoading = false; syncPronunciationEditor(); }
+  }
+  document.getElementById("pronunciationAdd").addEventListener("click", function () { appendPronunciationRule({}); pronunciationDirty = true; });
+  document.getElementById("pronunciationReload").addEventListener("click", function () { loadPronunciationRules(true); });
+  document.getElementById("pronunciationSave").addEventListener("click", async function () {
+    if (!pronunciationLoaded || pronunciationLoading) return;
+    pronunciationLoading = true; syncPronunciationEditor();
+    var sent = JSON.stringify({ version: 1, rules: currentPronunciationRules() });
+    try {
+      var response = await fetch("/v1/pronunciation", { method: "PUT", headers: { "Content-Type": "application/json" }, body: sent }); await ensureOk(response);
+      pronunciationDirty = false;
+      pronunciationStatus.textContent = "Rules saved. Apply them explicitly to a production.";
+    } catch (error) { pronunciationStatus.textContent = error.message; } finally { pronunciationLoading = false; syncPronunciationEditor(); }
+  });
+  document.getElementById("pronunciationPreview").addEventListener("click", async function () {
+    try {
+      var response = await fetch("/v1/pronunciation/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: document.getElementById("pronunciationSource").value, language: document.getElementById("pronunciationLanguage").value, rules: currentPronunciationRules() }) });
+      await ensureOk(response); renderPronunciationPreview(document.getElementById("pronunciationPreviewResult"), await response.json());
+      pronunciationStatus.textContent = "Preview uses current edits. Save before applying them to a production.";
+    } catch (error) { pronunciationStatus.textContent = error.message; }
+  });
+  document.getElementById("pronunciationExport").addEventListener("click", async function () {
+    try {
+      var response = await fetch("/v1/pronunciation"); await ensureOk(response); var blob = await response.blob();
+      var url = URL.createObjectURL(blob), link = document.createElement("a"); link.href = url; link.download = "pronunciation-rules.json"; link.click(); setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    } catch (error) { pronunciationStatus.textContent = error.message; }
+  });
+  document.getElementById("pronunciationImport").addEventListener("click", async function () {
+    if (!pronunciationLoaded || pronunciationLoading) return;
+    var file = document.getElementById("pronunciationImportFile").files[0], mode = document.getElementById("pronunciationImportMode").value;
+    if (!file || !mode) { pronunciationStatus.textContent = "Choose a JSON file and an explicit import mode."; return; }
+    if (pronunciationDirty) { pronunciationStatus.textContent = "Save or discard current edits before importing."; return; }
+    if (file.size > 2 * 1024 * 1024) { pronunciationStatus.textContent = "Rules JSON must be at most 2 MiB."; return; }
+    pronunciationLoading = true; syncPronunciationEditor();
+    try {
+      var response = await fetch("/v1/pronunciation/import?mode=" + mode, { method: "POST", headers: { "Content-Type": "application/json" }, body: file }); await ensureOk(response); setPronunciationDocument(await response.json());
+    } catch (error) { pronunciationStatus.textContent = error.message; } finally { pronunciationLoading = false; syncPronunciationEditor(); }
+  });
+  window.addEventListener("hashchange", function () { if (activePageFromHash() === "pronunciation") loadPronunciationRules(); });
+  if (activePageFromHash() === "pronunciation") loadPronunciationRules();
 
   // --- Session log drawer ----------------------------------------------
   var logToggleButton = document.getElementById("logToggleButton");
@@ -7190,6 +7294,20 @@
   var audiobookRequestPreview = document.getElementById("audiobookRequestPreview");
   var audiobookChapterPlan = document.getElementById("audiobookChapterPlan");
   var audiobookDocumentPlan = null;
+  var audiobookPronunciation = null;
+  var audiobookPronunciationLanguage = "";
+  document.getElementById("audiobookApplyPronunciation").addEventListener("click", async function () {
+    var status = document.getElementById("audiobookPronunciationStatus"), button = this;
+    var language = document.getElementById("audiobookPronunciationLanguage").value.trim();
+    if (!language) { status.textContent = "Choose an explicit language code first."; return; }
+    button.disabled = true;
+    try {
+      var response = await fetch("/v1/pronunciation/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: "", language: language }) }); await ensureOk(response);
+      var result = await response.json(); audiobookPronunciation = result.snapshot.rules.length ? result.snapshot : null; audiobookPronunciationLanguage = audiobookPronunciation ? language : "";
+      invalidateAudiobookPreview(); status.textContent = audiobookPronunciation ? result.snapshot.rules.length + " saved rules applied for " + language + ". Preview the chapters to inspect spoken changes." : "No saved rules. Original text will be used.";
+    } catch (error) { status.textContent = error.message; } finally { button.disabled = false; }
+  });
+  document.getElementById("audiobookClearPronunciation").addEventListener("click", function () { audiobookPronunciation = null; audiobookPronunciationLanguage = ""; invalidateAudiobookPreview(); document.getElementById("audiobookPronunciationStatus").textContent = "Original text. No rules applied."; });
   var audiobookAuditionAudio = document.getElementById("audiobookAuditionAudio");
   var audiobookAuditionStatus = document.getElementById("audiobookAuditionStatus");
   var audiobookAuditionCancel = document.getElementById("audiobookAuditionCancel");
@@ -7268,6 +7386,8 @@
       options = "invalid";
     }
     return JSON.stringify({
+      pronunciation: typeof audiobookPronunciation === "undefined" ? null : audiobookPronunciation,
+      language: typeof audiobookPronunciationLanguage === "undefined" ? "" : audiobookPronunciationLanguage,
       engine: audiobookEngineSelect.value,
       voice: audiobookVoiceSelect.value,
 	  promptSpec: audiobookEngineSelect.value === "dramabox" ? audiobookPromptSpec() : null,
@@ -7384,6 +7504,7 @@
         audition.addEventListener("click", function () { auditionAudiobookChapter(chapter.id); });
         item.appendChild(audition);
       }
+      if (chapter.pronunciationPreview) { var corrections = createElement("div", "pronunciation-preview"); renderPronunciationPreview(corrections, chapter.pronunciationPreview); item.appendChild(corrections); }
       list.appendChild(item);
     });
     container.appendChild(list);
@@ -7398,6 +7519,8 @@
     try {
       var optionsText = audiobookOptionsText();
 	  var requestBody = {
+        pronunciation: audiobookPronunciation,
+        language: audiobookPronunciationLanguage,
         engine: audiobookEngineSelect.value,
         voice: audiobookVoiceSelect.value,
 		promptSpec: audiobookEngineSelect.value === "dramabox" ? audiobookPromptSpec() : {},
@@ -7417,6 +7540,7 @@
 		form.append("promptSpec", JSON.stringify(requestBody.promptSpec));
 		form.append("acceptPromptWarnings", String(requestBody.acceptPromptWarnings));
 		form.append("verification", requestBody.verification);
+		if (audiobookPronunciation) { form.append("pronunciation", JSON.stringify(audiobookPronunciation)); form.append("language", audiobookPronunciationLanguage); }
 		if (optionsText) { form.append("options", optionsText); }
 		response = await fetch("/v1/audiobooks/preview-document", { method: "POST", body: form });
 	  } else {
@@ -7456,6 +7580,7 @@
 
   function audiobookDocumentForm(file) {
     var form = new FormData();
+    if (typeof audiobookPronunciation !== "undefined" && audiobookPronunciation) { form.append("pronunciation", JSON.stringify(audiobookPronunciation)); form.append("language", audiobookPronunciationLanguage); }
     form.append("file", file, file.name);
     form.append("engine", audiobookEngineSelect.value);
     form.append("voice", audiobookVoiceSelect.value);
@@ -8312,6 +8437,7 @@
       meta += " · " + Math.floor(book.durationSeconds / 60) + "m" + (book.durationSeconds % 60) + "s";
     }
     item.appendChild(createElement("div", "story-library-meta", meta));
+    if (book.pronunciation) { item.appendChild(createElement("p", "hint", "Pronunciation: " + book.pronunciation.rules.length + " frozen rules · " + book.language + ". To change rules, start a separate production from the original document.")); }
     if (book.documentPlan) {
       var chapterDetails = createElement("details", "");
       chapterDetails.appendChild(createElement("summary", "", book.documentPlan.chapters.length + " chapters"));

@@ -442,14 +442,38 @@ func validateDurableManifest(manifest Manifest, source string) error {
 	if manifest.SynthesisIdentity.Fingerprint != manifest.SynthesisFingerprint || len(manifest.Sections) == 0 || manifest.Chunks != len(manifest.Sections) {
 		return fmt.Errorf("synthesis identity or section table does not match")
 	}
+	request := Request{Text: source, EngineID: manifest.EngineID, VoiceID: manifest.VoiceID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec, Options: manifest.SynthesisIdentity.Options, documentPlan: manifest.DocumentPlan, Pronunciation: manifest.Pronunciation, Language: manifest.Language}
+	var corrected []Section
+	if manifest.Pronunciation != nil {
+		normalized, err := NormalizeRequest(request)
+		if err != nil {
+			return err
+		}
+		request = normalized
+		if buildSynthesisIdentity(request, manifest.SynthesisIdentity.Engine, manifest.SynthesisIdentity.Voice).Fingerprint != manifest.SynthesisFingerprint {
+			return fmt.Errorf("pronunciation identity does not match")
+		}
+		corrected, err = planCorrectedSections(request, nil)
+		if err != nil || len(corrected) != len(manifest.Sections) {
+			return fmt.Errorf("spoken section table does not match")
+		}
+	} else if manifest.SynthesisIdentity.Pronunciation != nil {
+		return fmt.Errorf("frozen pronunciation snapshot is missing")
+	}
 	if manifest.DocumentPlan != nil {
 		identity := manifest.SynthesisIdentity
-		request := Request{Text: source, EngineID: manifest.EngineID, VoiceID: manifest.VoiceID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec, Options: identity.Options, documentPlan: manifest.DocumentPlan}
 		expected, err := makeDocumentPlan(request, identity.Engine, identity.Voice)
 		if err != nil || expected.Digest != manifest.DocumentPlan.Digest || identity.PlanDigest != expected.Digest {
 			return fmt.Errorf("chapter plan does not match the frozen source and settings")
 		}
 		ranges, err := documentSectionRanges(source, manifest.DocumentPlan)
+		if manifest.Pronunciation != nil {
+			err = nil
+			ranges = nil
+			for _, section := range corrected {
+				ranges = append(ranges, sourceRange{int(section.StartByte), int(section.EndByte)})
+			}
+		}
 		if err != nil || len(ranges) != len(manifest.Sections) {
 			return fmt.Errorf("chapter section table does not match")
 		}
@@ -462,6 +486,14 @@ func validateDurableManifest(manifest Manifest, source string) error {
 		return fmt.Errorf("frozen chapter plan is missing")
 	}
 	for i, section := range manifest.Sections {
+		if manifest.Pronunciation != nil {
+			expected := corrected[i]
+			if section.StartByte != expected.StartByte || section.EndByte != expected.EndByte || section.SpokenText != expected.SpokenText || section.SpokenSHA256 != expected.SpokenSHA256 {
+				return fmt.Errorf("section %s spoken input does not match", section.ID)
+			}
+		} else if section.SpokenText != "" || section.SpokenSHA256 != "" {
+			return fmt.Errorf("spoken section has no frozen rules")
+		}
 		if section.ID != fmt.Sprintf("section-%04d", i+1) || section.StartByte < 0 || section.EndByte <= section.StartByte || section.EndByte > int64(len(source)) {
 			return fmt.Errorf("section %d has an invalid identity or source range", i+1)
 		}
