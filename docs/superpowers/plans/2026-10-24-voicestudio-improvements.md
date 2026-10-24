@@ -44,6 +44,14 @@
 
 ## What current code already gives us
 
+Execution status (24 October 2026): Stage 1 implementation and independent review
+are complete; GitHub publication is in progress. Its final verification passed
+the Go suite, 56 Node state regressions, and the complete Story Builder browser
+smoke, including focused editing during a delayed save and an 800-pixel window.
+Local OmniVoice produced the example's opening sentence as a 3.14-second take;
+the entire take remained available and Whisper transcribed the complete source.
+Stages 2–5 remain pending and are tracked as GitHub issues #52–#55; stage 1 is #51.
+
 - Story Builder has stable clip/track IDs, revision checks, edit history, timeline editing, voice bindings, stored takes and `auditionClip`. A script view should project that data, not create a second document.
 - The audiobook `PreviewDocument` path resolves the source, engine and voice without durable state. Extend it for chapter planning.
 - DramaBox currently has durable sections, attempts and render revisions. The other narration path uses simpler chunks. Stage 2 adds chapter information to both without pretending that both already have identical retry/resume support.

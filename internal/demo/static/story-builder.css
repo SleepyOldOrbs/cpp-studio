@@ -387,7 +387,19 @@ button { padding: .55rem .75rem; }
 .script-cue, .script-line-status { color: var(--muted); font-size: .78rem; }
 .script-row textarea { width: 100%; resize: vertical; border: 1px solid var(--line); border-radius: .35rem; padding: .6rem; background: var(--bg); color: var(--text); }
 .script-row p { margin: 0; }
+.script-line-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.script-line-controls select { max-width: 100%; padding: .35rem; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: .35rem; }
+.script-line-controls details { flex-basis: 100%; }
+.script-line-controls summary { cursor: pointer; color: var(--muted); }
+.script-line-controls details label { display: grid; gap: .4rem; padding-top: .4rem; }
+.script-line-controls details p { color: var(--muted); font-size: .78rem; margin-top: .4rem; }
 .script-mode .selection-panel, .script-mode .timeline-preferences { display: none; }
+dialog { width: min(36rem, calc(100vw - 2rem)); border: 1px solid var(--line); border-radius: .7rem; color: var(--text); background: var(--panel); padding: 1.5rem; }
+dialog::backdrop { background: #000a; }
+dialog form, dialog label { display: grid; gap: .7rem; }
+dialog p { color: var(--muted); line-height: 1.5; }
+dialog select { width: 100%; color: var(--text); background: var(--bg); padding: .6rem; }
+dialog a { color: var(--accent); }
 
 @media (max-width: 760px) {
   .studio-header { position: static; padding: .7rem; }

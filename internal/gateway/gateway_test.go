@@ -1124,6 +1124,56 @@ func TestStoryBuilderBuildsDialogueThroughSharedAudioReservationAndAuditionsRead
 	}
 }
 
+func TestStoryBuilderSelectedLineBuildRoute(t *testing.T) {
+	cfg := testConfig(map[string]config.EngineConfig{"omnivoice": {Command: "speech-helper", Mode: "subprocess"}, "audio": {Command: "speech-helper", Mode: "subprocess"}})
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	root := t.TempDir()
+	r.voices = voice.NewStore(filepath.Join(root, "voices"))
+	r.storyBuilderProjects = storybuilder.NewStoreWithOptions(filepath.Join(root, "projects"), storybuilder.StoreOptions{ResolveCharacterVoice: r.resolveStoryBuilderCharacterVoice})
+	actor, err := r.voices.Save("Actor", "Reference words.", wav.SyntheticTone(16000), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	character, err := r.voices.CreateCharacterVoice(actor.ID, "Character", "quiet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := r.storyBuilderProjects.Create("Selected route")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err = r.storyBuilderProjects.Update(project.ID, storybuilder.ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: []storybuilder.Track{{ID: "cast", Name: "Cast", Type: storybuilder.TrackTypeDialogue, CharacterVoiceID: character.ID, Clips: []storybuilder.TimelineClip{
+		{ID: "first", Type: storybuilder.ClipTypeDialogue, Label: "First", Text: "First.", DurationMS: 1000},
+		{ID: "second", Type: storybuilder.ClipTypeDialogue, Label: "Second", Text: "Second.", StartMS: 2000, DurationMS: 1000},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := engine.NewFake()
+	fake.Handle("omnivoice", func(spec engine.Spec) (engine.Result, error) {
+		return engine.Result{Output: wav.SyntheticTone(16000)}, nil
+	})
+	r.engines = fake
+	r.storyBuilderDialogueBuilds = r.newStoryBuilderDialogueBuildManager()
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/story-builder-projects/"+project.ID+"/builds", strings.NewReader(fmt.Sprintf(`{"revision":%d,"clip_id":"second"}`, project.Revision))))
+	if rec.Code != http.StatusAccepted {
+		t.Fatal(rec.Code, rec.Body.String())
+	}
+	var build storybuilder.DialogueBuild
+	if err := json.Unmarshal(rec.Body.Bytes(), &build); err != nil {
+		t.Fatal(err)
+	}
+	waitGatewayStoryBuilderBuild(t, r, project.ID, build.ID, storybuilder.DialogueBuildComplete)
+	saved, _, err := r.storyBuilderProjects.Get(project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Tracks[0].Clips[0].Status != storybuilder.DialogueStatusStale || saved.Tracks[0].Clips[1].Status != storybuilder.DialogueStatusReady {
+		t.Fatal("selected route built the wrong clips", saved.Tracks[0].Clips)
+	}
+}
+
 func TestStoryBuilderDialogueBuildCanBeFoundCancelledAndRetriedAfterReload(t *testing.T) {
 	r := NewRouter(testConfig(nil), lifecycle.NewManager(testConfig(nil))).(*router)
 	r.storyBuilderProjects = storybuilder.NewStoreWithOptions(t.TempDir(), storybuilder.StoreOptions{

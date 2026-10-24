@@ -59,6 +59,7 @@
           <button type="submit">Create</button>
         </div>
       </form>
+      <button id="storyBuilderExampleButton" type="button">Try an example</button>
       <div class="sidebar-heading">
         <h2>Projects</h2>
         <button id="storyBuilderRefreshButton" class="quiet-button" type="button">Refresh</button>
@@ -182,6 +183,21 @@
     </section>
   </main>
 
+  <dialog id="storyBuilderExampleDialog" aria-labelledby="storyBuilderExampleTitle">
+    <form id="storyBuilderExampleForm">
+      <h2 id="storyBuilderExampleTitle">The light at Crow Point</h2>
+      <p>A short scene with two characters, four lines and a pause. Choose voices, then generate individual lines when you are ready.</p>
+      <p id="storyBuilderExampleHint" role="status"></p>
+      <label>Keeper <select id="storyBuilderExampleFirst" required></select></label>
+      <label>Visitor <select id="storyBuilderExampleSecond" required></select></label>
+      <label>Optional sound effect <select id="storyBuilderExampleSFX"></select></label>
+      <p><a href="/demo/#design">Create and save voices in the studio</a> if your library is empty.</p>
+      <div class="track-actions">
+        <button type="submit">Create example project</button>
+        <button id="storyBuilderExampleCancel" type="button">Cancel</button>
+      </div>
+    </form>
+  </dialog>
   <script src="/demo/story-builder.js" defer></script>
 </body>
 </html>

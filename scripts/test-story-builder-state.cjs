@@ -31,7 +31,6 @@ test('script rows keep stable clip identities, scene membership and same-time tr
     { clipID: 'bell', trackID: 'fx', sceneID: 'arrival' },
   ]);
   assert.equal(JSON.stringify(project), before, 'reading Script must not reorder persisted clips');
-  assert.equal(context.scriptRows({ tracks: [{ id: 'empty', clips: null }] }).length, 0);
   assert.equal(context.scriptRows({ tracks: [{ id: 'empty', clips: null }] }).length, 0, 'saved empty tracks can contain null clips');
 });
 
@@ -54,6 +53,65 @@ test('script text uses shared undo and survives an older autosave response', () 
   assert.equal(session.current().tracks[0].clips[0].text, 'Before');
   assert.equal(session.restore(true), true);
   assert.equal(session.current().tracks[0].clips[0].text, 'After');
+});
+
+test('typing a script field records a newer session edit before blur without replacing the field', () => {
+  const context = vm.createContext({ clone: structuredClone, normalizeTracks() {}, timelineError: () => '', projectTransitionPending: false,
+    window: { clearTimeout() {}, setTimeout: () => 1 }, stopBrowserPlayback() {}, updateHistoryButtons() {}, updateBuildControls() {}, updateRenderControls() {}, syncScriptControls() {},
+    setStatus() {} });
+  vm.runInContext(functionSource('createEditSession') + functionSource('recordScriptEdit') + '\nthis.session = editSession;', context);
+  const session = context.session;
+  const project = { id: 'typing', revision: 1, scenes: [], timeline_duration_ms: 30000, tracks: [{ clips: [{ id: 'line', type: 'dialogue', text: 'Before', label: 'Before', status: 'ready' }] }] };
+  session.upsert(project); session.open(project);
+  context.editSession = session;
+  context.scheduleAutosave = () => session.scheduleAutosave(() => {});
+  const saved = structuredClone(project), version = session.saveVersion();
+  context.recordScriptEdit('line', 'text', 'Still typing');
+  assert.equal(session.reconcileSaved(saved, version), true, 'an in-progress field must advance the edit version');
+  assert.equal(session.current().tracks[0].clips[0].text, 'Still typing');
+  assert.equal(session.current().tracks[0].clips[0].status, 'stale');
+  context.recordScriptEdit('line', 'direction_override', 'whisper');
+  assert.equal(session.current().tracks[0].clips[0].direction_override, 'whisper');
+});
+
+test('script character reassignment rejects overlap atomically and preserves unrelated takes', () => {
+  const context = vm.createContext({ clone: structuredClone, normalizeTracks() {}, mintID: () => 'new-track',
+    window: { clearTimeout() {}, setTimeout: () => 1 } });
+  vm.runInContext(functionSource('timelineError') + functionSource('createEditSession') + functionSource('reassignScriptLine') + '\nthis.session = createEditSession();', context);
+  const project = { id: 'cast', scenes: [], timeline_duration_ms: 30000, tracks: [
+    { id: 'mara', type: 'dialogue', name: 'Mara', character_voice_id: 'mara', clips: [{ id: 'line', type: 'dialogue', text: 'Hello.', start_ms: 0, duration_ms: 1000, status: 'stale' }] },
+    { id: 'cole', type: 'dialogue', name: 'Cole', character_voice_id: 'cole', clips: [{ id: 'other', type: 'dialogue', text: 'Wait.', start_ms: 0, duration_ms: 1000, status: 'ready', source_id: 'kept', source_duration_ms: 1000, source_in_ms: 0, source_out_ms: 1000 }] },
+  ] };
+  const session = context.session; session.upsert(project); session.open(project);
+  const before = JSON.stringify(session.current());
+  let edit = session.edit(value => context.reassignScriptLine(value, 'line', { id: 'actor' }, { id: 'cole', name: 'Cole' }));
+  assert.equal(edit.accepted, false); assert.match(edit.error, /overlap/);
+  assert.equal(JSON.stringify(session.current()), before);
+  session.current().tracks[0].clips[0].start_ms = 2000;
+  edit = session.edit(value => context.reassignScriptLine(value, 'line', { id: 'actor' }, { id: 'cole', name: 'Cole' }));
+  assert.equal(edit.accepted, true);
+  assert.equal(session.current().tracks[0].clips.length, 0);
+  const clips = session.current().tracks[1].clips;
+  assert.equal(clips[0].source_id, 'kept'); assert.equal(clips[0].status, 'ready');
+  assert.equal(clips[1].id, 'line'); assert.equal(clips[1].start_ms, 2000); assert.equal(clips[1].character_voice_id, 'cole');
+});
+
+test('line direction overrides share undo and preserve an edit made during save', () => {
+  const context = vm.createContext({ clone: structuredClone, normalizeTracks() {}, timelineError: () => '', projectTransitionPending: false,
+    stopBrowserPlayback() {}, updateHistoryButtons() {}, updateBuildControls() {}, updateRenderControls() {}, syncScriptControls() {}, setStatus() {},
+    window: { clearTimeout() {}, setTimeout: () => 1 } });
+  vm.runInContext(functionSource('createEditSession') + functionSource('recordScriptEdit') + '\nthis.session = editSession;', context);
+  const session = context.session;
+  const project = { id: 'directions', scenes: [], timeline_duration_ms: 30000, tracks: [{ clips: [{ id: 'one', type: 'dialogue', text: 'Hello.', status: 'ready' }] }] };
+  session.upsert(project); session.open(project);
+  context.scheduleAutosave = () => session.scheduleAutosave(() => {});
+  const saved = structuredClone(project), version = session.saveVersion();
+  context.recordScriptEdit('one', 'direction_override', 'whisper');
+  session.scheduleAutosave(() => {}); session.reconcileSaved(saved, version);
+  assert.equal(session.current().tracks[0].clips[0].direction_override, 'whisper');
+  assert.equal(session.current().tracks[0].clips[0].status, 'stale');
+  session.restore(); assert.equal(session.current().tracks[0].clips[0].direction_override, undefined);
+  session.restore(true); assert.equal(session.current().tracks[0].clips[0].direction_override, 'whisper');
 });
 
 test('save reconciliation preserves edits made while a save is in flight', () => {
@@ -93,6 +151,7 @@ for (const terminal of ['complete', 'cancelled', 'failed']) {
       },
       updateBuildControls() {},
       updateRenderControls() {},
+      renderScript() {}, currentProject: () => ({}),
       setBuildStatus: (message, status) => statuses.push(status),
       refreshBuiltProject: async () => { refreshes++; return {}; },
       dialogueBuildableCount: () => 0,
@@ -188,6 +247,46 @@ function transitionFixture({ failSave = false, gateFirstSave = null } = {}) {
   return { context, calls, durable, edit };
 }
 
+test('example creation saves the old draft, opens a separate project and starts no build', async () => {
+  const { context, calls, durable, edit } = transitionFixture();
+  const originalRequest = context.request;
+  context.request = async (url, options = {}) => {
+    if (url === '/projects' && options.method === 'POST') {
+      calls.push('POST /projects');
+      const project = { id: 'example', name: JSON.parse(options.body).name, revision: 1, tracks: [], scenes: [], timeline_duration_ms: 30000 };
+      durable.set(project.id, structuredClone(project)); return project;
+    }
+    return originalRequest(url, options);
+  };
+  Object.assign(context, { exampleFirstVoice: { value: 'first-voice' }, exampleSecondVoice: { value: 'second-voice' }, exampleSFX: { value: '' },
+    exampleDialog: { close() {} }, setProjectView() {}, mintID: prefix => prefix + '-example',
+    characterVoiceDetails: id => ({ actor: { id: 'actor-' + id }, character: { id, name: id } }) });
+  vm.runInContext(functionSource('createExampleProject'), context);
+  edit('Preserved before example');
+  await context.createExampleProject();
+  assert.equal(durable.get('first').name, 'Preserved before example');
+  assert.equal(context.currentProject().id, 'example');
+  assert.equal(durable.get('example').tracks.flatMap(track => track.clips).filter(clip => clip.type === 'dialogue').length, 4);
+  assert.equal(durable.get('example').tracks.flatMap(track => track.clips).filter(clip => clip.type === 'silence').length, 1);
+  assert.ok(durable.get('example').tracks.flatMap(track => track.clips).filter(clip => clip.type === 'dialogue').every(clip => clip.duration_ms >= 5000), 'example dialogue must accommodate a take longer than 2.4 seconds');
+  assert.deepEqual(calls, ['PUT /projects/first', 'POST /projects', 'PUT /projects/example']);
+});
+
+test('failed draft save prevents example sound from being placed in the existing project', async () => {
+  const { context, calls, edit } = transitionFixture({ failSave: true });
+  edit('The light at Crow Point');
+  context.currentProject().tracks.push({ id: 'example_sfx', clips: [] });
+  let placements = 0;
+  Object.assign(context, { exampleFirstVoice: { value: 'one' }, exampleSecondVoice: { value: 'two' }, exampleSFX: { value: 'bell' },
+    exampleDialog: { close() {} }, libraryAudio: [{ id: 'bell' }], placeLibraryAudio: async () => { placements++; },
+    characterVoiceDetails: id => ({ actor: { id: 'actor' }, character: { id, name: id } }) });
+  vm.runInContext(functionSource('createExampleProject'), context);
+  await context.createExampleProject();
+  assert.equal(context.currentProject().id, 'first');
+  assert.equal(placements, 0, 'a cancelled example transition changed the old project');
+  assert.deepEqual(calls, ['PUT /projects/first']);
+});
+
 for (const transition of ['open', 'refresh']) {
   test(`${transition} saves a pending edit before replacing project state`, async () => {
     const { context, calls, durable, edit } = transitionFixture();
@@ -265,12 +364,14 @@ for (const terminal of ['complete', 'cancelled', 'failed']) {
     const project = { id: 'project_1', tracks: [{ clips: [{ type: 'dialogue', status: 'ready' }] }], renders: [] };
     const mutations = new Map();
     const renderButton = {};
+    let scriptUnlocked = false;
     const context = vm.createContext({
       apiRoot: '/projects', currentProject: () => project,
       serverMutationPending: () => mutations.size > 0,
       editSession: { mutation: key => mutations.get(key), beginMutation: (key, value) => mutations.set(key, value), endMutation: key => mutations.delete(key), invalidateHistory() {} },
       renderButton, latestMaster: { removeAttribute() {} }, renderRenderHistory() {}, setRenderStatus() {},
       activeDialogueBuild: null, dialogueCancelPending: false, updateBuildControls() {}, setBuildStatus() {}, dialogueBuildableCount: () => 0,
+      renderScript() { scriptUnlocked = mutations.size === 0; },
     });
     vm.runInContext(functionSource('updateRenderControls') + functionSource('monitorDialogueBuild'), context);
     context.refreshBuiltProject = async () => {
@@ -281,6 +382,7 @@ for (const terminal of ['complete', 'cancelled', 'failed']) {
     await context.monitorDialogueBuild({ project_id: project.id, status: terminal, completed: 1, total: 1 });
     assert.equal(mutations.size, 0);
     assert.equal(renderButton.disabled, false, 'terminal completion refreshes render availability without another edit');
+    assert.equal(scriptUnlocked, true, 'Script controls must refresh after the build releases its mutation');
   });
 }
 
@@ -295,6 +397,7 @@ for (const operation of ['revoiceCharacterVoice', 'placeLibraryAudio']) {
       editSession: { mutation: key => mutations.get(key), savePromise: () => null, beginMutation: (key, value) => mutations.set(key, value), endMutation: key => mutations.delete(key), applySaved: () => true },
       saveStatus: { dataset: { state: 'saved' } }, stopBrowserPlayback() {}, setStatus() {}, setVoiceLibraryStatus() {},
       appShell: { inert: false }, clone: structuredClone, request: async () => project, renderProjects() {},
+      renderScript() {},
       trackTypeForMediaRole: () => 'sfx', renderButton, latestMaster: { removeAttribute() {} }, renderRenderHistory() {}, setRenderStatus() {},
     });
     vm.runInContext(functionSource('updateRenderControls') + functionSource(operation), context);
