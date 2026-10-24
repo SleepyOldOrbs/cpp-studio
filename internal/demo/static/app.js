@@ -147,6 +147,17 @@
   var cloneModelSelect = document.getElementById("cloneModelSelect");
   var designForm = document.getElementById("designForm");
   var designDescriptionInput = document.getElementById("designDescriptionInput");
+  var designStarterStatus = document.getElementById("designStarterStatus");
+  var designStarters = [
+    {id:"calm-narration",name:"Calm narration",purpose:"Long passages and audiobooks",description:"A composed speaking voice with an even pace, clear diction and gentle pauses between thoughts. Keep the delivery natural and restrained."},
+    {id:"documentary",name:"Documentary explanation",purpose:"Factual explanation",description:"A steady, attentive voice with precise articulation and subtle emphasis on the main ideas. Explain each sentence clearly without a sales tone."},
+    {id:"warm-story",name:"Warm storytelling",purpose:"Welcoming narrative",description:"A warm, conversational voice with a relaxed rhythm and a sense of curiosity. Let emotion follow the words with small, natural changes in emphasis."},
+    {id:"presentation",name:"Energetic presentation",purpose:"Lively introductions",description:"A bright, engaged voice with crisp consonants, purposeful pacing and varied emphasis. Bring energy while keeping every word easy to follow."},
+    {id:"understated-dialogue",name:"Understated dialogue",purpose:"Quiet character scenes",description:"An intimate, matter-of-fact voice with unhurried phrasing and small pauses. Keep emotion subtle, as if speaking to someone nearby."},
+    {id:"theatrical-dialogue",name:"Theatrical dialogue",purpose:"Expressive character scenes",description:"An expressive voice with a broad range of emphasis, deliberate pauses and clear articulation. Give each thought a distinct intention while keeping the words intelligible."}
+  ];
+  designStarters.forEach(function (starter) { var option = document.createElement("option"); option.value = starter.id; option.textContent = starter.name + " · " + starter.purpose; document.getElementById("designStarterSelect").appendChild(option); });
+  document.getElementById("designStarterUse").addEventListener("click", function () { applyDesignStarter(document.getElementById("designStarterSelect").value); });
   var designModelSelect = document.getElementById("designModelSelect");
   var designGenerateButton = document.getElementById("designGenerateButton");
   var designErrorBox = document.getElementById("designErrorBox");
@@ -3842,6 +3853,13 @@
       clearBusy(librarySpeakButton);
       setRunning(false);
     }
+  }
+
+  function applyDesignStarter(id) {
+    var starter = designStarters.find(function (item) { return item.id === id; });
+    if (!starter) { designStarterStatus.textContent = "Choose a starting description first."; return; }
+    designDescriptionInput.value = starter.description;
+    designStarterStatus.textContent = starter.purpose + ". Edit this description, then choose Generate 3 candidates. Your selected voice and existing candidates are retained.";
   }
 
   function setDesignError(error, saving) {

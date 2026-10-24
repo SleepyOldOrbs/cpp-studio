@@ -503,10 +503,16 @@
             <summary><span class="workflow-step-number">2</span><span><strong>Describe a voice and generate candidates</strong><small>Describe the voice you want, then create three alternatives to compare.</small></span></summary>
             <div class="workflow-step-body">
               <label class="field"><span>Describe a voice</span>
+                <span class="design-starters">
+                  <label>Starting description <select id="designStarterSelect"><option value="">Choose a starting point…</option></select></label>
+                  <button id="designStarterUse" class="secondary compact-button" type="button">Use description</button>
+                </span>
+                <small id="designStarterStatus" class="hint">Descriptions are editable starting points. Generate and compare candidates before saving a voice.</small>
                 <textarea id="designDescriptionInput" rows="3" maxlength="500" placeholder="e.g. High pitched, singing voice &mdash; or &mdash; Deep gravelly cowboy&hellip;"></textarea>
                 <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> generates three candidates, one at a time. No recording needed.</small>
               </label>
               <div class="action-row"><button class="primary" id="designGenerateButton" type="submit">Generate 3 candidates</button></div>
+              <small class="hint">If no design engine is available, <a href="#models">install a design model in Models</a> and <a href="#engines">configure its engine in Engines</a>, then refresh health.</small>
               <p class="hint" id="designGenerationStatus" role="status"></p>
               <p class="error-box" id="designErrorBox" role="alert" hidden></p>
             </div>

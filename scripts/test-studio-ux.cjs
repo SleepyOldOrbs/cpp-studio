@@ -10,6 +10,15 @@ test('pronunciation highlighting uses UTF-8 byte offsets without splitting Unico
   assert.deepEqual(JSON.parse(JSON.stringify(parts)), [{text:'é ',matched:false},{text:'Jaymz',matched:true},{text:'!',matched:false}]);
 });
 
+test('a voice starter fills only the editable description and preserves selected audio', () => {
+  const selected={id:'saved'}, candidate={id:'candidate'};
+  const context=load(['applyDesignStarter'],{designStarters:[{id:'calm',description:'Measured and clear.',purpose:'Narration'}],designDescriptionInput:{value:'Before'},designStarterStatus:{},selectedVoiceId:selected,designCandidate:candidate,fetch(){assert.fail('starter must not generate or save');}});
+  context.applyDesignStarter('calm');
+  assert.equal(context.designDescriptionInput.value,'Measured and clear.');
+  assert.equal(context.selectedVoiceId,selected);assert.equal(context.designCandidate,candidate);
+  assert.match(context.designStarterStatus.textContent,/Generate/);
+});
+
 test('analysis preparation decodes at 16 kHz and writes mono PCM16 without modifying the source', async () => {
   const original = new File(['original bytes'], 'stereo-48k.wav');
   const context = load(['prepareAnalysisAudio', 'encodeWav', 'writeAscii'], {
