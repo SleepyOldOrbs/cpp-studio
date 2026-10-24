@@ -18,6 +18,8 @@ func TestExtractDocumentChapters(t *testing.T) {
 		{"normalised BOM CRLF", "book.md", "\ufeff# One\r\nText.", []string{"One"}, []int{0}, []int{11}},
 		{"fenced headings", "book.md", "```\n# Not a chapter\n```\n# Real\nText.", []string{"Introduction", "Real"}, nil, nil},
 		{"tilde fence", "book.md", "~~~text\n# Not a chapter\n~~~\n# Real\nText.", []string{"Introduction", "Real"}, nil, nil},
+		{"indented delimiter is code", "book.md", "Intro.\n\n    ```\n\n# Real Chapter\nNarratable words.", []string{"Introduction", "Real Chapter"}, nil, nil},
+		{"tabbed delimiter is code", "book.md", "Intro.\n\n\t```\n\n# Real Chapter\nNarratable words.", []string{"Introduction", "Real Chapter"}, nil, nil},
 		{"blank prefix and closing hashes", "book.md", "\n\n# Title ###\nText.", []string{"Title"}, []int{0}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

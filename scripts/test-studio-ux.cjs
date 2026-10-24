@@ -395,7 +395,7 @@ test('passage audition uses the approved plan and discards changed or immediatel
     const changed = scenario === 'changed', cancelled = scenario === 'cancelled';
     let currentKey = 'approved', pauses = 0;
     const fields = [], requests = [];
-    const context = load(['auditionAudiobookChapter'], {
+    const context = load(['cancelAudiobookAudition', 'auditionAudiobookChapter'], {
       audiobookRequestKey: () => currentKey, audiobookResolvedKey: 'approved', audiobookDocumentPlan: { digest: 'digest' },
       audiobookFileInput: { files: [{ name: 'book.md' }] }, audiobookAuditionPending: false, audiobookAuditionJobId: '',
       audiobookAuditionStatus: {}, audiobookAuditionAudio: { hidden: true, load() {} }, audiobookErrorBox: {},
@@ -419,6 +419,37 @@ test('passage audition uses the approved plan and discards changed or immediatel
     if (changed || cancelled) assert.ok(requests.some(r => r[0] === '/v1/jobs/audition-1/cancel'));
     assert.equal(pauses, 1);
   }
+});
+
+test('a failed audition poll requests cancellation and keeps a handle when cancellation is unavailable', async () => {
+  for (const cancellationOK of [false, true]) {
+    const requests = [];
+    const context = load(['cancelAudiobookAudition', 'auditionAudiobookChapter'], {
+      audiobookRequestKey: () => 'approved', audiobookResolvedKey: 'approved', audiobookDocumentPlan: { digest: 'digest' },
+      audiobookFileInput: { files: [{ name: 'book.md' }] }, audiobookAuditionPending: false, audiobookAuditionJobId: '',
+      audiobookAuditionStatus: {}, audiobookAuditionAudio: { hidden: true }, clearAudiobookAudition() {}, syncAudiobookEngineControls() {},
+      audiobookDocumentForm: () => ({ append() {} }), readErrorBody: async () => 'Status unavailable',
+      fetch: async (url, options) => {
+        requests.push([url, options && options.method]);
+        if (url === '/v1/audiobooks/audition') return { ok: true, json: async () => ({ id: 'audition-1' }) };
+        if (url.endsWith('/cancel')) return { ok: cancellationOK };
+        return { ok: false };
+      },
+    });
+    await context.auditionAudiobookChapter('chapter_001');
+    assert.ok(requests.some(r => r[0] === '/v1/jobs/audition-1/cancel' && r[1] === 'POST'));
+    assert.equal(context.audiobookAuditionJobId, cancellationOK ? '' : 'audition-1');
+    assert.equal(context.audiobookAuditionAudio.hidden, true);
+  }
+});
+
+test('reopened chapter plans identify the saved narrator with an engine-appropriate fallback', () => {
+  const context = load(['audiobookSavedNarrator'], { audiobookVoiceSelect: { options: [{value:'voice_1',textContent:'Ada'}] } });
+  assert.equal(context.audiobookSavedNarrator({ voiceId:'voice_1' }), 'Ada');
+  assert.equal(context.audiobookSavedNarrator({ voiceId:'missing_voice' }), 'missing_voice (saved voice)');
+  assert.equal(context.audiobookSavedNarrator({ synthesisIdentity:{voice:{id:'voice_1'}} }), 'Ada');
+  assert.equal(context.audiobookSavedNarrator({ engine:'dramabox', synthesisIdentity:{voice:{id:'default'}} }), 'DramaBox text-only voice');
+  assert.equal(context.audiobookSavedNarrator({}), 'Studio default');
 });
 
 test('Library dates prefer real updates and fall back from missing, zero or invalid updates', () => {

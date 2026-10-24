@@ -7311,11 +7311,11 @@
 	  audiobookPromptWarningAcceptance.hidden = true;
 	  audiobookPromptWarningsPending = false;
 	}
-	audiobookNarrateButton.disabled = audiobookBusy || audiobookAuditionPending || Boolean(audiobookBenchmarkJobId) || !available || audiobookBenchmarkBlocked ||
+	audiobookNarrateButton.disabled = audiobookBusy || audiobookAuditionPending || Boolean(audiobookAuditionJobId) || Boolean(audiobookBenchmarkJobId) || !available || audiobookBenchmarkBlocked ||
 	  (audiobookPromptWarningsPending && !audiobookAcceptPromptWarnings.checked) || audiobookResolvedKey !== audiobookRequestKey();
-    audiobookAuditionCancel.hidden = !audiobookAuditionPending;
+    audiobookAuditionCancel.hidden = !audiobookAuditionPending && !audiobookAuditionJobId;
     audiobookChapterPlan.querySelectorAll("[data-audiobook-audition]").forEach(function (button) {
-      button.disabled = audiobookBusy || audiobookAuditionPending || Boolean(audiobookBenchmarkJobId) || !available || audiobookResolvedKey !== audiobookRequestKey() || (audiobookPromptWarningsPending && !audiobookAcceptPromptWarnings.checked);
+      button.disabled = audiobookBusy || audiobookAuditionPending || Boolean(audiobookAuditionJobId) || Boolean(audiobookBenchmarkJobId) || !available || audiobookResolvedKey !== audiobookRequestKey() || (audiobookPromptWarningsPending && !audiobookAcceptPromptWarnings.checked);
     });
   }
 
@@ -7476,14 +7476,40 @@
     audiobookAuditionAudio.hidden = true;
     audiobookAuditionStatus.textContent = "";
     if (audiobookAuditionJobId) {
-      fetch("/v1/jobs/" + encodeURIComponent(audiobookAuditionJobId) + "/cancel", { method: "POST" }).catch(function () {});
+      cancelAudiobookAudition();
+    }
+  }
+
+  async function cancelAudiobookAudition() {
+    var id = audiobookAuditionJobId;
+    if (!id) { return true; }
+    try {
+      var response = await fetch("/v1/jobs/" + encodeURIComponent(id) + "/cancel", { method: "POST" });
+      if (!response.ok) {
+        // A completed job can win the cancellation race. Confirm that it is
+        // terminal before releasing the UI's handle to its reservation.
+        if (response.status !== 409) { throw new Error("Cancellation unavailable"); }
+        var status = await fetch("/v1/jobs/" + encodeURIComponent(id));
+        if (!status.ok) { throw new Error("Status unavailable"); }
+        var job = await status.json();
+        if (["complete", "cancelled", "failed"].indexOf(job.status) < 0) { throw new Error("Audition is still running"); }
+      }
+      if (audiobookAuditionJobId === id) { audiobookAuditionJobId = ""; }
+      audiobookAuditionStatus.textContent = "Audition cancelled.";
+      return true;
+    } catch (_) {
+      audiobookAuditionStatus.textContent = "Could not confirm cancellation. Use Cancel audition to retry.";
+      return false;
+    } finally {
+      syncAudiobookEngineControls();
     }
   }
 
   async function auditionAudiobookChapter(chapterID) {
     var requestedKey = audiobookRequestKey();
     var file = audiobookFileInput.files && audiobookFileInput.files[0];
-    if (audiobookAuditionPending || !file || !audiobookDocumentPlan || audiobookResolvedKey !== requestedKey) { return; }
+    if (audiobookAuditionPending || audiobookAuditionJobId || !file || !audiobookDocumentPlan || audiobookResolvedKey !== requestedKey) { return; }
+    var finished = false;
     clearAudiobookAudition();
     audiobookAuditionCancelled = false;
     audiobookAuditionPending = true;
@@ -7498,32 +7524,33 @@
       audiobookAuditionJobId = created.id;
       while (true) {
         if (requestedKey !== audiobookRequestKey() || audiobookAuditionCancelled) {
-          await fetch("/v1/jobs/" + encodeURIComponent(created.id) + "/cancel", { method: "POST" });
-          if (requestedKey === audiobookRequestKey()) { audiobookAuditionStatus.textContent = "Audition cancelled."; }
+          await cancelAudiobookAudition();
           return;
         }
         var status = await fetch("/v1/jobs/" + encodeURIComponent(created.id));
         if (!status.ok) { throw new Error(await readErrorBody(status)); }
         var job = await status.json();
         if (requestedKey !== audiobookRequestKey() || audiobookAuditionCancelled) {
-          if (requestedKey === audiobookRequestKey()) { audiobookAuditionStatus.textContent = "Audition cancelled."; }
+          await cancelAudiobookAudition();
           return;
         }
         if (job.status === "complete") {
+          finished = true;
           audiobookAuditionAudio.src = job.result.audioUrl;
           audiobookAuditionAudio.hidden = false;
           audiobookAuditionAudio.load();
           audiobookAuditionStatus.textContent = "Passage ready. Press play to listen. Temporary audio is replaced by the next audition.";
           return;
         }
-        if (job.status === "cancelled") { audiobookAuditionStatus.textContent = "Audition cancelled."; return; }
-        if (job.status === "failed") { throw new Error(job.error || "Audition failed"); }
+        if (job.status === "cancelled") { finished = true; audiobookAuditionStatus.textContent = "Audition cancelled."; return; }
+        if (job.status === "failed") { finished = true; throw new Error(job.error || "Audition failed"); }
         await new Promise(function (resolve) { setTimeout(resolve, 500); });
       }
     } catch (err) {
-      if (requestedKey === audiobookRequestKey()) { audiobookAuditionStatus.textContent = "Audition failed: " + err.message; }
+      var stopped = finished || await cancelAudiobookAudition();
+      if (requestedKey === audiobookRequestKey()) { audiobookAuditionStatus.textContent = "Audition failed: " + err.message + (stopped ? "" : ". Use Cancel audition to retry."); }
     } finally {
-      audiobookAuditionJobId = "";
+      if (finished) { audiobookAuditionJobId = ""; }
       audiobookAuditionPending = false;
       syncAudiobookEngineControls();
     }
@@ -8060,6 +8087,15 @@
     item.appendChild(details);
   }
 
+  function audiobookSavedNarrator(book) {
+    var id = book.voiceId || (book.synthesisIdentity && book.synthesisIdentity.voice && book.synthesisIdentity.voice.id) || "";
+    if (id && id !== "default") {
+      var option = Array.prototype.find.call(audiobookVoiceSelect.options, function (voice) { return voice.value === id; });
+      return option ? option.textContent : id + " (saved voice)";
+    }
+    return book.engine === "dramabox" ? "DramaBox text-only voice" : "Studio default";
+  }
+
   function renderAudiobookCard(book, interrupted) {
     var item = createElement("div", "story-library-item" + (interrupted ? " is-interrupted" : ""));
     item.appendChild(createElement("div", "story-library-title", book.title || book.id));
@@ -8074,7 +8110,7 @@
       var chapterDetails = createElement("details", "");
       chapterDetails.appendChild(createElement("summary", "", book.documentPlan.chapters.length + " chapters"));
       var chapterContent = createElement("div", "");
-      renderAudiobookChapterPlan(chapterContent, book.documentPlan, book.voice || "Studio default");
+      renderAudiobookChapterPlan(chapterContent, book.documentPlan, audiobookSavedNarrator(book));
       chapterDetails.appendChild(chapterContent);
       item.appendChild(chapterDetails);
     }

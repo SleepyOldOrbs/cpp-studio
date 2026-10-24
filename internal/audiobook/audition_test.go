@@ -122,3 +122,32 @@ func TestAuditionCancellationAndFailureReleaseResources(t *testing.T) {
 		}
 	}
 }
+
+func TestDramaBoxAuditionExcerptKeepsFirstProductionSectionSource(t *testing.T) {
+	registry := jobs.NewRegistry()
+	var spoken SynthesisRequest
+	manager := NewManager(ManagerOptions{RootDir: t.TempDir(), Jobs: registry, Synthesize: func(_ context.Context, request SynthesisRequest) ([]byte, error) {
+		spoken = request
+		return wav.SyntheticTone(16000), nil
+	}})
+	source := "# Opening\n\nThe actual story begins here.\n\n" + strings.Repeat("The clock is ticking. ", 40)
+	doc := DocumentRequest{Filename: "story.md", Data: []byte(source), Request: Request{EngineID: DramaBoxEngineID, Verification: VerificationModeOff}}
+	preview, err := manager.PreviewDocument(context.Background(), doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	excerpt := preview.Plan.Chapters[0].Excerpt
+	if !strings.HasPrefix(excerpt, "# Opening\n\nThe actual story begins here.") || !strings.HasPrefix(source, excerpt) || len([]rune(excerpt)) > DefaultChunkChars {
+		t.Fatalf("excerpt is not the bounded original passage: %q", excerpt)
+	}
+	doc.Request.PlanDigest = preview.Plan.Digest
+	id, err := manager.AuditionDocument(context.Background(), doc, "chapter_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForAudiobookJob(t, registry, id)
+	want := buildRequestPrompt(preview.Request, excerpt)
+	if spoken.Text != want {
+		t.Fatal("audition differs from displayed native passage", spoken.Text, want)
+	}
+}

@@ -95,7 +95,26 @@ func makeDocumentPlan(req Request, resolvedEngine EngineIdentity, resolvedVoice 
 		source := req.Text[chapter.StartByte:chapter.EndByte]
 		chapter.WordCount = len(strings.Fields(source))
 		chapter.EstimatedListeningSeconds = (chapter.WordCount*60 + 149) / 150
-		if chunks := chapterTextChunks(source, DefaultChunkChars); len(chunks) > 0 {
+		if req.EngineID == DramaBoxEngineID {
+			ranges, err := buildDramaBoxRanges(source)
+			if err != nil {
+				return nil, err
+			}
+			if len(ranges) > 0 {
+				passage := []rune(source[ranges[0].start:ranges[0].end])
+				if len(passage) > DefaultChunkChars {
+					cut := DefaultChunkChars
+					for index := cut - 1; index > 0; index-- {
+						if unicode.IsSpace(passage[index]) {
+							cut = index
+							break
+						}
+					}
+					passage = passage[:cut]
+				}
+				chapter.Excerpt = strings.TrimSpace(string(passage))
+			}
+		} else if chunks := chapterTextChunks(source, DefaultChunkChars); len(chunks) > 0 {
 			chapter.Excerpt = chunks[0]
 		}
 		plan.WordCount += chapter.WordCount

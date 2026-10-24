@@ -101,7 +101,9 @@ func markdownChapters(text string) []Chapter {
 	fenceLength := 0
 	for _, line := range strings.SplitAfter(text, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
+		unindented := strings.TrimLeft(line, " ")
+		validFenceIndent := len(line)-len(unindented) <= 3 && !strings.HasPrefix(unindented, "\t")
+		if validFenceIndent && len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
 			run := 0
 			for run < len(trimmed) && trimmed[run] == trimmed[0] {
 				run++
