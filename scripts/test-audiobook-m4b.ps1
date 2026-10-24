@@ -36,7 +36,7 @@ try {
   }
 } finally { $writer.Dispose(); $stream.Dispose() }
 $secondTitle = 'Café # = ; \ chapter\'
-$metadata = @{title='The Clock #1=two; \ book';author='Fixture Writer';narrator='Fixture Narrator';year='2026';genre='Fiction';description="Line one`nLine two; # = \"}
+$metadata = @{title='The Clock #1=two; \ book';author='Fixture Writer';narrator='Fixture Narrator';year='2026';genre='Fiction';description="Line one`nLine two; # = \`r"}
 $created = [DateTime]::UtcNow.ToString('o')
 # A completed, generated PCM fixture exercises delivery without spending an
 # inference run. Its editorial intervals are deliberately distinct from text.
@@ -102,19 +102,24 @@ async page => {
   await page.locator('section[data-page="audiobook"] details.result-panel > summary').click();
   const card=page.locator('#audiobookShelf .story-library-item').first();
   await card.locator('.audiobook-m4b > summary').click();
+  const source=await page.request.get('__BASE__/v1/audiobooks/book_20261024_120000_001').then(r=>r.json());
+  const changed=await page.request.put('__BASE__/v1/audiobooks/book_20261024_120000_001/metadata',{data:{...source.metadata,title:'Retitled Clock'}});
+  assert(changed.status()===204,'metadata edit failed');
   await card.getByRole('button',{name:'Review M4B export',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('.audiobook-m4b').textContent.includes('2 chapters:'));
   const encoded=page.waitForResponse(r=>r.url().endsWith('/exports/m4b')&&r.request().method()==='POST');
   await card.getByRole('button',{name:'Export M4B',exact:true}).click();
   assert((await encoded).status()===200,'UI export failed');
-  const ready=card.getByRole('link',{name:'Download M4B · render-0001',exact:true});
+  const ready=card.getByRole('link',{name:'Download M4B · render-0001 · Retitled Clock',exact:true});
   await ready.waitFor();
+  assert((await ready.textContent()).includes('Retitled Clock'),'re-export kept the old title label');
+  assert(await card.getByRole('link',{name:/The Clock/}).count()===0,'old same-render download label survived');
   let download=page.waitForEvent('download');
   await ready.click();
   await (await download).saveAs('__OUT__/browser-export.m4b');
   await page.locator('a[data-page-link="library"]').first().click();
   await page.locator('#libraryFilterInput').fill('render-0001 M4B');
-  const entry=page.locator('.library-item').filter({has:page.getByText('The Clock #1=two; \\ book — render-0001 M4B',{exact:true})});
+  const entry=page.locator('.library-item').filter({has:page.getByText('Retitled Clock — render-0001 M4B',{exact:true})});
   await entry.waitFor();
   const delivery=entry.getByRole('button',{name:'Download M4B',exact:true});
   assert(await delivery.isEnabled(),'Library export is incorrectly disabled');

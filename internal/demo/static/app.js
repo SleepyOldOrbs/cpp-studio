@@ -8104,7 +8104,6 @@
       status.textContent = "Book details saved.";
       audiobookStatus.textContent = "Book details saved: " + (metadata.title || id);
       log("Book details saved: " + id);
-      await refreshAudiobooks(true);
       return true;
     } catch (err) {
       status.textContent = (detailsSaved ? "Details saved; cover could not be saved: " : "Could not save book details: ") + err.message;
@@ -8118,6 +8117,9 @@
     var fields = createElement("div", "audiobook-details-grid");
     var metadata = book.metadata || {};
     var inputs = {};
+    var status = createElement("p", "hint");
+    status.setAttribute("role", "status");
+    function dirty() { item.dataset.bookDetailsDirty = "true"; status.textContent = "Unsaved changes. Save or discard them before closing this page."; }
     [ ["title", "Title"], ["author", "Author"], ["narrator", "Narrator credit"], ["year", "Year"], ["genre", "Genre"], ["description", "Description"] ].forEach(function (field) {
       var label = createElement("label", "field");
       label.appendChild(createElement("span", "", field[1]));
@@ -8126,6 +8128,7 @@
       input.maxLength = field[0] === "description" ? 4000 : field[0] === "year" ? 4 : 256;
       input.value = metadata[field[0]] || (field[0] === "title" ? book.title : "");
       input.dataset.bookDetail = field[0];
+      input.addEventListener("input", dirty);
       inputs[field[0]] = input;
       label.appendChild(input);
       fields.appendChild(label);
@@ -8143,20 +8146,35 @@
     cover.type = "file";
     cover.accept = "image/png,image/jpeg";
     cover.dataset.bookCover = "true";
+    cover.addEventListener("change", dirty);
     coverLabel.appendChild(cover);
     details.appendChild(coverLabel);
     var save = createElement("button", "secondary compact-button", "Save book details");
     save.type = "button";
-    var status = createElement("p", "hint");
-    status.setAttribute("role", "status");
+    var discard = createElement("button", "plain compact-button", "Discard changes");
+    discard.type = "button";
+    discard.addEventListener("click", function () {
+      Object.keys(inputs).forEach(function (key) { inputs[key].value = metadata[key] || (key === "title" ? book.title : ""); });
+      cover.value = "";
+      delete item.dataset.bookDetailsDirty;
+      refreshAudiobooks(true);
+    });
     save.addEventListener("click", async function () {
       var values = {};
       Object.keys(inputs).forEach(function (key) { values[key] = inputs[key].value; });
       save.disabled = true;
-      await saveAudiobookDetails(book.id, values, cover.files && cover.files[0], status);
+      discard.disabled = true;
+      cover.disabled = true;
+      Object.keys(inputs).forEach(function (key) { inputs[key].disabled = true; });
+      var saved = await saveAudiobookDetails(book.id, values, cover.files && cover.files[0], status);
       save.disabled = false;
+      discard.disabled = false;
+      cover.disabled = false;
+      Object.keys(inputs).forEach(function (key) { inputs[key].disabled = false; });
+      if (saved) { delete item.dataset.bookDetailsDirty; refreshAudiobooks(true); }
     });
     details.appendChild(save);
+    details.appendChild(discard);
     details.appendChild(status);
     item.appendChild(details);
   }
@@ -8174,6 +8192,21 @@
       status.textContent = "Export failed: " + err.message;
       return null;
     }
+  }
+
+  function renderAudiobookM4BDownload(container, record, fallbackTitle) {
+    var renderID = record.renderId || "";
+    Array.prototype.slice.call(container.querySelectorAll("[data-m4b-render]")).forEach(function (node) { if (node.dataset.m4bRender === renderID) { node.remove(); } });
+    var title = record.metadata && record.metadata.title || fallbackTitle;
+    var node;
+    if (record.unavailableReason) { node = createElement("p", "hint", record.unavailableReason); }
+    else {
+      node = createElement("a", "secondary-button", "Download M4B · " + (renderID || "original master") + " · " + title);
+      node.href = record.url;
+      node.download = title + ".m4b";
+    }
+    node.dataset.m4bRender = renderID;
+    container.appendChild(node);
   }
 
   function appendAudiobookM4B(item, book) {
@@ -8204,10 +8237,9 @@
     cancel.hidden = true;
     var status = createElement("p", "hint");
     status.setAttribute("role", "status");
-    var download = createElement("a", "secondary-button", "Download M4B");
-    download.hidden = true;
+    var downloads = createElement("div", "action-row");
     var plan = null, version = 0, controller = null;
-    select.addEventListener("change", function () { version += 1; plan = null; encode.disabled = true; summary.textContent = "Review this master before exporting."; download.hidden = true; });
+    select.addEventListener("change", function () { version += 1; plan = null; encode.disabled = true; summary.textContent = "Review this master before exporting."; });
     review.addEventListener("click", async function () {
       var requested = ++version;
       encode.disabled = true;
@@ -8241,10 +8273,7 @@
       review.disabled = false;
       select.disabled = false;
       if (record) {
-        download.href = record.url;
-        download.download = (record.metadata && record.metadata.title || book.title) + ".m4b";
-        download.textContent = "Download M4B · " + (record.renderId || "original master");
-        download.hidden = false;
+        renderAudiobookM4BDownload(downloads, record, book.title);
         refreshLibrary(true);
       }
       plan = null;
@@ -8252,17 +8281,14 @@
     cancel.addEventListener("click", function () { if (controller) { controller.abort(); } });
     details.appendChild(summary);
     var actions = createElement("div", "action-row");
-    [review, encode, cancel, download].forEach(function (element) { actions.appendChild(element); });
+    [review, encode, cancel].forEach(function (element) { actions.appendChild(element); });
     details.appendChild(actions);
     details.appendChild(status);
     (book.exports || []).forEach(function (record) {
       if (record.format !== "m4b") { return; }
-      var link = createElement("a", "secondary-button", "Download M4B · " + (record.renderId || "original master") + " · " + (record.metadata.title || book.title));
-      if (record.unavailableReason) { details.appendChild(createElement("p", "hint", record.unavailableReason)); return; }
-      link.href = record.url;
-      link.download = (record.metadata.title || book.title) + ".m4b";
-      details.appendChild(link);
+      renderAudiobookM4BDownload(downloads, record, book.title);
     });
+    details.appendChild(downloads);
     item.appendChild(details);
   }
 
@@ -8277,6 +8303,7 @@
 
   function renderAudiobookCard(book, interrupted) {
     var item = createElement("div", "story-library-item" + (interrupted ? " is-interrupted" : ""));
+    item.dataset.bookId = book.id;
     item.appendChild(createElement("div", "story-library-title", book.title || book.id));
     var engineLabel = book.engine === "dramabox" ? "DramaBox" : "Fast local";
     var unitLabel = book.engine === "dramabox" ? " sections" : " chunks";
@@ -8337,6 +8364,30 @@
     return item;
   }
 
+  function renderAudiobookShelf(payload) {
+    var records = (payload.interrupted || []).map(function (book) { return { book: book, interrupted: true }; }).concat((payload.audiobooks || []).map(function (book) { return { book: book, interrupted: false }; }));
+    var drafts = {};
+    Array.prototype.slice.call(audiobookShelf.children).forEach(function (node) { if (node.dataset.bookDetailsDirty === "true") { drafts[node.dataset.bookId] = node; } });
+    if (!Object.keys(drafts).length) {
+      audiobookShelf.textContent = "";
+      if (!records.length) { audiobookShelf.textContent = "No audiobooks yet."; }
+      records.forEach(function (record) { audiobookShelf.appendChild(renderAudiobookCard(record.book, record.interrupted)); });
+      return;
+    }
+    // Leave dirty nodes attached: moving them would also lose editor focus.
+    // Their File inputs and unsaved text survive unrelated completion/refresh.
+    Array.prototype.slice.call(audiobookShelf.childNodes).forEach(function (node) { if (!node.dataset || drafts[node.dataset.bookId] !== node) { node.remove(); } });
+    var anchor = null;
+    for (var index = records.length - 1; index >= 0; index -= 1) {
+      var record = records[index];
+      var draft = drafts[record.book.id];
+      if (draft) { anchor = draft; continue; }
+      var node = renderAudiobookCard(record.book, record.interrupted);
+      audiobookShelf.insertBefore(node, anchor);
+      anchor = node;
+    }
+  }
+
   async function refreshAudiobooks(silent) {
     if (audiobookM4BBusy) { return; }
     try {
@@ -8346,15 +8397,7 @@
       }
       var payload = await response.json();
       if (audiobookM4BBusy) { return; }
-      var books = payload.audiobooks || [];
-      var interrupted = payload.interrupted || [];
-      audiobookShelf.textContent = "";
-      if (!books.length && !interrupted.length) {
-        audiobookShelf.textContent = "No audiobooks yet.";
-        return;
-      }
-      interrupted.forEach(function (book) { audiobookShelf.appendChild(renderAudiobookCard(book, true)); });
-      books.forEach(function (book) { audiobookShelf.appendChild(renderAudiobookCard(book, false)); });
+      renderAudiobookShelf(payload);
       if (!silent) {
         log("Audiobook shelf refreshed");
       }

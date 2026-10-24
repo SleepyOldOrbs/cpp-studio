@@ -55,6 +55,12 @@ audition are merged in PR #57 (ce0645a), after independent review fixes and Wind
 CI passed. Two-narrator browser acceptance and real OmniVoice audition and cancellation
 passed. Stages 1–2 issues #51–#52 are closed; stages 3–5 remain tracked as #53–#55.
 
+Stage 3 details, cover ownership and revision-bound M4B delivery are implemented
+and independently reviewed. Review fixes passed the full Go suite, vet, 66 Node
+checks, real FFmpeg 8/9 container checks, export/Library browser downloads and
+VLC chapter/cover/credit inspection. The branch is ready for GitHub CI and merge.
+Stages 4–5 pronunciation snapshots and voice/Library polish remain.
+
 - Story Builder has stable clip/track IDs, revision checks, edit history, timeline editing, voice bindings, stored takes and `auditionClip`. A script view should project that data, not create a second document.
 - The audiobook `PreviewDocument` path resolves the source, engine and voice without durable state. Extend it for chapter planning.
 - DramaBox currently has durable sections, attempts and render revisions. The other narration path uses simpler chunks. Stage 2 adds chapter information to both without pretending that both already have identical retry/resume support.

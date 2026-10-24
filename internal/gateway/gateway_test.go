@@ -7450,6 +7450,9 @@ func TestAudiobookM4BPlanExportAndDownloadRoutes(t *testing.T) {
 	if download.Code != http.StatusOK || download.Header().Get("Content-Type") != "audio/mp4" || !strings.Contains(download.Body.String(), "ftypM4A") {
 		t.Fatal("wrong export response", download.Code, download.Body.String())
 	}
+	if download.Header().Get("Cache-Control") != "no-store" || download.Header().Get("ETag") != `"`+record.SHA256+`"` {
+		t.Fatal("mutable render export URL can serve a stale cached snapshot", download.Header())
+	}
 	unsafe := httptest.NewRecorder()
 	r.ServeHTTP(unsafe, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/"+id+"/exports/m4b?render=../../outside", nil))
 	if unsafe.Code != http.StatusNotFound {

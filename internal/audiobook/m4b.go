@@ -168,10 +168,10 @@ func (m *Manager) PreviewM4B(ctx context.Context, id, renderID string) (M4BExpor
 }
 
 func m4bMetadata(plan M4BExportPlan) string {
-	escape := strings.NewReplacer("\\", "\\\\", "=", "\\=", ";", "\\;", "#", "\\#", "\r", "", "\n", "\\\n")
+	escape := strings.NewReplacer("\\", "\\\\", "=", "\\=", ";", "\\;", "#", "\\#", "\r", "\\\r", "\n", "\\\n")
 	value := func(text string) string {
 		encoded := escape.Replace(text)
-		if strings.HasSuffix(text, "\\") {
+		if strings.HasSuffix(encoded, "\\") {
 			// FFmpeg's newer ffmetadec line reader treats an escaped final
 			// backslash as continuation too. A NUL value terminator prevents
 			// it consuming the next tag/chapter; both old and new readers

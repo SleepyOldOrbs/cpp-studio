@@ -1719,6 +1719,8 @@ func (r *router) handleAudiobook(w http.ResponseWriter, req *http.Request) {
 					target = "original"
 				}
 				w.Header().Set("Content-Type", "audio/mp4")
+				w.Header().Set("Cache-Control", "no-store")
+				w.Header().Set("ETag", `"`+record.SHA256+`"`)
 				w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": "audiobook-" + parts[0] + "-" + target + ".m4b"}))
 				http.ServeFile(w, req, path)
 			default:
