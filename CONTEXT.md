@@ -251,6 +251,21 @@ save, undo, redo, playback, and selected-clip deletion shortcuts apply only
 outside editable text and numeric fields. Later Story Builder slices extend
 this aggregate rather than creating a second persistence system.
 
+Script and Timeline are two views of those same Project, Track and Clip
+identities. Script orders clips by start time and track order, displays scene
+headings and sound cues, and records text and direction edits as the user types
+so autosave cannot replace an uncommitted focused field. Character reassignment
+moves one line to the chosen Character Voice's Dialogue Track, preserving its
+identity and timing; an overlapping placement is rejected atomically.
+Selected-line generation uses the same reservation and immutable-take
+publication path as a bulk dialogue build. An optional per-clip
+`direction_override` replaces the inherited Character Voice direction for that
+line only; changing it invalidates that line's current take and blocks an old
+in-flight result. OmniVoice overrides use supported style tags, while Drama3
+supports prose direction. Loading the short example creates a separate project
+with user-selected saved voices and an optional Library sound; it does not
+start synthesis.
+
 ## Timeline Track
 
 An ordered lane in a Story Builder Project, typed as Dialogue, SFX, or Music.

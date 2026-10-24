@@ -1,6 +1,6 @@
 param(
   [int]$GatewayPort = 8877,
-  [string]$OutDir = ".\out\story-builder-browser-smoke"
+  [string]$OutDir = (Join-Path ".\out" ("story-builder-browser-smoke-" + [guid]::NewGuid().ToString("N").Substring(0, 8)))
 )
 
 # Real-browser acceptance for Story Builder timeline editing and Library media. The server,
@@ -125,11 +125,20 @@ function Invoke-BrowserCode {
   param([string]$Code)
 
   $jsonCode = $Code | ConvertTo-Json -Compress
-  Invoke-BrowserCLI -Arguments @("run-code", "async page => await (eval($jsonCode))(page)")
+  $codePath = Join-Path $runtimeDir "browser-step.js"
+  [IO.File]::WriteAllText($codePath, "async page => await (eval($jsonCode))(page)")
+  try {
+    Invoke-BrowserCLI -Arguments @("run-code", "--filename=$codePath")
+  } catch {
+    Invoke-BrowserCLI -Arguments @("screenshot")
+    Invoke-BrowserCLI -Arguments @("snapshot")
+    throw
+  }
 }
 
 $launchCode = @'
 async page => {
+  await page.setViewportSize({ width: 1600, height: 1600 });
   const assert = (condition, message) => {
     if (!condition) throw new Error(message);
   };
@@ -160,6 +169,114 @@ async page => {
     'Story Builder did not keep Stories & Audiobooks active in the studio header');
   assert(await studioHeader.getByRole('link', { name: 'Story Builder', exact: true }).getAttribute('aria-current') === 'page',
     'Story Builder did not mark its studio navigation entry active');
+}
+'@
+
+$scriptViewCode = @'
+async page => {
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  const origin = page.url().split('/demo/')[0];
+  const created = await (await page.request.post(origin + '/v1/story-builder-projects', { data: { name: 'Script view smoke' } })).json();
+  const response = await page.request.put(origin + '/v1/story-builder-projects/' + created.id, { data: {
+    name: created.name, revision: created.revision, timeline_duration_ms: 30000,
+    scenes: [{ id: 'opening', title: 'The arrival', start_ms: 0 }],
+    tracks: [{ id: 'narrator', name: 'Narrator', type: 'dialogue', order: 0, character_voice_id: '__SCRIPT_CHARACTER_ID__', clips: [
+      { id: 'first', type: 'dialogue', text: 'The light came on.', label: 'Opening', start_ms: 0, duration_ms: 3000, status: 'stale' },
+      { id: 'pause', type: 'silence', label: 'A pause', start_ms: 3000, duration_ms: 1000 },
+      { id: 'second', type: 'dialogue', text: 'The harbour was quiet.', label: 'Another line', start_ms: 5000, duration_ms: 2000, status: 'stale' },
+    ] }],
+  } });
+  assert(response.ok(), 'could not create script fixture: ' + await response.text());
+  await page.goto(origin + '/demo/story-builder.html?project=' + created.id);
+  await page.locator('#storyBuilderNameInput').waitFor();
+  await page.locator('#storyBuilderScriptView').click();
+  assert(await page.locator('#storyBuilderTimelineViewport').isHidden(), 'Timeline was not hidden in Script');
+  assert(await page.locator('#storyBuilderScript h3').innerText() === 'The arrival', 'scene heading missing');
+  assert(await page.locator('#storyBuilderScript').innerText().then(text => text.includes('Pause')), 'pause cue missing');
+  const line = page.locator('#storyBuilderScript [data-clip-id="first"] > textarea');
+  await line.fill('The light went out.');
+  await line.press('Tab');
+  await page.locator('#storyBuilderTimelineView').click();
+  assert(await page.locator('#timeline-clip-first input').inputValue() === 'The light went out.', 'Script edit did not reach Timeline');
+  await page.locator('#storyBuilderUndo').click();
+  assert(await page.locator('#timeline-clip-first input').inputValue() === 'The light came on.', 'shared undo failed');
+  await page.locator('#storyBuilderRedo').click();
+  await page.locator('#storyBuilderSaveButton').click();
+  await page.waitForFunction(() => document.querySelector('#storyBuilderSaveStatus').textContent === 'Saved');
+  await page.reload();
+  await page.locator('#storyBuilderScriptView').click();
+  assert(await page.locator('#storyBuilderScript [data-clip-id="first"] > textarea').inputValue() === 'The light went out.', 'script clip identity/text did not persist');
+  let first = page.locator('#storyBuilderScript [data-clip-id="first"]');
+  await first.locator('summary').click();
+  await first.getByLabel('Line direction (leave empty to inherit)').fill('whisper, low pitch');
+  await first.getByLabel('Line direction (leave empty to inherit)').press('Tab');
+  await page.locator('#storyBuilderSaveButton').click();
+  await page.waitForFunction(() => document.querySelector('#storyBuilderSaveStatus').textContent === 'Saved');
+  await first.getByRole('button', { name: /Generate line/ }).click();
+  await page.waitForFunction(() => document.querySelector('#storyBuilderScript [data-clip-id="first"] .script-line-status')?.textContent === 'ready');
+  let saved = await (await page.request.get(origin + '/v1/story-builder-projects/' + created.id)).json();
+  assert(saved.tracks[0].clips.find(clip => clip.id === 'first').direction_override === 'whisper, low pitch', 'line direction did not persist');
+  assert(saved.tracks[0].clips.find(clip => clip.id === 'second').status === 'stale', 'selected generation built another line');
+  await first.getByRole('button', { name: /Play take/ }).click();
+  await first.getByLabel('Character', { exact: true }).selectOption('__SCRIPT_SECOND_ID__');
+  await page.waitForFunction(() => document.querySelector('#storyBuilderSaveStatus').textContent === 'Saved');
+  saved = await (await page.request.get(origin + '/v1/story-builder-projects/' + created.id)).json();
+  const moved = saved.tracks.find(track => track.clips?.some(clip => clip.id === 'first'));
+  assert(moved.character_voice_id === '__SCRIPT_SECOND_ID__' && moved.clips.find(clip => clip.id === 'first').status === 'stale', 'line reassignment did not update only the selected line');
+  await page.locator('#storyBuilderNameInput').fill('Draft kept before example');
+  let exampleBuilds = 0;
+  const countBuild = request => { if (request.method() === 'POST' && request.url().endsWith('/builds')) exampleBuilds++; };
+  page.on('request', countBuild);
+  await page.locator('#storyBuilderExampleButton').click();
+  await page.locator('#storyBuilderExampleFirst').selectOption('__SCRIPT_CHARACTER_ID__');
+  await page.locator('#storyBuilderExampleSecond').selectOption('__SCRIPT_SECOND_ID__');
+  await page.locator('#storyBuilderExampleSFX').selectOption('__SCRIPT_SFX_ID__');
+  await page.getByRole('button', { name: 'Create example project', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#storyBuilderNameInput').value === 'The light at Crow Point' && document.querySelectorAll('#storyBuilderScript .script-row > textarea').length === 4);
+  await page.waitForFunction(() => [...document.querySelectorAll('#storyBuilderScript .script-row p')].some(node => node.textContent.startsWith('SFX:')));
+  assert((await (await page.request.get(origin + '/v1/story-builder-projects/' + created.id)).json()).name === 'Draft kept before example', 'loading example lost unsaved work');
+  assert(exampleBuilds === 0, 'loading example started synthesis');
+  page.off('request', countBuild);
+  await page.setViewportSize({ width: 800, height: 1000 });
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Script overflowed a narrow window');
+  await page.locator('#storyBuilderScript .script-row > textarea').first().focus();
+  assert(await page.locator('#storyBuilderScript .script-row > textarea').first().evaluate(node => node === document.activeElement), 'Script text was not keyboard reachable');
+  await page.screenshot({ path: 'story-script-acceptance.png', fullPage: true });
+  await page.setViewportSize({ width: 1600, height: 1600 });
+  await page.locator('#storyBuilderTimelineView').click();
+}
+'@
+
+$scriptDraftCode = @'
+async page => {
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  await page.locator('#storyBuilderScriptView').click();
+  const projectID = await page.locator('.project-item[aria-current="true"]').getAttribute('data-project-id');
+  const routePattern = '**/v1/story-builder-projects/' + projectID;
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  let held = false;
+  await page.route(routePattern, async route => {
+    if (route.request().method() === 'PUT' && !held) { held = true; enter(); await gate; }
+    await route.continue();
+  });
+  const lines = page.locator('#storyBuilderScript .script-row > textarea');
+  await lines.nth(0).fill('The first line was deliberately changed.');
+  await lines.nth(0).press('Tab');
+  await entered;
+  await lines.nth(1).fill('This draft must survive without a blur.');
+  release();
+  await page.waitForFunction(() => document.querySelector('#storyBuilderSaveStatus').textContent === 'Saved');
+  assert(await lines.nth(1).inputValue() === 'This draft must survive without a blur.', 'an autosave discarded text still being typed');
+  assert(await lines.nth(1).evaluate(node => node === document.activeElement), 'autosave moved keyboard focus out of the script');
+  await lines.nth(1).press('Tab');
+  await page.unroute(routePattern);
+  await page.locator('#storyBuilderSaveButton').click();
+  await page.waitForFunction(() => document.querySelector('#storyBuilderSaveStatus').textContent === 'Saved');
+  const saved = await (await page.request.get(page.url().split('/demo/')[0] + '/v1/story-builder-projects/' + projectID)).json();
+  assert(saved.tracks.flatMap(track => track.clips || []).some(clip => clip.text === 'This draft must survive without a blur.'), 'focused draft did not reach durable storage');
+  await page.locator('#storyBuilderTimelineView').click();
 }
 '@
 
@@ -322,7 +439,7 @@ async page => {
   await page.locator('.timeline-clip').first().waitFor();
   assert(JSON.stringify(savedLabels) === JSON.stringify(await clipLabels()), 'saved millisecond timing drifted after reload');
   assert(await page.getByRole('button', { name: 'Undo' }).isDisabled(), 'undo history incorrectly survived reload');
-  assert((await page.locator('#storyBuilderSelectionBody').innerText()).includes('Select a clip'), 'selection incorrectly survived current-project reload');
+  assert(await page.locator('#storyBuilderSelectionPanel').isHidden() && await page.locator('.timeline-clip.is-selected').count() === 0, 'selection incorrectly survived current-project reload');
 
   return { project: projectID, savedLabels };
 }
@@ -422,7 +539,8 @@ async page => {
 
   const lane = page.locator('.track-row[data-track-type="dialogue"] .timeline-stage');
   const keeper = page.locator('.character-voice-asset', { hasText: 'Weathered keeper' });
-  await keeper.dragTo(lane);
+  await waitSaved();
+  await keeper.dragTo(lane, { sourcePosition: { x: 20, y: 20 }, targetPosition: { x: 30, y: 20 } });
   await page.locator('.dialogue-text-inline').waitFor();
   assert((await page.locator('.track-voice-binding').innerText()).includes('Mara / Weathered keeper'), 'compatible drop did not bind the track');
   assert((await page.locator('.clip-status-badge').innerText()).toLowerCase() === 'stale', 'new Dialogue Clip was not visibly stale');
@@ -1138,6 +1256,7 @@ async page => {
   assert(project.scenes?.length === 2 && project.scenes[0].id === 'cold-open' && project.scenes[1].id === 'crossing',
     'imported Episode scenes were flattened');
   const sceneButtons = page.locator('.scene-jump');
+  await sceneButtons.nth(1).waitFor();
   assert(await sceneButtons.count() === 2, 'Story Builder did not render the imported scene navigator');
   await sceneButtons.nth(1).click();
   assert(Number(await page.locator('#storyBuilderPlayhead').inputValue()) === project.scenes[1].start_ms,
@@ -1168,6 +1287,7 @@ async page => {
   const origin = page.url().split('/demo/')[0];
 
   await page.goto(origin + '/demo/story-builder.html');
+  await page.waitForFunction(() => !document.querySelector('.app-shell').inert && document.querySelector('#storyBuilderProjectList').childElementCount > 0);
   await page.locator('#storyBuilderNewName').fill('Reusable media browser smoke');
   await page.getByRole('button', { name: 'Create' }).click();
   await page.getByRole('button', { name: '+ SFX track' }).click();
@@ -1444,21 +1564,13 @@ async page => {
   const origin = page.url().split('/demo/')[0];
   const projectID = '__PLAYBACK_PROJECT_ID__';
 
-  await page.goto(origin + '/demo/#voice-cloning');
-  const actorCard = page.locator('.actor-voice-item', { hasText: 'Mara' }).first();
-  await actorCard.waitFor();
-  await actorCard.getByRole('button', { name: 'Delete', exact: true }).click();
-  await page.locator('#cloneErrorBox').filter({ hasText: 'Timeline playback browser smoke' }).waitFor();
+  const actorDelete = await page.request.delete(origin + '/v1/voices/__ACTOR_VOICE_ID__');
+  assert(actorDelete.status() === 409 && (await actorDelete.text()).includes('Timeline playback browser smoke'), 'Actor Voice deletion did not explain the project dependency');
   assert(await page.evaluate(id => fetch('/v1/story-builder-projects/' + id).then(response => response.ok), projectID),
     'blocked Actor Voice delete changed its dependent project');
 
-  const characterRows = actorCard.locator('.character-voice-item');
-  const characterNames = await characterRows.locator('.character-voice-form input').evaluateAll(nodes => nodes.map(node => node.value));
-  const characterIndex = characterNames.indexOf('Weathered keeper');
-  assert(characterIndex >= 0, 'Weathered keeper was not listed under its Actor Voice');
-  const characterRow = characterRows.nth(characterIndex);
-  await characterRow.getByRole('button', { name: 'Delete Character Voice', exact: true }).click();
-  await page.locator('#cloneErrorBox').filter({ hasText: 'Timeline playback browser smoke' }).waitFor();
+  const characterDelete = await page.request.delete(origin + '/v1/character-voices/__CHARACTER_VOICE_ID__');
+  assert(characterDelete.status() === 409 && (await characterDelete.text()).includes('Timeline playback browser smoke'), 'Character Voice deletion did not explain the project dependency');
   assert(await page.evaluate(id => fetch('/v1/character-voices/' + id).then(response => response.ok), '__CHARACTER_VOICE_ID__'),
     'blocked Character Voice delete removed the Voice');
 
@@ -1704,6 +1816,7 @@ try {
   $audioCode = $audioCode.Replace("__AUDIO_TRIM_PROJECT_ID__", $audioTrimProject.id)
   $statusCode = $statusCode.Replace("__STATUS_PROJECT_ID__", $statusProject.id)
   $buildFailureRecoveryCode = $buildFailureRecoveryCode.Replace("__RECOVERY_CHARACTER_VOICE_ID__", $keeperVoice.id)
+  $scriptViewCode = $scriptViewCode.Replace("__SCRIPT_CHARACTER_ID__", $keeperVoice.id).Replace("__SCRIPT_SECOND_ID__", $cartographerVoice.id).Replace("__SCRIPT_SFX_ID__", $sfxItem.id)
   $buildCancellationRecoveryCode = $buildCancellationRecoveryCode.Replace("__RECOVERY_CHARACTER_VOICE_ID__", $keeperVoice.id)
   $libraryAudioCode = $libraryAudioCode.Replace("__SFX_ITEM_ID__", $sfxItem.id).Replace("__MUSIC_ITEM_ID__", $musicItem.id).Replace("__BROKEN_PROJECT_ID__", $brokenProject.id)
   $playbackSetupCode = $playbackSetupCode.Replace("__PLAYBACK_PROJECT_ID__", $playbackProject.id)
@@ -1727,6 +1840,8 @@ try {
   Invoke-BrowserCode -Code $buildDialogueCode
   Invoke-BrowserCode -Code $completeGatewayWorkflowCode
   Invoke-BrowserCode -Code $completeGatewayDeliveryCode
+  Invoke-BrowserCode -Code $scriptViewCode
+  Invoke-BrowserCode -Code $scriptDraftCode
   Invoke-BrowserCode -Code $libraryAudioCode
   $catalogSFXItem = Invoke-RestMethod -Uri "$baseURL/v1/library" -Method Post -ContentType "application/json" -Body (@{
     kind = "audio"; name = "Library bell"; data_b64 = $libraryAudioB64; meta = @{ media_role = "sfx" }

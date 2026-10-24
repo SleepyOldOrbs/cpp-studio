@@ -46,7 +46,7 @@
     <div>
       <p class="eyebrow">cpp-studio</p>
       <h1>Story Builder</h1>
-      <p class="subtitle">Arrange Dialogue, SFX, and Music on your project timeline.</p>
+      <p class="subtitle">Write your script, then arrange Dialogue, SFX, and Music on the timeline.</p>
     </div>
   </header>
 
@@ -59,6 +59,7 @@
           <button type="submit">Create</button>
         </div>
       </form>
+      <button id="storyBuilderExampleButton" type="button">Try an example</button>
       <div class="sidebar-heading">
         <h2>Projects</h2>
         <button id="storyBuilderRefreshButton" class="quiet-button" type="button">Refresh</button>
@@ -102,6 +103,10 @@
             <h2 id="storyBuilderCanvasTitle">Timeline tracks</h2>
           </div>
           <div class="canvas-tools">
+            <div class="view-switch" role="group" aria-label="Project view">
+              <button id="storyBuilderScriptView" type="button" aria-pressed="false">Script</button>
+              <button id="storyBuilderTimelineView" type="button" aria-pressed="true">Timeline</button>
+            </div>
             <div class="timeline-preferences" aria-label="Timeline preferences">
               <label><input id="storyBuilderSnap" type="checkbox" checked> Snap 250 ms</label>
               <label for="storyBuilderTimelineDuration">Length (s)</label>
@@ -131,6 +136,7 @@
           <kbd>Ctrl/Cmd+S</kbd> save · <kbd>Ctrl/Cmd+Z</kbd> undo · <kbd>Ctrl/Cmd+Y</kbd> redo ·
           <kbd>Space</kbd> play or pause · <kbd>Delete</kbd> remove selected clips
         </p>
+        <div id="storyBuilderScript" class="script-list" aria-label="Project script" hidden></div>
         <div id="storyBuilderTimelineViewport" class="timeline-viewport">
           <div id="storyBuilderTimelineContent" class="timeline-content">
             <div id="storyBuilderTimelineRuler" class="timeline-ruler" aria-hidden="true"><span>0s</span><span>5s</span><span>10s</span><span>15s</span><span>20s</span><span>25s</span><span>30s</span></div>
@@ -177,6 +183,21 @@
     </section>
   </main>
 
+  <dialog id="storyBuilderExampleDialog" aria-labelledby="storyBuilderExampleTitle">
+    <form id="storyBuilderExampleForm">
+      <h2 id="storyBuilderExampleTitle">The light at Crow Point</h2>
+      <p>A short scene with two characters, four lines and a pause. Choose voices, then generate individual lines when you are ready.</p>
+      <p id="storyBuilderExampleHint" role="status"></p>
+      <label>Keeper <select id="storyBuilderExampleFirst" required></select></label>
+      <label>Visitor <select id="storyBuilderExampleSecond" required></select></label>
+      <label>Optional sound effect <select id="storyBuilderExampleSFX"></select></label>
+      <p><a href="/demo/#design">Create and save voices in the studio</a> if your library is empty.</p>
+      <div class="track-actions">
+        <button type="submit">Create example project</button>
+        <button id="storyBuilderExampleCancel" type="button">Cancel</button>
+      </div>
+    </form>
+  </dialog>
   <script src="/demo/story-builder.js" defer></script>
 </body>
 </html>

@@ -418,3 +418,189 @@ func waitDialogueBuild(t *testing.T, manager *DialogueBuildManager, projectID, b
 	t.Fatalf("timed out waiting for build %q: %+v", want, build)
 	return DialogueBuild{}
 }
+
+func TestStartClipBuildsOnlySelectedDialogueAndKeepsOtherTake(t *testing.T) {
+	store, project := buildTestProject(t, []TimelineClip{
+		{ID: "first", Type: ClipTypeDialogue, Label: "First", Text: "First.", StartMS: 0, DurationMS: 1000},
+		{ID: "second", Type: ClipTypeDialogue, Label: "Second", Text: "Second.", StartMS: 2000, DurationMS: 1000},
+		{ID: "pause", Type: ClipTypeSilence, Label: "Pause", StartMS: 4000, DurationMS: 1000},
+	})
+	input, err := store.BeginDialogueBuild(project.ID, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err = store.CompleteDialogueBuild(project.ID, input, wav.SyntheticTone(16000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	take := project.Tracks[0].Clips[0].SourceID
+	var spoken []string
+	manager := NewDialogueBuildManager(DialogueBuildManagerOptions{Store: store, Synthesize: func(_ context.Context, input DialogueSynthesisInput) ([]byte, error) {
+		spoken = append(spoken, input.ClipID)
+		return wav.SyntheticTone(16000), nil
+	}})
+	if _, err := manager.StartClip(context.Background(), project.ID, project.Revision-1, "second"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale revision: %v", err)
+	}
+	for _, id := range []string{"first", "pause", "missing"} {
+		if _, err := manager.StartClip(context.Background(), project.ID, project.Revision, id); !errors.Is(err, ErrNoDialogueToBuild) {
+			t.Fatalf("ineligible %q: %v", id, err)
+		}
+	}
+	started, err := manager.StartClip(context.Background(), project.ID, project.Revision, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := waitDialogueBuild(t, manager, project.ID, started.ID, DialogueBuildComplete)
+	if result.Total != 1 || result.Completed != 1 || !reflect.DeepEqual(spoken, []string{"second"}) {
+		t.Fatalf("selected build %+v, spoken %v", result, spoken)
+	}
+	saved, _, err := store.Get(project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Tracks[0].Clips[0].SourceID != take || saved.Tracks[0].Clips[1].Status != DialogueStatusReady {
+		t.Fatalf("unrelated take changed: %+v", saved.Tracks[0].Clips)
+	}
+}
+
+func TestStartClipUsesBuildReservationAndRejectsEditedCompletion(t *testing.T) {
+	store, project := buildTestProject(t, []TimelineClip{{ID: "line", Type: ClipTypeDialogue, Label: "Line", Text: "Before.", DurationMS: 1000}})
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	manager := NewDialogueBuildManager(DialogueBuildManagerOptions{Store: store, Synthesize: func(context.Context, DialogueSynthesisInput) ([]byte, error) {
+		close(entered)
+		<-proceed
+		return wav.SyntheticTone(16000), nil
+	}})
+	started, err := manager.StartClip(context.Background(), project.ID, project.Revision, "line")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	if _, err := manager.Start(context.Background(), project.ID, project.Revision); !errors.Is(err, ErrDialogueBuildBusy) {
+		t.Errorf("bulk bypassed selected build: %v", err)
+	}
+	project, _, err = store.Get(project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project.Tracks[0].Clips[0].Text = "After."
+	_, err = store.Update(project.ID, ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: project.Tracks})
+	close(proceed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDialogueBuild(t, manager, project.ID, started.ID, DialogueBuildFailed)
+	saved, _, _ := store.Get(project.ID)
+	if clip := saved.Tracks[0].Clips[0]; clip.Text != "After." || clip.SourceID != "" {
+		t.Fatalf("stale audio attached: %+v", clip)
+	}
+}
+
+func TestMovingDialogueBetweenCharacterTracksPreservesUnrelatedTakes(t *testing.T) {
+	store, project := buildTestProject(t, []TimelineClip{{ID: "move", Type: ClipTypeDialogue, Label: "Move", Text: "Hello.", StartMS: 2000, DurationMS: 1000}})
+	project.Tracks = append(project.Tracks, Track{ID: "cole", Name: "Cole", Type: TrackTypeDialogue, Order: 1, CharacterVoiceID: "character_cole", Clips: []TimelineClip{{ID: "stay", Type: ClipTypeDialogue, Label: "Stay", Text: "Wait.", DurationMS: 1000}}})
+	project, err := store.Update(project.ID, ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: project.Tracks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"move", "stay"} {
+		input, err := store.BeginDialogueBuild(project.ID, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		project, err = store.CompleteDialogueBuild(project.ID, input, wav.SyntheticTone(16000))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	kept := project.Tracks[1].Clips[0].SourceID
+	moved := project.Tracks[0].Clips[0]
+	moved.StartMS = 0
+	tracks := cloneTracks(project.Tracks)
+	tracks[0].Clips = nil
+	tracks[1].Clips = append(tracks[1].Clips, moved)
+	if _, err := store.Update(project.ID, ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: tracks}); err == nil {
+		t.Fatal("overlapping reassignment accepted")
+	}
+	unchanged, _, _ := store.Get(project.ID)
+	if unchanged.Revision != project.Revision || len(unchanged.Tracks[0].Clips) != 1 {
+		t.Fatal("failed reassignment mutated project")
+	}
+	tracks[1].Clips[1].StartMS = 2000
+	saved, err := store.Update(project.ID, ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: tracks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Tracks[1].Clips[0].SourceID != kept || saved.Tracks[1].Clips[0].Status != DialogueStatusReady {
+		t.Fatal("unrelated take invalidated")
+	}
+	if clip := saved.Tracks[1].Clips[1]; clip.ID != "move" || clip.CharacterVoiceID != "character_cole" || clip.SourceID != "" || clip.Status != DialogueStatusStale {
+		t.Fatalf("wrong reassignment: %+v", clip)
+	}
+}
+
+func TestLineDirectionOverrideInheritsPersistsAndInvalidatesOnlyChangedTake(t *testing.T) {
+	store, project := buildTestProject(t, []TimelineClip{{ID: "line", Type: ClipTypeDialogue, Label: "Line", Text: "Hello.", DurationMS: 1000}})
+	input, err := store.BeginDialogueBuild(project.ID, "line")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.Direction != "quiet and guarded" {
+		t.Fatal(input.Direction)
+	}
+	project, err = store.CompleteDialogueBuild(project.ID, input, wav.SyntheticTone(16000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousTake, err := store.DialogueAudioPath(project.ID, "line")
+	if err != nil {
+		t.Fatal(err)
+	}
+	project.Tracks[0].Clips[0].DirectionOverride = "whisper"
+	project, err = store.Update(project.ID, ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: project.Tracks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.Tracks[0].Clips[0].SourceID != "" || project.Tracks[0].Clips[0].Status != DialogueStatusStale {
+		t.Fatal("direction edit reused old take")
+	}
+	if _, err := os.Stat(previousTake); err != nil {
+		t.Fatal("historical take lost", err)
+	}
+	input, err = store.BeginDialogueBuild(project.ID, "line")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.Direction != "whisper" {
+		t.Fatal(input.Direction)
+	}
+	project, _, _ = store.Get(project.ID)
+	project.Tracks[0].Clips[0].DirectionOverride = ""
+	project, err = store.Update(project.ID, ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: project.Tracks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteDialogueBuild(project.ID, input, wav.SyntheticTone(16000)); !errors.Is(err, ErrConflict) {
+		t.Fatal("stale direction attached", err)
+	}
+	input, err = store.BeginDialogueBuild(project.ID, "line")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.Direction != "quiet and guarded" {
+		t.Fatal("clearing did not inherit", input.Direction)
+	}
+}
+
+func TestLineDirectionOverrideValidation(t *testing.T) {
+	store, project := buildTestProject(t, []TimelineClip{{ID: "line", Type: ClipTypeDialogue, Label: "Line", Text: "Hello.", DurationMS: 1000}})
+	project.Tracks[0].Clips[0].DirectionOverride = string(make([]byte, 501))
+	if _, err := store.Update(project.ID, ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: project.Tracks}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("oversized direction accepted", err)
+	}
+	project.Tracks[0].Clips = []TimelineClip{{ID: "pause", Type: ClipTypeSilence, Label: "Pause", DurationMS: 1000, DirectionOverride: "soft"}}
+	if _, err := store.Update(project.ID, ProjectUpdate{Name: project.Name, Revision: project.Revision, Tracks: project.Tracks}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("silence direction accepted", err)
+	}
+}

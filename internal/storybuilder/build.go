@@ -80,6 +80,18 @@ func NewDialogueBuildManager(options DialogueBuildManagerOptions) *DialogueBuild
 }
 
 func (m *DialogueBuildManager) Start(ctx context.Context, projectID string, revision int) (DialogueBuild, error) {
+	return m.start(ctx, projectID, revision, "")
+}
+
+// StartClip uses the same reservation and publication boundaries as a bulk build.
+func (m *DialogueBuildManager) StartClip(ctx context.Context, projectID string, revision int, clipID string) (DialogueBuild, error) {
+	if strings.TrimSpace(clipID) == "" {
+		return DialogueBuild{}, ErrInvalid
+	}
+	return m.start(ctx, projectID, revision, clipID)
+}
+
+func (m *DialogueBuildManager) start(ctx context.Context, projectID string, revision int, clipID string) (DialogueBuild, error) {
 	if m == nil || m.store == nil || m.synthesize == nil {
 		return DialogueBuild{}, ErrInvalid
 	}
@@ -94,6 +106,15 @@ func (m *DialogueBuildManager) Start(ctx context.Context, projectID string, revi
 	candidates, err := m.store.DialogueBuildCandidates(projectID, revision)
 	if err != nil {
 		return DialogueBuild{}, err
+	}
+	if clipID != "" {
+		selected := candidates[:0]
+		for _, candidate := range candidates {
+			if candidate.ClipID == clipID {
+				selected = append(selected, candidate)
+			}
+		}
+		candidates = selected
 	}
 	if len(candidates) == 0 {
 		return DialogueBuild{}, ErrNoDialogueToBuild
@@ -272,13 +293,14 @@ type DialogueBuildClip struct {
 // DialogueSynthesisInput is the current spoken content and performance identity
 // frozen when one clip enters the building state.
 type DialogueSynthesisInput struct {
-	CharacterVoiceID string
-	EngineID         string
-	ClipID           string
-	Text             string
-	ActorVoiceID     string
-	Direction        string
-	VoiceFingerprint string
+	CharacterVoiceID  string
+	EngineID          string
+	ClipID            string
+	Text              string
+	ActorVoiceID      string
+	Direction         string
+	DirectionOverride string
+	VoiceFingerprint  string
 }
 
 // DialogueBuildCandidates returns retryable dialogue in timeline order. A
@@ -344,10 +366,13 @@ func (s *Store) BeginDialogueBuild(id, clipID string) (DialogueSynthesisInput, e
 		}
 		direction = identity.Direction
 	}
+	if clip.DirectionOverride != "" {
+		direction = clip.DirectionOverride
+	}
 	input := DialogueSynthesisInput{
 		EngineID: project.DialogueEngine,
 		ClipID:   clip.ID, Text: clip.Text, ActorVoiceID: clip.ActorVoiceID, CharacterVoiceID: clip.CharacterVoiceID,
-		Direction: direction, VoiceFingerprint: clip.VoiceFingerprint,
+		Direction: direction, DirectionOverride: clip.DirectionOverride, VoiceFingerprint: clip.VoiceFingerprint,
 	}
 	clip.Status = DialogueStatusBuilding
 	clip.BuildError = ""
@@ -373,7 +398,7 @@ func (s *Store) CompleteDialogueBuild(id string, input DialogueSynthesisInput, a
 	if err != nil {
 		return Project{}, err
 	}
-	if project.DialogueEngine != input.EngineID || clip.Status != DialogueStatusBuilding || clip.Text != input.Text || clip.ActorVoiceID != input.ActorVoiceID ||
+	if project.DialogueEngine != input.EngineID || clip.Status != DialogueStatusBuilding || clip.Text != input.Text || clip.ActorVoiceID != input.ActorVoiceID || clip.CharacterVoiceID != input.CharacterVoiceID || clip.DirectionOverride != input.DirectionOverride ||
 		clip.VoiceFingerprint != input.VoiceFingerprint {
 		return Project{}, ErrConflict
 	}

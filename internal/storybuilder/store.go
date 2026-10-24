@@ -19,18 +19,20 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"cpp-studio/internal/engine"
 	"cpp-studio/internal/story"
 	"cpp-studio/internal/wav"
 )
 
 const (
-	DefaultRootDir            = "out/story-builder-projects"
-	MaxNameLength             = 120
-	MaxTracks                 = 128
-	MaxClips                  = 2048
-	MaxDialogueTextLength     = 4000
-	DefaultTimelineDurationMS = 30000
-	manifestName              = "project.json"
+	DefaultRootDir             = "out/story-builder-projects"
+	MaxNameLength              = 120
+	MaxTracks                  = 128
+	MaxClips                   = 2048
+	MaxDialogueTextLength      = 4000
+	MaxDialogueDirectionLength = 500
+	DefaultTimelineDurationMS  = 30000
+	manifestName               = "project.json"
 )
 
 var (
@@ -102,6 +104,7 @@ type TimelineClip struct {
 	SourceMediaRole     MediaRole      `json:"source_media_role,omitempty"`
 	MediaError          string         `json:"media_error,omitempty"`
 	Text                string         `json:"text,omitempty"`
+	DirectionOverride   string         `json:"direction_override,omitempty"`
 	Status              DialogueStatus `json:"status,omitempty"`
 	CharacterVoiceID    string         `json:"character_voice_id,omitempty"`
 	ActorVoiceID        string         `json:"actor_voice_id,omitempty"`
@@ -595,6 +598,15 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 	if err := validateTracks(tracks, timelineDurationMS); err != nil {
 		return Project{}, err
 	}
+	for _, track := range tracks {
+		for _, clip := range track.Clips {
+			if clip.Type == ClipTypeDialogue && clip.DirectionOverride != "" {
+				if err := engine.ValidateSpeechDirection(dialogueEngine, clip.DirectionOverride); err != nil {
+					return Project{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+				}
+			}
+		}
+	}
 	scenes := project.Scenes
 	if update.Scenes != nil {
 		scenes = cloneScenes(*update.Scenes)
@@ -925,6 +937,7 @@ func (s *Store) prepareTracks(existing, incoming []Track, revoiceTrackIDs map[st
 			clip.SourceOutMS = 0
 			clip.MediaError = ""
 			clip.Text = strings.TrimSpace(clip.Text)
+			clip.DirectionOverride = strings.TrimSpace(clip.DirectionOverride)
 			if clip.Text == "" {
 				clip.Text = clip.Label
 			}
@@ -942,7 +955,7 @@ func (s *Store) prepareTracks(existing, incoming []Track, revoiceTrackIDs map[st
 				continue
 			}
 			if oldClip, ok := existingClips[clip.ID]; ok && oldClip.Type == ClipTypeDialogue &&
-				strings.TrimSpace(oldClip.Text) == clip.Text && oldTrack.CharacterVoiceID == track.CharacterVoiceID &&
+				strings.TrimSpace(oldClip.Text) == clip.Text && oldClip.DirectionOverride == clip.DirectionOverride && oldTrack.CharacterVoiceID == track.CharacterVoiceID &&
 				oldTrack.ActorVoiceID == track.ActorVoiceID && oldTrack.VoiceFingerprint == track.VoiceFingerprint {
 				clip.Status = dialogueStatus(oldClip)
 				clip.BuildError = oldClip.BuildError
@@ -1018,6 +1031,9 @@ func validateTracks(tracks []Track, timelineDurationMS int64) error {
 				return ErrInvalid
 			}
 			clipIDs[clip.ID] = struct{}{}
+			if (clip.Type != ClipTypeDialogue && clip.DirectionOverride != "") || utf8.RuneCountInString(clip.DirectionOverride) > MaxDialogueDirectionLength {
+				return ErrInvalid
+			}
 			hasSource := clip.SourceID != "" || clip.SourceDurationMS != 0 || clip.SourceInMS != 0 || clip.SourceOutMS != 0
 			hasStoryProvenance := clip.SourceStoryID != "" || clip.SourceStoryLineID != "" || clip.SourceStoryTakeID != ""
 			if hasSource {

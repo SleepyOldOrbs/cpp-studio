@@ -4252,7 +4252,8 @@ type storyBuilderLibraryAudioRequest struct {
 }
 
 type storyBuilderDialogueBuildRequest struct {
-	Revision int `json:"revision"`
+	Revision int    `json:"revision"`
+	ClipID   string `json:"clip_id,omitempty"`
 }
 
 type storyBuilderRenderRequest struct {
@@ -4460,7 +4461,13 @@ func (r *router) handleStoryBuilderDialogueBuilds(w http.ResponseWriter, req *ht
 		writeJSONError(w, http.StatusBadRequest, "revision must be positive")
 		return
 	}
-	build, err := r.storyBuilderDialogueBuilds.Start(req.Context(), projectID, body.Revision)
+	var build storybuilder.DialogueBuild
+	var err error
+	if body.ClipID != "" {
+		build, err = r.storyBuilderDialogueBuilds.StartClip(req.Context(), projectID, body.Revision, body.ClipID)
+	} else {
+		build, err = r.storyBuilderDialogueBuilds.Start(req.Context(), projectID, body.Revision)
+	}
 	if err != nil {
 		writeStoryBuilderProjectError(w, err)
 		return

@@ -27,6 +27,9 @@
   const deleteButton = byID("storyBuilderDeleteButton");
   const refreshButton = byID("storyBuilderRefreshButton");
   const tracksElement = byID("storyBuilderTracks");
+  const scriptElement = byID("storyBuilderScript");
+  const scriptViewButton = byID("storyBuilderScriptView");
+  const timelineViewButton = byID("storyBuilderTimelineView");
   const undoButton = byID("storyBuilderUndo");
   const redoButton = byID("storyBuilderRedo");
   const snapInput = byID("storyBuilderSnap");
@@ -49,8 +52,13 @@
   const voiceRefresh = byID("storyBuilderVoiceRefresh");
   const voiceStatus = byID("storyBuilderVoiceStatus");
   const voiceGroups = byID("storyBuilderVoiceGroups");
+  const exampleDialog = byID("storyBuilderExampleDialog");
+  const exampleFirstVoice = byID("storyBuilderExampleFirst");
+  const exampleSecondVoice = byID("storyBuilderExampleSecond");
+  const exampleSFX = byID("storyBuilderExampleSFX");
 
   let panelPosition = null;
+  let projectView = "timeline";
   let clipPointerEdit = null;
   let panelPointerEdit = null;
   let actorVoices = [];
@@ -725,7 +733,7 @@
   }
 
   function refreshSelectionUI() {
-    document.querySelectorAll(".timeline-clip").forEach((element) => {
+    document.querySelectorAll(".timeline-clip, .script-row").forEach((element) => {
       const selected = editSession.selectionHas(element.dataset.clipId);
       element.classList.toggle("is-selected", selected);
       if (element.getAttribute("role") === "button") element.setAttribute("aria-pressed", String(selected));
@@ -1062,10 +1070,190 @@
     });
   }
 
+  function scriptRows(project) {
+    if (!project) return [];
+    const scenes = [...(project.scenes || [])].sort((a, b) => a.start_ms - b.start_ms);
+    return project.tracks.flatMap((track, trackIndex) => (track.clips || []).map((clip, clipIndex) => ({
+      clipID: clip.id, trackID: track.id,
+      sceneID: scenes.filter((scene) => scene.start_ms <= clip.start_ms).at(-1)?.id || "",
+      start: clip.start_ms, order: track.order ?? trackIndex, trackIndex, clipIndex,
+    }))).sort((a, b) => a.start - b.start || a.order - b.order || a.trackIndex - b.trackIndex || a.clipIndex - b.clipIndex)
+      .map(({ clipID, trackID, sceneID }) => ({ clipID, trackID, sceneID }));
+  }
+
+  function setProjectView(view) {
+    projectView = view;
+    scriptElement.hidden = view !== "script";
+    timelineViewport.hidden = view === "script";
+    editor.classList.toggle("script-mode", view === "script");
+    scriptViewButton.setAttribute("aria-pressed", String(view === "script"));
+    timelineViewButton.setAttribute("aria-pressed", String(view === "timeline"));
+    byID("storyBuilderCanvasTitle").textContent = view === "script" ? "Script" : "Timeline tracks";
+    renderTracks();
+  }
+
+  function reassignScriptLine(project, clipID, actor, character) {
+    const source = project.tracks.find((track) => track.clips.some((clip) => clip.id === clipID));
+    const clip = source?.clips.find((item) => item.id === clipID);
+    if (!clip || clip.type !== "dialogue" || source.character_voice_id === character.id) return;
+    let target = project.tracks.find((track) => track.type === "dialogue" && track.character_voice_id === character.id);
+    if (!target) {
+      target = { id: mintID("track"), name: character.name, type: "dialogue", order: project.tracks.length,
+        muted: false, character_voice_id: character.id, actor_voice_id: actor.id, voice_fingerprint: "", clips: [] };
+      project.tracks.push(target);
+    }
+    source.clips = source.clips.filter((item) => item.id !== clipID);
+    Object.assign(clip, { character_voice_id: character.id, actor_voice_id: actor.id, voice_fingerprint: target.voice_fingerprint || "",
+      status: "stale", build_error: "", source_id: "", source_duration_ms: 0, source_in_ms: 0, source_out_ms: 0 });
+    target.clips.push(clip);
+  }
+
+  function recordScriptEdit(clipID, field, value) {
+    if (projectTransitionPending || !["text", "direction_override"].includes(field)) return;
+    stopBrowserPlayback(true);
+    const result = editSession.edit((project) => {
+      const clip = project.tracks.flatMap((track) => track.clips).find((item) => item.id === clipID);
+      if (!clip || clip.type !== "dialogue" || (clip[field] || "") === value) return;
+      clip[field] = value;
+      if (field === "text" && value.trim()) clip.label = value.trim().slice(0, 120);
+      clip.status = "stale";
+      clip.build_error = "";
+    });
+    if (result.error) { setStatus("failed", result.error); return; }
+    if (!result.accepted) return;
+    scheduleAutosave();
+    updateHistoryButtons();
+    updateBuildControls();
+    updateRenderControls();
+    syncScriptControls();
+  }
+
+  function syncScriptControls() {
+    const project = currentProject();
+    const busy = serverMutationPending();
+    scriptElement.querySelectorAll(".script-row").forEach((row) => {
+      const found = project?.tracks.flatMap((track) => track.clips.map((clip) => ({ track, clip }))).find((item) => item.clip.id === row.dataset.clipId);
+      if (!found || found.clip.type !== "dialogue") return;
+      const { track, clip } = found;
+      row.querySelector(".script-line-status").textContent = clip.build_error || clipStatus(clip);
+      row.querySelector(".script-generate").disabled = busy || !clip.text.trim() || !characterVoiceDetails(track.character_voice_id) || clipStatus(clip) === "ready";
+      row.querySelector(".script-play").disabled = clipStatus(clip) !== "ready" || Boolean(clip.media_error);
+      row.querySelectorAll("textarea, select").forEach((input) => { input.disabled = busy; });
+    });
+  }
+
+  function scriptLineControls(track, clip) {
+    const controls = document.createElement("div");
+    controls.className = "script-line-controls";
+    const label = document.createElement("label");
+    label.textContent = "Character ";
+    const characterSelect = document.createElement("select");
+    characterSelect.setAttribute("aria-label", "Character");
+    const missing = document.createElement("option");
+    missing.value = ""; missing.textContent = "Choose a Character Voice";
+    characterSelect.append(missing);
+    for (const actor of actorVoices) for (const character of actor.character_voices || []) {
+      const option = document.createElement("option");
+      option.value = character.id; option.textContent = `${actor.name} / ${character.name}`;
+      characterSelect.append(option);
+    }
+    characterSelect.value = track.character_voice_id || "";
+    characterSelect.disabled = serverMutationPending();
+    characterSelect.addEventListener("change", () => {
+      const details = characterVoiceDetails(characterSelect.value);
+      if (details) acceptTimelineEdit((project) => reassignScriptLine(project, clip.id, details.actor, details.character));
+    });
+    label.append(characterSelect);
+    const generate = actionButton("Generate line", `Generate line ${clip.label}`, () => buildStaleDialogue(clip.id),
+      serverMutationPending() || !characterVoiceDetails(track.character_voice_id) || clipStatus(clip) === "ready");
+    const play = actionButton("Play take", `Play take ${clip.label}`, () => auditionClip(clip), clipStatus(clip) !== "ready" || Boolean(clip.media_error));
+    generate.classList.add("script-generate");
+    play.classList.add("script-play");
+    controls.append(label, generate, play);
+    const delivery = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Delivery";
+    const inherited = document.createElement("p");
+    const voice = characterVoiceDetails(track.character_voice_id);
+    inherited.textContent = `Character direction: ${voice?.character.direction || "None"}`;
+    const directionHelp = document.createElement("p");
+    directionHelp.textContent = currentProject()?.dialogue_engine === "fish-drama3"
+      ? "Describe how this line should be performed."
+      : "OmniVoice uses style tags, such as whisper, elderly or low pitch. Separate tags with commas.";
+    const overrideLabel = document.createElement("label");
+    overrideLabel.textContent = "Line direction (leave empty to inherit)";
+    const override = document.createElement("textarea");
+    override.rows = 2; override.maxLength = 500;
+    override.value = clip.direction_override || "";
+    override.disabled = serverMutationPending();
+    override.addEventListener("input", () => recordScriptEdit(clip.id, "direction_override", override.value));
+    overrideLabel.append(override);
+    delivery.append(summary, inherited, directionHelp, overrideLabel);
+    controls.append(delivery);
+    return controls;
+  }
+
+  function renderScript(project) {
+    if (project && scriptElement.dataset.projectId === project.id && scriptElement.contains(document.activeElement) && document.activeElement?.tagName === "TEXTAREA") {
+      syncScriptControls();
+      return;
+    }
+    scriptElement.dataset.projectId = project?.id || "";
+    scriptElement.replaceChildren();
+    let previousScene = null;
+    scriptRows(project).forEach(({ clipID, trackID, sceneID }) => {
+      const track = project.tracks.find((item) => item.id === trackID);
+      const clip = track.clips.find((item) => item.id === clipID);
+      if (sceneID && sceneID !== previousScene) {
+        const scene = project.scenes.find((item) => item.id === sceneID);
+        const heading = document.createElement("h3");
+        heading.textContent = scene.title;
+        scriptElement.append(heading);
+      }
+      previousScene = sceneID;
+      const row = document.createElement("article");
+      row.className = "script-row";
+      row.dataset.clipId = clip.id;
+      row.classList.toggle("is-selected", editSession.selectionHas(clip.id));
+      row.addEventListener("focusin", () => selectClip(clip.id));
+      const cue = document.createElement("span");
+      cue.className = "script-cue";
+      const details = characterVoiceDetails(track.character_voice_id);
+      cue.textContent = `${(clip.start_ms / 1000).toFixed(2)}s · ${details ? details.character.name : track.name}`;
+      row.append(cue);
+      if (clip.type === "dialogue") {
+        const text = document.createElement("textarea");
+        text.value = clip.text ?? clip.label;
+        text.rows = 2;
+        text.maxLength = 4000;
+        text.disabled = serverMutationPending();
+        text.setAttribute("aria-label", `Script line: ${clip.label}`);
+        text.addEventListener("input", () => recordScriptEdit(clip.id, "text", text.value));
+        row.append(text);
+        const status = document.createElement("span");
+        status.className = "script-line-status";
+        status.textContent = clip.build_error || clip.status || "stale";
+        row.append(status);
+        row.append(scriptLineControls(track, clip));
+      } else {
+        const cueText = document.createElement("p");
+        cueText.textContent = clip.type === "silence" ? `Pause · ${(clip.duration_ms / 1000).toFixed(2)}s` : `${track.type === "sfx" ? "SFX" : "Music"}: ${clip.label}`;
+        row.append(cueText);
+      }
+      scriptElement.append(row);
+    });
+    if (!scriptElement.childElementCount) {
+      const empty = document.createElement("p");
+      empty.textContent = "Add a Dialogue track and a line to start your script. Timing and sound cues are arranged in Timeline.";
+      scriptElement.append(empty);
+    }
+  }
+
   function renderTracks() {
     tracksElement.replaceChildren();
     const project = currentProject();
     if (!project) {
+      renderScript(null);
       renderScenes(null);
       updateBuildControls();
       updateRenderControls();
@@ -1074,6 +1262,7 @@
       return;
     }
     normalizeTracks(project);
+    renderScript(project);
     pruneSelection();
     const timelineDuration = timelineDurationMS(project);
     renderScenes(project);
@@ -1223,6 +1412,7 @@
       setBuildStatus(`Could not build dialogue: ${detail}`, "failed");
     } finally {
       editSession.endMutation("dialogueBuild");
+      renderScript(currentProject());
       activeDialogueBuild = null;
       dialogueCancelPending = false;
       updateBuildControls();
@@ -1240,7 +1430,7 @@
     }
   }
 
-  async function buildStaleDialogue() {
+  async function buildStaleDialogue(clipID = "") {
     if (serverMutationPending()) return;
     stopBrowserPlayback(true);
     let project = currentProject();
@@ -1257,7 +1447,7 @@
     try {
       const started = await request(`${apiRoot}/${encodeURIComponent(project.id)}/builds`, {
         method: "POST",
-        body: JSON.stringify({ revision: project.revision }),
+        body: JSON.stringify({ revision: project.revision, ...(clipID ? { clip_id: clipID } : {}) }),
       });
       await monitorDialogueBuild(started);
     } catch (error) {
@@ -1715,6 +1905,7 @@
       setVoiceLibraryStatus(`Could not revoice ${track.name}: ${detail}`, "failed");
     } finally {
       editSession.endMutation("revoice");
+      renderScript(currentProject());
       appShell.inert = false;
       updateRenderControls();
     }
@@ -1828,6 +2019,7 @@
       setVoiceLibraryStatus(`Could not add ${asset.name}: ${detail}`, "failed");
     } finally {
       editSession.endMutation("mediaPlacement");
+      renderScript(currentProject());
       appShell.inert = false;
       updateRenderControls();
     }
@@ -2035,6 +2227,10 @@
     editSession.clearAutosave();
     const project = currentProject();
     if (!project) return;
+    if (project.tracks.some((track) => track.clips.some((clip) => clip.type === "dialogue" && !clip.text.trim()))) {
+      setStatus("failed", "Spoken text is required. Finish the line or remove it in Timeline.");
+      return;
+    }
     const requestedName = nameInput.value.trim();
     if (!requestedName) {
       setStatus("failed", "A project name is required");
@@ -2107,6 +2303,7 @@
       failure = `Render failed — ${detail}`;
     } finally {
       editSession.endMutation("render");
+      renderScript(currentProject());
       appShell.inert = false;
       updateRenderControls();
       if (failure) setRenderStatus(failure, "failed");
@@ -2137,6 +2334,7 @@
       failure = `Export failed — ${error.message}`;
     } finally {
       editSession.endMutation("export");
+      renderScript(currentProject());
       appShell.inert = false;
       updateRenderControls();
       if (failure) setRenderStatus(failure, "failed");
@@ -2183,6 +2381,66 @@
     panelPointerEdit = null;
   }
 
+  async function openExample() {
+    await refreshVoiceLibrary();
+    const choices = actorVoices.flatMap((actor) => (actor.character_voices || []).map((character) => ({ id: character.id, name: `${actor.name} / ${character.name}` })));
+    for (const select of [exampleFirstVoice, exampleSecondVoice]) {
+      select.replaceChildren(new Option("Choose a Character Voice", ""));
+      choices.forEach((choice) => select.append(new Option(choice.name, choice.id)));
+    }
+    exampleSFX.replaceChildren(new Option("No sound effect", ""));
+    libraryAudio.filter((item) => item.meta?.media_role === "sfx" || item.mediaRole === "sfx").forEach((item) => exampleSFX.append(new Option(item.name, item.id)));
+    byID("storyBuilderExampleHint").textContent = choices.length < 2 ? "Save two Character Voices before creating this example." : "The example creates a separate project. Loading it does not generate audio.";
+    exampleDialog.showModal();
+  }
+
+  async function createExampleProject() {
+    const first = characterVoiceDetails(exampleFirstVoice.value);
+    const second = characterVoiceDetails(exampleSecondVoice.value);
+    if (!first || !second || first.character.id === second.character.id) {
+      byID("storyBuilderExampleHint").textContent = "Choose two different Character Voices for the example.";
+      return;
+    }
+    const sfxID = exampleSFX.value;
+    let createdProjectID = "";
+    exampleDialog.close();
+    try {
+      await runProjectTransition(async () => {
+        const created = await request(apiRoot, { method: "POST", body: JSON.stringify({ name: "The light at Crow Point" }) });
+        createdProjectID = created.id;
+        const lines = [
+          ["Keep the lantern low. There is a ship beyond the fog.", "The keeper speaks", 0],
+          ["I thought this lighthouse had been empty for years.", "The visitor replies", 9000],
+          ["Empty buildings can still keep their promises.", "The keeper answers", 18000],
+          ["Then I will wait here until the light returns.", "The visitor decides", 27000],
+        ];
+        const tracks = [first, second].map((details, index) => ({
+          id: `example_cast_${index}`, name: details.character.name, type: "dialogue", order: index, muted: false,
+          character_voice_id: details.character.id, actor_voice_id: details.actor.id,
+          clips: lines.filter((_line, lineIndex) => lineIndex % 2 === index).map(([text, label, start]) => ({
+            id: `example_line_${start}`, type: "dialogue", text, label, start_ms: start, duration_ms: 8000,
+          })),
+        }));
+        tracks[0].clips.push({ id: "example_pause", type: "silence", label: "A moment in the fog", start_ms: 8000, duration_ms: 1000 });
+        if (sfxID) tracks.push({ id: "example_sfx", name: "Sound effect", type: "sfx", order: 2, muted: false, clips: [] });
+        const project = await request(`${apiRoot}/${encodeURIComponent(created.id)}`, { method: "PUT", body: JSON.stringify({
+          name: created.name, revision: created.revision, timeline_duration_ms: 40000,
+          scenes: [{ id: "example_scene", title: "The light at Crow Point", start_ms: 0 }], tracks,
+        }) });
+        editSession.upsert(project);
+        showCurrent(project);
+        setProjectView("script");
+      });
+      if (sfxID && createdProjectID && currentProject()?.id === createdProjectID) {
+        const asset = libraryAudio.find((item) => item.id === sfxID);
+        const track = currentProject().tracks.find((item) => item.id === "example_sfx");
+        if (asset && track) await placeLibraryAudio(track, { ...asset, mediaRole: "sfx" }, 26000);
+      }
+    } catch (error) {
+      setStatus("failed", `Could not create example: ${error.message}`);
+    }
+  }
+
   function isEditableTarget(target) {
     return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable;
   }
@@ -2205,6 +2463,10 @@
     }
   });
 
+  byID("storyBuilderExampleButton").addEventListener("click", () => openExample());
+  byID("storyBuilderExampleCancel").addEventListener("click", () => exampleDialog.close());
+  byID("storyBuilderExampleForm").addEventListener("submit", (event) => { event.preventDefault(); void createExampleProject(); });
+
   nameInput.addEventListener("input", () => {
     const project = currentProject();
     if (!project) return;
@@ -2217,6 +2479,8 @@
     scheduleAutosave();
   });
   byID("storyBuilderAddDialogue").addEventListener("click", () => addTrack("dialogue"));
+  scriptViewButton.addEventListener("click", () => setProjectView("script"));
+  timelineViewButton.addEventListener("click", () => setProjectView("timeline"));
   byID("storyBuilderAddSFX").addEventListener("click", () => addTrack("sfx"));
   byID("storyBuilderAddMusic").addEventListener("click", () => addTrack("music"));
   undoButton.addEventListener("click", () => restoreTimeline(false));

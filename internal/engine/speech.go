@@ -12,6 +12,47 @@ import (
 	"strings"
 )
 
+// ValidateSpeechDirection validates explicit overrides against the native model
+// contract. OmniVoice uses enumerated style tags; Drama3 accepts prose direction.
+func ValidateSpeechDirection(engineID, direction string) error {
+	if engineID != "omnivoice" || strings.TrimSpace(direction) == "" {
+		return nil
+	}
+	categories := []string{
+		"male|female|男|女",
+		"child|teenager|young adult|middle-aged|elderly|儿童|少年|青年|中年|老年",
+		"very low pitch|low pitch|moderate pitch|high pitch|very high pitch|极低音调|低音调|中音调|高音调|极高音调",
+		"whisper|耳语",
+		"american accent|british accent|australian accent|chinese accent|canadian accent|indian accent|korean accent|portuguese accent|russian accent|japanese accent",
+		"河南话|陕西话|四川话|贵州话|云南话|桂林话|济南话|石家庄话|甘肃话|宁夏话|青岛话|东北话",
+	}
+	seen := make(map[int]bool)
+	for _, item := range strings.FieldsFunc(direction, func(r rune) bool { return r == ',' || r == '，' }) {
+		item = strings.ToLower(strings.TrimSpace(item))
+		if item == "" {
+			continue
+		}
+		category := -1
+		for index, terms := range categories {
+			if slices.Contains(strings.Split(terms, "|"), item) {
+				category = index
+				break
+			}
+		}
+		if category < 0 {
+			return fmt.Errorf("unsupported OmniVoice style %q; use tags such as whisper, elderly or low pitch", item)
+		}
+		if seen[category] {
+			return fmt.Errorf("conflicting OmniVoice styles in the same category")
+		}
+		seen[category] = true
+	}
+	if seen[4] && seen[5] {
+		return fmt.Errorf("OmniVoice cannot mix an English accent and a Chinese dialect")
+	}
+	return nil
+}
+
 const (
 	DefaultDramaBoxInferenceSteps    = 30
 	DefaultDramaBoxGuidanceScale     = 2.5
