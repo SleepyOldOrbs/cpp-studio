@@ -69,6 +69,61 @@ func TestReadModelAggregatesPurposeBuiltStores(t *testing.T) {
 	}
 }
 
+func TestVoiceBrowsingProjectsReferenceRelationshipsAndUnavailablePreview(t *testing.T) {
+	sources := readModelFixture()
+	sources.VoiceReferenceStatus = func(id string) error {
+		if id == "voice_keeper" {
+			return errors.New("reference missing; reassign a recording")
+		}
+		return nil
+	}
+	sources.CharacterPreviewStatus = func(string) error { return errors.New("preview missing; generate it again") }
+	response, err := NewReadModel(sources).List("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := findEntry(t, response.Entries, KindActorVoice, "voice_keeper")
+	if actor.PreviewAction.DisabledReason == "" || actor.ArtifactAction.DisabledReason == "" {
+		t.Fatal("missing reference advertised as ready")
+	}
+	for _, child := range actor.Children {
+		if child.Relationship.ID != actor.ID || child.Metadata["reference"] == "" || child.PreviewAction == nil || child.PreviewAction.DisabledReason == "" {
+			t.Fatal(child)
+		}
+	}
+	empty, err := NewReadModel(sources).List("no such saved voice 4871")
+	if err != nil || len(empty.Entries) != 0 {
+		t.Fatal(empty, err)
+	}
+}
+
+func TestLibraryContextualReuseAndSpecificOwnerLinks(t *testing.T) {
+	sources := readModelFixture()
+	sources.VoiceReuseStatus = func(id, target string) string {
+		if target == "story-builder" {
+			return "Configure a compatible dialogue engine"
+		}
+		return ""
+	}
+	response, err := NewReadModel(sources).List("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := findEntry(t, response.Entries, KindActorVoice, "voice_keeper")
+	if len(actor.ReuseActions) != 2 || actor.ReuseActions[0].VoiceID != actor.ID || actor.ReuseActions[1].DisabledReason == "" {
+		t.Fatal(actor.ReuseActions)
+	}
+	for _, child := range actor.Children {
+		if child.ReuseActions[0].VoiceID != child.ID {
+			t.Fatal(child)
+		}
+	}
+	book := findEntry(t, response.Entries, KindAudiobook, "book_1")
+	if book.LaunchAction.OwnerID != book.ID || !strings.Contains(book.LaunchAction.URL, "audiobook=book_1") {
+		t.Fatal(book.LaunchAction)
+	}
+}
+
 func TestReadModelUsesInterruptedStoryLifecycle(t *testing.T) {
 	entry := storyEntries(story.Summary{
 		ID: "story_interrupted", Title: "Interrupted", Status: story.StatusInterrupted,

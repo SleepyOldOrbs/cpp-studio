@@ -206,6 +206,21 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	}
 	r.audiobooks = audiobook.NewManager(audiobookOptions)
 	r.libraryReadModel = library.NewReadModel(library.ReadModelSources{
+		VoiceReuseStatus: r.voiceReuseStatus,
+		VoiceReferenceStatus: func(id string) error {
+			_, _, err := r.voices.ResolveReference(id)
+			if err != nil {
+				return fmt.Errorf("Reference unavailable; reassign a recording in Voice cloning")
+			}
+			return nil
+		},
+		CharacterPreviewStatus: func(id string) error {
+			_, err := r.voices.CharacterPreviewPath(id)
+			if err != nil {
+				return fmt.Errorf("Preview unavailable; generate it again in Voice cloning")
+			}
+			return nil
+		},
 		Items:           func() ([]library.Item, error) { return r.library.List() },
 		ActorVoices:     func() ([]voice.Clone, error) { return r.voices.List() },
 		CharacterVoices: func(actorID string) ([]voice.CharacterVoice, error) { return r.voices.ListCharacterVoices(actorID) },
@@ -294,6 +309,7 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/voice", r.handleVoice)
 	mux.HandleFunc("/v1/voices", r.handleVoices)
 	mux.HandleFunc("/v1/voices/design", r.handleVoiceDesign)
+	mux.HandleFunc("/v1/voices/reuse", r.handleVoiceReuse)
 	mux.HandleFunc("/v1/voices/", r.handleVoiceClone)
 	mux.HandleFunc("/v1/character-voices/", r.handleCharacterVoice)
 	r.mux = mux
@@ -5341,12 +5357,16 @@ func (r *router) resolveAudiobookVoice(_ context.Context, voiceID string) (audio
 	if voiceID == "" || voiceID == "default" {
 		return audiobook.VoiceIdentity{ID: "default", Fingerprint: "default"}, nil
 	}
-	clone, ok, err := r.voices.Load(voiceID)
+	clone, character, err := r.loadReuseVoice(voiceID)
 	if err != nil {
 		return audiobook.VoiceIdentity{}, err
 	}
-	if !ok {
-		return audiobook.VoiceIdentity{}, fmt.Errorf("voice %q not found", voiceID)
+	characterDirection := ""
+	if character != nil {
+		characterDirection = character.Direction
+		if character.Reference != nil {
+			clone.Analysis = character.Reference.Analysis
+		}
 	}
 	resolved, err := r.resolveVoice(voiceID)
 	if err != nil {
@@ -5367,6 +5387,13 @@ func (r *router) resolveAudiobookVoice(_ context.Context, voiceID string) (audio
 	}
 	referenceSHA := hex.EncodeToString(h.Sum(nil))
 	identityHash := sha256.Sum256([]byte(voiceID + "\x00" + referenceSHA + "\x00" + resolved.RefText))
+	if character != nil {
+		frozen, ok, err := r.voices.ResolveCharacterSynthesisIdentity(voiceID)
+		if err != nil || !ok {
+			return audiobook.VoiceIdentity{}, fmt.Errorf("Character Voice unavailable")
+		}
+		identityHash = sha256.Sum256([]byte(hex.EncodeToString(identityHash[:]) + "\x00" + frozen.Fingerprint))
+	}
 	usableSpeech, fitnessMethod := 0.0, "analysis unavailable"
 	warnings := []string(nil)
 	ineligibleReason := "reference analysis is unavailable; re-save or inspect the voice"
@@ -5383,7 +5410,8 @@ func (r *router) resolveAudiobookVoice(_ context.Context, voiceID string) (audio
 		}
 	}
 	return audiobook.VoiceIdentity{
-		ID: voiceID, Fingerprint: hex.EncodeToString(identityHash[:]), ReferenceSHA256: referenceSHA,
+		CharacterDirection: characterDirection,
+		ID:                 voiceID, Fingerprint: hex.EncodeToString(identityHash[:]), ReferenceSHA256: referenceSHA,
 		UsableSpeechSeconds: usableSpeech, FitnessMethod: fitnessMethod, FitnessWarnings: warnings,
 		DramaBoxIneligibleReason: ineligibleReason, Reference: resolved,
 	}, nil

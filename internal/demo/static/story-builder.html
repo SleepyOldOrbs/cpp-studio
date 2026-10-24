@@ -65,6 +65,16 @@
         <button id="storyBuilderRefreshButton" class="quiet-button" type="button">Refresh</button>
       </div>
       <div id="storyBuilderProjectList" class="project-list" aria-live="polite"></div>
+      <section id="storyBuilderPendingVoice" class="pending-library-voice" hidden aria-label="Assign Library voice">
+        <h2>Assign Library voice</h2>
+        <p>Choose an existing project, then a selected line or Dialogue track. Your script stays intact; changed dialogue needs rebuilding.</p>
+        <label>Character Voice <select id="storyBuilderPendingCharacter"></select></label>
+        <label>Assign to <select id="storyBuilderPendingTarget"></select></label>
+        <button id="storyBuilderPendingCheck" type="button">Check voice for this project</button>
+        <button id="storyBuilderPendingApply" type="button">Assign voice</button>
+        <button id="storyBuilderPendingDismiss" class="quiet-button" type="button">Dismiss</button>
+        <p id="storyBuilderPendingStatus" role="status"></p>
+      </section>
     </aside>
 
     <section id="storyBuilderEditor" class="project-editor" hidden>

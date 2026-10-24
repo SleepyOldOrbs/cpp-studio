@@ -399,6 +399,17 @@ func TestDesignWritesValidWAV(t *testing.T) {
 	assertFixtureWAV(t, data)
 }
 
+func TestDesignAcceptsCandidateSeed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "candidate.wav")
+	var output bytes.Buffer
+	if err := run([]string{"design", "--instruct", "A clear voice", "--text", "Words.", "--out", path, "--seed", "123"}, &output, &output); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDesignAcceptsActorVoiceReference(t *testing.T) {
 	dir := t.TempDir()
 	refPath := filepath.Join(dir, "reference.wav")

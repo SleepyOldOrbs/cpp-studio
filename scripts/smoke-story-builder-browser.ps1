@@ -1420,17 +1420,21 @@ async page => {
   const productions = page.locator('.library-group[data-library-category="productions"]');
   if (!(await productions.getAttribute('open'))) await productions.locator('summary').click();
   const projectCard = page.locator('.library-item', { hasText: 'Timeline playback browser smoke' }).first();
-  await Promise.all([
-    page.waitForURL(new RegExp('story-builder\\.html\\?project=' + projectID)),
+  const [openedProject] = await Promise.all([
+    page.waitForEvent('popup'),
     projectCard.getByRole('link', { name: 'Open Story Builder', exact: true }).click(),
   ]);
-  assert(page.url().endsWith('project=' + projectID), 'owning-tool launch lost the selected project identity');
+  await openedProject.waitForURL(new RegExp('story-builder\\.html\\?project=' + projectID));
+  await openedProject.locator('#storyBuilderNameInput').waitFor({ state: 'visible' });
+  assert(openedProject.url().endsWith('project=' + projectID), 'owning-tool launch lost the selected project identity');
+  assert(page.url().endsWith('#library'), 'owning-tool launch replaced the current console session');
+  await openedProject.close();
 
   await page.route('**/v1/library', route => route.fulfill({
     contentType: 'application/json', body: JSON.stringify({ entries: [], items: [] }),
   }));
-  await page.goto(origin + '/demo/#library');
-  await page.locator('.library-group-empty').first().waitFor({ state: 'attached' });
+  await page.reload();
+  await page.waitForFunction(() => document.querySelectorAll('.library-group-empty').length === 7 && document.querySelectorAll('.library-item').length === 0);
   assert(await page.locator('.library-group-empty').count() === 7, 'empty unified Library did not render every group state');
   await page.unroute('**/v1/library');
 
@@ -1542,16 +1546,19 @@ async page => {
   if (!(await productions.getAttribute('open'))) await productions.locator('summary').click();
   const card = page.locator('.library-item', { hasText: 'Complete Story Builder workflow' }).first();
   await card.waitFor();
-  await Promise.all([
-    page.waitForURL(new RegExp('story-builder\\.html\\?project=' + project.id), { waitUntil: 'commit' }),
+  const [reopenedPage] = await Promise.all([
+    page.waitForEvent('popup'),
     card.getByRole('link', { name: 'Open Story Builder', exact: true }).click(),
   ]);
-  const reopened = page.locator(`.project-item[data-project-id="${project.id}"][aria-current="true"]`);
+  await reopenedPage.waitForURL(new RegExp('story-builder\\.html\\?project=' + project.id), { waitUntil: 'commit' });
+  const reopened = reopenedPage.locator(`.project-item[data-project-id="${project.id}"][aria-current="true"]`);
   await reopened.waitFor();
   assert(await reopened.count() === 1,
     'Library reopen did not restore the complete workflow project');
   const durable = await api(`/v1/story-builder-projects/${project.id}`);
   assert(durable.renders?.[0]?.exports?.[0]?.format === 'mp3', 'complete workflow artifacts did not survive Library reopen');
+  assert(page.url().endsWith('#library'), 'project launch replaced the current console session');
+  await reopenedPage.close();
   return { project: project.id, render: rendered.render.revision, export: 'mp3' };
 }
 '@

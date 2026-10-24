@@ -147,6 +147,17 @@
   var cloneModelSelect = document.getElementById("cloneModelSelect");
   var designForm = document.getElementById("designForm");
   var designDescriptionInput = document.getElementById("designDescriptionInput");
+  var designStarterStatus = document.getElementById("designStarterStatus");
+  var designStarters = [
+    {id:"calm-narration",name:"Calm narration",purpose:"Long passages and audiobooks",description:"A composed speaking voice with an even pace, clear diction and gentle pauses between thoughts. Keep the delivery natural and restrained."},
+    {id:"documentary",name:"Documentary explanation",purpose:"Factual explanation",description:"A steady, attentive voice with precise articulation and subtle emphasis on the main ideas. Explain each sentence clearly without a sales tone."},
+    {id:"warm-story",name:"Warm storytelling",purpose:"Welcoming narrative",description:"A warm, conversational voice with a relaxed rhythm and a sense of curiosity. Let emotion follow the words with small, natural changes in emphasis."},
+    {id:"presentation",name:"Energetic presentation",purpose:"Lively introductions",description:"A bright, engaged voice with crisp consonants, purposeful pacing and varied emphasis. Bring energy while keeping every word easy to follow."},
+    {id:"understated-dialogue",name:"Understated dialogue",purpose:"Quiet character scenes",description:"An intimate, matter-of-fact voice with unhurried phrasing and small pauses. Keep emotion subtle, as if speaking to someone nearby."},
+    {id:"theatrical-dialogue",name:"Theatrical dialogue",purpose:"Expressive character scenes",description:"An expressive voice with a broad range of emphasis, deliberate pauses and clear articulation. Give each thought a distinct intention while keeping the words intelligible."}
+  ];
+  designStarters.forEach(function (starter) { var option = document.createElement("option"); option.value = starter.id; option.textContent = starter.name + " · " + starter.purpose; document.getElementById("designStarterSelect").appendChild(option); });
+  document.getElementById("designStarterUse").addEventListener("click", function () { applyDesignStarter(document.getElementById("designStarterSelect").value); });
   var designModelSelect = document.getElementById("designModelSelect");
   var designGenerateButton = document.getElementById("designGenerateButton");
   var designErrorBox = document.getElementById("designErrorBox");
@@ -641,6 +652,7 @@
     apiControls.forEach(function (control) {
       control.disabled = busy;
     });
+    designGenerateButton.disabled = busy || !designModelReady();
     if (activeStoryID) {
       storyGenerateButton.disabled = true;
     }
@@ -940,6 +952,9 @@
     { value: "qwen3", engine: "voicedesign", label: "Qwen3-TTS 1.7B VoiceDesign (characterful)" },
     { value: "fireredtts3-instruct", engine: "fireredtts3-instruct", label: "FireRedTTS3 Instruct (experimental)" }
   ];
+  var designReadyModels = [];
+
+  function designModelReady() { return (designReadyModels || []).indexOf(designModelSelect.value) >= 0; }
 
   function updateSpeechPerformance(id, model) {
     var panel = document.getElementById(id);
@@ -1192,6 +1207,8 @@
     var available = DESIGN_MODELS.filter(function (model) {
       return engines && Object.prototype.hasOwnProperty.call(engines, model.engine);
     });
+    designReadyModels = available.map(function (model) { return model.value; });
+    designGenerateButton.disabled = Boolean(running) || !available.length;
     if (available.length === 0) {
       designModelSelect.textContent = "";
       designModelSelect.appendChild(createElement("option", "", "No compatible model configured"));
@@ -3844,6 +3861,13 @@
     }
   }
 
+  function applyDesignStarter(id) {
+    var starter = designStarters.find(function (item) { return item.id === id; });
+    if (!starter) { designStarterStatus.textContent = "Choose a starting description first."; return; }
+    designDescriptionInput.value = starter.description;
+    designStarterStatus.textContent = starter.purpose + ". Edit this description, then choose Generate 3 candidates. Your selected voice and existing candidates are retained.";
+  }
+
   function setDesignError(error, saving) {
     showDesignSaveStatus();
     var message = error && error.message ? error.message : String(error);
@@ -3882,6 +3906,7 @@
     if (event) event.preventDefault();
     if (running) return;
     clearDesignError();
+    if (!designModelReady()) { setDesignError(new Error("No compatible design engine is available. Install its model in Models, configure it in Engines, then refresh health.")); return; }
     var description = designDescriptionInput.value.trim();
     if (!description) { setDesignError(new Error("Describe the voice you want first")); return; }
     var model = designModelSelect.value || "voxcpm2";
@@ -6717,6 +6742,7 @@
 
   function applyPage(name) {
     var changedPage = displayedPage !== "" && displayedPage !== name;
+    if (displayedPage === "library" && name !== "library") stopLibraryAudition();
     displayedPage = name;
     var parent = PAGE_PARENT[name] || "";
     if (name !== "transcription" && transcribeRecorder && transcribeRecorder.state() !== "idle") {
@@ -7294,6 +7320,8 @@
   var audiobookRequestPreview = document.getElementById("audiobookRequestPreview");
   var audiobookChapterPlan = document.getElementById("audiobookChapterPlan");
   var audiobookDocumentPlan = null;
+  var audiobookReusedVoice = null;
+  var audiobookReuseStatus = document.getElementById("audiobookReuseStatus");
   var audiobookPronunciation = null;
   var audiobookPronunciationLanguage = "";
   document.getElementById("audiobookApplyPronunciation").addEventListener("click", async function () {
@@ -7700,6 +7728,9 @@
       }
       audiobookVoiceSelect.appendChild(option);
     });
+    if (audiobookReusedVoice && !(voices || []).some(function (voice) { return voice.id === audiobookReusedVoice.id; })) {
+      var reusedOption=createElement("option", "", audiobookReusedVoice.name); reusedOption.value=audiobookReusedVoice.id; reusedOption.dataset.dramaboxEligible=String(Number((audiobookReusedVoice.analysis || {}).usable_speech_seconds || 0)>=10); audiobookVoiceSelect.appendChild(reusedOption);
+    }
     audiobookVoiceSelect.value = previous;
     if (audiobookVoiceSelect.value !== previous) {
       audiobookVoiceSelect.value = "";
@@ -7710,6 +7741,7 @@
 
   function renderAudiobookVoiceReference() {
     var clone = (libraryVoices || []).find(function (item) { return item.id === audiobookVoiceSelect.value; });
+    if (!clone && audiobookReusedVoice && audiobookReusedVoice.id===audiobookVoiceSelect.value) clone=audiobookReusedVoice;
     audiobookVoiceReference.hidden = !clone;
     if (!clone) {
       audiobookVoicePreview.removeAttribute("src");
@@ -7729,6 +7761,21 @@
       "DramaBox disabled for this reference: needs at least 10s usable 16-bit PCM speech; other engines remain available";
     audiobookVoiceProvenance.textContent = clone.id + (analysis.content_sha256 ? " · SHA-256 " + analysis.content_sha256 : "") + " · " + provenance + " · " + dramaBoxFitness + (warnings ? " · " + warnings : "");
     audiobookVoicePreview.src = clone.audio_url;
+  }
+
+  async function applyLibraryAudiobookVoice(action, status) {
+    if (audiobookBusy || audiobookAuditionPending) { status.textContent="Finish or cancel the current narration/audition before reusing a voice."; return false; }
+    var key=audiobookRequestKey(), selectedEngine=audiobookEngineSelect.value;
+    try {
+      var response=await fetch("/v1/voices/reuse?target=audiobook&voice="+encodeURIComponent(action.voice_id)+"&engine="+encodeURIComponent(selectedEngine)); await ensureOk(response); var choice=await response.json();
+      if (key!==audiobookRequestKey()) {status.textContent="The audiobook settings changed. Select Use for audiobook again.";return false;}
+      audiobookReusedVoice={id:choice.voiceId,name:choice.name,analysis:choice.analysis || {},audio_url:choice.audioUrl};
+      renderAudiobookVoices(libraryVoices); audiobookVoiceSelect.value=choice.voiceId;
+      if (choice.characterId) {audiobookDirectionInput.value=choice.direction || "";}
+      renderAudiobookVoiceReference(); invalidateAudiobookPreview();
+      audiobookReuseStatus.textContent="Selected "+choice.name+". Your document and settings are retained"+(choice.characterId ? "; the character's saved direction is applied" : "")+". Preview the chapters before narration.";
+      status.textContent=audiobookReuseStatus.textContent; window.location.hash="audiobook";return true;
+    }catch(error){status.textContent=error.message;return false;}
   }
 
   function audiobookBenchmarkMatches(result) {
@@ -10966,12 +11013,25 @@
     return row;
   }
 
+  var libraryActiveAudio = null;
+
+  function activateLibraryAudition(audio) {
+    if (libraryActiveAudio && libraryActiveAudio !== audio) libraryActiveAudio.pause();
+    libraryActiveAudio = audio;
+  }
+
+  function stopLibraryAudition() {
+    if (libraryActiveAudio) libraryActiveAudio.pause();
+    libraryActiveAudio = null;
+  }
+
   function appendLibraryAudio(row, artifactURL) {
     if (!artifactURL) { return; }
     var audio = document.createElement("audio");
     audio.controls = true;
     audio.preload = "none";
     audio.src = artifactURL;
+    audio.addEventListener("play", function () { activateLibraryAudition(audio); });
     row.appendChild(audio);
   }
 
@@ -11001,6 +11061,7 @@
 
   function appendLibraryPreview(row, entry) {
     var preview = entry.preview_action;
+    if (preview && preview.disabled_reason) { row.appendChild(createElement("p", "hint", preview.disabled_reason)); return; }
     if (!preview || !preview.url) { return; }
     if ((preview.content_type || "").indexOf("audio/") === 0) {
       appendLibraryAudio(row, preview.url);
@@ -11018,7 +11079,7 @@
     var artifact = entry.artifact_action;
     var launch = entry.launch_action;
     var remove = entry.delete_action;
-    if (!artifact && !launch && !remove) { return; }
+    if (!artifact && !launch && !remove && !(entry.reuse_actions || []).length) { return; }
     var actions = createElement("div", "library-item-actions");
     if (artifact && artifact.url) {
       var download = createElement("button", "plain compact-button", artifact.label || "Download");
@@ -11036,8 +11097,16 @@
     if (launch && launch.url) {
       var open = createElement("a", "secondary-button", launch.label || "Open");
       open.href = launch.url;
+      if (launch.target === "audiobook" && launch.owner_id) {open.addEventListener("click",function(event){event.preventDefault();openLibraryAudiobook(launch.owner_id);});}
+      if (launch.target === "story" || launch.url.indexOf("/demo/story-builder.html")===0) {open.target="_blank";open.rel="noopener";}
       actions.appendChild(open);
     }
+    (entry.reuse_actions || []).forEach(function(action){
+      var status=createElement("span","hint");
+      if (action.target==="story-builder" && !action.disabled_reason) {var link=createElement("a","secondary-button",action.label);link.href=action.url;link.target="_blank";link.rel="noopener";actions.appendChild(link);}
+      else {var button=createElement("button","secondary compact-button",action.label);button.type="button";button.disabled=Boolean(action.disabled_reason);button.addEventListener("click",function(){applyLibraryAudiobookVoice(action,status);});actions.appendChild(button);}
+      if(action.disabled_reason)status.textContent=action.disabled_reason;actions.appendChild(status);
+    });
     if (remove && remove.url) {
       var removeButton = createElement("button", "plain compact-button", remove.label || "Delete");
       removeButton.type = "button";
@@ -11075,8 +11144,19 @@
     return "";
   }
 
+  async function openLibraryAudiobook(id) {
+    window.location.hash="audiobook";
+    await refreshAudiobooks();
+    var card=Array.from(audiobookShelf.querySelectorAll("[data-book-id]")).find(function(item){return item.dataset.bookId===id;});
+    if(!card){audiobookReuseStatus.textContent="This audiobook is no longer available. Refresh Library.";return;}
+    revealWorkflowResult(card);card.querySelectorAll("details").forEach(function(details){details.open=true;});card.tabIndex=-1;card.focus();card.scrollIntoView({block:"center"});
+  }
+
   function renderLibraryEntry(entry, nested) {
     var row = createElement("article", nested ? "library-child" : "library-item");
+    row.dataset.libraryId = entry.id;
+    row.dataset.libraryKind = entry.kind;
+    row.dataset.libraryOwnSearch = libraryEntrySearchParts(Object.assign({}, entry, {children:[]})).filter(Boolean).join(" ").toLocaleLowerCase();
     var head = createElement("div", "library-item-head");
     head.appendChild(createElement("span", "library-item-name", entry.name || entry.id));
     head.appendChild(createElement("span", "library-item-kind", String(entry.subtype || entry.kind).replaceAll("_", " ")));
@@ -11091,6 +11171,8 @@
     if (entry.relationship) { detail.push("from " + entry.relationship.name); }
     if (metadata.author) { detail.push("Author: " + metadata.author); }
     if (metadata.narrator) { detail.push("Narrator: " + metadata.narrator); }
+    if (metadata.reference) { detail.push(metadata.reference); }
+    if (metadata.reference_state) { detail.push("Reference " + metadata.reference_state); }
     ["status", "fitness", "bitrate", "duration_seconds", "duration_ms", "tracks", "revision"].forEach(function (key) {
       if (metadata[key]) {
         var suffix = key === "duration_seconds" ? "s" : (key === "duration_ms" ? "ms" : "");
@@ -11111,9 +11193,12 @@
   }
 
   function applyLibraryFilter() {
+    stopLibraryAudition();
     var query = libraryFilterInput.value.trim().toLocaleLowerCase();
+    var kindFilter = document.getElementById("libraryVoiceFilter").value;
+    var filtering = Boolean(query || kindFilter);
     var groups = Array.prototype.slice.call(libraryList.querySelectorAll(".library-group"));
-    if (query && libraryFilterOpenState === null) {
+    if (filtering && libraryFilterOpenState === null) {
       libraryFilterOpenState = {};
       groups.forEach(function (group) { libraryFilterOpenState[group.dataset.libraryCategory] = group.open; });
     }
@@ -11123,24 +11208,35 @@
       var visible = 0;
       cards.forEach(function (card) {
         var matches = !query || card.dataset.librarySearch.indexOf(query) >= 0;
+        var children = Array.from(card.querySelectorAll(".library-child"));
+        var ownMatch = !query || (card.dataset.libraryOwnSearch || card.dataset.librarySearch).indexOf(query) >= 0;
+        var visibleChildren = 0;
+        children.forEach(function (child) {
+          child.hidden = kindFilter === "actor_voice" || !(ownMatch || (child.dataset.libraryOwnSearch || "").indexOf(query) >= 0);
+          if (!child.hidden) visibleChildren++;
+        });
+        if (kindFilter === "actor_voice") matches = card.dataset.libraryKind === "actor_voice" && ownMatch;
+        if (kindFilter === "character_voice") matches = card.dataset.libraryKind === "actor_voice" && visibleChildren > 0;
+        card.classList.toggle("library-character-context", kindFilter === "character_voice");
         card.hidden = !matches;
         if (matches) { visible += 1; }
       });
-      group.hidden = Boolean(query) && visible === 0;
+      group.hidden = filtering && visible === 0;
       var count = group.querySelector(".library-group-count");
-      count.textContent = query ? visible + " of " + cards.length + " shown" : cards.length + (cards.length === 1 ? " item" : " items");
-      if (query && visible) { group.open = true; }
+      count.textContent = filtering ? visible + " of " + cards.length + " groups shown" : cards.length + (cards.length === 1 ? " item" : " items");
+      if (filtering && visible) { group.open = true; }
       totalVisible += visible;
     });
-    if (!query && libraryFilterOpenState !== null) {
+    if (!filtering && libraryFilterOpenState !== null) {
       groups.forEach(function (group) { group.open = Boolean(libraryFilterOpenState[group.dataset.libraryCategory]); });
       libraryFilterOpenState = null;
     }
-    libraryFilterClearButton.hidden = !query;
-    libraryFilterEmpty.hidden = !query || totalVisible > 0;
+    libraryFilterClearButton.hidden = !filtering;
+    libraryFilterEmpty.hidden = !filtering || totalVisible > 0;
   }
 
   function renderLibraryItems(payload) {
+    stopLibraryAudition();
     var openCategories = {};
     Array.prototype.forEach.call(libraryList.querySelectorAll(".library-group[open]"), function (group) {
       openCategories[group.dataset.libraryCategory] = true;
@@ -11214,8 +11310,10 @@
     refreshLibrary(false);
   });
   libraryFilterInput.addEventListener("input", applyLibraryFilter);
+  document.getElementById("libraryVoiceFilter").addEventListener("change", applyLibraryFilter);
   libraryFilterClearButton.addEventListener("click", function () {
     libraryFilterInput.value = "";
+    document.getElementById("libraryVoiceFilter").value = "";
     applyLibraryFilter();
     libraryFilterInput.focus();
   });
@@ -11231,6 +11329,10 @@
   refreshVoices(true);
   loadProfiles();
   refreshGPU();
+  var requestedLibraryItem=new URLSearchParams(window.location.search);
+  if(requestedLibraryItem.get("audiobook")) openLibraryAudiobook(requestedLibraryItem.get("audiobook"));
+  if(requestedLibraryItem.get("story")) loadStory(requestedLibraryItem.get("story"));
+  if(requestedLibraryItem.get("voice")) { window.location.hash="audiobook"; audiobookReuseStatus.textContent="Choose the narrator engine, then apply the requested Library voice."; var reuseButton=createElement("button","secondary","Apply requested voice"); reuseButton.type="button";reuseButton.addEventListener("click",function(){applyLibraryAudiobookVoice({voice_id:requestedLibraryItem.get("voice")},audiobookReuseStatus);});audiobookReuseStatus.insertAdjacentElement("afterend",reuseButton); }
   window.setInterval(function () {
     if (document.visibilityState === "visible") {
       refreshHealth(true);

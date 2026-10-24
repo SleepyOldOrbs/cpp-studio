@@ -3761,4 +3761,7 @@ details[open] > .library-group-summary::after {
 .pronunciation-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .pronunciation-text mark { background: #ecd596; color: #211b11; padding: .1em; }
 @media (max-width: 800px) { .pronunciation-rule { grid-template-columns: 1fr; } }
+.design-starters { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
+.design-starters label { flex: 1; min-width: 12rem; }
 .pronunciation-editor { border: 0; margin: 0; padding: 0; min-width: 0; }
+.library-character-context > audio, .library-character-context > .library-item-actions, .library-character-context > .library-item-text { display: none; }

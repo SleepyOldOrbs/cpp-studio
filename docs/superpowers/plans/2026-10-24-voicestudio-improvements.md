@@ -57,11 +57,20 @@ passed. Stages 1–2 issues #51–#52 are closed; stages 3–5 remain tracked as
 
 Stage 3 is merged in PR #58 (bf56668), after independent review fixes,
 Windows/Linux CI, FFmpeg 8/9 validation, browser download and VLC inspection.
-Stage 4 pronunciation snapshots are implemented and independently reviewed.
-Full Go/vet, 70 Node checks, browser apply/save/delayed-load coverage and native
-OmniVoice book/dialogue checks passed; both native corrected-name outputs were
-transcribed exactly by Whisper. GitHub CI and merge follow the reviewed fix pass.
-Stage 5 voice browsing and Library polish is in progress in a separate branch.
+Stage 4 is merged in PR #59 (0145fc7), after independent review fixes and
+Windows/Linux CI. Frozen rules preserve source text and resumed/retried speech;
+full Go/vet, 70 Node checks, delayed-load browser coverage and native corrected
+book/dialogue transcriptions passed.
+Stage 5 voice starters, Actor/Character browsing and contextual production reuse
+are implemented and independently reviewed. Full Go/vet, 77 Node checks, fixture and real Qwen3/OmniVoice
+browser workflows passed. The chosen design candidate's saved reference hash
+matches exactly; specific book/project reopens preserve current edits. The
+full Story Builder browser smoke passed with its new-tab preservation checks.
+Review fixes preserve the book speaker setting and the pending voice retry control;
+Library navigation also stops its hidden audition. Final browser acceptance
+includes a failed handoff followed by a successful retry with the manuscript retained.
+GitHub delivery is tracked in issue #55. See the [acceptance record](../../voicestudio-improvements-acceptance-2026-10-24.md)
+for evidence, decisions and limits across all five stages.
 
 - Story Builder has stable clip/track IDs, revision checks, edit history, timeline editing, voice bindings, stored takes and `auditionClip`. A script view should project that data, not create a second document.
 - The audiobook `PreviewDocument` path resolves the source, engine and voice without durable state. Extend it for chapter planning.
@@ -77,11 +86,11 @@ Deferred: automatic free-prose casting, a full script-import language, drag-reor
 
 ## How to execute and resume
 
-- [ ] Start with stage 1, slice 1A. Re-read its named files and confirm current signatures before changing code; these plans describe the 2026-10-24 checkout.
-- [ ] Deliver one slice at a time with a focused diff, relevant tests and a short demonstration. Commit each accepted slice separately; do not combine all five stages into one PR.
-- [ ] At each stage gate, record what was demonstrated, what failed and the next unchecked slice. Link the commit/PR and any fixture output here or in the corresponding GitHub issue.
-- [ ] Use GitHub Issues as the execution tracker when implementation begins; check for existing matching issues before creating one per stage. These local documents are the implementation specifications, not a replacement tracker.
-- [ ] Reassess the next stage after using the completed one. Broader changes require a concrete reason and a separate scope decision.
+- [x] Start with stage 1, slice 1A. Re-read its named files and confirm current signatures before changing code; these plans describe the 2026-10-24 checkout.
+- [x] Deliver one slice at a time with a focused diff, relevant tests and a short demonstration. Commit each accepted slice separately; do not combine all five stages into one PR.
+- [x] At each stage gate, record what was demonstrated, what failed and the next unchecked slice. Link the commit/PR and any fixture output here or in the corresponding GitHub issue.
+- [x] Use GitHub Issues as the execution tracker when implementation begins; check for existing matching issues before creating one per stage. These local documents are the implementation specifications, not a replacement tracker.
+- [x] Reassess the next stage after using the completed one. Broader changes require a concrete reason and a separate scope decision.
 
 No application tests or rendering are required to approve these documents. During implementation, use the focused commands in each subplan, then any additional checks required by repository policy. Do not repeat broad suites after every UI change without a reason.
 

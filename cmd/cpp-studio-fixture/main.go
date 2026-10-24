@@ -583,6 +583,7 @@ func runSpeech(args []string, stdout, stderr io.Writer) error {
 func runDesign(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("design", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	flags.Uint64("seed", 0, "fixture/test helper candidate seed (accepted for native argument parity)")
 	instruct := flags.String("instruct", "", "fixture/test helper voice design instruction")
 	text := flags.String("text", "", "fixture/test helper text to synthesize")
 	outPath := flags.String("out", "", "fixture/test helper WAV output path")

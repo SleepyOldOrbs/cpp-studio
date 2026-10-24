@@ -28,6 +28,7 @@ type EngineIdentity struct {
 // VoiceIdentity records the authorized reference selected for production.
 // Reference is runtime-only; manifests retain its content identity, not a host path.
 type VoiceIdentity struct {
+	CharacterDirection       string        `json:"characterDirection,omitempty"`
 	ID                       string        `json:"id"`
 	Fingerprint              string        `json:"fingerprint"`
 	ReferenceSHA256          string        `json:"referenceSha256,omitempty"`

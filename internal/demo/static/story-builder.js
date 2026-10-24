@@ -79,6 +79,14 @@
   let playbackSources = new Set();
   let playheadMS = 0;
   let requestedProjectID = new URLSearchParams(window.location.search).get("project") || "";
+  let pendingLibraryVoiceID = new URLSearchParams(window.location.search).get("voice") || "";
+  let pendingLibraryVoiceRequest = 0;
+  const pendingVoicePanel = byID("storyBuilderPendingVoice");
+  const pendingVoiceStatus = byID("storyBuilderPendingStatus");
+  const pendingCharacter = byID("storyBuilderPendingCharacter");
+  const pendingTarget = byID("storyBuilderPendingTarget");
+  pendingVoicePanel.hidden = !pendingLibraryVoiceID;
+  if (pendingLibraryVoiceID) pendingVoiceStatus.textContent="Choose an existing project to check this voice.";
 
   function persistDiagnosticError(message) {
     fetch("/v1/logs/events", {
@@ -819,6 +827,7 @@
   }
 
   function refreshSelectionUI() {
+    renderPendingVoiceTargets();
     document.querySelectorAll(".timeline-clip, .script-row").forEach((element) => {
       const selected = editSession.selectionHas(element.dataset.clipId);
       element.classList.toggle("is-selected", selected);
@@ -1338,6 +1347,7 @@
   function renderTracks() {
     tracksElement.replaceChildren();
     const project = currentProject();
+    renderPendingVoiceTargets();
     if (!project) {
       renderScript(null);
       renderScenes(null);
@@ -1500,6 +1510,7 @@
     } finally {
       editSession.endMutation("dialogueBuild");
       renderScript(currentProject());
+      renderPendingVoiceTargets();
       activeDialogueBuild = null;
       dialogueCancelPending = false;
       updateBuildControls();
@@ -1885,6 +1896,7 @@
     renderProjects();
     renderTracks();
     if (project && !editSession.mutation("dialogueBuild")) void resumeDialogueBuild(project.id);
+    if (pendingLibraryVoiceID) void refreshPendingLibraryVoice();
   }
 
   let projectTransitionPending = false;
@@ -1942,6 +1954,68 @@
       setStatus("failed", error.message);
     }
   }
+
+  function renderPendingVoiceTargets() {
+    if (!pendingLibraryVoiceID) return;
+    const previous=pendingTarget.value,project=currentProject();pendingTarget.replaceChildren();
+    const add=(value,label)=>{const option=document.createElement("option");option.value=value;option.textContent=label;pendingTarget.append(option);};
+    add("","Choose a selected line or Dialogue track");
+    const selected=selectedClips().filter(item=>item.clip.type==="dialogue");
+    if(selected.length===1) add("clip:"+selected[0].clip.id,"Selected line: "+selected[0].clip.label);
+    for(const track of project?.tracks || []) if(track.type==="dialogue") add("track:"+track.id,track.name+(track.clips.length ? ` (revoice ${track.clips.length} lines)` : " (empty)"));
+    pendingTarget.value=previous;if(pendingTarget.selectedIndex<0)pendingTarget.value="";
+    pendingTarget.disabled=!project || serverMutationPending();
+  }
+
+  async function refreshPendingLibraryVoice() {
+    if (!pendingLibraryVoiceID) return;
+    const project=currentProject();renderPendingVoiceTargets();
+    if(!project){pendingVoiceStatus.textContent="Choose an existing project first.";return;}
+    const sequence=++pendingLibraryVoiceRequest,projectID=project.id,engineID=project.dialogue_engine;
+    byID("storyBuilderPendingApply").disabled=true;pendingVoiceStatus.textContent="Checking the saved reference and selected engine…";
+    try {
+      const result=await request(`/v1/voices/reuse?target=story-builder&voice=${encodeURIComponent(pendingLibraryVoiceID)}&engine=${encodeURIComponent(engineID)}`);
+      if(sequence!==pendingLibraryVoiceRequest||currentProject()?.id!==projectID||currentProject()?.dialogue_engine!==engineID)return;
+      const previous=pendingCharacter.value;pendingCharacter.replaceChildren();
+      const choices=result.characterId ? [{id:result.characterId,name:result.name}] : result.characters || [];
+      const empty=document.createElement("option");empty.value="";empty.textContent="Choose a Character Voice";pendingCharacter.append(empty);
+      for(const choice of choices){const option=document.createElement("option");option.value=choice.id;option.textContent=choice.name+(choice.disabledReason ? " · "+choice.disabledReason : "");option.disabled=Boolean(choice.disabledReason);pendingCharacter.append(option);}
+      pendingCharacter.value=choices.some(choice=>choice.id===previous&&!choice.disabledReason)?previous:(choices.length===1&&!choices[0].disabledReason?choices[0].id:"");
+      pendingVoiceStatus.textContent=`${result.name}: reference checked for ${engineID}. Choose where to assign it.`;byID("storyBuilderPendingApply").disabled=false;
+    } catch(error){pendingVoiceStatus.textContent=error.message+". Change the dialogue engine or reference, then check again.";}
+  }
+
+  async function assignPendingLibraryVoice() {
+    const characterID=pendingCharacter.value,target=pendingTarget.value;
+    if(!currentProject()||!characterID||!target){pendingVoiceStatus.textContent="Choose a project, Character Voice and target first.";return;}
+    if(serverMutationPending()){pendingVoiceStatus.textContent="Finish the current project operation before assigning a voice.";return;}
+    await saveProject();
+    if(saveStatus.dataset.state!=="saved"){pendingVoiceStatus.textContent="Save the current edits successfully before assigning a voice.";return;}
+    const projectID=editSession.currentID(),version=editSession.saveVersion(),engineID=currentProject().dialogue_engine;
+    byID("storyBuilderPendingApply").disabled=true;
+    try {
+      await request(`/v1/voices/reuse?target=story-builder&voice=${encodeURIComponent(characterID)}&engine=${encodeURIComponent(engineID)}`);
+      if(editSession.currentID()!==projectID||editSession.saveVersion()!==version||serverMutationPending()) throw new Error("The project changed while checking. Select the target and try again.");
+      const details=characterVoiceDetails(characterID);if(!details)throw new Error("Refresh the voice library, then select this voice again.");
+      if(target.startsWith("clip:")) {
+        const clipID=target.slice(5);
+        if(!currentProject().tracks.some(track=>track.clips.some(clip=>clip.id===clipID&&clip.type==="dialogue")))throw new Error("The selected line is no longer available.");
+        acceptTimelineEdit(project=>reassignScriptLine(project,clipID,details.actor,details.character));
+        const assigned=currentProject().tracks.find(track=>track.clips.some(clip=>clip.id===clipID));if(assigned?.character_voice_id!==characterID)throw new Error("The line assignment could not be applied. Resolve its timeline conflict and try again.");
+      } else {
+        const track=currentProject().tracks.find(track=>track.id===target.slice(6)&&track.type==="dialogue");if(!track)throw new Error("Choose an existing Dialogue track.");
+        if(track.clips.length) await revoiceCharacterVoice(track,details.actor,details.character);
+        else acceptTimelineEdit(()=>{track.character_voice_id=details.character.id;track.actor_voice_id=details.actor.id;track.voice_fingerprint="";});
+        if(currentProject().tracks.find(item=>item.id===track.id)?.character_voice_id!==characterID)throw new Error("The track assignment did not complete. Check the project save status and try again.");
+      }
+      pendingVoiceStatus.textContent=`Assigned ${details.actor.name} / ${details.character.name}. The script is preserved; build changed dialogue when ready.`;
+    }catch(error){pendingVoiceStatus.textContent=error.message;}
+    finally{byID("storyBuilderPendingApply").disabled=false;renderPendingVoiceTargets();}
+  }
+
+  byID("storyBuilderPendingCheck").addEventListener("click",refreshPendingLibraryVoice);
+  byID("storyBuilderPendingApply").addEventListener("click",assignPendingLibraryVoice);
+  byID("storyBuilderPendingDismiss").addEventListener("click",()=>{pendingLibraryVoiceID="";pendingLibraryVoiceRequest++;pendingVoicePanel.hidden=true;});
 
   function setVoiceLibraryStatus(message, state = "") {
     voiceStatus.replaceChildren(document.createTextNode(message));
