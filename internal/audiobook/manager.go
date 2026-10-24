@@ -74,6 +74,7 @@ type SynthesisResult struct {
 type SynthesizeDetailedFunc func(ctx context.Context, request SynthesisRequest) (SynthesisResult, error)
 
 type ManagerOptions struct {
+	EncodeM4B          EncodeM4BFunc
 	RootDir            string
 	BenchmarkRootDir   string
 	ReserveEngine      ReserveEngineFunc
@@ -122,6 +123,12 @@ type Service interface {
 	PreviewDocument(context.Context, DocumentRequest) (ResolvedRequest, error)
 	AuditionDocument(context.Context, DocumentRequest, string) (string, error)
 	AuditionAudio(string) ([]byte, error)
+	UpdateBookMetadata(string, BookMetadata) error
+	SetBookCover(string, []byte) error
+	BookCoverPath(string) (string, string, error)
+	PreviewM4B(context.Context, string, string) (M4BExportPlan, error)
+	ExportM4B(context.Context, string, M4BExportRequest) (ExportRecord, error)
+	ExportPath(string, string) (string, ExportRecord, error)
 	Create(context.Context, DocumentRequest) (string, int, error)
 	Resume(context.Context, string) (int, error)
 	Restart(context.Context, string) (string, int, error)
@@ -159,6 +166,7 @@ type narrationUnit struct {
 }
 
 type Manager struct {
+	encodeM4B          EncodeM4BFunc
 	mu                 sync.Mutex
 	rootDir            string
 	benchmarkRootDir   string
@@ -224,6 +232,7 @@ func NewManager(opts ManagerOptions) *Manager {
 		}
 	}
 	manager := &Manager{
+		encodeM4B:          opts.EncodeM4B,
 		rootDir:            rootDir,
 		benchmarkRootDir:   benchmarkRootDir,
 		store:              NewStore(rootDir),
@@ -1635,6 +1644,7 @@ func (m *Manager) List() ([]Manifest, error) {
 		if err := json.Unmarshal(data, &manifest); err != nil {
 			continue
 		}
+		m.annotateBookExports(entry.Name(), &manifest)
 		out = append(out, manifest)
 	}
 	m.mu.Lock()
@@ -1668,6 +1678,9 @@ func (m *Manager) Status(id string) (Manifest, bool, error) {
 		return Manifest{}, false, nil
 	}
 	if manifest, ok, err := loadManifest(filepath.Join(m.rootDir, id, manifestFileName)); err != nil || ok {
+		if err == nil && ok {
+			m.annotateBookExports(id, &manifest)
+		}
 		return manifest, ok, err
 	}
 	manifest, _, err := m.store.LoadDurableWIP(id)

@@ -3751,3 +3751,6 @@ details[open] > .library-group-summary::after {
 .audiobook-chapters { padding-left: 24px; }
 .audiobook-chapters li { padding: 12px 0; border-top: 1px solid var(--line-soft); }
 .audiobook-chapters blockquote { margin: 8px 0; padding-left: 12px; border-left: 2px solid var(--line-soft); white-space: pre-wrap; overflow-wrap: anywhere; }
+.audiobook-details-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; margin: 12px 0; }
+.audiobook-cover { width: 100px; height: 150px; object-fit: contain; }
+@media (max-width: 800px) { .audiobook-details-grid { grid-template-columns: 1fr; } }

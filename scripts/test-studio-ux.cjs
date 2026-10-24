@@ -452,6 +452,82 @@ test('reopened chapter plans identify the saved narrator with an engine-appropri
   assert.equal(context.audiobookSavedNarrator({}), 'Studio default');
 });
 
+test('book details save through the audiobook owner and clearly report a rejected cover', async () => {
+  for (const coverOK of [false,true]) {
+    const requests = [], status = {};
+    const context = load(['saveAudiobookDetails'], {
+      FormData: class { append() {} }, audiobookStatus: {}, refreshAudiobooks: async () => {}, log() {},
+      readErrorBody: async () => 'Malformed cover',
+      fetch: async (url, options) => { requests.push([url, options]); return {ok: !url.endsWith('/cover') || coverOK}; },
+    });
+    await context.saveAudiobookDetails('book-1', {title:'Café', author:'Writer'}, {name:'cover.png'}, status);
+    assert.deepEqual(requests.map(r=>[r[0],r[1].method]), [['/v1/audiobooks/book-1/metadata','PUT'],['/v1/audiobooks/book-1/cover','PUT']]);
+    assert.equal(JSON.parse(requests[0][1].body).title, 'Café');
+    assert.match(status.textContent, coverOK ? /saved/i : /Details saved.*cover.*Malformed cover/i);
+  }
+});
+
+test('M4B export submits the reviewed render and master identity and reports cancellation', async () => {
+  for (const cancelled of [false,true]) {
+    let request;
+    const status={};
+    const plan={renderId:'render-0002',masterSha256:'reviewed-hash'};
+    const signal={};
+    const context=load(['exportAudiobookM4B'],{
+      fetch:async(url,options)=>{request=[url,options];if(cancelled){const e=new Error('cancelled');e.name='AbortError';throw e;}return{ok:true,json:async()=>({url:'/delivery.m4b',renderId:'render-0002'})};},
+      readErrorBody:async()=>'',
+    });
+    const record=await context.exportAudiobookM4B('book_1',plan,status,signal);
+    assert.equal(request[0],'/v1/audiobooks/book_1/exports/m4b');
+    assert.deepEqual(JSON.parse(request[1].body),plan);
+    assert.equal(request[1].signal,signal);
+    if(cancelled){assert.equal(record,null);assert.match(status.textContent,/cancelled/i);}else{assert.equal(record.renderId,'render-0002');assert.match(status.textContent,/ready/i);}
+  }
+});
+
+test('shelf refresh cannot remove an active M4B export and its cancel control', async () => {
+  for (const startedBeforeRefresh of [true,false]) {
+    let requests=0;
+    const shelf={textContent:'Export and cancel controls'};
+    const context=load(['refreshAudiobooks'],{
+      audiobookM4BBusy:startedBeforeRefresh,audiobookShelf:shelf,
+      fetch:async()=>{requests++;return{ok:true,json:async()=>{context.audiobookM4BBusy=true;return{audiobooks:[],interrupted:[]};}};},
+    });
+    await context.refreshAudiobooks(true);
+    assert.equal(shelf.textContent,'Export and cancel controls');
+    assert.equal(requests,startedBeforeRefresh?0:1);
+  }
+});
+
+test('audiobook shelf retains the exact dirty card and selected file while adding completed work', () => {
+  const file={name:'cover.png'};
+  const dirty={dataset:{bookId:'book_1',bookDetailsDirty:'true'},input:{value:'Draft author'},files:[file]};
+  const stale={dataset:{bookId:'old'}};
+  const children=[dirty,stale];
+  stale.remove=()=>children.splice(children.indexOf(stale),1);
+  const shelf={children,childNodes:children,insertBefore(node,anchor){const i=anchor?children.indexOf(anchor):children.length;children.splice(i,0,node);},appendChild(node){children.push(node);}};
+  const context=load(['renderAudiobookShelf'],{audiobookShelf:shelf,renderAudiobookCard(book){assert.notEqual(book.id,'book_1');return{dataset:{bookId:book.id}};}});
+  context.renderAudiobookShelf({audiobooks:[{id:'book_2'},{id:'book_1'}],interrupted:[]});
+  assert.deepEqual(children.map(node=>node.dataset.bookId),['book_2','book_1']);
+  assert.equal(children[1],dirty);
+  assert.equal(dirty.input.value,'Draft author');
+  assert.equal(dirty.files[0],file);
+});
+
+test('re-export replaces the same-render download label and filename with the returned snapshot', () => {
+  const nodes=[];
+  const container={querySelectorAll(){return nodes;},appendChild(node){nodes.push(node);}};
+  const context=load(['renderAudiobookM4BDownload'],{createElement(tag,cls,text){const node={dataset:{},textContent:text,remove(){nodes.splice(nodes.indexOf(node),1);}};return node;}});
+  context.renderAudiobookM4BDownload(container,{renderId:'render-0001',url:'/same',metadata:{title:'Old title'}},'Book');
+  context.renderAudiobookM4BDownload(container,{renderId:'render-0002',url:'/other',metadata:{title:'Other render'}},'Book');
+  context.renderAudiobookM4BDownload(container,{renderId:'render-0001',url:'/same',metadata:{title:'New title'}},'Book');
+  assert.equal(nodes.length,2);
+  const link=nodes.find(node=>node.dataset.m4bRender==='render-0001');
+  assert.match(link.textContent,/New title/);
+  assert.equal(link.download,'New title.m4b');
+  assert.ok(!nodes.some(node=>node.textContent.includes('Old title')));
+});
+
 test('Library dates prefer real updates and fall back from missing, zero or invalid updates', () => {
   const context = load(['libraryTimestamp'], { Date });
   const created = '2026-09-10T08:28:42.799Z';

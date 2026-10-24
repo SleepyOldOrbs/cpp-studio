@@ -309,6 +309,16 @@ Legacy work keeps its original partition and fingerprint. Passage audition uses
 the displayed source excerpt through the same narration resolution and reservation
 path, retaining only one bounded temporary WAV without creating a production.
 
+Finished audiobooks own editable book details and validated, retained cover images.
+These credits do not change synthesis identity. Optional M4B delivery uses the
+operator's configured FFmpeg/AAC encoder and a specific WAV render plus its hash.
+An export freezes the render's actual chapter boundaries and the current details
+and cover before encoding; concurrent credit edits cannot relabel its snapshot.
+WAV masters and attempts remain intact. Legacy masters without recorded chapter
+boundaries explicitly export as a single chapter. Library projects the delivery's
+original render and credits and disables missing files; encoding and publication
+remain owned by Audiobook.
+
 ## Audiobook lifecycle
 
 Resume continues an interrupted Audiobook production only under its original

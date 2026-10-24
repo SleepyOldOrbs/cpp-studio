@@ -1,6 +1,6 @@
 # Audiobook M4B delivery Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Export a finished audiobook as an M4B with working chapter navigation, cover and useful book metadata.
 
@@ -33,9 +33,9 @@
 
 **Interfaces:** define `BookMetadata{Title, Author, Narrator, Year, Genre, Description string}` and optional cover reference owned by the book. Add `UpdateBookMetadata(id string, metadata BookMetadata) error` and `SetBookCover(id string, data []byte) error` on the Audiobook store. Accept PNG/JPEG only, at most 10 MiB and 20 million decoded pixels; metadata text fields are bounded (title/author/narrator/genre 256 characters; description 4,000; year empty or four digits).
 
-- [ ] Add tests for old manifests, metadata edits leaving synthesis identity unchanged, Unicode details and invalid/oversized cover rejection without replacing the old cover.
-- [ ] Run `go test ./internal/audiobook ./internal/gateway`; establish failures, implement details/cover endpoints and UI with existing multipart/atomic-write patterns, then require PASS.
-- [ ] Reopen a fixture book and verify its details/cover persist. Review and commit.
+- [x] Add tests for old manifests, metadata edits leaving synthesis identity unchanged, Unicode details and invalid/oversized cover rejection without replacing the old cover.
+- [x] Run `go test ./internal/audiobook ./internal/gateway`; establish failures, implement details/cover endpoints and UI with existing multipart/atomic-write patterns, then require PASS.
+- [x] Reopen a fixture book and verify its details/cover persist. Review and commit.
 
 ## 3B — Encode and publish a revision-bound M4B
 
@@ -45,10 +45,10 @@
 
 Snapshot metadata and copy the validated cover into the export staging area before encoding, so concurrent detail/cover edits cannot change a running export. Use AAC in an M4B/MP4 container with one initial spoken-word preset (96 kbit/s). Retain master sample rate/channel count when supported by the configured encoder; report incompatibility explicitly. Encode FFmetadata chapter markers from stage 2 sample boundaries. Escape metadata correctly and pass arguments directly, never through a shell. For legacy unchaptered books, show **Single chapter: [book title]** before export. Publish only after container/audio validation succeeds; replacement of a same-render export must preserve the old valid artifact on failure.
 
-- [ ] Add fixture tests for two chapter markers, zero/out-of-range boundaries, selected-attempt timing changes, metadata escaping, concurrent cover replacement, unavailable encoder, cancellation and stale master hash.
-- [ ] Run `go test ./internal/audiobook ./internal/engine ./internal/gateway`; establish failures, implement encoding through existing engine lifecycle and atomic publication, then require PASS.
-- [ ] Create `scripts/test-audiobook-m4b.ps1` using generated short PCM fixtures. With configured FFmpeg/FFprobe, assert AAC codec, M4B container, two named ordered chapters within one encoded audio frame of planned markers, metadata/cover and decodable full audio. Missing tools must be reported as SKIP, never PASS.
-- [ ] Review and commit after fixture export validation; no long book render is needed.
+- [x] Add fixture tests for two chapter markers, zero/out-of-range boundaries, selected-attempt timing changes, metadata escaping, concurrent cover replacement, unavailable encoder, cancellation and stale master hash.
+- [x] Run `go test ./internal/audiobook ./internal/engine ./internal/gateway`; establish failures, implement encoding through existing engine lifecycle and atomic publication, then require PASS.
+- [x] Create `scripts/test-audiobook-m4b.ps1` using generated short PCM fixtures. With configured FFmpeg/FFprobe, assert AAC codec, M4B container, two named ordered chapters within one encoded audio frame of planned markers, metadata/cover and decodable full audio. Missing tools must be reported as SKIP, never PASS.
+- [x] Review and commit after fixture export validation; no long book render is needed.
 
 ## 3C — Export discovery and real-player acceptance
 
@@ -56,9 +56,9 @@ Snapshot metadata and copy the validated cover into the export staging area befo
 
 **Interface:** expose exports as children of their owning audiobook/render through existing Library `Entry`, `Relationship` and `ArtifactAction` fields. The export action identifies the chosen render and metadata snapshot; changing a selection does not silently relabel an older export.
 
-- [ ] Add tests for owner/revision relationships, download content type, missing artifact disabled reason and safe rejection of path traversal.
-- [ ] Add **Export M4B**, progress, readiness remedy and download/open actions to the existing audiobook result panel and Library.
-- [ ] Run `go test ./internal/library ./internal/gateway` and the M4B fixture script. Open the result in an available audiobook-capable player, inspect details/cover and seek to both chapters; record the player and observed result.
-- [ ] Review and commit. If player support is unavailable, mark that acceptance step outstanding rather than claim it passed.
+- [x] Add tests for owner/revision relationships, download content type, missing artifact disabled reason and safe rejection of path traversal.
+- [x] Add **Export M4B**, progress, readiness remedy and download/open actions to the existing audiobook result panel and Library.
+- [x] Run `go test ./internal/library ./internal/gateway` and the M4B fixture script. Open the result in an available audiobook-capable player, inspect details/cover and seek to both chapters; record the player and observed result.
+- [x] Review and commit. If player support is unavailable, mark that acceptance step outstanding rather than claim it passed.
 
 **Stage gate:** A real M4B is downloadable and plays with correct chapter seeks and book details. The original master remains usable after success, failure and cancellation.

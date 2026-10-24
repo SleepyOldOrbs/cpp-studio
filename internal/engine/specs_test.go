@@ -705,3 +705,14 @@ ggml_cuda_init: found 1 CUDA device
 		t.Fatalf("valid zero-turn result = (%+v, %v), want empty success", empty, err)
 	}
 }
+func TestM4BSpecKeepsMetadataCoverAndPCMFormatInDirectArguments(t *testing.T) {
+	spec := M4BSpec("master.wav", "book.m4b", "chapters.txt", "cover.png", wav.Format{SampleRate: 16000, Channels: 1, BitsPerSample: 16})
+	want := []string{"-nostdin", "-y", "-i", "master.wav", "-f", "ffmetadata", "-i", "chapters.txt", "-i", "cover.png", "-map", "0:a:0", "-map_metadata", "1", "-map_chapters", "1", "-c:a", "aac", "-b:a", "96k", "-ar", "16000", "-ac", "1", "-map", "2:v:0", "-c:v", "copy", "-disposition:v:0", "attached_pic", "-movflags", "+faststart", "-f", "mp4", "book.m4b"}
+	if spec.Engine != "ffmpeg" || !reflect.DeepEqual(spec.BuildArgs("master.wav", "book.m4b"), want) {
+		t.Fatal(spec.BuildArgs("master.wav", "book.m4b"))
+	}
+	without := M4BSpec("master.wav", "book.m4b", "chapters.txt", "", wav.Format{SampleRate: 24000, Channels: 2, BitsPerSample: 16}).BuildArgs("master.wav", "book.m4b")
+	if slices.Contains(without, "2:v:0") || !slices.Contains(without, "24000") {
+		t.Fatal(without)
+	}
+}

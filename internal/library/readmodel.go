@@ -331,6 +331,26 @@ func audiobookEntries(book audiobook.Manifest) []Entry {
 			search:         []string{book.Title, book.ID, render.ID, "render revision", "wav"},
 		})
 	}
+	for _, export := range book.Exports {
+		if export.Format != "m4b" {
+			continue
+		}
+		title := export.Metadata.Title
+		if title == "" {
+			title = book.Title
+		}
+		renderName := export.RenderID
+		if renderName == "" {
+			renderName = "original master"
+		}
+		relationship := &Relationship{Kind: KindAudiobook, ID: book.ID, Name: book.Title}
+		if export.RenderID != "" {
+			relationship = &Relationship{Kind: KindRenderRevision, ID: book.ID + "/render/" + export.RenderID, Name: book.Title + " — " + export.RenderID}
+		}
+		entries = append(entries, Entry{Kind: KindExport, ID: book.ID + "/exports/" + export.RenderID + "/m4b", Name: title + " — " + renderName + " M4B", Subtype: "m4b", CreatedAt: export.CreatedAt, Relationship: relationship,
+			Metadata:       map[string]string{"author": export.Metadata.Author, "narrator": export.Metadata.Narrator, "render_id": export.RenderID, "bytes": strconv.FormatInt(export.Bytes, 10), "bitrate": "AAC · 96 kbit/s"},
+			ArtifactAction: &Action{Label: "Download M4B", URL: export.URL, ContentType: "audio/mp4", DisabledReason: export.UnavailableReason}, LaunchAction: &Action{Label: "Open Audiobook", URL: "/demo/#audiobook"}, search: []string{title, book.Title, book.ID, export.RenderID, export.Metadata.Author, export.Metadata.Narrator, "m4b", "export"}})
+	}
 	return entries
 }
 

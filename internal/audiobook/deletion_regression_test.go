@@ -62,6 +62,12 @@ func TestDeletionBlockedDuringRetryAndAttemptRender(t *testing.T) {
 	if err := manager.Delete(id); !errors.Is(err, ErrProductionActive) {
 		t.Errorf("delete during retry: %v", err)
 	}
+	if err := manager.UpdateBookMetadata(id, BookMetadata{Author: "New credit"}); !errors.Is(err, ErrProductionActive) {
+		t.Errorf("metadata edit during retry: %v", err)
+	}
+	if err := manager.SetBookCover(id, testCoverPNG(t)); !errors.Is(err, ErrProductionActive) {
+		t.Errorf("cover edit during retry: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(root, id)); err != nil {
 		t.Errorf("active book removed: %v", err)
 	}
@@ -91,6 +97,12 @@ func TestDeletionBlockedDuringRetryAndAttemptRender(t *testing.T) {
 	}
 	if err := manager.Delete(id); !errors.Is(err, ErrProductionActive) {
 		t.Errorf("delete during render: %v", err)
+	}
+	if err := manager.UpdateBookMetadata(id, BookMetadata{Author: "New credit"}); !errors.Is(err, ErrProductionActive) {
+		t.Errorf("metadata edit during render: %v", err)
+	}
+	if err := manager.SetBookCover(id, testCoverPNG(t)); !errors.Is(err, ErrProductionActive) {
+		t.Errorf("cover edit during render: %v", err)
 	}
 	unblockRender()
 	waitForAudiobookJob(t, registry, renderID)
