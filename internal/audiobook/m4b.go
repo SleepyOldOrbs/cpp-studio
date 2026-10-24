@@ -44,18 +44,19 @@ type M4BExportPlan struct {
 }
 
 type ExportRecord struct {
-	Format       string          `json:"format"`
-	RenderID     string          `json:"renderId,omitempty"`
-	MasterSHA256 string          `json:"masterSha256"`
-	Metadata     BookMetadata    `json:"metadata"`
-	Cover        *BookCover      `json:"cover,omitempty"`
-	Chapters     []ExportChapter `json:"chapters"`
-	SampleRate   uint32          `json:"sampleRate"`
-	File         string          `json:"file"`
-	URL          string          `json:"url"`
-	SHA256       string          `json:"sha256"`
-	Bytes        int64           `json:"bytes"`
-	CreatedAt    time.Time       `json:"createdAt"`
+	UnavailableReason string          `json:"unavailableReason,omitempty"`
+	Format            string          `json:"format"`
+	RenderID          string          `json:"renderId,omitempty"`
+	MasterSHA256      string          `json:"masterSha256"`
+	Metadata          BookMetadata    `json:"metadata"`
+	Cover             *BookCover      `json:"cover,omitempty"`
+	Chapters          []ExportChapter `json:"chapters"`
+	SampleRate        uint32          `json:"sampleRate"`
+	File              string          `json:"file"`
+	URL               string          `json:"url"`
+	SHA256            string          `json:"sha256"`
+	Bytes             int64           `json:"bytes"`
+	CreatedAt         time.Time       `json:"createdAt"`
 }
 
 func fileSHA256(ctx context.Context, path string) (string, error) {
@@ -324,12 +325,7 @@ func (m *Manager) ExportPath(id, renderID string) (string, ExportRecord, error) 
 		if record.Format != "m4b" || record.RenderID != renderID {
 			continue
 		}
-		target := renderID
-		if target == "" {
-			target = "original"
-		}
-		decoded, hashErr := hex.DecodeString(record.SHA256)
-		if strings.ContainsAny(target, "/\\") || hashErr != nil || len(decoded) != sha256.Size || record.File != "exports/"+target+"-"+record.SHA256+".m4b" {
+		if !validM4BExportFile(record) {
 			return "", ExportRecord{}, ErrStoreCorrupt
 		}
 		path := filepath.Join(m.rootDir, id, filepath.FromSlash(record.File))
@@ -343,4 +339,32 @@ func (m *Manager) ExportPath(id, renderID string) (string, ExportRecord, error) 
 		return path, record, nil
 	}
 	return "", ExportRecord{}, ErrProductionNotFound
+}
+
+func validM4BExportFile(record ExportRecord) bool {
+	target := record.RenderID
+	if target == "" {
+		target = "original"
+	}
+	decoded, err := hex.DecodeString(record.SHA256)
+	return record.Format == "m4b" && !strings.ContainsAny(target, "/\\") && err == nil && len(decoded) == sha256.Size && record.File == "exports/"+target+"-"+record.SHA256+".m4b"
+}
+
+// Read-time availability uses size/existence only; downloads verify the hash.
+func (m *Manager) annotateBookExports(id string, book *Manifest) {
+	for index := range book.Exports {
+		record := &book.Exports[index]
+		if record.Format != "m4b" {
+			continue
+		}
+		record.UnavailableReason = ""
+		if validateBookID(id) != nil || book.ID != id || !validM4BExportFile(*record) {
+			record.UnavailableReason = "M4B export identity is invalid. Export this render again."
+			continue
+		}
+		info, err := os.Stat(filepath.Join(m.rootDir, id, filepath.FromSlash(record.File)))
+		if err != nil || !info.Mode().IsRegular() || info.Size() != record.Bytes {
+			record.UnavailableReason = "M4B file is missing or changed. Export this render again."
+		}
+	}
 }

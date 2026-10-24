@@ -1644,6 +1644,7 @@ func (m *Manager) List() ([]Manifest, error) {
 		if err := json.Unmarshal(data, &manifest); err != nil {
 			continue
 		}
+		m.annotateBookExports(entry.Name(), &manifest)
 		out = append(out, manifest)
 	}
 	m.mu.Lock()
@@ -1677,6 +1678,9 @@ func (m *Manager) Status(id string) (Manifest, bool, error) {
 		return Manifest{}, false, nil
 	}
 	if manifest, ok, err := loadManifest(filepath.Join(m.rootDir, id, manifestFileName)); err != nil || ok {
+		if err == nil && ok {
+			m.annotateBookExports(id, &manifest)
+		}
 		return manifest, ok, err
 	}
 	manifest, _, err := m.store.LoadDurableWIP(id)

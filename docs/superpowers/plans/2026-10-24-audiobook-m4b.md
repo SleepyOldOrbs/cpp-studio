@@ -1,6 +1,6 @@
 # Audiobook M4B delivery Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Export a finished audiobook as an M4B with working chapter navigation, cover and useful book metadata.
 
@@ -56,9 +56,9 @@ Snapshot metadata and copy the validated cover into the export staging area befo
 
 **Interface:** expose exports as children of their owning audiobook/render through existing Library `Entry`, `Relationship` and `ArtifactAction` fields. The export action identifies the chosen render and metadata snapshot; changing a selection does not silently relabel an older export.
 
-- [ ] Add tests for owner/revision relationships, download content type, missing artifact disabled reason and safe rejection of path traversal.
-- [ ] Add **Export M4B**, progress, readiness remedy and download/open actions to the existing audiobook result panel and Library.
-- [ ] Run `go test ./internal/library ./internal/gateway` and the M4B fixture script. Open the result in an available audiobook-capable player, inspect details/cover and seek to both chapters; record the player and observed result.
-- [ ] Review and commit. If player support is unavailable, mark that acceptance step outstanding rather than claim it passed.
+- [x] Add tests for owner/revision relationships, download content type, missing artifact disabled reason and safe rejection of path traversal.
+- [x] Add **Export M4B**, progress, readiness remedy and download/open actions to the existing audiobook result panel and Library.
+- [x] Run `go test ./internal/library ./internal/gateway` and the M4B fixture script. Open the result in an available audiobook-capable player, inspect details/cover and seek to both chapters; record the player and observed result.
+- [x] Review and commit. If player support is unavailable, mark that acceptance step outstanding rather than claim it passed.
 
 **Stage gate:** A real M4B is downloadable and plays with correct chapter seeks and book details. The original master remains usable after success, failure and cancellation.

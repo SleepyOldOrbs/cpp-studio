@@ -373,12 +373,16 @@ func TestM4BExportsStayAssociatedWithTheirSelectedRenderTimings(t *testing.T) {
 	}
 	waitForAudiobookJob(t, manager.registry, retry)
 	// Terminal registry state can precede the deferred reservation release.
+	idleDeadline := time.Now().Add(5 * time.Second)
 	for {
 		manager.mu.Lock()
 		idle := manager.activeID == ""
 		manager.mu.Unlock()
 		if idle {
 			break
+		}
+		if time.Now().After(idleDeadline) {
+			t.Fatal("retry did not release its reservation")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -387,12 +391,16 @@ func TestM4BExportsStayAssociatedWithTheirSelectedRenderTimings(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForAudiobookJob(t, manager.registry, render)
+	idleDeadline = time.Now().Add(5 * time.Second)
 	for {
 		manager.mu.Lock()
 		idle := manager.activeID == ""
 		manager.mu.Unlock()
 		if idle {
 			break
+		}
+		if time.Now().After(idleDeadline) {
+			t.Fatal("render did not release its reservation")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -412,5 +420,30 @@ func TestM4BExportsStayAssociatedWithTheirSelectedRenderTimings(t *testing.T) {
 	}
 	if _, _, err := manager.ExportPath(id, first.RenderID); err != nil {
 		t.Fatal("old export unavailable", err)
+	}
+}
+
+func TestMissingM4BIsDisabledInBookReadProjection(t *testing.T) {
+	manager, id := m4bFixture(t, func(ctx context.Context, in, out, metadata, cover string, format wav.Format) error {
+		return os.WriteFile(out, []byte("\x00\x00\x00\x20ftypM4A export"), 0o600)
+	})
+	plan, err := manager.PreviewM4B(context.Background(), id, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := manager.ExportM4B(context.Background(), id, M4BExportRequest{RenderID: plan.RenderID, MasterSHA256: plan.MasterSHA256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(manager.rootDir, id, filepath.FromSlash(record.File))); err != nil {
+		t.Fatal(err)
+	}
+	books, err := manager.List()
+	if err != nil || len(books) != 1 || books[0].Exports[0].UnavailableReason == "" {
+		t.Fatal(books, err)
+	}
+	book, ok, err := manager.Status(id)
+	if err != nil || !ok || book.Exports[0].UnavailableReason == "" {
+		t.Fatal(book, err)
 	}
 }

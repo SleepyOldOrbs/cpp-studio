@@ -1,6 +1,7 @@
 param(
   [string]$FFmpeg = '',
   [string]$FFprobe = '',
+  [switch]$Browser,
   [int]$GatewayPort = 8883,
   [string]$OutDir = (Join-Path $env:TEMP ('audiobook-m4b-' + [guid]::NewGuid().ToString('N')))
 )
@@ -90,6 +91,62 @@ try {
   if ($LASTEXITCODE) { throw 'Full AAC decode failed' }
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $masterPath).Hash -ne $before) { throw 'Export changed the WAV master' }
   $plan | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $runtimeDir 'export-plan.json')
+  if ($Browser) {
+    $npx = Get-Command npx -ErrorAction Stop
+    $session = "m4b-browser-$PID"
+    $browserCode = @'
+async page => {
+  const assert=(ok,why)=>{if(!ok)throw new Error(why);};
+  await page.setViewportSize({width:1400,height:1200});
+  await page.goto('__BASE__/demo/#audiobook');
+  await page.locator('section[data-page="audiobook"] details.result-panel > summary').click();
+  const card=page.locator('#audiobookShelf .story-library-item').first();
+  await card.locator('.audiobook-m4b > summary').click();
+  await card.getByRole('button',{name:'Review M4B export',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('.audiobook-m4b').textContent.includes('2 chapters:'));
+  const encoded=page.waitForResponse(r=>r.url().endsWith('/exports/m4b')&&r.request().method()==='POST');
+  await card.getByRole('button',{name:'Export M4B',exact:true}).click();
+  assert((await encoded).status()===200,'UI export failed');
+  const ready=card.getByRole('link',{name:'Download M4B · render-0001',exact:true});
+  await ready.waitFor();
+  let download=page.waitForEvent('download');
+  await ready.click();
+  await (await download).saveAs('__OUT__/browser-export.m4b');
+  await page.locator('a[data-page-link="library"]').first().click();
+  await page.locator('#libraryFilterInput').fill('render-0001 M4B');
+  const entry=page.locator('.library-item').filter({has:page.getByText('The Clock #1=two; \\ book — render-0001 M4B',{exact:true})});
+  await entry.waitFor();
+  const delivery=entry.getByRole('button',{name:'Download M4B',exact:true});
+  assert(await delivery.isEnabled(),'Library export is incorrectly disabled');
+  download=page.waitForEvent('download');
+  await delivery.click();
+  const file=await download;
+  assert(file.suggestedFilename().endsWith('.m4b'),'Library used the wrong extension');
+  await file.saveAs('__OUT__/library-export.m4b');
+  await page.setViewportSize({width:800,height:1100});
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Library overflows at 800px');
+  await page.screenshot({path:'__OUT__/m4b-library.png',fullPage:true});
+  console.log(JSON.stringify({status:'ok',flow:'M4B UI export and Library download'}));
+}
+'@
+    $codePath=Join-Path $runtimeDir 'browser-check.js'
+    $browserCode.Replace('__BASE__',$base).Replace('__OUT__',$runtimeDir.Replace('\','/')) | Set-Content -Encoding utf8 $codePath
+    Push-Location $runtimeDir
+    try {
+      & $npx.Source --yes --package '@playwright/cli' playwright-cli "-s=$session" open "$base/demo/#audiobook"
+      if ($LASTEXITCODE) {throw 'Browser did not open'}
+      & $npx.Source --yes --package '@playwright/cli' playwright-cli "-s=$session" run-code "--filename=$codePath"
+      if ($LASTEXITCODE) {throw 'M4B browser acceptance failed'}
+      $current = Get-Content (Join-Path $bookDir 'manifest.json') -Raw | ConvertFrom-Json
+      foreach ($downloadName in @('browser-export.m4b','library-export.m4b')) {
+        if ((Get-FileHash -Algorithm SHA256 (Join-Path $runtimeDir $downloadName)).Hash.ToLowerInvariant() -ne $current.exports[0].sha256) {throw 'UI/Library downloaded a different export'}
+      }
+    } finally {
+      & $npx.Source --yes --package '@playwright/cli' playwright-cli "-s=$session" snapshot
+      & $npx.Source --yes --package '@playwright/cli' playwright-cli "-s=$session" close | Out-Null
+      Pop-Location
+    }
+  }
   [ordered]@{status='ok';output=$outputPath;probe=(Join-Path $runtimeDir 'ffprobe.json');chapters=2;masterUnchanged=$true} | ConvertTo-Json
 } finally {
   if (-not $server.HasExited) { Stop-Process -Id $server.Id }

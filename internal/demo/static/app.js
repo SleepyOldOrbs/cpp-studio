@@ -7211,6 +7211,7 @@
   var activeBookId = "";
   var bookPollTimer = null;
   var audiobookBusy = false;
+  var audiobookM4BBusy = false;
   var audiobookResolvedKey = "";
   var activeBookUsesSections = false;
   var activeBookStartedAt = 0;
@@ -8160,6 +8161,111 @@
     item.appendChild(details);
   }
 
+  async function exportAudiobookM4B(id, plan, status, signal) {
+    status.textContent = "Encoding M4B… The WAV master remains available.";
+    try {
+      var response = await fetch("/v1/audiobooks/" + encodeURIComponent(id) + "/exports/m4b", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ renderId: plan.renderId, masterSha256: plan.masterSha256 }), signal: signal });
+      if (!response.ok) { throw new Error(await readErrorBody(response)); }
+      var record = await response.json();
+      status.textContent = "M4B ready · " + (record.renderId || "original master");
+      return record;
+    } catch (err) {
+      if (err.name === "AbortError") { status.textContent = "Export cancelled. Existing downloads are retained."; return null; }
+      status.textContent = "Export failed: " + err.message;
+      return null;
+    }
+  }
+
+  function appendAudiobookM4B(item, book) {
+    var details = createElement("details", "audiobook-m4b");
+    details.appendChild(createElement("summary", "", "M4B delivery"));
+    var label = createElement("label", "field");
+    label.appendChild(createElement("span", "", "Master to export"));
+    var select = createElement("select", "text-input");
+    var renders = book.renderRevisions || [];
+    (renders.length ? renders : [{ id: "", title: "Original WAV master" }]).forEach(function (render) {
+      var option = createElement("option", "", render.title || render.id);
+      option.value = render.id;
+      select.appendChild(option);
+    });
+    select.value = book.currentRenderId || "";
+    if (select.selectedIndex < 0) { select.selectedIndex = 0; }
+    label.appendChild(select);
+    details.appendChild(label);
+    details.appendChild(createElement("p", "hint", "AAC audio at 96 kbit/s with chapter navigation and a snapshot of the current book details and cover. Previous render exports keep their own details."));
+    var summary = createElement("p", "hint");
+    var review = createElement("button", "secondary compact-button", "Review M4B export");
+    review.type = "button";
+    var encode = createElement("button", "primary compact-button", "Export M4B");
+    encode.type = "button";
+    encode.disabled = true;
+    var cancel = createElement("button", "secondary compact-button", "Cancel export");
+    cancel.type = "button";
+    cancel.hidden = true;
+    var status = createElement("p", "hint");
+    status.setAttribute("role", "status");
+    var download = createElement("a", "secondary-button", "Download M4B");
+    download.hidden = true;
+    var plan = null, version = 0, controller = null;
+    select.addEventListener("change", function () { version += 1; plan = null; encode.disabled = true; summary.textContent = "Review this master before exporting."; download.hidden = true; });
+    review.addEventListener("click", async function () {
+      var requested = ++version;
+      encode.disabled = true;
+      review.disabled = true;
+      status.textContent = "Preparing export…";
+      try {
+        var response = await fetch("/v1/audiobooks/" + encodeURIComponent(book.id) + "/exports/plan?render=" + encodeURIComponent(select.value));
+        if (!response.ok) { throw new Error(await readErrorBody(response)); }
+        var prepared = await response.json();
+        if (requested !== version) { return; }
+        plan = prepared;
+        summary.textContent = prepared.singleChapter ? "Single chapter: " + prepared.chapters[0].title : prepared.chapters.length + " chapters: " + prepared.chapters.map(function (chapter) { return chapter.title; }).join(" · ");
+        status.textContent = prepared.available ? "Ready to export " + (prepared.metadata.title || book.title) + "." : "Configure FFmpeg with AAC support, then review this export again.";
+        encode.disabled = !prepared.available;
+      } catch (err) { plan = null; status.textContent = "Could not prepare export: " + err.message; }
+      finally { review.disabled = false; }
+    });
+    encode.addEventListener("click", async function () {
+      if (!plan) { return; }
+      if (audiobookM4BBusy) { status.textContent = "Another M4B export is running. Wait for it to finish."; return; }
+      audiobookM4BBusy = true;
+      controller = new AbortController();
+      encode.disabled = true;
+      review.disabled = true;
+      select.disabled = true;
+      cancel.hidden = false;
+      var record = await exportAudiobookM4B(book.id, plan, status, controller.signal);
+      audiobookM4BBusy = false;
+      cancel.hidden = true;
+      controller = null;
+      review.disabled = false;
+      select.disabled = false;
+      if (record) {
+        download.href = record.url;
+        download.download = (record.metadata && record.metadata.title || book.title) + ".m4b";
+        download.textContent = "Download M4B · " + (record.renderId || "original master");
+        download.hidden = false;
+        refreshLibrary(true);
+      }
+      plan = null;
+    });
+    cancel.addEventListener("click", function () { if (controller) { controller.abort(); } });
+    details.appendChild(summary);
+    var actions = createElement("div", "action-row");
+    [review, encode, cancel, download].forEach(function (element) { actions.appendChild(element); });
+    details.appendChild(actions);
+    details.appendChild(status);
+    (book.exports || []).forEach(function (record) {
+      if (record.format !== "m4b") { return; }
+      var link = createElement("a", "secondary-button", "Download M4B · " + (record.renderId || "original master") + " · " + (record.metadata.title || book.title));
+      if (record.unavailableReason) { details.appendChild(createElement("p", "hint", record.unavailableReason)); return; }
+      link.href = record.url;
+      link.download = (record.metadata.title || book.title) + ".m4b";
+      details.appendChild(link);
+    });
+    item.appendChild(details);
+  }
+
   function audiobookSavedNarrator(book) {
     var id = book.voiceId || (book.synthesisIdentity && book.synthesisIdentity.voice && book.synthesisIdentity.voice.id) || "";
     if (id && id !== "default") {
@@ -8217,6 +8323,7 @@
       return item;
     }
     appendAudiobookBookDetails(item, book);
+    appendAudiobookM4B(item, book);
     appendAudiobookAttempts(item, book);
     item.addEventListener("click", function (event) {
       if (event.target.closest("button,input,textarea,select,details,a,label")) { return; }
@@ -8231,12 +8338,14 @@
   }
 
   async function refreshAudiobooks(silent) {
+    if (audiobookM4BBusy) { return; }
     try {
       var response = await fetch("/v1/audiobooks", { method: "GET" });
       if (!response.ok) {
         return;
       }
       var payload = await response.json();
+      if (audiobookM4BBusy) { return; }
       var books = payload.audiobooks || [];
       var interrupted = payload.interrupted || [];
       audiobookShelf.textContent = "";
@@ -10745,11 +10854,15 @@
     if (artifact && artifact.url) {
       var download = createElement("button", "plain compact-button", artifact.label || "Download");
       download.type = "button";
+      download.disabled = Boolean(artifact.disabled_reason);
+      if (artifact.disabled_reason) { download.title = artifact.disabled_reason; }
       download.addEventListener("click", function () {
+        if (artifact.disabled_reason) { return; }
         var extensions = { "audio/wav": "wav", "audio/mpeg": "mp3", "audio/flac": "flac", "audio/ogg": "opus", "image/png": "png" };
         downloadURL(artifact.url, entry.name + "." + (extensions[artifact.content_type] || entry.subtype || "bin"));
       });
       actions.appendChild(download);
+      if (artifact.disabled_reason) { actions.appendChild(createElement("span", "hint", artifact.disabled_reason)); }
     }
     if (launch && launch.url) {
       var open = createElement("a", "secondary-button", launch.label || "Open");
@@ -10807,6 +10920,8 @@
     var timestamp = libraryTimestamp(entry);
     if (timestamp) { detail.push(timestamp); }
     if (entry.relationship) { detail.push("from " + entry.relationship.name); }
+    if (metadata.author) { detail.push("Author: " + metadata.author); }
+    if (metadata.narrator) { detail.push("Narrator: " + metadata.narrator); }
     ["status", "fitness", "bitrate", "duration_seconds", "duration_ms", "tracks", "revision"].forEach(function (key) {
       if (metadata[key]) {
         var suffix = key === "duration_seconds" ? "s" : (key === "duration_ms" ? "ms" : "");

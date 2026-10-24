@@ -207,3 +207,19 @@ func readModelFixture() ReadModelSources {
 		},
 	}
 }
+
+func TestAudiobookM4BEntriesRetainRenderAndMetadataSnapshots(t *testing.T) {
+	book := audiobook.Manifest{ID: "book_1", Title: "Current edited title", Exports: []audiobook.ExportRecord{
+		{Format: "m4b", RenderID: "render-0001", Metadata: audiobook.BookMetadata{Title: "Original title", Author: "Original author", Narrator: "Ada"}, URL: "/original.m4b"},
+		{Format: "m4b", RenderID: "render-0002", Metadata: audiobook.BookMetadata{Title: "New title"}, URL: "/new.m4b", UnavailableReason: "M4B file is missing"},
+	}}
+	entries := audiobookEntries(book)
+	first := findEntry(t, entries, KindExport, "book_1/exports/render-0001/m4b")
+	if first.Name != "Original title — render-0001 M4B" || first.Relationship == nil || first.Relationship.Kind != KindRenderRevision || first.Relationship.ID != "book_1/render/render-0001" || first.Metadata["author"] != "Original author" || first.ArtifactAction.ContentType != "audio/mp4" || first.ArtifactAction.URL != "/original.m4b" {
+		t.Fatal(first)
+	}
+	second := findEntry(t, entries, KindExport, "book_1/exports/render-0002/m4b")
+	if second.ArtifactAction.DisabledReason != "M4B file is missing" {
+		t.Fatal(second)
+	}
+}

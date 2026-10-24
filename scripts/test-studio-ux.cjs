@@ -467,6 +467,38 @@ test('book details save through the audiobook owner and clearly report a rejecte
   }
 });
 
+test('M4B export submits the reviewed render and master identity and reports cancellation', async () => {
+  for (const cancelled of [false,true]) {
+    let request;
+    const status={};
+    const plan={renderId:'render-0002',masterSha256:'reviewed-hash'};
+    const signal={};
+    const context=load(['exportAudiobookM4B'],{
+      fetch:async(url,options)=>{request=[url,options];if(cancelled){const e=new Error('cancelled');e.name='AbortError';throw e;}return{ok:true,json:async()=>({url:'/delivery.m4b',renderId:'render-0002'})};},
+      readErrorBody:async()=>'',
+    });
+    const record=await context.exportAudiobookM4B('book_1',plan,status,signal);
+    assert.equal(request[0],'/v1/audiobooks/book_1/exports/m4b');
+    assert.deepEqual(JSON.parse(request[1].body),plan);
+    assert.equal(request[1].signal,signal);
+    if(cancelled){assert.equal(record,null);assert.match(status.textContent,/cancelled/i);}else{assert.equal(record.renderId,'render-0002');assert.match(status.textContent,/ready/i);}
+  }
+});
+
+test('shelf refresh cannot remove an active M4B export and its cancel control', async () => {
+  for (const startedBeforeRefresh of [true,false]) {
+    let requests=0;
+    const shelf={textContent:'Export and cancel controls'};
+    const context=load(['refreshAudiobooks'],{
+      audiobookM4BBusy:startedBeforeRefresh,audiobookShelf:shelf,
+      fetch:async()=>{requests++;return{ok:true,json:async()=>{context.audiobookM4BBusy=true;return{audiobooks:[],interrupted:[]};}};},
+    });
+    await context.refreshAudiobooks(true);
+    assert.equal(shelf.textContent,'Export and cancel controls');
+    assert.equal(requests,startedBeforeRefresh?0:1);
+  }
+});
+
 test('Library dates prefer real updates and fall back from missing, zero or invalid updates', () => {
   const context = load(['libraryTimestamp'], { Date });
   const created = '2026-09-10T08:28:42.799Z';
