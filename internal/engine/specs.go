@@ -739,6 +739,24 @@ func ProbeEncodedAudioSpec(path string) Spec {
 	}
 }
 
+// M4BSpec encodes one identified audiobook master and its owner-written
+// FFmetadata chapter map. Paths are supplied by production, never by HTTP.
+func M4BSpec(input, output, metadata, cover string, format wav.Format) Spec {
+	return Spec{Engine: "ffmpeg", Label: "ffmpeg M4B export command", Timeout: DefaultTranscodeTimeout, InputPath: input, OutputPath: output, BuildArgs: func(in, out string) []string {
+		args := []string{"-nostdin", "-y", "-i", in, "-f", "ffmetadata", "-i", metadata}
+		if cover != "" {
+			args = append(args, "-i", cover)
+		}
+		args = append(args, "-map", "0:a:0", "-map_metadata", "1", "-map_chapters", "1", "-c:a", "aac", "-b:a", "96k", "-ar", fmt.Sprint(format.SampleRate), "-ac", fmt.Sprint(format.Channels))
+		if cover != "" {
+			args = append(args, "-map", "2:v:0", "-c:v", "copy", "-disposition:v:0", "attached_pic")
+		}
+		return append(args, "-movflags", "+faststart", "-f", "mp4", out)
+	}, ValidateOutput: func(path string) error {
+		return ValidateEncodedAudio(path, AudioFormat{ID: "m4b", ContentType: "audio/mp4", Label: "M4B"})
+	}}
+}
+
 // DecodeAudioSpec turns anything ffmpeg understands into the one thing every
 // browser does: 16-bit PCM in a WAV. This is the escape hatch for the files
 // the Extractor's client-side decoder refuses — old MPEG-1/2 radio rips,

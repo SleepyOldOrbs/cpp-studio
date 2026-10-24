@@ -129,6 +129,7 @@ type VerificationSummary struct {
 // Manifest describes either a legacy finished audiobook or a versioned durable
 // Audiobook production. Versioned-only fields are omitted for legacy manifests.
 type Manifest struct {
+	Exports                  []ExportRecord       `json:"exports,omitempty"`
 	Metadata                 *BookMetadata        `json:"metadata,omitempty"`
 	Cover                    *BookCover           `json:"cover,omitempty"`
 	SampleRate               uint32               `json:"sampleRate,omitempty"`

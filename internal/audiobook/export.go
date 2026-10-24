@@ -64,6 +64,9 @@ func (s *Store) editableFinalBook(id string) (Manifest, error) {
 	if !ok {
 		return Manifest{}, ErrProductionNotFound
 	}
+	if book.ID != id {
+		return Manifest{}, ErrStoreCorrupt
+	}
 	if book.Status != "" && book.Status != ProductionStatusComplete {
 		return Manifest{}, ErrProductionActive
 	}

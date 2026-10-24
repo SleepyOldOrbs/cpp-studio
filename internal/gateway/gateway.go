@@ -177,6 +177,22 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 		ResolveVoice:  r.resolveAudiobookVoice,
 		Jobs:          r.jobs,
 	}
+	if _, ok := cfg.Engines["ffmpeg"]; ok {
+		audiobookOptions.EncodeM4B = func(ctx context.Context, in, out, metadata, cover string, format wav.Format) error {
+			available, err := r.audioEncoders(ctx)
+			if err != nil {
+				return fmt.Errorf("%w: %v", audiobook.ErrExportUnavailable, err)
+			}
+			if !available["aac"] {
+				return audiobook.ErrExportUnavailable
+			}
+			if _, err := r.engines.Run(ctx, engine.M4BSpec(in, out, metadata, cover, format)); err != nil {
+				return err
+			}
+			_, err = r.engines.Run(ctx, engine.ProbeEncodedAudioSpec(out))
+			return err
+		}
+	}
 	if whisperConfig, ok := cfg.Engines["whisper"]; ok {
 		verifierIdentity := fullSynthesisFingerprint(whisperConfig)
 		audiobookOptions.Verify = func(ctx context.Context, source string, wavBytes []byte) (audiobook.Verification, error) {
@@ -1644,7 +1660,7 @@ func writeAudiobookError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case errors.Is(err, audiobook.ErrProductionNotFound):
 		status = http.StatusNotFound
-	case errors.Is(err, audiobook.ErrVerificationUnavailable):
+	case errors.Is(err, audiobook.ErrVerificationUnavailable), errors.Is(err, audiobook.ErrExportUnavailable):
 		status = http.StatusServiceUnavailable
 	case errors.Is(err, audiobook.ErrProductionNotInterrupted),
 		errors.Is(err, audiobook.ErrSynthesisIdentityChanged),
@@ -1660,6 +1676,58 @@ func writeAudiobookError(w http.ResponseWriter, err error) {
 func (r *router) handleAudiobook(w http.ResponseWriter, req *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(req.URL.Path, "/v1/audiobooks/"), "/")
 	parts := strings.Split(rest, "/")
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "exports" {
+		if parts[2] == "plan" {
+			if !requireMethod(w, req, http.MethodGet) {
+				return
+			}
+			plan, err := r.audiobooks.PreviewM4B(req.Context(), parts[0], req.URL.Query().Get("render"))
+			if err != nil {
+				writeAudiobookError(w, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(plan)
+			return
+		}
+		if parts[2] == "m4b" {
+			switch req.Method {
+			case http.MethodPost:
+				req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
+				var request audiobook.M4BExportRequest
+				decoder := json.NewDecoder(req.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&request); err != nil {
+					writeJSONError(w, http.StatusBadRequest, "invalid M4B export request: "+err.Error())
+					return
+				}
+				record, err := r.audiobooks.ExportM4B(req.Context(), parts[0], request)
+				if err != nil {
+					writeAudiobookError(w, err)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(record)
+			case http.MethodGet:
+				path, record, err := r.audiobooks.ExportPath(parts[0], req.URL.Query().Get("render"))
+				if err != nil {
+					writeAudiobookError(w, err)
+					return
+				}
+				target := record.RenderID
+				if target == "" {
+					target = "original"
+				}
+				w.Header().Set("Content-Type", "audio/mp4")
+				w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": "audiobook-" + parts[0] + "-" + target + ".m4b"}))
+				http.ServeFile(w, req, path)
+			default:
+				w.Header().Set("Allow", "GET, POST")
+				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+			return
+		}
+	}
 	if len(parts) == 2 && parts[0] != "" && parts[1] == "metadata" {
 		if !requireMethod(w, req, http.MethodPut) {
 			return

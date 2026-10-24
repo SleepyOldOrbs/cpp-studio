@@ -7409,6 +7409,54 @@ func TestAudiobookBookDetailsAndCoverEndpoints(t *testing.T) {
 	}
 }
 
+func TestAudiobookM4BPlanExportAndDownloadRoutes(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{})
+	r := NewRouter(cfg, lifecycle.NewManager(cfg)).(*router)
+	manager := audiobook.NewManager(audiobook.ManagerOptions{RootDir: "out/audiobooks", Jobs: r.jobs, Synthesize: func(context.Context, audiobook.SynthesisRequest) ([]byte, error) {
+		return wav.SyntheticTone(16000), nil
+	}, EncodeM4B: func(ctx context.Context, in, out, metadata, cover string, format wav.Format) error {
+		return os.WriteFile(out, []byte("\x00\x00\x00\x20ftypM4A fixture export"), 0o600)
+	}})
+	r.audiobooks = manager
+	id, _, err := manager.Create(context.Background(), audiobook.DocumentRequest{Filename: "book.txt", Data: []byte("One short chapter.")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := waitGatewayAudiobookJob(t, r, id); job.Status != "complete" {
+		t.Fatal(job)
+	}
+	preview := httptest.NewRecorder()
+	r.ServeHTTP(preview, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/"+id+"/exports/plan", nil))
+	if preview.Code != http.StatusOK {
+		t.Fatal(preview.Code, preview.Body.String())
+	}
+	var plan audiobook.M4BExportPlan
+	if err := json.Unmarshal(preview.Body.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	request, _ := json.Marshal(audiobook.M4BExportRequest{RenderID: plan.RenderID, MasterSHA256: plan.MasterSHA256})
+	exported := httptest.NewRecorder()
+	r.ServeHTTP(exported, httptest.NewRequest(http.MethodPost, "/v1/audiobooks/"+id+"/exports/m4b", bytes.NewReader(request)))
+	if exported.Code != http.StatusOK {
+		t.Fatal(exported.Code, exported.Body.String())
+	}
+	var record audiobook.ExportRecord
+	if err := json.Unmarshal(exported.Body.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	download := httptest.NewRecorder()
+	r.ServeHTTP(download, httptest.NewRequest(http.MethodGet, record.URL, nil))
+	if download.Code != http.StatusOK || download.Header().Get("Content-Type") != "audio/mp4" || !strings.Contains(download.Body.String(), "ftypM4A") {
+		t.Fatal("wrong export response", download.Code, download.Body.String())
+	}
+	unsafe := httptest.NewRecorder()
+	r.ServeHTTP(unsafe, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/"+id+"/exports/m4b?render=../../outside", nil))
+	if unsafe.Code != http.StatusNotFound {
+		t.Fatal("unsafe render accepted", unsafe.Code)
+	}
+}
+
 func TestAudiobookOptionsRejectUnknownDuplicateSeedAndLegacyUse(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cfg := testConfig(map[string]config.EngineConfig{
