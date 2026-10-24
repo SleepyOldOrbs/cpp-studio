@@ -368,7 +368,7 @@ func NormalizeRequest(req Request) (Request, error) {
 			req.PromptSpec = DramaBoxPromptSpec{SpeakerPhrase: DefaultSpeakerPhrase, AdvancedDirection: req.Direction}
 			req.AcceptPromptWarnings = true
 		}
-		evaluation, err := EvaluateDramaBoxPrompt(req.PromptSpec, req.Text)
+		evaluation, err := evaluateRequestPrompt(req)
 		if err != nil {
 			return Request{}, err
 		}
@@ -470,7 +470,7 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 	}
 	var promptEvaluation PromptEvaluation
 	if req.EngineID == DramaBoxEngineID {
-		promptEvaluation, err = EvaluateDramaBoxPrompt(req.PromptSpec, req.Text)
+		promptEvaluation, err = evaluateRequestPrompt(req)
 		if err != nil {
 			return "", 0, err
 		}

@@ -10,6 +10,20 @@ test('pronunciation highlighting uses UTF-8 byte offsets without splitting Unico
   assert.deepEqual(JSON.parse(JSON.stringify(parts)), [{text:'é ',matched:false},{text:'Jaymz',matched:true},{text:'!',matched:false}]);
 });
 
+test('dictionary loading locks replacement edits until an existing baseline is visible', async () => {
+  let respond;const editor={disabled:false}, reload={disabled:false};let visible=[];
+  const context=load(['loadPronunciationRules','setPronunciationDocument','syncPronunciationEditor'],{
+    pronunciationLoaded:false,pronunciationDirty:false,pronunciationLoading:false,pronunciationRules:{replaceChildren(){visible=[];}},pronunciationStatus:{},
+    document:{getElementById:id=>id==='pronunciationEditor'?editor:reload},appendPronunciationRule:rule=>visible.push(rule),
+    fetch:()=>new Promise(resolve=>{respond=resolve;}),ensureOk:async()=>{},
+  });
+  const pending=context.loadPronunciationRules();assert.equal(editor.disabled,true);
+  respond({json:async()=>({version:1,rules:[{term:'James',replacement:'Jaymz'}]})});await pending;
+  assert.equal(editor.disabled,false);assert.equal(visible[0].term,'James');assert.equal(context.pronunciationLoaded,true);
+  context.fetch=async()=>{throw Error('Offline');};await context.loadPronunciationRules(true);
+  assert.equal(visible[0].term,'James','failed reload must preserve baseline');
+});
+
 test('analysis preparation decodes at 16 kHz and writes mono PCM16 without modifying the source', async () => {
   const original = new File(['original bytes'], 'stereo-48k.wav');
   const context = load(['prepareAnalysisAudio', 'encodeWav', 'writeAscii'], {

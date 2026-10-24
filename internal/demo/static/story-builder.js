@@ -578,6 +578,28 @@
     }));
   }
 
+  async function previewPronunciationLines(sources, language, rules) {
+    const frozen = await request("/v1/pronunciation/preview", {method:"POST",body:JSON.stringify({source:"",language,...(rules === undefined ? {} : {rules})})});
+    const lines=[];let batch=[];
+    const bodyFor = values => JSON.stringify({sources:values,language,rules:frozen.snapshot.rules});
+    const encoder=new TextEncoder(), envelopeBytes=encoder.encode(bodyFor([])).length;
+    let batchBytes=envelopeBytes;
+    const send = async () => {
+      if (!batch.length) return;
+      const result=await request("/v1/pronunciation/preview",{method:"POST",body:bodyFor(batch)});
+      if (result.snapshot.fingerprint!==frozen.snapshot.fingerprint) throw new Error("Pronunciation policy changed during preview. Refresh and try again.");
+      lines.push(...result.lines);batch=[];batchBytes=envelopeBytes;
+    };
+    for (const source of sources) {
+      const sourceBytes=encoder.encode(JSON.stringify(source)).length;
+      if (envelopeBytes+sourceBytes>2*1024*1024) throw new Error("Pronunciation rules and this line exceed the preview limit. Reduce the rule set.");
+      if (batch.length && (batch.length>=512 || batchBytes+sourceBytes+1>2*1024*1024)) await send();
+      batchBytes+=sourceBytes+(batch.length?1:0);
+      batch.push(source);
+    }
+    await send();return {snapshot:frozen.snapshot,lines};
+  }
+
   async function previewProjectPronunciation(clear = false) {
     const project = currentProject(); if (!project) return;
     const language = clear ? (project.language || "en") : pronunciationLanguage.value.trim();
@@ -589,8 +611,8 @@
     try {
       const sources = clips.map(clip => clip.text);
       const [next, previous] = await Promise.all([
-        request("/v1/pronunciation/preview", {method:"POST", body:JSON.stringify({sources,language,...(clear ? {rules:[]} : {})})}),
-        request("/v1/pronunciation/preview", {method:"POST", body:JSON.stringify({sources,language:project.language || language,rules:project.pronunciation?.rules || []})}),
+        previewPronunciationLines(sources,language,clear ? [] : undefined),
+        previewPronunciationLines(sources,project.language || language,project.pronunciation?.rules || []),
       ]);
       if (currentProject()?.id !== projectID || editSession.saveVersion() !== version) throw new Error("The script changed while previewing. Preview again.");
       if (next.lines.some(line => Array.from(line.spoken).length > 4000)) throw new Error("A corrected line exceeds 4,000 characters. Split that line before applying rules.");

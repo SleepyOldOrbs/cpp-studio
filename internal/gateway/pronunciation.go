@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"cpp-studio/internal/pronunciation"
+	"cpp-studio/internal/storybuilder"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -66,8 +67,8 @@ func (r *router) handlePronunciation(w http.ResponseWriter, req *http.Request) {
 			Lines    []pronunciation.Resolution `json:"lines,omitempty"`
 		}{Resolution: resolution, Snapshot: snapshot}
 		if input.Sources != nil {
-			if len(input.Sources) > 1000 {
-				err = fmt.Errorf("preview at most 1000 dialogue lines at a time")
+			if len(input.Sources) > storybuilder.MaxClips {
+				err = fmt.Errorf("preview at most %d dialogue lines at a time", storybuilder.MaxClips)
 				break
 			}
 			lines := make([]pronunciation.Resolution, 0, len(input.Sources))

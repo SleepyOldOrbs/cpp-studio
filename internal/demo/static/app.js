@@ -6784,6 +6784,7 @@
   // --- Pronunciation dictionary ----------------------------------------
   var pronunciationLoaded = false;
   var pronunciationDirty = false;
+  var pronunciationLoading = false;
   var pronunciationRules = document.getElementById("pronunciationRules");
   var pronunciationStatus = document.getElementById("pronunciationStatus");
 
@@ -6826,25 +6827,36 @@
     });
   }
 
+  function syncPronunciationEditor() {
+    document.getElementById("pronunciationEditor").disabled = pronunciationLoading || !pronunciationLoaded;
+    document.getElementById("pronunciationReload").disabled = pronunciationLoading;
+  }
+
+  function setPronunciationDocument(doc) {
+    pronunciationRules.replaceChildren(); doc.rules.forEach(appendPronunciationRule); pronunciationLoaded = true; pronunciationDirty = false;
+    pronunciationStatus.textContent = doc.rules.length + " saved rules. Existing productions keep their own rules.";
+  }
+
   async function loadPronunciationRules(force) {
-    if (!force && (pronunciationLoaded || pronunciationDirty)) return;
+    if (pronunciationLoading || (!force && pronunciationLoaded)) return;
+    pronunciationLoading = true; syncPronunciationEditor();
     try {
       var response = await fetch("/v1/pronunciation"); await ensureOk(response); var doc = await response.json();
-      if (!force && pronunciationDirty) return;
-      pronunciationRules.replaceChildren(); doc.rules.forEach(appendPronunciationRule); pronunciationLoaded = true; pronunciationDirty = false;
-      pronunciationStatus.textContent = doc.rules.length + " saved rules. Existing productions keep their own rules.";
-    } catch (error) { pronunciationStatus.textContent = error.message; }
+      setPronunciationDocument(doc);
+    } catch (error) { pronunciationStatus.textContent = error.message + ". Reload saved rules before editing."; }
+    finally { pronunciationLoading = false; syncPronunciationEditor(); }
   }
   document.getElementById("pronunciationAdd").addEventListener("click", function () { appendPronunciationRule({}); pronunciationDirty = true; });
   document.getElementById("pronunciationReload").addEventListener("click", function () { loadPronunciationRules(true); });
   document.getElementById("pronunciationSave").addEventListener("click", async function () {
-    var button = this; button.disabled = true;
+    if (!pronunciationLoaded || pronunciationLoading) return;
+    pronunciationLoading = true; syncPronunciationEditor();
     var sent = JSON.stringify({ version: 1, rules: currentPronunciationRules() });
     try {
       var response = await fetch("/v1/pronunciation", { method: "PUT", headers: { "Content-Type": "application/json" }, body: sent }); await ensureOk(response);
-      pronunciationDirty = sent !== JSON.stringify({ version: 1, rules: currentPronunciationRules() });
-      pronunciationStatus.textContent = pronunciationDirty ? "Saved. Newer edits still need saving." : "Rules saved. Apply them explicitly to a production.";
-    } catch (error) { pronunciationStatus.textContent = error.message; } finally { button.disabled = false; }
+      pronunciationDirty = false;
+      pronunciationStatus.textContent = "Rules saved. Apply them explicitly to a production.";
+    } catch (error) { pronunciationStatus.textContent = error.message; } finally { pronunciationLoading = false; syncPronunciationEditor(); }
   });
   document.getElementById("pronunciationPreview").addEventListener("click", async function () {
     try {
@@ -6860,14 +6872,15 @@
     } catch (error) { pronunciationStatus.textContent = error.message; }
   });
   document.getElementById("pronunciationImport").addEventListener("click", async function () {
+    if (!pronunciationLoaded || pronunciationLoading) return;
     var file = document.getElementById("pronunciationImportFile").files[0], mode = document.getElementById("pronunciationImportMode").value;
     if (!file || !mode) { pronunciationStatus.textContent = "Choose a JSON file and an explicit import mode."; return; }
     if (pronunciationDirty) { pronunciationStatus.textContent = "Save or discard current edits before importing."; return; }
     if (file.size > 2 * 1024 * 1024) { pronunciationStatus.textContent = "Rules JSON must be at most 2 MiB."; return; }
-    var button = this; button.disabled = true;
+    pronunciationLoading = true; syncPronunciationEditor();
     try {
-      var response = await fetch("/v1/pronunciation/import?mode=" + mode, { method: "POST", headers: { "Content-Type": "application/json" }, body: file }); await ensureOk(response); await loadPronunciationRules(true);
-    } catch (error) { pronunciationStatus.textContent = error.message; } finally { button.disabled = false; }
+      var response = await fetch("/v1/pronunciation/import?mode=" + mode, { method: "POST", headers: { "Content-Type": "application/json" }, body: file }); await ensureOk(response); setPronunciationDocument(await response.json());
+    } catch (error) { pronunciationStatus.textContent = error.message; } finally { pronunciationLoading = false; syncPronunciationEditor(); }
   });
   window.addEventListener("hashchange", function () { if (activePageFromHash() === "pronunciation") loadPronunciationRules(); });
   if (activePageFromHash() === "pronunciation") loadPronunciationRules();

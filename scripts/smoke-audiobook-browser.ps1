@@ -27,12 +27,19 @@ $code = @'
 async page => {
   const assert = (ok, why) => { if (!ok) throw new Error(why); };
   await page.setViewportSize({width: 1400, height: 1200});
+  await page.request.put('__BASE__/v1/pronunciation',{data:{version:1,rules:[{term:'James',replacement:'Jaymz',language:'en'}]}});
+  let releaseLoad;const loading=new Promise(resolve=>{releaseLoad=resolve;});
+  await page.route('**/v1/pronunciation',async route=>{if(route.request().method()==='GET')await loading;await route.continue();});
   await page.goto('__BASE__/demo/#pronunciation');
+  assert(await page.locator('#pronunciationAdd').isDisabled()&&await page.locator('#pronunciationSave').isDisabled(),'dictionary allowed replacement before existing rules loaded');
+  releaseLoad();
   await page.locator('#pronunciationStatus').filter({hasText:'saved rules'}).waitFor();
+  await page.unroute('**/v1/pronunciation');
+  assert(await page.locator('[data-rule-field="term"]').inputValue()==='James','existing baseline was lost');
   await page.locator('#pronunciationAdd').click();
-  await page.locator('[data-rule-field="term"]').fill('James');
-  await page.locator('[data-rule-field="replacement"]').fill('Jaymz');
-  await page.locator('[data-rule-field="language"]').fill('en');
+  await page.locator('[data-rule-field="term"]').last().fill('York');
+  await page.locator('[data-rule-field="replacement"]').last().fill('Yawk');
+  await page.locator('[data-rule-field="language"]').last().fill('en');
   await page.locator('#pronunciationLanguage').fill('en');
   await page.locator('#pronunciationPreview').click();
   await page.locator('#pronunciationPreviewResult mark').filter({hasText:'Jaymz'}).waitFor();
@@ -115,7 +122,7 @@ async page => {
   await page.locator('#audiobookApplyPronunciation').evaluate(button => button.closest('details').open=true);
   await page.locator('#audiobookPronunciationLanguage').fill('en');
   await page.locator('#audiobookApplyPronunciation').click();
-  await page.locator('#audiobookPronunciationStatus').filter({hasText:'1 saved rules applied'}).waitFor();
+  await page.locator('#audiobookPronunciationStatus').filter({hasText:'2 saved rules applied'}).waitFor();
   await upload('# Name\nJames opens the door.');
   await page.locator('#audiobookPreviewButton').click();
   await page.locator('#audiobookChapterPlan mark').filter({hasText:'Jaymz'}).waitFor();

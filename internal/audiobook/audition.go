@@ -37,7 +37,7 @@ func (m *Manager) AuditionDocument(ctx context.Context, document DocumentRequest
 	}
 	request := resolved.Request
 	if request.EngineID == DramaBoxEngineID {
-		evaluation, err := EvaluateDramaBoxPrompt(request.PromptSpec, request.Text)
+		evaluation, err := evaluateRequestPrompt(request)
 		if err != nil {
 			return "", err
 		}

@@ -1548,11 +1548,11 @@
       <header class="module-head"><h2>Pronunciation corrections</h2></header>
       <div class="module-body">
         <p>Respell recurring names and phrases for narration. Matching is case-sensitive, uses whole words, and runs once. Apply saved rules explicitly in Audiobook or Story Builder; saved productions keep their own snapshot.</p>
+        <fieldset id="pronunciationEditor" class="pronunciation-editor" disabled>
         <div id="pronunciationRules" class="pronunciation-rules"></div>
         <div class="extract-selection-actions">
           <button id="pronunciationAdd" class="secondary" type="button">Add rule</button>
           <button id="pronunciationSave" class="primary" type="button">Save rules</button>
-          <button id="pronunciationReload" class="secondary" type="button">Discard edits</button>
           <button id="pronunciationExport" class="secondary" type="button">Export saved JSON</button>
         </div>
         <details><summary>Import JSON</summary>
@@ -1560,6 +1560,8 @@
           <label>Import mode <select id="pronunciationImportMode"><option value="">Choose…</option><option value="merge">Merge new rules (conflicts are rejected)</option><option value="replace">Replace all saved rules</option></select></label>
           <button id="pronunciationImport" class="secondary" type="button">Import and save</button>
         </details>
+        </fieldset>
+        <button id="pronunciationReload" class="secondary" type="button">Reload saved rules / discard edits</button>
         <label>Preview language code <input id="pronunciationLanguage" type="text" placeholder="en" maxlength="35"></label>
         <label>Original text <textarea id="pronunciationSource" rows="3">James visited New York.</textarea></label>
         <button id="pronunciationPreview" class="secondary" type="button">Preview current edits</button>
