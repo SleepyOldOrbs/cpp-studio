@@ -18,6 +18,7 @@ $configPath = Join-Path $runtimeDir 'config.json'
 @{ gateway = @{ host = '127.0.0.1'; port = $GatewayPort }; engines = @{
   audio = @{ command = $fixtureExe; args = @('speech'); mode = 'subprocess'; requestTimeoutSeconds = 45 }
   dramabox = @{ command = $fixtureExe; args = @('speech'); mode = 'subprocess'; requestTimeoutSeconds = 45 }
+  omnivoice = @{ command = $fixtureExe; args = @('speech'); mode = 'subprocess'; requestTimeoutSeconds = 45 }
 }} | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $configPath
 $baseURL = "http://127.0.0.1:$GatewayPort"
 $session = "audiobook-smoke-$PID"
@@ -26,6 +27,18 @@ $code = @'
 async page => {
   const assert = (ok, why) => { if (!ok) throw new Error(why); };
   await page.setViewportSize({width: 1400, height: 1200});
+  await page.goto('__BASE__/demo/#pronunciation');
+  await page.locator('#pronunciationStatus').filter({hasText:'saved rules'}).waitFor();
+  await page.locator('#pronunciationAdd').click();
+  await page.locator('[data-rule-field="term"]').fill('James');
+  await page.locator('[data-rule-field="replacement"]').fill('Jaymz');
+  await page.locator('[data-rule-field="language"]').fill('en');
+  await page.locator('#pronunciationLanguage').fill('en');
+  await page.locator('#pronunciationPreview').click();
+  await page.locator('#pronunciationPreviewResult mark').filter({hasText:'Jaymz'}).waitFor();
+  assert((await page.locator('#pronunciationPreviewResult').innerText()).includes('James'), 'original text missing from preview');
+  await page.locator('#pronunciationSave').click();
+  await page.locator('#pronunciationStatus').filter({hasText:'Rules saved'}).waitFor();
   await page.goto('__BASE__/demo/#audiobook');
   await page.locator('#audiobookEngineSelect option[value="audio"]:not([disabled])').waitFor({state:'attached'});
   const source = '# Opening\nThe old clock chimed.\n# Ending\nThe town fell quiet.'.replace(/\\n/g, '\n');
@@ -98,8 +111,48 @@ async page => {
   shelf = await page.request.get('__BASE__/v1/audiobooks').then(r => r.json());
   const drama = shelf.audiobooks.find(b => b.title === 'Drama chapter fixture');
   assert(drama && drama.sections.length === 2 && drama.chapterBoundaries.length === 2, 'Drama chapter plan missing');
+  await page.locator('#audiobookEngineSelect').selectOption('audio');
+  await page.locator('#audiobookApplyPronunciation').evaluate(button => button.closest('details').open=true);
+  await page.locator('#audiobookPronunciationLanguage').fill('en');
+  await page.locator('#audiobookApplyPronunciation').click();
+  await page.locator('#audiobookPronunciationStatus').filter({hasText:'1 saved rules applied'}).waitFor();
+  await upload('# Name\nJames opens the door.');
+  await page.locator('#audiobookPreviewButton').click();
+  await page.locator('#audiobookChapterPlan mark').filter({hasText:'Jaymz'}).waitFor();
+  await page.locator('[data-audiobook-audition]').click();
+  await page.locator('#audiobookAuditionAudio').waitFor({state:'visible'});
+  await page.locator('#audiobookTitleInput').fill('Corrected name');
+  await page.locator('#audiobookNarrateButton').click();
+  await page.waitForFunction(() => document.querySelector('#audiobookStatus').textContent.includes('Complete'));
+  shelf = await page.request.get('__BASE__/v1/audiobooks').then(r=>r.json());
+  const corrected=shelf.audiobooks.find(b=>b.title==='Corrected name');
+  assert(corrected?.pronunciation?.rules[0].replacement==='Jaymz' && corrected.language==='en','book snapshot was not saved');
+
+  const actorResponse=await page.request.post('__BASE__/v1/voices',{multipart:{name:'Pronunciation actor',transcript:'A short reference.',file:{name:'ref.wav',mimeType:'audio/wav',buffer:await master.body()}}});
+  assert(actorResponse.ok(),'voice fixture failed: '+await actorResponse.text());const actor=await actorResponse.json();
+  const character=await page.request.post('__BASE__/v1/voices/'+actor.id+'/characters',{data:{name:'Name reader',direction:'Calm and clear'}}).then(r=>r.json());
+  let project=await page.request.post('__BASE__/v1/story-builder-projects',{data:{name:'Pronunciation project'}}).then(r=>r.json());
+  const save=await page.request.put('__BASE__/v1/story-builder-projects/'+project.id,{data:{name:project.name,revision:project.revision,tracks:[{id:'names_track',name:'Reader',type:'dialogue',order:0,character_voice_id:character.id,clips:[{id:'name_line',label:'Name line',type:'dialogue',text:'James opens the door.',start_ms:0,duration_ms:8000}]}]}});
+  assert(save.ok(),'project fixture failed: '+await save.text());project=await save.json();
+  await page.goto('__BASE__/demo/story-builder.html?project='+project.id);
+  await page.locator('#storyBuilderNameInput').waitFor({state:'visible'});
+  await page.locator('.project-pronunciation > summary').click();
+  await page.locator('#storyBuilderPronunciationLanguage').fill('en');
+  await page.locator('#storyBuilderPronunciationPreview').click();
+  await page.locator('#storyBuilderPronunciationResult mark').filter({hasText:'Jaymz'}).waitFor();
+  await page.locator('#storyBuilderPronunciationApply').click();
+  await page.waitForFunction(()=>document.querySelector('#storyBuilderSaveStatus').textContent==='Saved');
+  let saved=await page.request.get('__BASE__/v1/story-builder-projects/'+project.id).then(r=>r.json());
+  assert(saved.pronunciation?.rules[0].replacement==='Jaymz'&&saved.tracks[0].clips[0].text==='James opens the door.','project lost source or snapshot');
+  await page.request.put('__BASE__/v1/pronunciation',{data:{version:1,rules:[{term:'James',replacement:'Different',language:'en'}]}});
+  saved=await page.request.get('__BASE__/v1/story-builder-projects/'+project.id).then(r=>r.json());
+  assert(saved.pronunciation.rules[0].replacement==='Jaymz','global dictionary edit changed project');
+  await page.locator('#storyBuilderBuildButton').click();
+  await page.waitForFunction(()=>document.querySelector('#storyBuilderBuildStatus').dataset.state==='ready');
+  saved=await page.request.get('__BASE__/v1/story-builder-projects/'+project.id).then(r=>r.json());
+  assert(saved.tracks[0].clips[0].status==='ready','corrected dialogue did not build');
   await page.setViewportSize({width:800, height:1100});
-  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'audiobook overflows at 800px');
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'pronunciation project overflows at 800px');
   await page.screenshot({path:'__SCREEN__', fullPage:true});
   console.log(JSON.stringify({status:'ok', book:book.id, drama:drama.id, auditionSeconds:audio.duration}));
 }

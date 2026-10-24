@@ -40,6 +40,7 @@ import (
 	"cpp-studio/internal/library"
 	"cpp-studio/internal/lifecycle"
 	"cpp-studio/internal/models"
+	"cpp-studio/internal/pronunciation"
 	"cpp-studio/internal/story"
 	"cpp-studio/internal/storybuilder"
 	"cpp-studio/internal/voice"
@@ -47,6 +48,7 @@ import (
 )
 
 type router struct {
+	pronunciation              *pronunciation.Store
 	mux                        *http.ServeMux
 	requestSequence            atomic.Uint64
 	cfg                        config.Config
@@ -114,14 +116,15 @@ const (
 // NewRouter builds the cpp-studio gateway HTTP routes.
 func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	r := &router{
-		cfg:       cfg,
-		manager:   manager,
-		engines:   engine.NewRunner(cfg.Engines, manager),
-		voices:    voice.NewStore(""),
-		jobs:      jobs.NewRegistry(),
-		library:   library.NewStore(""),
-		gpuQuery:  defaultGPUQuery,
-		ggufCache: map[string]ggufCacheEntry{},
+		pronunciation: pronunciation.NewStore(""),
+		cfg:           cfg,
+		manager:       manager,
+		engines:       engine.NewRunner(cfg.Engines, manager),
+		voices:        voice.NewStore(""),
+		jobs:          jobs.NewRegistry(),
+		library:       library.NewStore(""),
+		gpuQuery:      defaultGPUQuery,
+		ggufCache:     map[string]ggufCacheEntry{},
 	}
 	storyBuilderStoreOptions := storybuilder.StoreOptions{
 		ResolveCharacterVoice: r.resolveStoryBuilderCharacterVoice,
@@ -255,6 +258,8 @@ func NewRouter(cfg config.Config, manager *lifecycle.Manager) http.Handler {
 	mux.HandleFunc("/v1/jobs/", r.handleJob)
 	mux.HandleFunc("/v1/logs/events", r.handleBrowserLogEvent)
 	mux.HandleFunc("/v1/library", r.handleLibrary)
+	mux.HandleFunc("/v1/pronunciation", r.handlePronunciation)
+	mux.HandleFunc("/v1/pronunciation/", r.handlePronunciation)
 	mux.HandleFunc("/v1/library/", r.handleLibraryItem)
 	mux.HandleFunc("/v1/audiobooks", r.handleAudiobooks)
 	mux.HandleFunc("/v1/audiobooks/preview", r.handleAudiobookPreview)
@@ -1333,13 +1338,19 @@ func (r *router) handleAudiobooks(w http.ResponseWriter, req *http.Request) {
 			title = strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
 		}
 		voiceID := strings.TrimSpace(req.FormValue("voice"))
+		snapshot, err := decodePronunciationSnapshot(req.FormValue("pronunciation"))
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		promptSpec, err := decodeDramaBoxPromptSpec(req.FormValue("promptSpec"))
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		bookRequest, err := audiobook.NormalizeRequest(audiobook.Request{
-			PlanDigest:           strings.TrimSpace(req.FormValue("planDigest")),
+			PlanDigest:    strings.TrimSpace(req.FormValue("planDigest")),
+			Pronunciation: snapshot, Language: req.FormValue("language"),
 			Title:                title,
 			VoiceID:              voiceID,
 			EngineID:             req.FormValue("engine"),
@@ -1399,6 +1410,8 @@ func decodeDramaBoxPromptSpec(raw string) (audiobook.DramaBoxPromptSpec, error) 
 }
 
 type audiobookPreviewRequest struct {
+	Pronunciation        *pronunciation.Snapshot      `json:"pronunciation,omitempty"`
+	Language             string                       `json:"language,omitempty"`
 	EngineID             string                       `json:"engine"`
 	VoiceID              string                       `json:"voice"`
 	Direction            string                       `json:"direction"`
@@ -1428,6 +1441,7 @@ func (r *router) handleAudiobookPreview(w http.ResponseWriter, req *http.Request
 		optionsJSON = string(body.Options)
 	}
 	resolved, err := r.audiobooks.Preview(req.Context(), audiobook.Request{
+		Pronunciation: body.Pronunciation, Language: body.Language,
 		EngineID:             body.EngineID,
 		VoiceID:              strings.TrimSpace(body.VoiceID),
 		Direction:            body.Direction,
@@ -1467,6 +1481,11 @@ func (r *router) handleAudiobookDocumentPreview(w http.ResponseWriter, req *http
 		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("read uploaded file: %v", err))
 		return
 	}
+	snapshot, err := decodePronunciationSnapshot(req.FormValue("pronunciation"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	promptSpec, err := decodeDramaBoxPromptSpec(req.FormValue("promptSpec"))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
@@ -1476,7 +1495,8 @@ func (r *router) handleAudiobookDocumentPreview(w http.ResponseWriter, req *http
 		Filename: header.Filename,
 		Data:     data,
 		Request: audiobook.Request{
-			PlanDigest:           strings.TrimSpace(req.FormValue("planDigest")),
+			PlanDigest:    strings.TrimSpace(req.FormValue("planDigest")),
+			Pronunciation: snapshot, Language: req.FormValue("language"),
 			VoiceID:              strings.TrimSpace(req.FormValue("voice")),
 			EngineID:             req.FormValue("engine"),
 			Direction:            req.FormValue("direction"),
@@ -1547,12 +1567,7 @@ func writeAudiobookPreview(w http.ResponseWriter, resolved audiobook.ResolvedReq
 	promptSections := []audiobook.PromptSectionPreview{}
 	if resolved.Request.EngineID == audiobook.DramaBoxEngineID {
 		var err error
-		promptEvaluation, err = audiobook.EvaluateDramaBoxPrompt(resolved.Request.PromptSpec, resolved.Request.Text)
-		if err != nil {
-			writeAudiobookPreviewError(w, err)
-			return
-		}
-		promptSections, err = audiobook.PreviewDramaBoxDocumentSections(resolved.Request.PromptSpec, resolved.Request.Text, resolved.Plan)
+		promptEvaluation, promptSections, err = audiobook.PreviewRequestPrompt(resolved.Request)
 		if err != nil {
 			writeAudiobookPreviewError(w, err)
 			return
@@ -4397,6 +4412,9 @@ type storyBuilderProjectCreateRequest struct {
 }
 
 type storyBuilderProjectUpdateRequest struct {
+	ApplyPronunciation bool                         `json:"apply_pronunciation"`
+	Pronunciation      *pronunciation.Snapshot      `json:"pronunciation"`
+	Language           string                       `json:"language"`
 	DialogueEngine     *string                      `json:"dialogue_engine"`
 	Name               string                       `json:"name"`
 	Revision           int                          `json:"revision"`
@@ -4538,6 +4556,7 @@ func (r *router) handleStoryBuilderProject(w http.ResponseWriter, req *http.Requ
 			return
 		}
 		project, err := r.storyBuilderProjects.Update(id, storybuilder.ProjectUpdate{
+			ApplyPronunciation: body.ApplyPronunciation, Pronunciation: body.Pronunciation, Language: body.Language,
 			DialogueEngine: body.DialogueEngine,
 			Name:           body.Name, Revision: body.Revision, TimelineDurationMS: body.TimelineDurationMS,
 			Scenes: body.Scenes, Tracks: *body.Tracks, RevoiceTrackIDs: body.RevoiceTrackIDs,

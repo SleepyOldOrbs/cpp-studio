@@ -173,6 +173,14 @@ republish the manifest that job is serving.
 
 ## Story Builder Project (`internal/storybuilder`)
 
+`internal/pronunciation` owns literal respelling rules and their versioned snapshots.
+Audiobook and Story Builder apply a snapshot only through an explicit user action.
+Original source text stays intact; resolved spoken text is a separate synthesis
+input. Audiobook checkpoints retain the snapshot and spoken hashes, including on
+resume and retry. Story Builder invalidates only dialogue whose resolved speech
+changes and checks the current speech identity before attaching a take. Editing
+the local dictionary never changes an existing production or project implicitly.
+
 A Story Builder Project is one separately saved production owned by the
 Story Builder tool. Its manifest has a stable id, user-facing name, typed
 Dialogue/SFX/Music tracks, timeline clips, timestamps, and a monotonic revision.

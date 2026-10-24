@@ -90,6 +90,17 @@
         <span id="storyBuilderDialogueEngineHint">Uses each character’s Actor Voice and performance direction. Changing engine rebuilds dialogue; previous takes and masters are kept.</span>
       </div>
       <section class="render-history" aria-labelledby="storyBuilderRenderHistoryTitle">
+        <details class="project-pronunciation"><summary>Pronunciation corrections</summary>
+          <p>Preview saved rules, then explicitly apply them to this project. Original script text stays intact. Changed speech needs rebuilding; earlier takes remain available.</p>
+          <label>Language code <input id="storyBuilderPronunciationLanguage" type="text" maxlength="35" placeholder="en"></label>
+          <button id="storyBuilderPronunciationPreview" type="button">Preview saved rules</button>
+          <button id="storyBuilderPronunciationApply" type="button" disabled>Apply previewed rules</button>
+          <button id="storyBuilderPronunciationClear" type="button">Use original text</button>
+          <a href="/demo/#pronunciation" target="_blank" rel="noopener">Manage rules</a>
+          <p id="storyBuilderPronunciationStatus" role="status"></p>
+          <p id="storyBuilderPronunciationSaved"></p>
+          <div id="storyBuilderPronunciationResult"></div>
+        </details>
         <div>
           <p class="eyebrow">Delivery</p>
           <h2 id="storyBuilderRenderHistoryTitle">Rendered masters</h2>

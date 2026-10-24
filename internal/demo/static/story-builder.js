@@ -56,6 +56,10 @@
   const exampleFirstVoice = byID("storyBuilderExampleFirst");
   const exampleSecondVoice = byID("storyBuilderExampleSecond");
   const exampleSFX = byID("storyBuilderExampleSFX");
+  const pronunciationLanguage = byID("storyBuilderPronunciationLanguage");
+  const pronunciationStatus = byID("storyBuilderPronunciationStatus");
+  const pronunciationResult = byID("storyBuilderPronunciationResult");
+  let pronunciationPreview = null;
 
   let panelPosition = null;
   let projectView = "timeline";
@@ -160,12 +164,14 @@
     const mutations = new Map();
 
     const current = () => projects.find((project) => project.id === currentID) || null;
-    const snapshot = (project) => ({ scenes: clone(project.scenes), tracks: clone(project.tracks), timeline_duration_ms: project.timeline_duration_ms, dialogue_engine: project.dialogue_engine });
+    const snapshot = (project) => ({ scenes: clone(project.scenes), tracks: clone(project.tracks), timeline_duration_ms: project.timeline_duration_ms, dialogue_engine: project.dialogue_engine, pronunciation: project.pronunciation === undefined ? undefined : clone(project.pronunciation), language: project.language });
     const applySnapshot = (project, value) => {
       project.scenes = clone(value.scenes);
       project.tracks = clone(value.tracks);
       project.timeline_duration_ms = value.timeline_duration_ms;
       project.dialogue_engine = value.dialogue_engine;
+      if (value.pronunciation === undefined) delete project.pronunciation; else project.pronunciation = clone(value.pronunciation);
+      if (value.language === undefined) delete project.language; else project.language = value.language;
       normalizeTracks(project);
     };
     const pruneSelection = () => {
@@ -277,6 +283,7 @@
           project.scenes = changedDuringSave ? project.scenes : clone(saved.scenes || []);
           project.name = changedDuringSave ? project.name : saved.name;
           if (!changedDuringSave) project.dialogue_engine = saved.dialogue_engine;
+          if (!changedDuringSave) { project.pronunciation = clone(saved.pronunciation || null); project.language = saved.language || ""; }
           if (!changedDuringSave) project.tracks = clone(saved.tracks);
           projects = [project, ...projects.filter((item) => item.id !== project.id)];
           if (changedDuringSave) saveAgain = true;
@@ -559,6 +566,63 @@
       clip.source_story_id = clip.source_story_line_id = clip.source_story_take_id = "";
     }));
   }
+
+  function applyProjectPronunciation(project, snapshot, language, changedIDs) {
+    project.pronunciation = snapshot && snapshot.rules.length ? clone(snapshot) : null;
+    project.language = project.pronunciation ? language : "";
+    project.tracks.forEach(track => track.clips.forEach(clip => {
+      if (clip.type !== "dialogue" || !changedIDs.includes(clip.id)) return;
+      clip.status = "stale"; clip.build_error = ""; clip.media_error = "";
+      clip.source_id = ""; clip.source_duration_ms = clip.source_in_ms = clip.source_out_ms = 0;
+      clip.source_story_id = clip.source_story_line_id = clip.source_story_take_id = "";
+    }));
+  }
+
+  async function previewProjectPronunciation(clear = false) {
+    const project = currentProject(); if (!project) return;
+    const language = clear ? (project.language || "en") : pronunciationLanguage.value.trim();
+    if (!language) { pronunciationStatus.textContent = "Choose an explicit language code first."; return; }
+    const version = editSession.saveVersion(), projectID = project.id;
+    const clips = project.tracks.flatMap(track => track.clips).filter(clip => clip.type === "dialogue");
+    byID("storyBuilderPronunciationApply").disabled = true;
+    pronunciationPreview = null;
+    try {
+      const sources = clips.map(clip => clip.text);
+      const [next, previous] = await Promise.all([
+        request("/v1/pronunciation/preview", {method:"POST", body:JSON.stringify({sources,language,...(clear ? {rules:[]} : {})})}),
+        request("/v1/pronunciation/preview", {method:"POST", body:JSON.stringify({sources,language:project.language || language,rules:project.pronunciation?.rules || []})}),
+      ]);
+      if (currentProject()?.id !== projectID || editSession.saveVersion() !== version) throw new Error("The script changed while previewing. Preview again.");
+      if (next.lines.some(line => Array.from(line.spoken).length > 4000)) throw new Error("A corrected line exceeds 4,000 characters. Split that line before applying rules.");
+      pronunciationPreview = {projectID,version,language,snapshot:next.snapshot,changedIDs:clips.filter((clip,i) => next.lines[i].spoken !== previous.lines[i].spoken).map(clip=>clip.id)};
+      pronunciationResult.replaceChildren();
+      next.lines.forEach((line,i) => {
+        if (!line.substitutions.length && line.spoken === previous.lines[i].spoken) return;
+        const card=document.createElement("div"); const heading=document.createElement("strong"); heading.textContent=clips[i].label || `Line ${i+1}`;card.append(heading);
+        for (const [label,key] of [["Original","source"],["Spoken","spoken"]]) {
+          const p=document.createElement("p");p.className="pronunciation-text";p.append(`${label}: `);
+          const bytes=new TextEncoder().encode(line[key]),decoder=new TextDecoder();let cursor=0;
+          line.substitutions.forEach(span=>{const start=span[key+"Start"],end=span[key+"End"];p.append(decoder.decode(bytes.slice(cursor,start)));const mark=document.createElement("mark");mark.textContent=decoder.decode(bytes.slice(start,end));p.append(mark);cursor=end;});p.append(decoder.decode(bytes.slice(cursor)));card.append(p);
+        } pronunciationResult.append(card);
+      });
+      pronunciationStatus.textContent=`${pronunciationPreview.changedIDs.length} lines will need rebuilding. Preview only; project rules have not changed.`;
+      byID("storyBuilderPronunciationApply").disabled=false;
+      if (clear) applyPreviewedPronunciation();
+    } catch (error) { pronunciationStatus.textContent=error.message; }
+  }
+
+  function applyPreviewedPronunciation() {
+    const preview=pronunciationPreview;
+    if (!preview || currentProject()?.id!==preview.projectID || editSession.saveVersion()!==preview.version) {pronunciationStatus.textContent="The project changed. Preview again before applying rules.";return;}
+    if (acceptTimelineEdit(project=>applyProjectPronunciation(project,preview.snapshot,preview.language,preview.changedIDs))) {
+      pronunciationStatus.textContent=`Applied ${preview.snapshot.rules.length} rules for ${preview.language}. Later dictionary edits will not change this project. Undo and Save Project use the normal project history.`;
+      pronunciationPreview=null;byID("storyBuilderPronunciationApply").disabled=true;
+    }
+  }
+
+  byID("storyBuilderPronunciationPreview").addEventListener("click",()=>previewProjectPronunciation());
+  byID("storyBuilderPronunciationApply").addEventListener("click",applyPreviewedPronunciation);
+  byID("storyBuilderPronunciationClear").addEventListener("click",()=>previewProjectPronunciation(true));
 
   function setRenderStatus(message, state = "") {
     renderStatus.textContent = message;
@@ -1263,6 +1327,7 @@
     }
     normalizeTracks(project);
     renderScript(project);
+    byID("storyBuilderPronunciationSaved").textContent = project.pronunciation ? `${project.pronunciation.rules.length} frozen rules · ${project.language}. Dictionary edits take effect only when you preview and apply them.` : "Original text. No pronunciation rules applied.";
     pruneSelection();
     const timelineDuration = timelineDurationMS(project);
     renderScenes(project);
@@ -1781,6 +1846,11 @@
     if (changedProject) {
       stopBrowserPlayback(false);
       playheadMS = 0;
+      pronunciationPreview = null;
+      pronunciationResult.replaceChildren();
+      pronunciationStatus.textContent = "";
+      pronunciationLanguage.value = project?.language || "";
+      byID("storyBuilderPronunciationApply").disabled = true;
     }
     editSession.open(project);
     editor.hidden = !project;
@@ -1883,6 +1953,7 @@
       name: project.name,
       revision: project.revision,
       dialogue_engine: project.dialogue_engine || "omnivoice",
+      apply_pronunciation: true, pronunciation: clone(project.pronunciation || null), language: project.language || "",
       timeline_duration_ms: project.timeline_duration_ms,
       tracks,
       revoice_track_ids: [track.id],
@@ -2253,6 +2324,7 @@
       name: requestedName,
       revision: project.revision,
       dialogue_engine: project.dialogue_engine || "omnivoice",
+      apply_pronunciation: true, pronunciation: clone(project.pronunciation || null), language: project.language || "",
       timeline_duration_ms: project.timeline_duration_ms,
       scenes: clone(project.scenes || []),
       tracks: clone(project.tracks),

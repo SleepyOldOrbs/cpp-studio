@@ -10,7 +10,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"cpp-studio/internal/pronunciation"
 	"cpp-studio/internal/wav"
 )
 
@@ -293,14 +295,16 @@ type DialogueBuildClip struct {
 // DialogueSynthesisInput is the current spoken content and performance identity
 // frozen when one clip enters the building state.
 type DialogueSynthesisInput struct {
-	CharacterVoiceID  string
-	EngineID          string
-	ClipID            string
-	Text              string
-	ActorVoiceID      string
-	Direction         string
-	DirectionOverride string
-	VoiceFingerprint  string
+	SourceText          string
+	PronunciationPolicy int
+	CharacterVoiceID    string
+	EngineID            string
+	ClipID              string
+	Text                string
+	ActorVoiceID        string
+	Direction           string
+	DirectionOverride   string
+	VoiceFingerprint    string
 }
 
 // DialogueBuildCandidates returns retryable dialogue in timeline order. A
@@ -327,6 +331,9 @@ func (s *Store) DialogueBuildCandidates(id string, revision int) ([]DialogueBuil
 		for _, clip := range track.Clips {
 			if clip.Type != ClipTypeDialogue || (clip.Status != DialogueStatusStale && clip.Status != DialogueStatusFailed && clip.Status != DialogueStatusBuilding) {
 				continue
+			}
+			if _, _, err := resolvedDialogue(project, clip); err != nil {
+				return nil, err
 			}
 			candidates = append(candidates, DialogueBuildClip{
 				EngineID: project.DialogueEngine,
@@ -369,9 +376,14 @@ func (s *Store) BeginDialogueBuild(id, clipID string) (DialogueSynthesisInput, e
 	if clip.DirectionOverride != "" {
 		direction = clip.DirectionOverride
 	}
+	spoken, policy, err := resolvedDialogue(project, *clip)
+	if err != nil {
+		return DialogueSynthesisInput{}, err
+	}
 	input := DialogueSynthesisInput{
+		SourceText: clip.Text, PronunciationPolicy: policy,
 		EngineID: project.DialogueEngine,
-		ClipID:   clip.ID, Text: clip.Text, ActorVoiceID: clip.ActorVoiceID, CharacterVoiceID: clip.CharacterVoiceID,
+		ClipID:   clip.ID, Text: spoken, ActorVoiceID: clip.ActorVoiceID, CharacterVoiceID: clip.CharacterVoiceID,
 		Direction: direction, DirectionOverride: clip.DirectionOverride, VoiceFingerprint: clip.VoiceFingerprint,
 	}
 	clip.Status = DialogueStatusBuilding
@@ -398,7 +410,11 @@ func (s *Store) CompleteDialogueBuild(id string, input DialogueSynthesisInput, a
 	if err != nil {
 		return Project{}, err
 	}
-	if project.DialogueEngine != input.EngineID || clip.Status != DialogueStatusBuilding || clip.Text != input.Text || clip.ActorVoiceID != input.ActorVoiceID || clip.CharacterVoiceID != input.CharacterVoiceID || clip.DirectionOverride != input.DirectionOverride ||
+	spoken, policy, err := resolvedDialogue(project, *clip)
+	if err != nil {
+		return Project{}, err
+	}
+	if project.DialogueEngine != input.EngineID || clip.Status != DialogueStatusBuilding || clip.Text != input.SourceText || spoken != input.Text || policy != input.PronunciationPolicy || clip.ActorVoiceID != input.ActorVoiceID || clip.CharacterVoiceID != input.CharacterVoiceID || clip.DirectionOverride != input.DirectionOverride ||
 		clip.VoiceFingerprint != input.VoiceFingerprint {
 		return Project{}, ErrConflict
 	}
@@ -459,6 +475,30 @@ func (s *Store) CompleteDialogueBuild(id string, input DialogueSynthesisInput, a
 		return Project{}, err
 	}
 	return project, nil
+}
+
+func resolvedDialogue(project Project, clip TimelineClip) (string, int, error) {
+	text, policy := clip.Text, 0
+	if project.Pronunciation != nil {
+		snapshot, err := pronunciation.ValidateSnapshot(project.Pronunciation)
+		if err != nil {
+			return "", 0, fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
+		if snapshot != nil {
+			var err error
+			text, err = pronunciation.Resolve(clip.Text, project.Language, snapshot.Rules)
+			if err != nil {
+				return "", 0, fmt.Errorf("%w: %v", ErrInvalid, err)
+			}
+			if text != clip.Text {
+				policy = snapshot.PolicyVersion
+			}
+		}
+	}
+	if utf8.RuneCountInString(text) > MaxDialogueTextLength {
+		return "", 0, fmt.Errorf("%w: spoken dialogue exceeds %d characters after pronunciation corrections; split this line", ErrInvalid, MaxDialogueTextLength)
+	}
+	return text, policy, nil
 }
 
 // FailDialogueBuild durably records a failed active clip for a later retry.

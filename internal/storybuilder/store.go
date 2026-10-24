@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"cpp-studio/internal/engine"
+	"cpp-studio/internal/pronunciation"
 	"cpp-studio/internal/story"
 	"cpp-studio/internal/wav"
 )
@@ -165,13 +166,16 @@ type ProjectScene struct {
 }
 
 type ProjectUpdate struct {
-	DialogueEngine     *string         `json:"dialogue_engine,omitempty"`
-	Name               string          `json:"name"`
-	Revision           int             `json:"revision"`
-	TimelineDurationMS int64           `json:"timeline_duration_ms,omitempty"`
-	Scenes             *[]ProjectScene `json:"scenes,omitempty"`
-	Tracks             []Track         `json:"tracks"`
-	RevoiceTrackIDs    []string        `json:"revoice_track_ids,omitempty"`
+	ApplyPronunciation bool                    `json:"apply_pronunciation,omitempty"`
+	Pronunciation      *pronunciation.Snapshot `json:"pronunciation,omitempty"`
+	Language           string                  `json:"language,omitempty"`
+	DialogueEngine     *string                 `json:"dialogue_engine,omitempty"`
+	Name               string                  `json:"name"`
+	Revision           int                     `json:"revision"`
+	TimelineDurationMS int64                   `json:"timeline_duration_ms,omitempty"`
+	Scenes             *[]ProjectScene         `json:"scenes,omitempty"`
+	Tracks             []Track                 `json:"tracks"`
+	RevoiceTrackIDs    []string                `json:"revoice_track_ids,omitempty"`
 }
 
 type RenderRevision struct {
@@ -197,16 +201,18 @@ type TranscodeRenderFunc func(context.Context, string, string, string, string) e
 
 // Project is one separately saved Story Builder production.
 type Project struct {
-	DialogueEngine     string           `json:"dialogue_engine,omitempty"`
-	ID                 string           `json:"id"`
-	Name               string           `json:"name"`
-	Revision           int              `json:"revision"`
-	CreatedAt          time.Time        `json:"created_at"`
-	UpdatedAt          time.Time        `json:"updated_at"`
-	TimelineDurationMS int64            `json:"timeline_duration_ms"`
-	Scenes             []ProjectScene   `json:"scenes,omitempty"`
-	Tracks             []Track          `json:"tracks"`
-	Renders            []RenderRevision `json:"renders,omitempty"`
+	Pronunciation      *pronunciation.Snapshot `json:"pronunciation,omitempty"`
+	Language           string                  `json:"language,omitempty"`
+	DialogueEngine     string                  `json:"dialogue_engine,omitempty"`
+	ID                 string                  `json:"id"`
+	Name               string                  `json:"name"`
+	Revision           int                     `json:"revision"`
+	CreatedAt          time.Time               `json:"created_at"`
+	UpdatedAt          time.Time               `json:"updated_at"`
+	TimelineDurationMS int64                   `json:"timeline_duration_ms"`
+	Scenes             []ProjectScene          `json:"scenes,omitempty"`
+	Tracks             []Track                 `json:"tracks"`
+	Renders            []RenderRevision        `json:"renders,omitempty"`
 }
 
 // DependentProject identifies a saved project that still needs a Voice for
@@ -595,6 +601,41 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 			}
 		}
 	}
+	spokenProject := project
+	if update.ApplyPronunciation {
+		spokenProject.Pronunciation, err = pronunciation.ValidateSnapshot(update.Pronunciation)
+		if err != nil {
+			return Project{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
+		spokenProject.Language = ""
+		if spokenProject.Pronunciation != nil {
+			spokenProject.Language, err = pronunciation.Language(update.Language)
+			if err != nil || spokenProject.Language == "" {
+				return Project{}, fmt.Errorf("%w: choose an explicit pronunciation language", ErrInvalid)
+			}
+		}
+	}
+	for i := range tracks {
+		for j := range tracks[i].Clips {
+			clip := &tracks[i].Clips[j]
+			if clip.Type != ClipTypeDialogue {
+				continue
+			}
+			spoken, policy, err := resolvedDialogue(spokenProject, *clip)
+			if err != nil {
+				return Project{}, err
+			}
+			before, beforePolicy, err := resolvedDialogue(project, *clip)
+			if err != nil {
+				return Project{}, err
+			}
+			if spoken != before || policy != beforePolicy {
+				clip.Status, clip.BuildError, clip.MediaError = DialogueStatusStale, "", ""
+				clip.SourceID, clip.SourceDurationMS, clip.SourceInMS, clip.SourceOutMS = "", 0, 0, 0
+				clip.SourceStoryID, clip.SourceStoryLineID, clip.SourceStoryTakeID = "", "", ""
+			}
+		}
+	}
 	if err := validateTracks(tracks, timelineDurationMS); err != nil {
 		return Project{}, err
 	}
@@ -619,6 +660,7 @@ func (s *Store) Update(id string, update ProjectUpdate) (Project, error) {
 	}
 	project.Name = name
 	project.DialogueEngine = dialogueEngine
+	project.Pronunciation, project.Language = spokenProject.Pronunciation, spokenProject.Language
 	project.TimelineDurationMS = timelineDurationMS
 	project.Scenes = scenes
 	project.Tracks = tracks

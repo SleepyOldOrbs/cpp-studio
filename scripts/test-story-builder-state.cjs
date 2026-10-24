@@ -4,6 +4,21 @@ const vm = require('node:vm');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+test('pronunciation apply participates in shared undo, save reconciliation and preserves unchanged takes', () => {
+  const context = vm.createContext({clone: structuredClone, normalizeTracks() {}, timelineError: () => '', window:{clearTimeout(){},setTimeout:()=>1}});
+  vm.runInContext(functionSource('createEditSession') + functionSource('applyProjectPronunciation') + '\nthis.session = createEditSession();', context);
+  const project={id:'p',revision:1,tracks:[{clips:[{id:'a',type:'dialogue',text:'James',source_id:'old',status:'ready'},{id:'b',type:'dialogue',text:'Quiet',source_id:'keep',status:'ready'}]}],scenes:[],timeline_duration_ms:30000};
+  const session=context.session;session.upsert(project);session.open(project);
+  const saved=structuredClone(project),version=session.saveVersion();
+  session.edit(p=>context.applyProjectPronunciation(p,{rules:[{term:'James',replacement:'Jaymz'}],policyVersion:1},'en',['a']));session.scheduleAutosave(()=>{});
+  session.reconcileSaved(saved,version);
+  assert.equal(session.current().pronunciation.rules[0].replacement,'Jaymz');
+  assert.equal(session.current().tracks[0].clips[0].text,'James');
+  assert.equal(session.current().tracks[0].clips[1].source_id,'keep');
+  assert.equal(session.restore(),true);assert.equal(session.current().pronunciation,undefined);
+  assert.equal(session.restore(true),true);assert.equal(session.current().language,'en');
+});
+
 const source = fs.readFileSync(path.join(__dirname, '../internal/demo/static/story-builder.js'), 'utf8');
 function functionSource(name) {
   const start = source.search(new RegExp(`  (?:async )?function ${name}\\(`));

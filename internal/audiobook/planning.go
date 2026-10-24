@@ -1,6 +1,7 @@
 package audiobook
 
 import (
+	"cpp-studio/internal/pronunciation"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -51,12 +52,24 @@ func validateDocumentPlan(text string, plan *DocumentPlan) error {
 
 func makeDocumentPlan(req Request, resolvedEngine EngineIdentity, resolvedVoice VoiceIdentity) (*DocumentPlan, error) {
 	if req.documentPlan == nil {
+		if req.Pronunciation != nil {
+			if _, err := planCorrectedSections(req, nil); err != nil {
+				return nil, err
+			}
+		}
 		return nil, nil
 	}
 	if err := validateDocumentPlan(req.Text, req.documentPlan); err != nil {
 		return nil, err
 	}
-	if req.EngineID == DramaBoxEngineID {
+	var corrected []Section
+	if req.Pronunciation != nil {
+		var err error
+		corrected, err = planCorrectedSections(req, nil)
+		if err != nil {
+			return nil, err
+		}
+	} else if req.EngineID == DramaBoxEngineID {
 		if _, err := documentSectionRanges(req.Text, req.documentPlan); err != nil {
 			return nil, err
 		}
@@ -79,6 +92,8 @@ func makeDocumentPlan(req Request, resolvedEngine EngineIdentity, resolvedVoice 
 		chapter.WordCount = 0
 		chapter.EstimatedListeningSeconds = 0
 		chapter.Excerpt = ""
+		chapter.SpokenExcerpt = ""
+		chapter.PronunciationPreview = nil
 	}
 	baseRequest := req
 	baseRequest.documentPlan = nil
@@ -117,10 +132,56 @@ func makeDocumentPlan(req Request, resolvedEngine EngineIdentity, resolvedVoice 
 		} else if chunks := chapterTextChunks(source, DefaultChunkChars); len(chunks) > 0 {
 			chapter.Excerpt = chunks[0]
 		}
+		if req.Pronunciation != nil {
+			for _, section := range corrected {
+				if section.ChapterID != chapter.ID {
+					continue
+				}
+				// Audition uses an atomic prefix of the actual first production unit.
+				resolution, err := pronunciation.ResolveDetailed(source, req.Language, req.Pronunciation.Rules)
+				if err != nil {
+					return nil, err
+				}
+				first := slicePronunciation(resolution, int(section.StartByte)-chapter.StartByte, int(section.EndByte)-chapter.StartByte)
+				short, err := partitionCorrectedResolution(first, int(section.StartByte), chapter.ID, DefaultEngineID)
+				if err != nil {
+					return nil, err
+				}
+				if len(short) > 0 {
+					preview := slicePronunciation(resolution, int(short[0].StartByte)-chapter.StartByte, int(short[0].EndByte)-chapter.StartByte)
+					chapter.Excerpt, chapter.SpokenExcerpt, chapter.PronunciationPreview = preview.Source, preview.Spoken, &preview
+				}
+				break
+			}
+		}
 		plan.WordCount += chapter.WordCount
 	}
 	plan.EstimatedListeningSeconds = (plan.WordCount*60 + 149) / 150
 	return plan, nil
+}
+
+func slicePronunciation(result pronunciation.Resolution, start, end int) pronunciation.Resolution {
+	spokenStart, spokenEnd := start, end
+	for _, span := range result.Substitutions {
+		delta := (span.SpokenEnd - span.SpokenStart) - (span.SourceEnd - span.SourceStart)
+		if span.SourceEnd <= start {
+			spokenStart += delta
+		}
+		if span.SourceEnd <= end {
+			spokenEnd += delta
+		}
+	}
+	preview := pronunciation.Resolution{Source: result.Source[start:end], Spoken: result.Spoken[spokenStart:spokenEnd], Substitutions: []pronunciation.Substitution{}}
+	for _, span := range result.Substitutions {
+		if span.SourceStart >= start && span.SourceEnd <= end {
+			span.SourceStart -= start
+			span.SourceEnd -= start
+			span.SpokenStart -= spokenStart
+			span.SpokenEnd -= spokenStart
+			preview.Substitutions = append(preview.Substitutions, span)
+		}
+	}
+	return preview
 }
 
 // New chaptered books keep the legacy sentence/paragraph policy while applying

@@ -4,6 +4,12 @@ const vm = require('node:vm');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+test('pronunciation highlighting uses UTF-8 byte offsets without splitting Unicode', () => {
+  const context = load(['pronunciationSegments'], { TextEncoder, TextDecoder });
+  const parts = context.pronunciationSegments('é Jaymz!', [{spokenStart:3,spokenEnd:8}], 'spoken');
+  assert.deepEqual(JSON.parse(JSON.stringify(parts)), [{text:'é ',matched:false},{text:'Jaymz',matched:true},{text:'!',matched:false}]);
+});
+
 test('analysis preparation decodes at 16 kHz and writes mono PCM16 without modifying the source', async () => {
   const original = new File(['original bytes'], 'stereo-48k.wav');
   const context = load(['prepareAnalysisAudio', 'encodeWav', 'writeAscii'], {
@@ -366,7 +372,7 @@ test('a delayed chapter preview cannot approve a changed document or narrator', 
       audiobookEngineSelect: { value: 'audio' }, audiobookVoiceSelect: { value: 'voice', selectedOptions: [{ textContent: 'Narrator' }] },
       audiobookAcceptPromptWarnings: { checked: false }, audiobookFileInput: { files: [{ name: 'book.md' }] },
       audiobookOptionsText: () => '', audiobookPromptWarningAcceptance: {}, audiobookChapterPlan: {},
-      audiobookResolvedKey: '', audiobookDocumentPlan: null, FormData: class { append() {} },
+      audiobookResolvedKey: '', audiobookDocumentPlan: null, audiobookPronunciation: null, audiobookPronunciationLanguage: '', FormData: class { append() {} },
       renderAudiobookChapterPlan(_, value) { drawn = value; }, syncAudiobookEngineControls() {},
       fetch: async () => ({ ok: true, json: async () => { if (changed) currentKey = 'second'; return { plan }; } }),
     });

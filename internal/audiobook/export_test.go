@@ -3,6 +3,7 @@ package audiobook
 import (
 	"bytes"
 	"context"
+	"cpp-studio/internal/pronunciation"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -126,11 +127,15 @@ func TestJPEGBookCoverAndCorruptPathRejection(t *testing.T) {
 	}
 }
 
-func m4bFixture(t *testing.T, encode EncodeM4BFunc) (*Manager, string) {
+func m4bFixture(t *testing.T, encode EncodeM4BFunc, requests ...Request) (*Manager, string) {
 	t.Helper()
 	registry := jobs.NewRegistry()
 	manager := NewManager(ManagerOptions{RootDir: t.TempDir(), Jobs: registry, EncodeM4B: encode, Synthesize: func(context.Context, SynthesisRequest) ([]byte, error) { return wav.SyntheticTone(16000), nil }})
-	id, _, err := manager.Create(context.Background(), DocumentRequest{Filename: "book.md", Data: []byte("# First\nFirst words.\n# Second\nSecond words."), Request: Request{EngineID: DramaBoxEngineID, Verification: VerificationModeOff}})
+	request := Request{EngineID: DramaBoxEngineID, Verification: VerificationModeOff}
+	if len(requests) > 0 {
+		request = requests[0]
+	}
+	id, _, err := manager.Create(context.Background(), DocumentRequest{Filename: "book.md", Data: []byte("# First\nFirst words.\n# Second\nSecond words."), Request: request})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,9 +358,10 @@ func TestM4BExportFreezesCoverAndDetailsDuringConcurrentEdits(t *testing.T) {
 }
 
 func TestM4BExportsStayAssociatedWithTheirSelectedRenderTimings(t *testing.T) {
+	snapshot, _ := pronunciation.Freeze([]pronunciation.Rule{{Term: "First", Replacement: "The opening", Language: "en"}})
 	manager, id := m4bFixture(t, func(ctx context.Context, in, out, metadata, cover string, format wav.Format) error {
 		return os.WriteFile(out, []byte("\x00\x00\x00\x20ftypM4A render export"), 0o600)
-	})
+	}, Request{EngineID: DramaBoxEngineID, Verification: VerificationModeOff, Pronunciation: &snapshot, Language: "en"})
 	first, err := manager.PreviewM4B(context.Background(), id, "")
 	if err != nil {
 		t.Fatal(err)
@@ -364,6 +370,9 @@ func TestM4BExportsStayAssociatedWithTheirSelectedRenderTimings(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.synthesizeDetailed = func(ctx context.Context, req SynthesisRequest) (SynthesisResult, error) {
+		if !strings.Contains(req.Text, "The opening") || strings.Contains(req.Text, "First") {
+			t.Errorf("retry lost frozen pronunciation: %q", req.Text)
+		}
 		actual := req.Options.Seed
 		return SynthesisResult{Audio: wav.SyntheticTone(32000), ActualSeed: &actual}, nil
 	}
