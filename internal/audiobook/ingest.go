@@ -27,6 +27,120 @@ const MaxChunks = 600
 // sentences, comfortably inside the TTS engine's per-run budget.
 const DefaultChunkChars = 300
 
+const ChapterExtractionPolicyVersion = 1
+
+// Chapter describes canonical source bytes, independently of synthesis units.
+type Chapter struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	StartByte int    `json:"startByte"`
+	EndByte   int    `json:"endByte"`
+}
+
+type ExtractedDocument struct {
+	Text          string
+	Chapters      []Chapter
+	PolicyVersion int
+}
+
+// ExtractDocument preserves the existing canonical text and adds explicit
+// editorial chapter identity. Ranges partition that text, including separators.
+func ExtractDocument(filename string, data []byte) (ExtractedDocument, error) {
+	if strings.ToLower(path.Ext(filename)) == ".epub" {
+		if len(data) == 0 || len(data) > MaxDocumentBytes {
+			return ExtractedDocument{}, fmt.Errorf("document must contain between 1 and %d bytes", MaxDocumentBytes)
+		}
+		parts, err := extractEPUBParts(data)
+		if err != nil {
+			return ExtractedDocument{}, err
+		}
+		var text strings.Builder
+		chapters := make([]Chapter, 0, len(parts))
+		for index, part := range parts {
+			if index > 0 {
+				text.WriteString("\n\n")
+				chapters[index-1].EndByte = text.Len()
+			}
+			start := text.Len()
+			text.WriteString(part.Text)
+			if text.Len() > MaxDocumentBytes {
+				return ExtractedDocument{}, fmt.Errorf("expanded book exceeds %d text bytes", MaxDocumentBytes)
+			}
+			title := part.Title
+			if title == "" {
+				title = fmt.Sprintf("Chapter %d", index+1)
+			}
+			chapters = append(chapters, Chapter{ID: fmt.Sprintf("chapter_%03d", index+1), Title: title, StartByte: start, EndByte: text.Len()})
+		}
+		if !utf8.ValidString(text.String()) {
+			return ExtractedDocument{}, fmt.Errorf("epub text is not valid UTF-8")
+		}
+		return ExtractedDocument{Text: text.String(), Chapters: chapters, PolicyVersion: ChapterExtractionPolicyVersion}, nil
+	}
+	text, err := Extract(filename, data)
+	if err != nil {
+		return ExtractedDocument{}, err
+	}
+	chapters := []Chapter{{ID: "chapter_001", Title: "Chapter 1", StartByte: 0, EndByte: len(text)}}
+	if strings.ToLower(path.Ext(filename)) == ".md" {
+		chapters = markdownChapters(text)
+	}
+	return ExtractedDocument{Text: text, Chapters: chapters, PolicyVersion: ChapterExtractionPolicyVersion}, nil
+}
+
+var markdownChapterRE = regexp.MustCompile(`^ {0,3}#\s+(.+?)(?:\s+#+\s*)?$`)
+var epubHeadingRE = regexp.MustCompile(`(?is)<h[1-6](?:\s[^>]*)?>(.*?)</h[1-6]\s*>`)
+
+func markdownChapters(text string) []Chapter {
+	var chapters []Chapter
+	offset := 0
+	var fence byte
+	fenceLength := 0
+	for _, line := range strings.SplitAfter(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
+			run := 0
+			for run < len(trimmed) && trimmed[run] == trimmed[0] {
+				run++
+			}
+			if run >= 3 {
+				if fence == 0 {
+					fence = trimmed[0]
+					fenceLength = run
+				} else if fence == trimmed[0] && run >= fenceLength && strings.TrimSpace(trimmed[run:]) == "" {
+					fence = 0
+				}
+				offset += len(line)
+				continue
+			}
+		}
+		if fence == 0 {
+			match := markdownChapterRE.FindStringSubmatch(strings.TrimRight(line, "\r\n"))
+			if match != nil {
+				start := offset
+				if len(chapters) == 0 {
+					if strings.TrimSpace(text[:offset]) != "" {
+						chapters = append(chapters, Chapter{Title: "Introduction", StartByte: 0, EndByte: offset})
+					} else {
+						start = 0
+					}
+				} else {
+					chapters[len(chapters)-1].EndByte = offset
+				}
+				chapters = append(chapters, Chapter{Title: strings.TrimSpace(match[1]), StartByte: start, EndByte: len(text)})
+			}
+		}
+		offset += len(line)
+	}
+	if len(chapters) == 0 {
+		chapters = []Chapter{{Title: "Chapter 1", StartByte: 0, EndByte: len(text)}}
+	}
+	for index := range chapters {
+		chapters[index].ID = fmt.Sprintf("chapter_%03d", index+1)
+	}
+	return chapters
+}
+
 // Extract pulls plain text from an uploaded document. Supported: .txt and
 // .md (UTF-8), .epub (XHTML chapters in spine order). PDFs need a real
 // extraction library and are rejected with a pointer to the alternatives.
@@ -79,10 +193,24 @@ type epubPackage struct {
 	} `xml:"spine>itemref"`
 }
 
+type epubTextPart struct{ Text, Title string }
+
 func extractEPUB(data []byte) (string, error) {
+	parts, err := extractEPUBParts(data)
+	if err != nil {
+		return "", err
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		texts = append(texts, part.Text)
+	}
+	return strings.Join(texts, "\n\n"), nil
+}
+
+func extractEPUBParts(data []byte) ([]epubTextPart, error) {
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return "", fmt.Errorf("open epub: %v", err)
+		return nil, fmt.Errorf("open epub: %v", err)
 	}
 	files := make(map[string]*zip.File, len(reader.File))
 	for _, f := range reader.File {
@@ -91,23 +219,23 @@ func extractEPUB(data []byte) (string, error) {
 
 	containerXML, err := readZipFile(files["META-INF/container.xml"])
 	if err != nil {
-		return "", fmt.Errorf("epub container: %v", err)
+		return nil, fmt.Errorf("epub container: %v", err)
 	}
 	var container epubContainer
 	if err := xml.Unmarshal(containerXML, &container); err != nil {
-		return "", fmt.Errorf("parse epub container: %v", err)
+		return nil, fmt.Errorf("parse epub container: %v", err)
 	}
 	if len(container.Rootfiles) == 0 {
-		return "", fmt.Errorf("epub has no rootfile")
+		return nil, fmt.Errorf("epub has no rootfile")
 	}
 	opfPath := path.Clean(container.Rootfiles[0].FullPath)
 	opfXML, err := readZipFile(files[opfPath])
 	if err != nil {
-		return "", fmt.Errorf("epub package: %v", err)
+		return nil, fmt.Errorf("epub package: %v", err)
 	}
 	var pkg epubPackage
 	if err := xml.Unmarshal(opfXML, &pkg); err != nil {
-		return "", fmt.Errorf("parse epub package: %v", err)
+		return nil, fmt.Errorf("parse epub package: %v", err)
 	}
 	hrefByID := make(map[string]string, len(pkg.Manifest))
 	for _, item := range pkg.Manifest {
@@ -115,7 +243,7 @@ func extractEPUB(data []byte) (string, error) {
 	}
 
 	opfDir := path.Dir(opfPath)
-	var chapters []string
+	var chapters []epubTextPart
 	for _, ref := range pkg.Spine {
 		href, ok := hrefByID[ref.IDRef]
 		if !ok {
@@ -131,13 +259,17 @@ func extractEPUB(data []byte) (string, error) {
 			continue
 		}
 		if text := htmlToText(string(raw)); text != "" {
-			chapters = append(chapters, text)
+			title := ""
+			if heading := epubHeadingRE.FindStringSubmatch(string(raw)); heading != nil {
+				title = htmlToText(heading[1])
+			}
+			chapters = append(chapters, epubTextPart{Text: text, Title: title})
 		}
 	}
 	if len(chapters) == 0 {
-		return "", fmt.Errorf("epub spine yielded no readable chapters")
+		return nil, fmt.Errorf("epub spine yielded no readable chapters")
 	}
-	return strings.Join(chapters, "\n\n"), nil
+	return chapters, nil
 }
 
 func readZipFile(f *zip.File) ([]byte, error) {
