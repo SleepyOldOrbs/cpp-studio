@@ -442,6 +442,25 @@ func validateDurableManifest(manifest Manifest, source string) error {
 	if manifest.SynthesisIdentity.Fingerprint != manifest.SynthesisFingerprint || len(manifest.Sections) == 0 || manifest.Chunks != len(manifest.Sections) {
 		return fmt.Errorf("synthesis identity or section table does not match")
 	}
+	if manifest.DocumentPlan != nil {
+		identity := manifest.SynthesisIdentity
+		request := Request{Text: source, EngineID: manifest.EngineID, VoiceID: manifest.VoiceID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec, Options: identity.Options, documentPlan: manifest.DocumentPlan}
+		expected, err := makeDocumentPlan(request, identity.Engine, identity.Voice)
+		if err != nil || expected.Digest != manifest.DocumentPlan.Digest || identity.PlanDigest != expected.Digest {
+			return fmt.Errorf("chapter plan does not match the frozen source and settings")
+		}
+		ranges, err := documentSectionRanges(source, manifest.DocumentPlan)
+		if err != nil || len(ranges) != len(manifest.Sections) {
+			return fmt.Errorf("chapter section table does not match")
+		}
+		for index, bounds := range ranges {
+			if manifest.Sections[index].StartByte != int64(bounds.start) || manifest.Sections[index].EndByte != int64(bounds.end) || manifest.Sections[index].ChapterID != chapterIDForRange(manifest.DocumentPlan, bounds.start, bounds.end) {
+				return fmt.Errorf("chapter section %d source range does not match", index+1)
+			}
+		}
+	} else if manifest.SynthesisIdentity.PlanDigest != "" {
+		return fmt.Errorf("frozen chapter plan is missing")
+	}
 	for i, section := range manifest.Sections {
 		if section.ID != fmt.Sprintf("section-%04d", i+1) || section.StartByte < 0 || section.EndByte <= section.StartByte || section.EndByte > int64(len(source)) {
 			return fmt.Errorf("section %d has an invalid identity or source range", i+1)

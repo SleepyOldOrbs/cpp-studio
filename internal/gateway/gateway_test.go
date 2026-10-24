@@ -7249,6 +7249,115 @@ func TestAudiobookDocumentPreviewUsesCompleteProductionSourceAndSections(t *test
 	}
 }
 
+func TestAudiobookChapterPlanPreviewAndStaleCreate(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{"dramabox": helperEngine("speech-tone")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	upload := func(endpoint, source, digest string) *httptest.ResponseRecorder {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, _ := writer.CreateFormFile("file", "chapters.md")
+		_, _ = part.Write([]byte(source))
+		_ = writer.WriteField("engine", "dramabox")
+		_ = writer.WriteField("verification", "off")
+		_ = writer.WriteField("planDigest", digest)
+		_ = writer.Close()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, endpoint, &body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+	source := "# One\nFirst words.\n# Two\nSecond words."
+	rec := upload("/v1/audiobooks/preview-document", source, "")
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Code, rec.Body.String())
+	}
+	var preview struct {
+		Plan           *audiobook.DocumentPlan          `json:"plan"`
+		PromptSections []audiobook.PromptSectionPreview `json:"promptSections"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Plan == nil || len(preview.Plan.Chapters) != 2 || len(preview.PromptSections) != 2 {
+		t.Fatal("preview did not use chapter partition", rec.Body.String())
+	}
+	rec = upload("/v1/audiobooks", source+" Changed.", preview.Plan.Digest)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatal("stale plan accepted", rec.Code, rec.Body.String())
+	}
+	if entries, err := os.ReadDir("out/audiobooks"); err == nil && len(entries) != 0 {
+		t.Fatal("stale plan created work")
+	}
+	rec = upload("/v1/audiobooks", source, preview.Plan.Digest)
+	if rec.Code != http.StatusAccepted {
+		t.Fatal(rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if job := waitGatewayAudiobookJob(t, router, created.ID); job.Status != "complete" {
+		t.Fatal(job)
+	}
+	manifest, err := os.ReadFile(filepath.Join("out", "audiobooks", created.ID, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var book audiobook.Manifest
+	if err := json.Unmarshal(manifest, &book); err != nil {
+		t.Fatal(err)
+	}
+	if book.DocumentPlan.Digest != preview.Plan.Digest || len(book.ChapterBoundaries) != 2 {
+		t.Fatal("saved chapter plan differs", book)
+	}
+}
+
+func TestAudiobookPassageAuditionIsTemporaryAndPlayable(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{"audio": helperEngine("speech-tone")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "passage.txt")
+	_, _ = part.Write([]byte("This is the actual book passage."))
+	_ = writer.WriteField("chapterId", "chapter_001")
+	_ = writer.Close()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/audiobooks/audition", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatal(rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	job := waitGatewayAudiobookJob(t, router, created.ID)
+	if job.Status != "complete" || job.Result["excerpt"] != "This is the actual book passage." {
+		t.Fatal(job)
+	}
+	audio := httptest.NewRecorder()
+	router.ServeHTTP(audio, httptest.NewRequest(http.MethodGet, job.Result["audioUrl"], nil))
+	if audio.Code != http.StatusOK || audio.Header().Get("Content-Type") != "audio/wav" || wav.ValidateBytes(audio.Body.Bytes()) != nil {
+		t.Fatal("unplayable audition", audio.Code)
+	}
+	if entries, _ := os.ReadDir("out/audiobooks"); len(entries) != 0 {
+		t.Fatal("audition saved a book")
+	}
+	missing := httptest.NewRecorder()
+	router.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/auditions/missing/audio", nil))
+	if missing.Code != http.StatusNotFound {
+		t.Fatal(missing.Code)
+	}
+}
+
 func TestAudiobookOptionsRejectUnknownDuplicateSeedAndLegacyUse(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cfg := testConfig(map[string]config.EngineConfig{

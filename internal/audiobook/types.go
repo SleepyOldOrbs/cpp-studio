@@ -80,17 +80,27 @@ type Attempt struct {
 }
 
 type RenderRevision struct {
-	ID               string            `json:"id"`
-	ArtifactFile     string            `json:"artifactFile"`
-	ArtifactURL      string            `json:"artifactUrl"`
-	SelectedAttempts map[string]string `json:"selectedAttempts"`
-	CreatedAt        time.Time         `json:"createdAt"`
-	DurationSeconds  int               `json:"durationSeconds"`
+	SampleRate        uint32            `json:"sampleRate,omitempty"`
+	ChapterBoundaries []ChapterBoundary `json:"chapterBoundaries,omitempty"`
+	ID                string            `json:"id"`
+	ArtifactFile      string            `json:"artifactFile"`
+	ArtifactURL       string            `json:"artifactUrl"`
+	SelectedAttempts  map[string]string `json:"selectedAttempts"`
+	CreatedAt         time.Time         `json:"createdAt"`
+	DurationSeconds   int               `json:"durationSeconds"`
+}
+
+// Sample positions are PCM frames: channel count does not change time.
+type ChapterBoundary struct {
+	ChapterID   string `json:"chapterId"`
+	StartSample int64  `json:"startSample"`
+	EndSample   int64  `json:"endSample"`
 }
 
 // Section binds a stable canonical-source byte range to its durable outputs.
 // Its output fields project the selected Attempt once attempts are recorded.
 type Section struct {
+	ChapterID             string        `json:"chapterId,omitempty"`
 	ID                    string        `json:"id"`
 	StartByte             int64         `json:"startByte"`
 	EndByte               int64         `json:"endByte"`
@@ -119,6 +129,9 @@ type VerificationSummary struct {
 // Manifest describes either a legacy finished audiobook or a versioned durable
 // Audiobook production. Versioned-only fields are omitted for legacy manifests.
 type Manifest struct {
+	SampleRate               uint32               `json:"sampleRate,omitempty"`
+	ChapterBoundaries        []ChapterBoundary    `json:"chapterBoundaries,omitempty"`
+	DocumentPlan             *DocumentPlan        `json:"documentPlan,omitempty"`
 	SchemaVersion            int                  `json:"schemaVersion,omitempty"`
 	ID                       string               `json:"id"`
 	Title                    string               `json:"title"`

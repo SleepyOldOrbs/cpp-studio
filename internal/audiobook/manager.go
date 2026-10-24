@@ -92,6 +92,8 @@ type ManagerOptions struct {
 // Request carries narration intent. NormalizeRequest and Submit validate and
 // normalize its engine and direction before any job starts.
 type Request struct {
+	PlanDigest           string
+	documentPlan         *DocumentPlan
 	Title                string
 	Text                 string
 	VoiceID              string
@@ -118,6 +120,8 @@ type DocumentRequest struct {
 type Service interface {
 	Preview(context.Context, Request) (ResolvedRequest, error)
 	PreviewDocument(context.Context, DocumentRequest) (ResolvedRequest, error)
+	AuditionDocument(context.Context, DocumentRequest, string) (string, error)
+	AuditionAudio(string) ([]byte, error)
 	Create(context.Context, DocumentRequest) (string, int, error)
 	Resume(context.Context, string) (int, error)
 	Restart(context.Context, string) (string, int, error)
@@ -147,10 +151,11 @@ const (
 var _ Service = (*Manager)(nil)
 
 type narrationUnit struct {
-	text    string
-	seed    Seed
-	section *Section
-	audio   string
+	chapterID string
+	text      string
+	seed      Seed
+	section   *Section
+	audio     string
 }
 
 type Manager struct {
@@ -170,6 +175,9 @@ type Manager struct {
 	counter            int
 	retryCounter       int
 	benchmarkCounter   int
+	auditionCounter    int
+	auditionID         string
+	auditionAudio      []byte
 	activeID           string
 	activeProductionID string
 	creating           bool
@@ -259,11 +267,12 @@ func (m *Manager) Preview(ctx context.Context, req Request) (ResolvedRequest, er
 // PreviewDocument extracts the same canonical source used by Create, then
 // resolves the request without creating durable state or reserving an engine.
 func (m *Manager) PreviewDocument(ctx context.Context, document DocumentRequest) (ResolvedRequest, error) {
-	text, err := Extract(document.Filename, document.Data)
+	extracted, err := ExtractDocument(document.Filename, document.Data)
 	if err != nil {
 		return ResolvedRequest{}, requestErrorf("%v", err)
 	}
-	document.Request.Text = text
+	document.Request.Text = extracted.Text
+	document.Request.documentPlan = &DocumentPlan{ExtractionPolicyVersion: extracted.PolicyVersion, Chapters: extracted.Chapters}
 	return m.Preview(ctx, document.Request)
 }
 
@@ -279,7 +288,12 @@ func (m *Manager) resolveRequest(ctx context.Context, req Request) (ResolvedRequ
 	if req.EngineID == DramaBoxEngineID && resolvedVoice.Reference != nil && resolvedVoice.DramaBoxIneligibleReason != "" {
 		return ResolvedRequest{}, requestErrorf("DramaBox voice reference %q is not eligible: %s", resolvedVoice.ID, resolvedVoice.DramaBoxIneligibleReason)
 	}
-	return ResolvedRequest{Request: req, Engine: resolvedEngine, Voice: resolvedVoice}, nil
+	plan, err := makeDocumentPlan(req, resolvedEngine, resolvedVoice)
+	if err != nil {
+		return ResolvedRequest{}, requestErrorf("%v", err)
+	}
+	req.documentPlan = plan
+	return ResolvedRequest{Request: req, Engine: resolvedEngine, Voice: resolvedVoice, Plan: plan}, nil
 }
 
 // RequestError identifies invalid audiobook intent. HTTP callers map these
@@ -408,11 +422,12 @@ func (m *Manager) SubmitDocument(ctx context.Context, filename string, data []by
 		m.creating = false
 		m.mu.Unlock()
 	}()
-	text, err := Extract(filename, data)
+	extracted, err := ExtractDocument(filename, data)
 	if err != nil {
 		return "", 0, requestErrorf("%v", err)
 	}
-	req.Text = text
+	req.Text = extracted.Text
+	req.documentPlan = &DocumentPlan{ExtractionPolicyVersion: extracted.PolicyVersion, Chapters: extracted.Chapters}
 	if strings.TrimSpace(req.Title) == "" {
 		req.Title = strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
 	}
@@ -455,6 +470,10 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 	if err != nil {
 		return "", 0, err
 	}
+	req = resolved.Request
+	if req.PlanDigest != "" && (resolved.Plan == nil || req.PlanDigest != resolved.Plan.Digest) {
+		return "", 0, requestErrorf("chapter plan changed; preview the document and settings again")
+	}
 	identity := buildSynthesisIdentity(req, resolved.Engine, resolved.Voice)
 	benchmarkProfileIdentity := m.matchingBenchmarkProfile(req, resolved)
 
@@ -465,7 +484,7 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 		return "", 0, err
 	}
 	if req.EngineID == DramaBoxEngineID {
-		sections, err := planDramaBoxSections(req.Text, m.seedSource)
+		sections, err := planDocumentSections(req.Text, req.documentPlan, m.seedSource)
 		if err != nil {
 			return "", 0, fmt.Errorf("plan DramaBox sections: %w", err)
 		}
@@ -473,6 +492,7 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 		createdAt := m.now()
 		options := req.Options
 		manifest := Manifest{
+			DocumentPlan:  cloneDocumentPlan(req.documentPlan),
 			SchemaVersion: CurrentManifestSchemaVersion, ID: id, Title: title,
 			VoiceID: req.VoiceID, EngineID: req.EngineID, Direction: req.Direction,
 			PromptSpec: req.PromptSpec, PromptWarnings: promptEvaluation.Warnings,
@@ -489,13 +509,19 @@ func (m *Manager) submit(ctx context.Context, req Request, ownsCreation bool) (s
 		initial = &manifest
 		units = make([]narrationUnit, len(sections))
 		for i := range sections {
-			units[i] = narrationUnit{text: req.Text[sections[i].StartByte:sections[i].EndByte], seed: sections[i].Seed, section: &manifest.Sections[i]}
+			units[i] = narrationUnit{text: req.Text[sections[i].StartByte:sections[i].EndByte], seed: sections[i].Seed, section: &manifest.Sections[i], chapterID: sections[i].ChapterID}
 		}
 	} else {
-		chunks := Chunk(req.Text, DefaultChunkChars)
-		units = make([]narrationUnit, len(chunks))
-		for i, chunk := range chunks {
-			units[i] = narrationUnit{text: chunk}
+		if req.documentPlan != nil {
+			for _, chapter := range req.documentPlan.Chapters {
+				for _, chunk := range chapterTextChunks(req.Text[chapter.StartByte:chapter.EndByte], DefaultChunkChars) {
+					units = append(units, narrationUnit{text: chunk, chapterID: chapter.ID})
+				}
+			}
+		} else {
+			for _, chunk := range Chunk(req.Text, DefaultChunkChars) {
+				units = append(units, narrationUnit{text: chunk})
+			}
 		}
 	}
 	if len(units) == 0 {
@@ -604,7 +630,7 @@ func (m *Manager) Resume(ctx context.Context, id string) (int, error) {
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
 		EngineID: manifest.EngineID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec,
 		AcceptPromptWarnings: true, Options: *manifest.ResolvedOptions,
-		Verification: manifestVerificationMode(manifest),
+		Verification: manifestVerificationMode(manifest), documentPlan: cloneDocumentPlan(manifest.DocumentPlan),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("stored audiobook request: %w", err)
@@ -635,7 +661,8 @@ func (m *Manager) Resume(ctx context.Context, id string) (int, error) {
 			section.Attempts = nil
 		}
 		units[i] = narrationUnit{
-			text: source[section.StartByte:section.EndByte], seed: section.Seed,
+			chapterID: section.ChapterID,
+			text:      source[section.StartByte:section.EndByte], seed: section.Seed,
 			section: section, audio: trustedPath,
 		}
 	}
@@ -682,7 +709,7 @@ func (m *Manager) Restart(ctx context.Context, id string) (string, int, error) {
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
 		EngineID: manifest.EngineID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec,
 		AcceptPromptWarnings: true, Options: *manifest.ResolvedOptions,
-		Verification: manifestVerificationMode(manifest),
+		Verification: manifestVerificationMode(manifest), documentPlan: cloneDocumentPlan(manifest.DocumentPlan),
 	})
 }
 
@@ -710,7 +737,7 @@ func (m *Manager) CanResume(ctx context.Context, id string) error {
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
 		EngineID: manifest.EngineID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec,
 		AcceptPromptWarnings: true, Options: *manifest.ResolvedOptions,
-		Verification: manifestVerificationMode(manifest),
+		Verification: manifestVerificationMode(manifest), documentPlan: cloneDocumentPlan(manifest.DocumentPlan),
 	})
 	if err != nil {
 		return err
@@ -784,7 +811,7 @@ func (m *Manager) RetrySection(ctx context.Context, id, sectionID string, mode R
 		Title: manifest.Title, Text: source, VoiceID: manifest.VoiceID,
 		EngineID: manifest.EngineID, Direction: manifest.Direction, PromptSpec: manifest.PromptSpec,
 		AcceptPromptWarnings: true, Options: *manifest.ResolvedOptions,
-		Verification: manifestVerificationMode(manifest),
+		Verification: manifestVerificationMode(manifest), documentPlan: cloneDocumentPlan(manifest.DocumentPlan),
 	})
 	if err != nil {
 		return "", err
@@ -1083,13 +1110,25 @@ func (m *Manager) runAttemptSelection(ctx context.Context, jobID string, manifes
 		durationSeconds = int(duration.Round(time.Second) / time.Second)
 	}
 	artifactURL := "/v1/audiobooks/" + manifest.ID + "/artifact/" + filename
+	timingUnits := make([]narrationUnit, len(manifest.Sections))
+	for index, section := range manifest.Sections {
+		timingUnits[index] = narrationUnit{chapterID: section.ChapterID}
+	}
+	rate, bounds, timingErr := chapterTimings(manifest.DocumentPlan, timingUnits, paths, sectionCrossfade, 0)
+	if timingErr != nil {
+		_ = os.Remove(outputPath)
+		m.finishRetry(jobID, timingErr)
+		return
+	}
 	manifest.RenderRevisions = append(manifest.RenderRevisions, RenderRevision{
+		SampleRate: rate, ChapterBoundaries: append([]ChapterBoundary(nil), bounds...),
 		ID: renderID, ArtifactFile: filename, ArtifactURL: artifactURL,
 		SelectedAttempts: selected, CreatedAt: m.now(), DurationSeconds: durationSeconds,
 	})
 	manifest.CurrentRenderID = renderID
 	manifest.ArtifactURL = artifactURL
 	manifest.DurationSeconds = durationSeconds
+	manifest.SampleRate, manifest.ChapterBoundaries = rate, bounds
 	if err := m.store.SaveManifestFinal(manifest); err != nil {
 		m.finishRetry(jobID, err)
 		return
@@ -1280,6 +1319,12 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		}
 		manifest := *initial
 		manifest.Status = ProductionStatusComplete
+		rate, bounds, timingErr := chapterTimings(manifest.DocumentPlan, units, clipPaths, sectionCrossfade, 0)
+		if timingErr != nil {
+			m.finishRunError(id, initial, "chapter timing: "+timingErr.Error(), false)
+			return
+		}
+		manifest.SampleRate, manifest.ChapterBoundaries = rate, bounds
 		if duration, err := wav.DurationFile(bookPath); err == nil {
 			manifest.DurationSeconds = int(duration.Round(time.Second) / time.Second)
 		}
@@ -1309,6 +1354,7 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		return
 	}
 	manifest := Manifest{
+		DocumentPlan:         cloneDocumentPlan(req.documentPlan),
 		ID:                   id,
 		Title:                title,
 		VoiceID:              req.VoiceID,
@@ -1336,12 +1382,27 @@ func (m *Manager) run(ctx context.Context, id, title string, req Request, identi
 		stitched = padded
 	}
 	manifest.ArtifactURL = "/v1/audiobooks/" + id + "/artifact/" + ArtifactName
+	if manifest.DocumentPlan != nil {
+		rate, bounds, timingErr := chapterTimings(manifest.DocumentPlan, units, clipPaths, 0, chunkGap)
+		if timingErr != nil {
+			m.finishRunError(id, initial, "chapter timing: "+timingErr.Error(), false)
+			return
+		}
+		manifest.SampleRate, manifest.ChapterBoundaries = rate, bounds
+		if duration, err := wav.Duration(stitched); err == nil {
+			manifest.DurationSeconds = int(duration.Round(time.Second) / time.Second)
+		}
+		ensureInitialRender(&manifest)
+	}
 
 	if ctx.Err() != nil {
 		m.finishRunError(id, initial, "audiobook narration was cancelled", true)
 		return
 	}
-	err = m.save(manifest, stitched)
+	if req.documentPlan != nil {
+		manifest.SourceFile = sourceFileName
+	}
+	err = m.save(manifest, stitched, req.Text)
 	if err != nil {
 		m.finishRunError(id, initial, "save audiobook: "+err.Error(), false)
 		return
@@ -1395,6 +1456,7 @@ func ensureInitialRender(manifest *Manifest) {
 		}
 	}
 	manifest.RenderRevisions = []RenderRevision{{
+		SampleRate: manifest.SampleRate, ChapterBoundaries: append([]ChapterBoundary(nil), manifest.ChapterBoundaries...),
 		ID: "render-0001", ArtifactFile: ArtifactName, ArtifactURL: manifest.ArtifactURL,
 		SelectedAttempts: selected, CreatedAt: manifest.CreatedAt, DurationSeconds: manifest.DurationSeconds,
 	}}
@@ -1520,7 +1582,7 @@ func (m *Manager) finishRunError(id string, manifest *Manifest, message string, 
 	m.registry.Fail(id, message)
 }
 
-func (m *Manager) save(manifest Manifest, audio []byte) error {
+func (m *Manager) save(manifest Manifest, audio []byte, source string) error {
 	if err := wav.ValidateBytes(audio); err != nil {
 		return fmt.Errorf("stitched narration: %w", err)
 	}
@@ -1533,6 +1595,11 @@ func (m *Manager) save(manifest Manifest, audio []byte) error {
 		return fmt.Errorf("create temp audiobook dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
+	if manifest.DocumentPlan != nil {
+		if err := os.WriteFile(filepath.Join(tmpDir, sourceFileName), []byte(source), 0o600); err != nil {
+			return fmt.Errorf("write canonical source: %w", err)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(tmpDir, ArtifactName), audio, 0o644); err != nil {
 		return fmt.Errorf("write narration wav: %w", err)
 	}

@@ -50,7 +50,10 @@ the Go suite, 56 Node state regressions, and the complete Story Builder browser
 smoke, including focused editing during a delayed save and an 800-pixel window.
 Local OmniVoice produced the example's opening sentence as a 3.14-second take;
 the entire take remained available and Whisper transcribed the complete source.
-Stage 2A extraction is implemented and committed as 20bc750; stage 2B is next. Stages 2–5 remain tracked as GitHub issues #52–#55; stage 1 issue #51 is closed.
+Stage 2 extraction, authoritative preview, per-render chapter timings and actual-passage
+audition are implemented. Two-narrator browser acceptance and real OmniVoice audition
+and cancellation passed; independent review is next. Stages 2–5 remain tracked as
+GitHub issues #52–#55; stage 1 issue #51 is closed.
 
 - Story Builder has stable clip/track IDs, revision checks, edit history, timeline editing, voice bindings, stored takes and `auditionClip`. A script view should project that data, not create a second document.
 - The audiobook `PreviewDocument` path resolves the source, engine and voice without durable state. Extend it for chapter planning.

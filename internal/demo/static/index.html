@@ -1298,14 +1298,17 @@
           </details>
 
           <details class="workflow-step" open>
-            <summary class="workflow-action-heading"><span class="workflow-step-number">3</span><span><strong>Preview and narrate</strong><small>Preview the narration settings, review them, then start narration.</small></span></summary>
+            <summary class="workflow-action-heading"><span class="workflow-step-number">3</span><span><strong>Preview and narrate</strong><small>Review your chapters and narrator, then start narration.</small></span></summary>
             <div class="workflow-step-body">
               <div class="field">
             <div class="action-row">
-              <button class="secondary" id="audiobookPreviewButton" type="button">Preview narration settings</button>
+              <button class="secondary" id="audiobookPreviewButton" type="button">Preview chapter plan</button>
               <span class="hint">Review this preview before Narrate. No audio is generated yet.</span>
             </div>
-            <pre id="audiobookRequestPreview" aria-live="polite">Narration settings have not been previewed.</pre>
+            <section id="audiobookChapterPlan" aria-live="polite" hidden></section>
+            <div class="action-row"><span id="audiobookAuditionStatus" class="hint" role="status"></span><button id="audiobookAuditionCancel" class="secondary" type="button" hidden>Cancel audition</button></div>
+            <audio id="audiobookAuditionAudio" controls hidden></audio>
+            <details><summary>Technical narration settings</summary><pre id="audiobookRequestPreview">Narration settings have not been previewed.</pre></details>
           </div>
           <div class="action-row">
             <button class="primary" id="audiobookNarrateButton" type="submit" disabled>Narrate</button>

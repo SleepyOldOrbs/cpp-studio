@@ -31,10 +31,13 @@ const ChapterExtractionPolicyVersion = 1
 
 // Chapter describes canonical source bytes, independently of synthesis units.
 type Chapter struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	StartByte int    `json:"startByte"`
-	EndByte   int    `json:"endByte"`
+	ID                        string `json:"id"`
+	Title                     string `json:"title"`
+	StartByte                 int    `json:"startByte"`
+	EndByte                   int    `json:"endByte"`
+	WordCount                 int    `json:"wordCount,omitempty"`
+	EstimatedListeningSeconds int    `json:"estimatedListeningSeconds,omitempty"`
+	Excerpt                   string `json:"excerpt,omitempty"`
 }
 
 type ExtractedDocument struct {

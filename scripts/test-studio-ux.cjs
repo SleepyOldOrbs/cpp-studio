@@ -357,6 +357,70 @@ function load(names, values = {}) {
   return context;
 }
 
+test('a delayed chapter preview cannot approve a changed document or narrator', async () => {
+  for (const changed of [false, true]) {
+    let currentKey = 'first', drawn;
+    const plan = { digest: 'digest', chapters: [] };
+    const context = load(['previewAudiobookDocument'], {
+      audiobookRequestKey: () => currentKey, audiobookErrorBox: {}, audiobookPreviewButton: {}, audiobookRequestPreview: {},
+      audiobookEngineSelect: { value: 'audio' }, audiobookVoiceSelect: { value: 'voice', selectedOptions: [{ textContent: 'Narrator' }] },
+      audiobookAcceptPromptWarnings: { checked: false }, audiobookFileInput: { files: [{ name: 'book.md' }] },
+      audiobookOptionsText: () => '', audiobookPromptWarningAcceptance: {}, audiobookChapterPlan: {},
+      audiobookResolvedKey: '', audiobookDocumentPlan: null, FormData: class { append() {} },
+      renderAudiobookChapterPlan(_, value) { drawn = value; }, syncAudiobookEngineControls() {},
+      fetch: async () => ({ ok: true, json: async () => { if (changed) currentKey = 'second'; return { plan }; } }),
+    });
+    await context.previewAudiobookDocument();
+    assert.equal(context.audiobookResolvedKey, changed ? '' : 'first');
+    assert.equal(context.audiobookDocumentPlan, changed ? null : plan);
+    assert.equal(drawn, changed ? undefined : plan);
+  }
+});
+
+test('changing audiobook inputs clears the displayed chapter plan and its approval', () => {
+  const context = load(['invalidateAudiobookPreview'], {
+    audiobookResolvedKey: 'approved', audiobookResolvedDirection: 'old', audiobookDocumentPlan: { digest: 'old' },
+    audiobookChapterPlan: { hidden: false, textContent: 'Old chapters' }, audiobookRequestPreview: {},
+    showMatchingAudiobookBenchmark() {}, syncAudiobookEngineControls() {}, clearAudiobookAudition() {},
+  });
+  context.invalidateAudiobookPreview();
+  assert.equal(context.audiobookDocumentPlan, null);
+  assert.equal(context.audiobookResolvedKey, '');
+  assert.equal(context.audiobookChapterPlan.hidden, true);
+  assert.equal(context.audiobookChapterPlan.textContent, '');
+});
+
+test('passage audition uses the approved plan and discards changed or immediately cancelled requests', async () => {
+  for (const scenario of ['complete', 'changed', 'cancelled']) {
+    const changed = scenario === 'changed', cancelled = scenario === 'cancelled';
+    let currentKey = 'approved', pauses = 0;
+    const fields = [], requests = [];
+    const context = load(['auditionAudiobookChapter'], {
+      audiobookRequestKey: () => currentKey, audiobookResolvedKey: 'approved', audiobookDocumentPlan: { digest: 'digest' },
+      audiobookFileInput: { files: [{ name: 'book.md' }] }, audiobookAuditionPending: false, audiobookAuditionJobId: '',
+      audiobookAuditionStatus: {}, audiobookAuditionAudio: { hidden: true, load() {} }, audiobookErrorBox: {},
+      clearAudiobookAudition() { pauses++; }, syncAudiobookEngineControls() {},
+      audiobookDocumentForm: () => ({ append(...args) { fields.push(args); } }),
+      fetch: async (url, options) => {
+        requests.push([url, options && options.method]);
+        if (url === '/v1/audiobooks/audition') {
+          if (changed) currentKey = 'changed';
+          if (cancelled) context.audiobookAuditionCancelled = true;
+          return { ok: true, json: async () => ({ id: 'audition-1' }) };
+        }
+        return { ok: true, json: async () => ({ status: 'complete', result: { audioUrl: '/temporary.wav' } }) };
+      },
+    });
+    await context.auditionAudiobookChapter('chapter_002');
+    assert.deepEqual(fields, [['chapterId', 'chapter_002']]);
+    assert.equal(context.audiobookAuditionAudio.hidden, changed || cancelled);
+    assert.equal(context.audiobookAuditionAudio.src, changed || cancelled ? undefined : '/temporary.wav');
+    assert.equal(context.audiobookAuditionPending, false);
+    if (changed || cancelled) assert.ok(requests.some(r => r[0] === '/v1/jobs/audition-1/cancel'));
+    assert.equal(pauses, 1);
+  }
+});
+
 test('Library dates prefer real updates and fall back from missing, zero or invalid updates', () => {
   const context = load(['libraryTimestamp'], { Date });
   const created = '2026-09-10T08:28:42.799Z';

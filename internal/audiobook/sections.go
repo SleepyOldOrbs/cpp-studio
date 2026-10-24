@@ -52,7 +52,11 @@ func PlanDramaBoxSections(canonicalSource string) ([]Section, error) {
 }
 
 func planDramaBoxSections(canonicalSource string, entropy io.Reader) ([]Section, error) {
-	ranges, err := buildDramaBoxRanges(canonicalSource)
+	return planDocumentSections(canonicalSource, nil, entropy)
+}
+
+func planDocumentSections(canonicalSource string, plan *DocumentPlan, entropy io.Reader) ([]Section, error) {
+	ranges, err := documentSectionRanges(canonicalSource, plan)
 	if err != nil {
 		return nil, err
 	}
@@ -65,6 +69,7 @@ func planDramaBoxSections(canonicalSource string, entropy io.Reader) ([]Section,
 		text := canonicalSource[sourceRange.start:sourceRange.end]
 		sum := sha256.Sum256([]byte(text))
 		sections = append(sections, Section{
+			ChapterID:  chapterIDForRange(plan, sourceRange.start, sourceRange.end),
 			ID:         fmt.Sprintf("section-%04d", i+1),
 			StartByte:  int64(sourceRange.start),
 			EndByte:    int64(sourceRange.end),
