@@ -33,9 +33,9 @@
 
 **Interfaces:** define `BookMetadata{Title, Author, Narrator, Year, Genre, Description string}` and optional cover reference owned by the book. Add `UpdateBookMetadata(id string, metadata BookMetadata) error` and `SetBookCover(id string, data []byte) error` on the Audiobook store. Accept PNG/JPEG only, at most 10 MiB and 20 million decoded pixels; metadata text fields are bounded (title/author/narrator/genre 256 characters; description 4,000; year empty or four digits).
 
-- [ ] Add tests for old manifests, metadata edits leaving synthesis identity unchanged, Unicode details and invalid/oversized cover rejection without replacing the old cover.
-- [ ] Run `go test ./internal/audiobook ./internal/gateway`; establish failures, implement details/cover endpoints and UI with existing multipart/atomic-write patterns, then require PASS.
-- [ ] Reopen a fixture book and verify its details/cover persist. Review and commit.
+- [x] Add tests for old manifests, metadata edits leaving synthesis identity unchanged, Unicode details and invalid/oversized cover rejection without replacing the old cover.
+- [x] Run `go test ./internal/audiobook ./internal/gateway`; establish failures, implement details/cover endpoints and UI with existing multipart/atomic-write patterns, then require PASS.
+- [x] Reopen a fixture book and verify its details/cover persist. Review and commit.
 
 ## 3B — Encode and publish a revision-bound M4B
 

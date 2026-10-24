@@ -122,6 +122,9 @@ type Service interface {
 	PreviewDocument(context.Context, DocumentRequest) (ResolvedRequest, error)
 	AuditionDocument(context.Context, DocumentRequest, string) (string, error)
 	AuditionAudio(string) ([]byte, error)
+	UpdateBookMetadata(string, BookMetadata) error
+	SetBookCover(string, []byte) error
+	BookCoverPath(string) (string, string, error)
 	Create(context.Context, DocumentRequest) (string, int, error)
 	Resume(context.Context, string) (int, error)
 	Restart(context.Context, string) (string, int, error)

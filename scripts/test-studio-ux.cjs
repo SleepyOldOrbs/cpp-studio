@@ -452,6 +452,21 @@ test('reopened chapter plans identify the saved narrator with an engine-appropri
   assert.equal(context.audiobookSavedNarrator({}), 'Studio default');
 });
 
+test('book details save through the audiobook owner and clearly report a rejected cover', async () => {
+  for (const coverOK of [false,true]) {
+    const requests = [], status = {};
+    const context = load(['saveAudiobookDetails'], {
+      FormData: class { append() {} }, audiobookStatus: {}, refreshAudiobooks: async () => {}, log() {},
+      readErrorBody: async () => 'Malformed cover',
+      fetch: async (url, options) => { requests.push([url, options]); return {ok: !url.endsWith('/cover') || coverOK}; },
+    });
+    await context.saveAudiobookDetails('book-1', {title:'Café', author:'Writer'}, {name:'cover.png'}, status);
+    assert.deepEqual(requests.map(r=>[r[0],r[1].method]), [['/v1/audiobooks/book-1/metadata','PUT'],['/v1/audiobooks/book-1/cover','PUT']]);
+    assert.equal(JSON.parse(requests[0][1].body).title, 'Café');
+    assert.match(status.textContent, coverOK ? /saved/i : /Details saved.*cover.*Malformed cover/i);
+  }
+});
+
 test('Library dates prefer real updates and fall back from missing, zero or invalid updates', () => {
   const context = load(['libraryTimestamp'], { Date });
   const created = '2026-09-10T08:28:42.799Z';

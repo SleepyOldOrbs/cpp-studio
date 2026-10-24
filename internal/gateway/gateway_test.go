@@ -7358,6 +7358,57 @@ func TestAudiobookPassageAuditionIsTemporaryAndPlayable(t *testing.T) {
 	}
 }
 
+func TestAudiobookBookDetailsAndCoverEndpoints(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := testConfig(map[string]config.EngineConfig{"audio": helperEngine("speech-tone")})
+	router := NewRouter(cfg, lifecycle.NewManager(cfg))
+	created := postAudiobook(t, router, nil)
+	if created.Code != http.StatusAccepted {
+		t.Fatal(created.Code, created.Body.String())
+	}
+	var book struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &book); err != nil {
+		t.Fatal(err)
+	}
+	if job := waitGatewayAudiobookJob(t, router, book.ID); job.Status != "complete" {
+		t.Fatal(job)
+	}
+	metadata := httptest.NewRecorder()
+	router.ServeHTTP(metadata, httptest.NewRequest(http.MethodPut, "/v1/audiobooks/"+book.ID+"/metadata", strings.NewReader(`{"title":"New café title","author":"Writer","narrator":"Ada","year":"2026","genre":"Fiction","description":"A story."}`)))
+	if metadata.Code != http.StatusNoContent {
+		t.Fatal(metadata.Code, metadata.Body.String())
+	}
+	var imageData bytes.Buffer
+	if err := stdpng.Encode(&imageData, image.NewRGBA(image.Rect(0, 0, 4, 3))); err != nil {
+		t.Fatal(err)
+	}
+	data := imageData.Bytes()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "cover.png")
+	_, _ = part.Write(data)
+	_ = writer.Close()
+	cover := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/v1/audiobooks/"+book.ID+"/cover", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(cover, req)
+	if cover.Code != http.StatusNoContent {
+		t.Fatal(cover.Code, cover.Body.String())
+	}
+	get := httptest.NewRecorder()
+	router.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/"+book.ID+"/cover", nil))
+	if get.Code != http.StatusOK || get.Header().Get("Content-Type") != "image/png" || !bytes.Equal(get.Body.Bytes(), data) {
+		t.Fatal("cover not readable", get.Code)
+	}
+	reopened := httptest.NewRecorder()
+	router.ServeHTTP(reopened, httptest.NewRequest(http.MethodGet, "/v1/audiobooks/"+book.ID, nil))
+	if !strings.Contains(reopened.Body.String(), `"author":"Writer"`) {
+		t.Fatal("details not persisted", reopened.Body.String())
+	}
+}
+
 func TestAudiobookOptionsRejectUnknownDuplicateSeedAndLegacyUse(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cfg := testConfig(map[string]config.EngineConfig{

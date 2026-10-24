@@ -1660,6 +1660,62 @@ func writeAudiobookError(w http.ResponseWriter, err error) {
 func (r *router) handleAudiobook(w http.ResponseWriter, req *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(req.URL.Path, "/v1/audiobooks/"), "/")
 	parts := strings.Split(rest, "/")
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "metadata" {
+		if !requireMethod(w, req, http.MethodPut) {
+			return
+		}
+		req.Body = http.MaxBytesReader(w, req.Body, maxJSONBodyBytes)
+		var metadata audiobook.BookMetadata
+		decoder := json.NewDecoder(req.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&metadata); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid book details: "+err.Error())
+			return
+		}
+		if err := r.audiobooks.UpdateBookMetadata(parts[0], metadata); err != nil {
+			writeAudiobookError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "cover" {
+		switch req.Method {
+		case http.MethodGet:
+			path, contentType, err := r.audiobooks.BookCoverPath(parts[0])
+			if err != nil {
+				writeAudiobookError(w, err)
+				return
+			}
+			w.Header().Set("Content-Type", contentType)
+			http.ServeFile(w, req, path)
+		case http.MethodPut:
+			req.Body = http.MaxBytesReader(w, req.Body, 11*1024*1024)
+			file, _, err := req.FormFile("file")
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, "upload a PNG or JPEG cover as file")
+				return
+			}
+			defer file.Close()
+			if req.MultipartForm != nil {
+				defer req.MultipartForm.RemoveAll()
+			}
+			data, err := io.ReadAll(io.LimitReader(file, 10*1024*1024+1))
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, "could not read cover")
+				return
+			}
+			if err := r.audiobooks.SetBookCover(parts[0], data); err != nil {
+				writeAudiobookError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.Header().Set("Allow", "GET, PUT")
+			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
 	if len(parts) == 1 && parts[0] != "" {
 		switch req.Method {
 		case http.MethodGet:

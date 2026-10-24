@@ -8087,6 +8087,79 @@
     item.appendChild(details);
   }
 
+  async function saveAudiobookDetails(id, metadata, cover, status) {
+    status.textContent = "Saving book details…";
+    var detailsSaved = false;
+    try {
+      var response = await fetch("/v1/audiobooks/" + encodeURIComponent(id) + "/metadata", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metadata) });
+      if (!response.ok) { throw new Error(await readErrorBody(response)); }
+      detailsSaved = true;
+      if (cover) {
+        var form = new FormData();
+        form.append("file", cover, cover.name);
+        response = await fetch("/v1/audiobooks/" + encodeURIComponent(id) + "/cover", { method: "PUT", body: form });
+        if (!response.ok) { throw new Error(await readErrorBody(response)); }
+      }
+      status.textContent = "Book details saved.";
+      audiobookStatus.textContent = "Book details saved: " + (metadata.title || id);
+      log("Book details saved: " + id);
+      await refreshAudiobooks(true);
+      return true;
+    } catch (err) {
+      status.textContent = (detailsSaved ? "Details saved; cover could not be saved: " : "Could not save book details: ") + err.message;
+      return false;
+    }
+  }
+
+  function appendAudiobookBookDetails(item, book) {
+    var details = createElement("details", "audiobook-book-details");
+    details.appendChild(createElement("summary", "", "Book details and cover"));
+    var fields = createElement("div", "audiobook-details-grid");
+    var metadata = book.metadata || {};
+    var inputs = {};
+    [ ["title", "Title"], ["author", "Author"], ["narrator", "Narrator credit"], ["year", "Year"], ["genre", "Genre"], ["description", "Description"] ].forEach(function (field) {
+      var label = createElement("label", "field");
+      label.appendChild(createElement("span", "", field[1]));
+      var input = createElement(field[0] === "description" ? "textarea" : "input", "text-input");
+      if (field[0] !== "description") { input.type = "text"; }
+      input.maxLength = field[0] === "description" ? 4000 : field[0] === "year" ? 4 : 256;
+      input.value = metadata[field[0]] || (field[0] === "title" ? book.title : "");
+      input.dataset.bookDetail = field[0];
+      inputs[field[0]] = input;
+      label.appendChild(input);
+      fields.appendChild(label);
+    });
+    details.appendChild(fields);
+    if (book.cover) {
+      var image = createElement("img", "audiobook-cover");
+      image.alt = "Cover of " + book.title;
+      image.src = "/v1/audiobooks/" + encodeURIComponent(book.id) + "/cover?v=" + encodeURIComponent(book.cover.sha256);
+      details.appendChild(image);
+    }
+    var coverLabel = createElement("label", "field");
+    coverLabel.appendChild(createElement("span", "", "Cover (PNG or JPEG, up to 10 MiB and 20 million pixels)"));
+    var cover = createElement("input", "");
+    cover.type = "file";
+    cover.accept = "image/png,image/jpeg";
+    cover.dataset.bookCover = "true";
+    coverLabel.appendChild(cover);
+    details.appendChild(coverLabel);
+    var save = createElement("button", "secondary compact-button", "Save book details");
+    save.type = "button";
+    var status = createElement("p", "hint");
+    status.setAttribute("role", "status");
+    save.addEventListener("click", async function () {
+      var values = {};
+      Object.keys(inputs).forEach(function (key) { values[key] = inputs[key].value; });
+      save.disabled = true;
+      await saveAudiobookDetails(book.id, values, cover.files && cover.files[0], status);
+      save.disabled = false;
+    });
+    details.appendChild(save);
+    details.appendChild(status);
+    item.appendChild(details);
+  }
+
   function audiobookSavedNarrator(book) {
     var id = book.voiceId || (book.synthesisIdentity && book.synthesisIdentity.voice && book.synthesisIdentity.voice.id) || "";
     if (id && id !== "default") {
@@ -8143,8 +8216,10 @@
       item.appendChild(actions);
       return item;
     }
+    appendAudiobookBookDetails(item, book);
     appendAudiobookAttempts(item, book);
-    item.addEventListener("click", function () {
+    item.addEventListener("click", function (event) {
+      if (event.target.closest("button,input,textarea,select,details,a,label")) { return; }
       audiobookAudio.src = book.artifactUrl;
       audiobookSaveButton.disabled = false;
       audiobookSaveButton.dataset.url = book.artifactUrl;
