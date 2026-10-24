@@ -38,6 +38,7 @@ func (r *router) handleReferenceAssignment(w http.ResponseWriter, req *http.Requ
 	}
 	if req.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "audio/wav")
+		w.Header().Set("Cache-Control", "no-store")
 		http.ServeFile(w, req, path)
 		return
 	}

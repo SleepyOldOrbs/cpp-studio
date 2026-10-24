@@ -19,6 +19,27 @@ test('a voice starter fills only the editable description and preserves selected
   assert.match(context.designStarterStatus.textContent,/Generate/);
 });
 
+test('missing design engines give a remedy and keep existing candidates', async () => {
+  let error;const candidate={id:'keep'};
+  const context=load(['generateDesign','designModelReady'],{running:false,designDescriptionInput:{value:'Clear narration'},designModelSelect:{value:'qwen3'},designReadyModels:[],designCandidate:candidate,clearDesignError(){},setDesignError(value){error=value;},fetch(){assert.fail('unavailable engine was invoked');}});
+  await context.generateDesign();assert.match(error.message,/Models.*Engines/);assert.equal(context.designCandidate,candidate);
+});
+
+test('Library auditions are exclusive and filtering preserves the selected voice', () => {
+  let paused=0;const first={pause(){paused++;}},second={pause(){paused++;}};
+  const context=load(['activateLibraryAudition','stopLibraryAudition'],{libraryActiveAudio:null,selectedVoiceId:'voice_keep'});
+  context.activateLibraryAudition(first);context.activateLibraryAudition(second);assert.equal(paused,1);
+  context.stopLibraryAudition();assert.equal(paused,2);assert.equal(context.selectedVoiceId,'voice_keep');
+});
+
+test('audiobook reuse validates the pending voice and preserves the document and engine', async () => {
+  const file={name:'Draft.md'}, input={files:[file]}, status={},select={value:'old'},engineSelect={value:'audio'};
+  const context=load(['applyLibraryAudiobookVoice'],{audiobookBusy:false,audiobookAuditionPending:false,audiobookRequestKey:()=> 'same',audiobookEngineSelect:engineSelect,audiobookVoiceSelect:select,audiobookFileInput:input,libraryVoices:[],audiobookReuseStatus:status,audiobookReusedVoice:null,
+    fetch:async url=>{assert.match(url,/voice=voice_new.*engine=audio/);return{json:async()=>({voiceId:'voice_new',name:'Reader',analysis:{},audioUrl:'/reference'})};},ensureOk:async()=>{},renderAudiobookVoices(){},renderAudiobookVoiceReference(){},invalidateAudiobookPreview(){},window:{location:{hash:'library'}},});
+  assert.equal(await context.applyLibraryAudiobookVoice({voice_id:'voice_new'},status),true);
+  assert.equal(select.value,'voice_new');assert.equal(engineSelect.value,'audio');assert.equal(input.files[0],file);
+});
+
 test('dictionary loading locks replacement edits until an existing baseline is visible', async () => {
   let respond;const editor={disabled:false}, reload={disabled:false};let visible=[];
   const context=load(['loadPronunciationRules','setPronunciationDocument','syncPronunciationEditor'],{
@@ -1015,6 +1036,7 @@ test('voice design generates three sequential candidates and retains successes w
   const requests = [], refs = [], playing = [], states = [];
   let active = 0, seed = 0;
   const context = load(['generateDesign'], {
+    designModelReady: () => true,
     running: false, designDescriptionInput: { value: 'Warm narrator' }, designModelSelect: { value: 'voxcpm2' },
     designGenerateButton: {}, designStatus: {}, designGenerationStatus: {}, designCandidate: null, designCandidates: [],
     designCandidateStatuses: [{}, {}, {}], designCandidateRadios: [{}, {}, {}],

@@ -57,11 +57,16 @@ passed. Stages 1–2 issues #51–#52 are closed; stages 3–5 remain tracked as
 
 Stage 3 is merged in PR #58 (bf56668), after independent review fixes,
 Windows/Linux CI, FFmpeg 8/9 validation, browser download and VLC inspection.
-Stage 4 pronunciation snapshots are implemented and independently reviewed.
-Full Go/vet, 70 Node checks, browser apply/save/delayed-load coverage and native
-OmniVoice book/dialogue checks passed; both native corrected-name outputs were
-transcribed exactly by Whisper. GitHub CI and merge follow the reviewed fix pass.
-Stage 5 voice browsing and Library polish is in progress in a separate branch.
+Stage 4 is merged in PR #59 (0145fc7), after independent review fixes and
+Windows/Linux CI. Frozen rules preserve source text and resumed/retried speech;
+full Go/vet, 70 Node checks, delayed-load browser coverage and native corrected
+book/dialogue transcriptions passed.
+Stage 5 voice starters, Actor/Character browsing and contextual production reuse
+are implemented. Full Go/vet, 74 Node checks, fixture and real Qwen3/OmniVoice
+browser workflows passed. The chosen design candidate's saved reference hash
+matches exactly; specific book/project reopens preserve current edits. The
+full Story Builder browser smoke passed with its new-tab preservation checks.
+Stage 5 independent whole-branch review and GitHub CI/merge remain.
 
 - Story Builder has stable clip/track IDs, revision checks, edit history, timeline editing, voice bindings, stored takes and `auditionClip`. A script view should project that data, not create a second document.
 - The audiobook `PreviewDocument` path resolves the source, engine and voice without durable state. Extend it for chapter planning.

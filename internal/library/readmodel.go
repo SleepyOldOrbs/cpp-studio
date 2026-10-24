@@ -2,6 +2,7 @@ package library
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,9 @@ const (
 )
 
 type Action struct {
+	Target         string `json:"target,omitempty"`
+	VoiceID        string `json:"voice_id,omitempty"`
+	OwnerID        string `json:"owner_id,omitempty"`
 	Label          string `json:"label"`
 	URL            string `json:"url"`
 	Method         string `json:"method,omitempty"`
@@ -43,6 +47,7 @@ type Relationship struct {
 // Entry is the stable Library read shape. It points back to owning routes;
 // the Library never copies a purpose-built manifest or owns its mutations.
 type Entry struct {
+	ReuseActions   []Action          `json:"reuse_actions,omitempty"`
 	Kind           string            `json:"kind"`
 	ID             string            `json:"id"`
 	Name           string            `json:"name"`
@@ -67,12 +72,15 @@ type ReadResponse struct {
 }
 
 type ReadModelSources struct {
-	Items           func() ([]Item, error)
-	ActorVoices     func() ([]voice.Clone, error)
-	CharacterVoices func(string) ([]voice.CharacterVoice, error)
-	Stories         func() ([]story.Summary, error)
-	Projects        func() ([]storybuilder.Project, error)
-	Audiobooks      func() ([]audiobook.Manifest, error)
+	VoiceReuseStatus       func(string, string) string
+	VoiceReferenceStatus   func(string) error
+	CharacterPreviewStatus func(string) error
+	Items                  func() ([]Item, error)
+	ActorVoices            func() ([]voice.Clone, error)
+	CharacterVoices        func(string) ([]voice.CharacterVoice, error)
+	Stories                func() ([]story.Summary, error)
+	Projects               func() ([]storybuilder.Project, error)
+	Audiobooks             func() ([]audiobook.Manifest, error)
 }
 
 type ReadModel struct {
@@ -114,7 +122,31 @@ func (m *ReadModel) List(query string) (ReadResponse, error) {
 		if err != nil {
 			return ReadResponse{}, fmt.Errorf("list Character Voices for %s: %w", actor.ID, err)
 		}
-		entries = append(entries, actorVoiceEntry(actor, characters))
+		entry := actorVoiceEntry(actor, characters)
+		entry.ReuseActions = m.voiceReuseActions(actor.ID)
+		if m.sources.VoiceReferenceStatus != nil {
+			if err := m.sources.VoiceReferenceStatus(actor.ID); err != nil {
+				entry.PreviewAction.DisabledReason = err.Error()
+				entry.ArtifactAction.DisabledReason = err.Error()
+				entry.Metadata["reference_state"] = "unavailable"
+			}
+		}
+		for i := range entry.Children {
+			child := &entry.Children[i]
+			child.ReuseActions = m.voiceReuseActions(child.ID)
+			if m.sources.VoiceReferenceStatus != nil {
+				if err := m.sources.VoiceReferenceStatus(child.ID); err != nil {
+					child.Metadata["reference_state"] = "unavailable"
+					child.Metadata["reference_error"] = err.Error()
+				}
+			}
+			if child.PreviewAction.URL != "" && m.sources.CharacterPreviewStatus != nil {
+				if err := m.sources.CharacterPreviewStatus(child.ID); err != nil {
+					child.PreviewAction.DisabledReason = err.Error()
+				}
+			}
+		}
+		entries = append(entries, entry)
 	}
 	for _, item := range stories {
 		entries = append(entries, storyEntries(item)...)
@@ -143,6 +175,20 @@ func (m *ReadModel) List(query string) (ReadResponse, error) {
 	return ReadResponse{Entries: entries, Items: items}, nil
 }
 
+func (m *ReadModel) voiceReuseActions(id string) []Action {
+	actions := []Action{{Label: "Use for audiobook", URL: "/demo/?voice=" + url.QueryEscape(id) + "#audiobook", Target: "audiobook", VoiceID: id}, {Label: "Assign in Story Builder", URL: "/demo/story-builder.html?voice=" + url.QueryEscape(id), Target: "story-builder", VoiceID: id}}
+	if m.sources.VoiceReuseStatus != nil {
+		for i := range actions {
+			actions[i].DisabledReason = m.sources.VoiceReuseStatus(id, actions[i].Target)
+		}
+	}
+	return actions
+}
+
+func productionLaunch(target, id, label string) *Action {
+	return &Action{Label: label, URL: "/demo/?" + target + "=" + url.QueryEscape(id) + "#" + target, Target: target, OwnerID: id}
+}
+
 func savedItemEntry(item Item) Entry {
 	artifactURL := "/v1/library/" + item.ID + "/artifact"
 	kind, subtype, contentType := KindSavedImage, "png", "image/png"
@@ -169,7 +215,7 @@ func actorVoiceEntry(actor voice.Clone, characters []voice.CharacterVoice) Entry
 	audioURL := "/v1/voices/" + actor.ID + "/audio"
 	entry := Entry{
 		Kind: KindActorVoice, ID: actor.ID, Name: actor.Name, Subtype: "actor", CreatedAt: actor.CreatedAt,
-		Metadata:       map[string]string{"transcript": actor.Transcript},
+		Metadata:       map[string]string{"transcript": actor.Transcript, "reference_state": "ready", "reference": "Actor recording"},
 		PreviewAction:  &Action{Label: "Preview", URL: audioURL, ContentType: "audio/wav"},
 		ArtifactAction: &Action{Label: "Download reference", URL: audioURL, ContentType: "audio/wav"},
 		LaunchAction:   &Action{Label: "Open Voice cloning", URL: "/demo/#voice-cloning"},
@@ -194,11 +240,15 @@ func actorVoiceEntry(actor voice.Clone, characters []voice.CharacterVoice) Entry
 		child := Entry{
 			Kind: KindCharacterVoice, ID: character.ID, Name: character.Name, Subtype: "character",
 			CreatedAt: character.CreatedAt, UpdatedAt: character.UpdatedAt,
-			Relationship: &Relationship{Kind: KindActorVoice, ID: actor.ID, Name: actor.Name},
-			Metadata:     map[string]string{"direction": character.Direction},
-			LaunchAction: &Action{Label: "Open Actor Voice", URL: "/demo/#voice-cloning"},
-			DeleteAction: &Action{Label: "Delete", URL: "/v1/character-voices/" + character.ID, Method: "DELETE"},
-			search:       []string{character.Name, character.ID, character.Direction, actor.Name, actor.ID},
+			Relationship:  &Relationship{Kind: KindActorVoice, ID: actor.ID, Name: actor.Name},
+			Metadata:      map[string]string{"direction": character.Direction, "reference_state": "ready", "reference": "Inherited from " + actor.Name},
+			PreviewAction: &Action{Label: "Preview", DisabledReason: "Generate a Character Voice preview in Voice cloning to audition its direction"},
+			LaunchAction:  &Action{Label: "Open Actor Voice", URL: "/demo/#voice-cloning"},
+			DeleteAction:  &Action{Label: "Delete", URL: "/v1/character-voices/" + character.ID, Method: "DELETE"},
+			search:        []string{character.Name, character.ID, character.Direction, actor.Name, actor.ID},
+		}
+		if character.Reference != nil {
+			child.Metadata["reference"] = "Recording assigned to this character"
 		}
 		if character.Preview != nil {
 			child.PreviewAction = &Action{Label: "Preview", URL: "/v1/character-voices/" + character.ID + "/preview/audio", ContentType: "audio/wav"}
@@ -220,7 +270,7 @@ func storyEntries(item story.Summary) []Entry {
 	entry := Entry{
 		Kind: KindStory, ID: item.ID, Name: name, Subtype: item.Mode, CreatedAt: item.CreatedAt,
 		Metadata:     map[string]string{"subject": item.Subject, "status": string(item.Status), "duration_seconds": strconv.Itoa(item.DurationSeconds)},
-		LaunchAction: &Action{Label: "Open Story", URL: "/demo/#story"},
+		LaunchAction: productionLaunch("story", item.ID, "Open Story"),
 		DeleteAction: &Action{Label: "Delete", URL: "/v1/stories/" + item.ID, Method: "DELETE"},
 		search:       []string{name, item.Subject, item.Mode, string(item.Status)},
 	}
@@ -241,7 +291,7 @@ func storyEntries(item story.Summary) []Entry {
 			Metadata:       map[string]string{"duration_seconds": strconv.Itoa(render.DurationSeconds), "revision": strconv.Itoa(render.Revision)},
 			PreviewAction:  &Action{Label: "Preview", URL: render.URL, ContentType: "audio/wav"},
 			ArtifactAction: &Action{Label: "Download WAV", URL: render.URL, ContentType: "audio/wav"},
-			LaunchAction:   &Action{Label: "Open Story", URL: "/demo/#story"},
+			LaunchAction:   productionLaunch("story", item.ID, "Open Story"),
 			search:         []string{name, item.Subject, "render revision", "wav", strconv.Itoa(render.Revision)},
 		})
 		for _, export := range render.Exports {
@@ -251,7 +301,7 @@ func storyEntries(item story.Summary) []Entry {
 				Relationship:   &Relationship{Kind: KindRenderRevision, ID: renderID, Name: renderName},
 				Metadata:       map[string]string{"bitrate": export.Bitrate, "revision": strconv.Itoa(render.Revision)},
 				ArtifactAction: &Action{Label: "Download " + strings.ToUpper(export.Format), URL: export.URL, ContentType: deliveryContentType(export.Format)},
-				LaunchAction:   &Action{Label: "Open Story", URL: "/demo/#story"},
+				LaunchAction:   productionLaunch("story", item.ID, "Open Story"),
 				search:         []string{name, item.Subject, export.Format, export.Bitrate, "export", strconv.Itoa(render.Revision)},
 			})
 		}
@@ -307,7 +357,7 @@ func audiobookEntries(book audiobook.Manifest) []Entry {
 	entry := Entry{
 		Kind: KindAudiobook, ID: book.ID, Name: book.Title, Subtype: status, CreatedAt: book.CreatedAt,
 		Metadata:     map[string]string{"status": status, "engine": book.EngineID, "direction": book.Direction, "duration_seconds": strconv.Itoa(book.DurationSeconds)},
-		LaunchAction: &Action{Label: "Open Audiobook", URL: "/demo/#audiobook"},
+		LaunchAction: productionLaunch("audiobook", book.ID, "Open Audiobook"),
 		DeleteAction: &Action{Label: "Delete", URL: "/v1/audiobooks/" + book.ID, Method: "DELETE"},
 		search:       []string{book.Title, book.ID, status, book.EngineID, book.Direction},
 	}
@@ -327,7 +377,7 @@ func audiobookEntries(book audiobook.Manifest) []Entry {
 			Metadata:       map[string]string{"duration_seconds": strconv.Itoa(render.DurationSeconds), "render_id": render.ID},
 			PreviewAction:  &Action{Label: "Preview", URL: render.ArtifactURL, ContentType: "audio/wav"},
 			ArtifactAction: &Action{Label: "Download WAV", URL: render.ArtifactURL, ContentType: "audio/wav"},
-			LaunchAction:   &Action{Label: "Open Audiobook", URL: "/demo/#audiobook"},
+			LaunchAction:   productionLaunch("audiobook", book.ID, "Open Audiobook"),
 			search:         []string{book.Title, book.ID, render.ID, "render revision", "wav"},
 		})
 	}
@@ -349,7 +399,7 @@ func audiobookEntries(book audiobook.Manifest) []Entry {
 		}
 		entries = append(entries, Entry{Kind: KindExport, ID: book.ID + "/exports/" + export.RenderID + "/m4b", Name: title + " — " + renderName + " M4B", Subtype: "m4b", CreatedAt: export.CreatedAt, Relationship: relationship,
 			Metadata:       map[string]string{"author": export.Metadata.Author, "narrator": export.Metadata.Narrator, "render_id": export.RenderID, "bytes": strconv.FormatInt(export.Bytes, 10), "bitrate": "AAC · 96 kbit/s"},
-			ArtifactAction: &Action{Label: "Download M4B", URL: export.URL, ContentType: "audio/mp4", DisabledReason: export.UnavailableReason}, LaunchAction: &Action{Label: "Open Audiobook", URL: "/demo/#audiobook"}, search: []string{title, book.Title, book.ID, export.RenderID, export.Metadata.Author, export.Metadata.Narrator, "m4b", "export"}})
+			ArtifactAction: &Action{Label: "Download M4B", URL: export.URL, ContentType: "audio/mp4", DisabledReason: export.UnavailableReason}, LaunchAction: productionLaunch("audiobook", book.ID, "Open Audiobook"), search: []string{title, book.Title, book.ID, export.RenderID, export.Metadata.Author, export.Metadata.Narrator, "m4b", "export"}})
 	}
 	return entries
 }

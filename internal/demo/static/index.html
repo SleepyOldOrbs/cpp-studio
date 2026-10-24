@@ -502,17 +502,18 @@
           <details class="workflow-step" open>
             <summary><span class="workflow-step-number">2</span><span><strong>Describe a voice and generate candidates</strong><small>Describe the voice you want, then create three alternatives to compare.</small></span></summary>
             <div class="workflow-step-body">
-              <label class="field"><span>Describe a voice</span>
-                <span class="design-starters">
+                <div class="design-starters">
                   <label>Starting description <select id="designStarterSelect"><option value="">Choose a starting point…</option></select></label>
                   <button id="designStarterUse" class="secondary compact-button" type="button">Use description</button>
-                </span>
+                </div>
                 <small id="designStarterStatus" class="hint">Descriptions are editable starting points. Generate and compare candidates before saving a voice.</small>
+              <label class="field"><span>Describe a voice</span>
                 <textarea id="designDescriptionInput" rows="3" maxlength="500" placeholder="e.g. High pitched, singing voice &mdash; or &mdash; Deep gravelly cowboy&hellip;"></textarea>
                 <small class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> generates three candidates, one at a time. No recording needed.</small>
               </label>
               <div class="action-row"><button class="primary" id="designGenerateButton" type="submit">Generate 3 candidates</button></div>
               <small class="hint">If no design engine is available, <a href="#models">install a design model in Models</a> and <a href="#engines">configure its engine in Engines</a>, then refresh health.</small>
+              <small class="hint">Prose descriptions suit VoxCPM2, Qwen3 and FireRed. OmniVoice uses style tags; edit the description to supported tags such as “elderly, low pitch” before generating with that model.</small>
               <p class="hint" id="designGenerationStatus" role="status"></p>
               <p class="error-box" id="designErrorBox" role="alert" hidden></p>
             </div>
@@ -1319,6 +1320,7 @@
               <p id="audiobookPronunciationStatus" role="status">Original text. No rules applied.</p>
             </details>
             <section id="audiobookChapterPlan" aria-live="polite" hidden></section>
+            <p id="audiobookReuseStatus" class="hint" role="status"></p>
             <div class="action-row"><span id="audiobookAuditionStatus" class="hint" role="status"></span><button id="audiobookAuditionCancel" class="secondary" type="button" hidden>Cancel audition</button></div>
             <audio id="audiobookAuditionAudio" controls hidden></audio>
             <details><summary>Technical narration settings</summary><pre id="audiobookRequestPreview">Narration settings have not been previewed.</pre></details>
@@ -1598,6 +1600,7 @@
             <input class="text-input" id="libraryFilterInput" type="search" placeholder="Name, words, source, model, or type">
           </label>
           <button class="secondary compact-button" id="libraryFilterClearButton" type="button" hidden>Clear filter</button>
+          <label class="library-filter">Voice type <select id="libraryVoiceFilter"><option value="">All Library items</option><option value="actor_voice">Actor Voices</option><option value="character_voice">Character Voices</option></select></label>
         </div>
         <div class="library-filter-empty" id="libraryFilterEmpty" hidden>No library items match this filter.</div>
         <div class="library-list" id="libraryList">Loading saved work&hellip;</div>

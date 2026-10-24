@@ -180,7 +180,7 @@ for (const terminal of ['complete', 'cancelled', 'failed']) {
       },
       updateBuildControls() {},
       updateRenderControls() {},
-      renderScript() {}, currentProject: () => ({}),
+      renderScript() {}, renderPendingVoiceTargets() {}, currentProject: () => ({}),
       setBuildStatus: (message, status) => statuses.push(status),
       refreshBuiltProject: async () => { refreshes++; return {}; },
       dialogueBuildableCount: () => 0,
@@ -393,7 +393,7 @@ for (const terminal of ['complete', 'cancelled', 'failed']) {
     const project = { id: 'project_1', tracks: [{ clips: [{ type: 'dialogue', status: 'ready' }] }], renders: [] };
     const mutations = new Map();
     const renderButton = {};
-    let scriptUnlocked = false;
+    let scriptUnlocked = false, reuseUnlocked = false;
     const context = vm.createContext({
       apiRoot: '/projects', currentProject: () => project,
       serverMutationPending: () => mutations.size > 0,
@@ -401,6 +401,7 @@ for (const terminal of ['complete', 'cancelled', 'failed']) {
       renderButton, latestMaster: { removeAttribute() {} }, renderRenderHistory() {}, setRenderStatus() {},
       activeDialogueBuild: null, dialogueCancelPending: false, updateBuildControls() {}, setBuildStatus() {}, dialogueBuildableCount: () => 0,
       renderScript() { scriptUnlocked = mutations.size === 0; },
+      renderPendingVoiceTargets() { reuseUnlocked = mutations.size === 0; },
     });
     vm.runInContext(functionSource('updateRenderControls') + functionSource('monitorDialogueBuild'), context);
     context.refreshBuiltProject = async () => {
@@ -411,6 +412,7 @@ for (const terminal of ['complete', 'cancelled', 'failed']) {
     await context.monitorDialogueBuild({ project_id: project.id, status: terminal, completed: 1, total: 1 });
     assert.equal(mutations.size, 0);
     assert.equal(renderButton.disabled, false, 'terminal completion refreshes render availability without another edit');
+    assert.equal(reuseUnlocked,true,'reuse target unlocks after the build');
     assert.equal(scriptUnlocked, true, 'Script controls must refresh after the build releases its mutation');
   });
 }

@@ -134,6 +134,12 @@ actor-reference publication leaves child manifests and previews unchanged.
 Its optional generated preview is replaceable evaluation data,
 not a Library asset or production take.
 
+Library browsing projects reference and preview availability from these owners.
+Its contextual voice actions carry a pending ID; the receiving Audiobook or
+Story Builder tool revalidates that ID, reference and selected engine before
+assignment. Voice-design starters are editable descriptions, and become saved
+Actor Voices only after actual candidate generation and explicit saving.
+
 ## Story (`internal/story`)
 
 The staged story pipeline behind `/v1/stories`, persisted atomically by the
