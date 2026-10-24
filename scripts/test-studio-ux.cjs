@@ -32,12 +32,56 @@ test('Library auditions are exclusive and filtering preserves the selected voice
   context.stopLibraryAudition();assert.equal(paused,2);assert.equal(context.selectedVoiceId,'voice_keep');
 });
 
+test('leaving Library stops its hidden audition without changing the selected voice', () => {
+  let paused=0;
+  const context=load(['applyPage','stopLibraryAudition'],{displayedPage:'library',PAGE_PARENT:{audiobook:'stories-audiobooks'},transcribeRecorder:null,pageModules:[],parentLinks:[],parentNavs:[],pageLinks:[],document:{documentElement:{setAttribute(){}}},refreshAudiobooks(){},refreshAudiobookBenchmarks(){},window:{scrollTo(){}},selectedVoiceId:'voice_keep',libraryActiveAudio:{pause(){paused++;}}});
+  context.applyPage('audiobook');
+  assert.equal(paused,1,'navigation left a hidden Library audition playing');
+  assert.equal(context.libraryActiveAudio,null);assert.equal(context.selectedVoiceId,'voice_keep');
+});
+
 test('audiobook reuse validates the pending voice and preserves the document and engine', async () => {
   const file={name:'Draft.md'}, input={files:[file]}, status={},select={value:'old'},engineSelect={value:'audio'};
   const context=load(['applyLibraryAudiobookVoice'],{audiobookBusy:false,audiobookAuditionPending:false,audiobookRequestKey:()=> 'same',audiobookEngineSelect:engineSelect,audiobookVoiceSelect:select,audiobookFileInput:input,libraryVoices:[],audiobookReuseStatus:status,audiobookReusedVoice:null,
     fetch:async url=>{assert.match(url,/voice=voice_new.*engine=audio/);return{json:async()=>({voiceId:'voice_new',name:'Reader',analysis:{},audioUrl:'/reference'})};},ensureOk:async()=>{},renderAudiobookVoices(){},renderAudiobookVoiceReference(){},invalidateAudiobookPreview(){},window:{location:{hash:'library'}},});
   assert.equal(await context.applyLibraryAudiobookVoice({voice_id:'voice_new'},status),true);
   assert.equal(select.value,'voice_new');assert.equal(engineSelect.value,'audio');assert.equal(input.files[0],file);
+});
+
+test('Character Voice reuse preserves the selected audiobook speaker phrase', async () => {
+  const speaker={value:'A woman'},direction={value:'Old direction'},status={};
+  const context=load(['applyLibraryAudiobookVoice'],{audiobookBusy:false,audiobookAuditionPending:false,audiobookRequestKey:()=> 'same',audiobookEngineSelect:{value:'dramabox'},audiobookVoiceSelect:{value:''},audiobookSpeakerPhrase:speaker,audiobookDirectionInput:direction,libraryVoices:[],audiobookReuseStatus:status,
+    fetch:async()=>({json:async()=>({voiceId:'character_one',characterId:'character_one',name:'Storyteller',direction:'Warm storytelling',promptSpec:{speakerPhrase:'A man'}})}),ensureOk:async()=>{},renderAudiobookVoices(){},renderAudiobookVoiceReference(){},invalidateAudiobookPreview(){},window:{location:{hash:'library'}},});
+  assert.equal(await context.applyLibraryAudiobookVoice({voice_id:'character_one'},status),true);
+  assert.equal(direction.value,'Warm storytelling');
+  assert.equal(speaker.value,'A woman','the saved character owns its direction, not the book speaker setting');
+});
+
+test('a requested Library voice can be retried after correcting its narrator engine', async () => {
+  const children=[],siblings=[],buttons=[];
+  const status={
+    set textContent(value){this.text=value;children.length=0;},get textContent(){return this.text;},
+    appendChild(button){children.push(button);},insertAdjacentElement(position,button){assert.equal(position,'afterend');siblings.push(button);},
+  };
+  const engine={value:'audio'},file={name:'Unsaved.md'};
+  const context=load(['applyLibraryAudiobookVoice'],{audiobookBusy:false,audiobookAuditionPending:false,audiobookRequestKey:()=> 'same',audiobookEngineSelect:engine,audiobookVoiceSelect:{value:''},audiobookFileInput:{files:[file]},audiobookDirectionInput:{value:''},libraryVoices:[],audiobookReuseStatus:status,
+    URLSearchParams,window:{location:{hash:'library',search:'?voice=character_one'}},
+    createElement(){const button={addEventListener(event,handler){assert.equal(event,'click');this.click=handler;}};buttons.push(button);return button;},
+    fetch:async()=>({json:async()=>({voiceId:'character_one',characterId:'character_one',name:'Storyteller',direction:'Warm storytelling'})}),
+    ensureOk:async()=>{if(engine.value!=='dramabox')throw Error('Choose expressive narration, then retry.');},renderAudiobookVoices(){},renderAudiobookVoiceReference(){},invalidateAudiobookPreview(){},
+  });
+  const start=source.indexOf('  var requestedLibraryItem=new URLSearchParams(');
+  const end=source.indexOf('  window.setInterval(',start);
+  assert.ok(start>=0 && end>start);
+  vm.runInContext(source.slice(start,end),context);
+  assert.equal(buttons.length,1);
+  buttons[0].click();await new Promise(setImmediate);
+  assert.match(status.textContent,/Choose expressive/);
+  assert.ok([...children,...siblings].includes(buttons[0]),'failure removed the pending handoff retry control');
+  engine.value='dramabox';buttons[0].click();await new Promise(setImmediate);
+  assert.equal(context.audiobookVoiceSelect.value,'character_one');
+  assert.equal(context.audiobookFileInput.files[0],file);
+  assert.match(status.textContent,/Selected Storyteller/);
 });
 
 test('dictionary loading locks replacement edits until an existing baseline is visible', async () => {

@@ -6742,6 +6742,7 @@
 
   function applyPage(name) {
     var changedPage = displayedPage !== "" && displayedPage !== name;
+    if (displayedPage === "library" && name !== "library") stopLibraryAudition();
     displayedPage = name;
     var parent = PAGE_PARENT[name] || "";
     if (name !== "transcription" && transcribeRecorder && transcribeRecorder.state() !== "idle") {
@@ -7770,7 +7771,7 @@
       if (key!==audiobookRequestKey()) {status.textContent="The audiobook settings changed. Select Use for audiobook again.";return false;}
       audiobookReusedVoice={id:choice.voiceId,name:choice.name,analysis:choice.analysis || {},audio_url:choice.audioUrl};
       renderAudiobookVoices(libraryVoices); audiobookVoiceSelect.value=choice.voiceId;
-      if (choice.characterId) {audiobookDirectionInput.value=choice.direction || "";audiobookSpeakerPhrase.value=choice.promptSpec.speakerPhrase || "A man";}
+      if (choice.characterId) {audiobookDirectionInput.value=choice.direction || "";}
       renderAudiobookVoiceReference(); invalidateAudiobookPreview();
       audiobookReuseStatus.textContent="Selected "+choice.name+". Your document and settings are retained"+(choice.characterId ? "; the character's saved direction is applied" : "")+". Preview the chapters before narration.";
       status.textContent=audiobookReuseStatus.textContent; window.location.hash="audiobook";return true;
@@ -11331,7 +11332,7 @@
   var requestedLibraryItem=new URLSearchParams(window.location.search);
   if(requestedLibraryItem.get("audiobook")) openLibraryAudiobook(requestedLibraryItem.get("audiobook"));
   if(requestedLibraryItem.get("story")) loadStory(requestedLibraryItem.get("story"));
-  if(requestedLibraryItem.get("voice")) { window.location.hash="audiobook"; audiobookReuseStatus.textContent="Choose the narrator engine, then apply the requested Library voice."; var reuseButton=createElement("button","secondary","Apply requested voice"); reuseButton.type="button";reuseButton.addEventListener("click",function(){applyLibraryAudiobookVoice({voice_id:requestedLibraryItem.get("voice")},audiobookReuseStatus);});audiobookReuseStatus.appendChild(reuseButton); }
+  if(requestedLibraryItem.get("voice")) { window.location.hash="audiobook"; audiobookReuseStatus.textContent="Choose the narrator engine, then apply the requested Library voice."; var reuseButton=createElement("button","secondary","Apply requested voice"); reuseButton.type="button";reuseButton.addEventListener("click",function(){applyLibraryAudiobookVoice({voice_id:requestedLibraryItem.get("voice")},audiobookReuseStatus);});audiobookReuseStatus.insertAdjacentElement("afterend",reuseButton); }
   window.setInterval(function () {
     if (document.visibilityState === "visible") {
       refreshHealth(true);

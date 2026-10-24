@@ -34,9 +34,9 @@
 
 **Interface:** six static, original description presets in the existing design UI, each `{id, name, description, purpose}`. Initial purposes: calm narration, documentary explanation, warm storytelling, energetic presentation, understated dialogue and theatrical dialogue. No real-person imitation, fabricated sample audio or promised accents. **Use description** fills the editable prompt; **Generate candidates** retains the existing explicit action.
 
-- [ ] Add a focused UI state assertion that choosing a preset changes only the description and does not generate, save or replace a selected Actor Voice.
-- [ ] Run `node --test scripts/test-studio-ux.cjs`; establish the new failure, implement the compact starter chooser and engine readiness copy, then require PASS.
-- [ ] Generate one short three-candidate set with the configured engine and save the chosen candidate through the existing flow. Review and commit.
+- [x] Add a focused UI state assertion that choosing a preset changes only the description and does not generate, save or replace a selected Actor Voice.
+- [x] Run `node --test scripts/test-studio-ux.cjs`; establish the new failure, implement the compact starter chooser and engine readiness copy, then require PASS.
+- [x] Generate one short three-candidate set with the configured engine and save the chosen candidate through the existing flow. Review and commit.
 
 ## 5B — Saved voices are easy to scan and audition
 
@@ -44,9 +44,9 @@
 
 **Interface:** reuse `ReadModel.List(query)` and `Entry` identity/metadata/actions. Provide search and Actor Voice/Character Voice filters, clear inherited voice relationships, existing preview audio and ready/unavailable states. Keep at most one audition playing. Do not advertise language/accent filters unless those fields actually exist in the saved records.
 
-- [ ] Add read-model cases for Actor/Character relationships, empty search results and unavailable preview actions. Add a UI state case for filter changes while preview audio is playing.
-- [ ] Run `go test ./internal/library` and `node --test scripts/test-studio-ux.cjs`; establish relevant new failures, implement the browsing layout and player behaviour, then require PASS.
-- [ ] Inspect keyboard focus, labels, contrast and a narrow window using a fixture library. Avoid oversized cards and nested scroll panes. Review and commit.
+- [x] Add read-model cases for Actor/Character relationships, empty search results and unavailable preview actions. Add a UI state case for filter changes while preview audio is playing.
+- [x] Run `go test ./internal/library` and `node --test scripts/test-studio-ux.cjs`; establish relevant new failures, implement the browsing layout and player behaviour, then require PASS.
+- [x] Inspect keyboard focus, labels, contrast and a narrow window using a fixture library. Avoid oversized cards and nested scroll panes. Review and commit.
 
 ## 5C — Clear reuse and return-to-production actions
 
@@ -54,9 +54,9 @@
 
 **Interface:** extend existing `Action`/`LaunchAction` projections with explicit target actions and `DisabledReason` when needed. Voice actions are **Use for audiobook** and **Assign in Story Builder**; project actions reopen their owner; artifact actions identify master/render/export. A pending target voice ID is validated by the receiving tool before assignment. Never change a global default engine as a side effect.
 
-- [ ] Add tests for compatible selection, missing/deleted voice reference, incompatible engine, stable owner/revision links and disabled export actions when artifacts are missing.
-- [ ] Implement contextual reuse: selecting a Character Voice for a book resolves its existing Actor/reference and supported direction, while Story Builder asks which existing Dialogue track or selected line receives it. Preserve current edits through the receiving tool's established save/leave handling.
-- [ ] Run `go test ./internal/library ./internal/gateway`, `node --test scripts/test-studio-ux.cjs` and the Story Builder browser smoke where its flow changed.
-- [ ] Demonstrate saved voice → audiobook preview and saved voice → selected Story Builder line; reopen a book/project from Library and download the correct render/export. Review and commit.
+- [x] Add tests for compatible selection, missing/deleted voice reference, incompatible engine, stable owner/revision links and disabled export actions when artifacts are missing.
+- [x] Implement contextual reuse: selecting a Character Voice for a book resolves its existing Actor/reference and supported direction, while Story Builder asks which existing Dialogue track or selected line receives it. Preserve current edits through the receiving tool's established save/leave handling.
+- [x] Run `go test ./internal/library ./internal/gateway`, `node --test scripts/test-studio-ux.cjs` and the Story Builder browser smoke where its flow changed.
+- [x] Demonstrate saved voice → audiobook preview and saved voice → selected Story Builder line; reopen a book/project from Library and download the correct render/export. Review and commit.
 
 **Stage gate:** A user can start from a description, compare/save a voice, locate it again and use it in the appropriate production. Every enabled action works; unavailable actions explain the concrete remedy.
