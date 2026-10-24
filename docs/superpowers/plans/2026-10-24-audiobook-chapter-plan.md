@@ -35,9 +35,9 @@
 
 **Initial rules:** TXT is one chapter. Markdown splits at top-level ATX headings (`# ` outside fenced code); preceding text is **Introduction**. EPUB uses readable spine documents in order, with first heading as title or **Chapter N** fallback. An EPUB spine document can contain multiple literary chapters: present this as an explicit initial limitation, not inferred structure. Headings remain spoken text. Do not offer manual chapter editing in this slice.
 
-- [ ] Write `TestExtractDocumentChapters` table cases for all three formats, empty input, fenced Markdown, multibyte names, BOM/CRLF, front matter and missing EPUB titles. Assert ordered non-overlapping valid byte ranges and no lost narratable text.
-- [ ] Run `go test ./internal/audiobook -run TestExtractDocumentChapters`; establish failure, implement extraction using current parsing/size limits, then require PASS.
-- [ ] Run `go test ./internal/audiobook` to protect the old extraction contract. Review and commit.
+- [x] Write `TestExtractDocumentChapters` table cases for all three formats, empty input, fenced Markdown, multibyte names, BOM/CRLF, front matter and missing EPUB titles. Assert ordered non-overlapping valid byte ranges and no lost narratable text.
+- [x] Run `go test ./internal/audiobook -run TestExtractDocumentChapters`; establish failure, implement extraction using current parsing/size limits, then require PASS.
+- [x] Run `go test ./internal/audiobook` to protect the old extraction contract. Review and commit.
 
 ## 2B — One preview plan, saved with production and render boundaries
 
