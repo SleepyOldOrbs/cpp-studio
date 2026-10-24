@@ -1,6 +1,6 @@
 # Pronunciation corrections Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Correct recurring words and names with previewable respelling rules while retaining original text and reproducible saved work.
 
@@ -35,10 +35,10 @@
 
 Matching is case-sensitive literal whole-word/phrase matching using Unicode letter/number boundaries. Longest match wins; a matching explicit language takes precedence over the empty-language fallback. Replacement is one pass, never recursive. Users explicitly choose a language; do not infer it. Show both source and spoken text, with matched substitutions highlighted.
 
-- [ ] Add table tests for overlapping phrases, apostrophes, Unicode boundaries, language precedence, duplicate rules, non-recursion and deterministic snapshot fingerprints regardless of input ordering.
-- [ ] Run `go test ./internal/pronunciation`; establish failures, implement the small store/resolver and preview endpoints/UI, then require PASS.
-- [ ] Add JSON export/import using the same validated schema. Test malformed/oversized import leaves the current store unchanged; importing requires choosing replace or merge explicitly.
-- [ ] Review and commit with a short preview demonstration; no synthesis is required for this slice.
+- [x] Add table tests for overlapping phrases, apostrophes, Unicode boundaries, language precedence, duplicate rules, non-recursion and deterministic snapshot fingerprints regardless of input ordering.
+- [x] Run `go test ./internal/pronunciation`; establish failures, implement the small store/resolver and preview endpoints/UI, then require PASS.
+- [x] Add JSON export/import using the same validated schema. Test malformed/oversized import leaves the current store unchanged; importing requires choosing replace or merge explicitly.
+- [x] Review and commit with a short preview demonstration; no synthesis is required for this slice.
 
 ## 4B — Frozen audiobook corrections
 
@@ -48,10 +48,10 @@ Matching is case-sensitive literal whole-word/phrase matching using Unicode lett
 
 Plan new synthesis units against both source boundaries and the engine's resolved spoken-text limit. Keep source-to-spoken mapping so safe subdivision remains possible; reject an indivisible over-limit replacement before reserving the engine. Chapter identity remains tied to source; rendered chapter boundaries remain tied to audio. Do not apply rules a second time on resume.
 
-- [ ] Add tests covering interrupted resume after global dictionary edits, frozen retry attempts, no-rule legacy fingerprint equality, longer substitutions, unchanged original manuscript and fidelity comparison against resolved spoken text. Include a replacement that changes audio duration: source chapter identity stays stable, the new render gets updated chapter times, and earlier M4B exports retain their original render association.
-- [ ] Run `go test ./internal/pronunciation ./internal/audiobook ./internal/gateway`; establish failures, implement the explicit **Apply pronunciation rules** preview and snapshot binding, then require PASS.
-- [ ] Demonstrate a corrected name in a short audition, then a fixture cancel/resume after dictionary changes. Confirm the existing production's spoken text and hashes are unchanged.
-- [ ] Review and commit. Offer changed rules as an explicit new production/restart, never silent continuation.
+- [x] Add tests covering interrupted resume after global dictionary edits, frozen retry attempts, no-rule legacy fingerprint equality, longer substitutions, unchanged original manuscript and fidelity comparison against resolved spoken text. Include a replacement that changes audio duration: source chapter identity stays stable, the new render gets updated chapter times, and earlier M4B exports retain their original render association.
+- [x] Run `go test ./internal/pronunciation ./internal/audiobook ./internal/gateway`; establish failures, implement the explicit **Apply pronunciation rules** preview and snapshot binding, then require PASS.
+- [x] Demonstrate a corrected name in a short audition, then a fixture cancel/resume after dictionary changes. Confirm the existing production's spoken text and hashes are unchanged.
+- [x] Review and commit. Offer changed rules as an explicit new production/restart, never silent continuation.
 
 ## 4C — Story Builder uses the same resolver and frozen project rules
 
@@ -59,8 +59,12 @@ Plan new synthesis units against both source boundaries and the engine's resolve
 
 **Interfaces:** add optional `Project.Pronunciation *pronunciation.Snapshot` and language through the existing revision-checked update. Resolve each line from original `TimelineClip.Text` at build time using the saved snapshot. Bind resolved text and snapshot policy to build completion checks. Applying a new snapshot invalidates only lines whose resolved synthesis input changes; historical takes remain retained.
 
-- [ ] Add tests for rule changes during a build, unchanged-line take reuse, over-limit rejection, source preservation, undo/save consistency and old projects with no snapshot.
-- [ ] Run `go test ./internal/pronunciation ./internal/storybuilder ./internal/gateway` and `node --test scripts/test-story-builder-state.cjs`; establish failures, implement explicit apply/preview, then require PASS.
-- [ ] Audition a corrected line, change the global dictionary and prove the project is unchanged until explicitly applying a new snapshot. Review and commit.
+- [x] Add tests for rule changes during a build, unchanged-line take reuse, over-limit rejection, source preservation, undo/save consistency and old projects with no snapshot.
+- [x] Run `go test ./internal/pronunciation ./internal/storybuilder ./internal/gateway` and `node --test scripts/test-story-builder-state.cjs`; establish failures, implement explicit apply/preview, then require PASS.
+- [x] Audition a corrected line, change the global dictionary and prove the project is unchanged until explicitly applying a new snapshot. Review and commit.
 
 **Stage gate:** The same rule behaves consistently in audiobook and scripted dialogue, source stays intact, and later dictionary edits cannot silently change saved or resumed production.
+
+## Acceptance evidence
+
+Implemented and independently reviewed in the pronunciation branch. Full Go suite and vet, 70 Node checks, delayed dictionary-load browser acceptance, frozen book/project apply and saved rules, large byte-bounded project previews, and native OmniVoice audition/dialogue verified by exact Whisper transcripts passed. Review regressions cover initial-load replacement safety, resolved DramaBox warning parity and all 2,048 supported project clips. Existing source and prior render/export identities remain intact.

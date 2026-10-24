@@ -48,3 +48,23 @@ func TestStoryBuilderHTTPPronunciationSnapshotUpdate(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 }
+
+func TestPronunciationPreviewAcceptsSupportedProjectClipCount(t *testing.T) {
+	r := &router{pronunciation: pronunciation.NewStore(filepath.Join(t.TempDir(), "rules.json"))}
+	sources := make([]string, storybuilder.MaxClips)
+	for i := range sources {
+		sources[i] = "James."
+	}
+	data, _ := json.Marshal(map[string]any{"sources": sources, "language": "en", "rules": []pronunciation.Rule{{Term: "James", Replacement: "Jaymz"}}})
+	w := httptest.NewRecorder()
+	r.handlePronunciation(w, httptest.NewRequest("POST", "/v1/pronunciation/preview", strings.NewReader(string(data))))
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var output struct {
+		Lines []pronunciation.Resolution `json:"lines"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &output); err != nil || len(output.Lines) != storybuilder.MaxClips {
+		t.Fatal(len(output.Lines), err)
+	}
+}

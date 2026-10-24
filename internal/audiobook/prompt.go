@@ -142,16 +142,20 @@ func PreviewDramaBoxPromptSections(spec DramaBoxPromptSpec, source string) ([]Pr
 	return PreviewDramaBoxDocumentSections(spec, source, nil)
 }
 
-func PreviewRequestPrompt(req Request) (PromptEvaluation, []PromptSectionPreview, error) {
+func evaluateRequestPrompt(req Request) (PromptEvaluation, error) {
 	text := req.Text
 	if req.Pronunciation != nil {
 		var err error
 		text, err = pronunciation.Resolve(req.Text, req.Language, req.Pronunciation.Rules)
 		if err != nil {
-			return PromptEvaluation{}, nil, err
+			return PromptEvaluation{}, err
 		}
 	}
-	evaluation, err := EvaluateDramaBoxPrompt(req.PromptSpec, text)
+	return EvaluateDramaBoxPrompt(req.PromptSpec, text)
+}
+
+func PreviewRequestPrompt(req Request) (PromptEvaluation, []PromptSectionPreview, error) {
+	evaluation, err := evaluateRequestPrompt(req)
 	if err != nil {
 		return evaluation, nil, err
 	}

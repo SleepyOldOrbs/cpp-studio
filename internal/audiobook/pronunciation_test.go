@@ -56,6 +56,46 @@ func TestCorrectedWhitespaceCannotOverflowSpokenBudget(t *testing.T) {
 	}
 }
 
+func TestCorrectedDramaBoxWarningsAgreeAcrossPreviewAuditionAndCreate(t *testing.T) {
+	for _, tc := range []struct {
+		source, term, replacement string
+		warns                     bool
+	}{{"hahaha", "hahaha", "ha ha ha", false}, {"James", "James", "hahaha", true}} {
+		t.Run(tc.source, func(t *testing.T) {
+			snapshot, _ := pronunciation.Freeze([]pronunciation.Rule{{Term: tc.term, Replacement: tc.replacement}})
+			doc := DocumentRequest{Filename: "name.txt", Data: []byte(tc.source), Request: Request{EngineID: DramaBoxEngineID, Pronunciation: &snapshot, Language: "en", Verification: VerificationModeOff}}
+			for _, audition := range []bool{false, true} {
+				registry := jobs.NewRegistry()
+				m := NewManager(ManagerOptions{RootDir: t.TempDir(), Jobs: registry, Synthesize: func(context.Context, SynthesisRequest) ([]byte, error) { return wav.SyntheticTone(16000), nil }})
+				resolved, err := m.PreviewDocument(context.Background(), doc)
+				if err != nil {
+					t.Fatal(err)
+				}
+				preview, _, err := PreviewRequestPrompt(resolved.Request)
+				if err != nil || (len(preview.Warnings) > 0) != tc.warns {
+					t.Fatal(preview, err)
+				}
+				var id string
+				if audition {
+					id, err = m.AuditionDocument(context.Background(), doc, resolved.Plan.Chapters[0].ID)
+				} else {
+					id, _, err = m.Create(context.Background(), doc)
+				}
+				if tc.warns {
+					if err == nil {
+						t.Fatal("execution accepted unacknowledged spoken warning")
+					}
+				} else {
+					if err != nil {
+						t.Fatal("execution disagreed with clean preview", err)
+					}
+					waitForAudiobookJob(t, registry, id)
+				}
+			}
+		})
+	}
+}
+
 func TestCorrectedResumeRetryAndFidelityKeepFrozenSpeech(t *testing.T) {
 	root := t.TempDir()
 	registry := jobs.NewRegistry()

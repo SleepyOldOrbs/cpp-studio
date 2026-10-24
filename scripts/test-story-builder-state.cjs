@@ -29,6 +29,20 @@ function functionSource(name) {
   return source.slice(start, start + 3 + next);
 }
 
+test('large pronunciation previews batch by bytes while freezing one dictionary snapshot', async () => {
+  const rules=[{term:'James',replacement:'Jaymz'}],calls=[];
+  const context=vm.createContext({TextEncoder,request:async(path,options)=>{
+    const body=JSON.parse(options.body);calls.push(body);
+    if (!body.sources) return {snapshot:{rules,fingerprint:'frozen',policyVersion:1}};
+    assert.equal(body.rules[0].replacement,'Jaymz');assert.ok(Buffer.byteLength(options.body)<=2*1024*1024);
+    return {snapshot:{rules,fingerprint:'frozen',policyVersion:1},lines:body.sources.map(source=>({source,spoken:source.replace('James','Jaymz'),substitutions:[]}))};
+  }});
+  vm.runInContext(functionSource('previewPronunciationLines'),context);
+  const sources=Array.from({length:2048},()=> 'James '+ 'é'.repeat(3990));
+  const result=await context.previewPronunciationLines(sources,'en');
+  assert.equal(result.lines.length,2048);assert.ok(calls.length>2);assert.equal(calls.filter(c=>!c.sources).length,1);
+});
+
 test('script rows keep stable clip identities, scene membership and same-time track order', () => {
   const context = vm.createContext({});
   vm.runInContext(functionSource('scriptRows'), context);
