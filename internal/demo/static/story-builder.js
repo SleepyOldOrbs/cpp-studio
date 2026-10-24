@@ -27,6 +27,9 @@
   const deleteButton = byID("storyBuilderDeleteButton");
   const refreshButton = byID("storyBuilderRefreshButton");
   const tracksElement = byID("storyBuilderTracks");
+  const scriptElement = byID("storyBuilderScript");
+  const scriptViewButton = byID("storyBuilderScriptView");
+  const timelineViewButton = byID("storyBuilderTimelineView");
   const undoButton = byID("storyBuilderUndo");
   const redoButton = byID("storyBuilderRedo");
   const snapInput = byID("storyBuilderSnap");
@@ -51,6 +54,7 @@
   const voiceGroups = byID("storyBuilderVoiceGroups");
 
   let panelPosition = null;
+  let projectView = "timeline";
   let clipPointerEdit = null;
   let panelPointerEdit = null;
   let actorVoices = [];
@@ -725,7 +729,7 @@
   }
 
   function refreshSelectionUI() {
-    document.querySelectorAll(".timeline-clip").forEach((element) => {
+    document.querySelectorAll(".timeline-clip, .script-row").forEach((element) => {
       const selected = editSession.selectionHas(element.dataset.clipId);
       element.classList.toggle("is-selected", selected);
       if (element.getAttribute("role") === "button") element.setAttribute("aria-pressed", String(selected));
@@ -1062,10 +1066,82 @@
     });
   }
 
+  function scriptRows(project) {
+    if (!project) return [];
+    const scenes = [...(project.scenes || [])].sort((a, b) => a.start_ms - b.start_ms);
+    return project.tracks.flatMap((track, trackIndex) => (track.clips || []).map((clip, clipIndex) => ({
+      clipID: clip.id, trackID: track.id,
+      sceneID: scenes.filter((scene) => scene.start_ms <= clip.start_ms).at(-1)?.id || "",
+      start: clip.start_ms, order: track.order ?? trackIndex, trackIndex, clipIndex,
+    }))).sort((a, b) => a.start - b.start || a.order - b.order || a.trackIndex - b.trackIndex || a.clipIndex - b.clipIndex)
+      .map(({ clipID, trackID, sceneID }) => ({ clipID, trackID, sceneID }));
+  }
+
+  function setProjectView(view) {
+    projectView = view;
+    scriptElement.hidden = view !== "script";
+    timelineViewport.hidden = view === "script";
+    editor.classList.toggle("script-mode", view === "script");
+    scriptViewButton.setAttribute("aria-pressed", String(view === "script"));
+    timelineViewButton.setAttribute("aria-pressed", String(view === "timeline"));
+    byID("storyBuilderCanvasTitle").textContent = view === "script" ? "Script" : "Timeline tracks";
+    renderTracks();
+  }
+
+  function renderScript(project) {
+    scriptElement.replaceChildren();
+    let previousScene = null;
+    scriptRows(project).forEach(({ clipID, trackID, sceneID }) => {
+      const track = project.tracks.find((item) => item.id === trackID);
+      const clip = track.clips.find((item) => item.id === clipID);
+      if (sceneID && sceneID !== previousScene) {
+        const scene = project.scenes.find((item) => item.id === sceneID);
+        const heading = document.createElement("h3");
+        heading.textContent = scene.title;
+        scriptElement.append(heading);
+      }
+      previousScene = sceneID;
+      const row = document.createElement("article");
+      row.className = "script-row";
+      row.dataset.clipId = clip.id;
+      row.classList.toggle("is-selected", editSession.selectionHas(clip.id));
+      row.addEventListener("focusin", () => selectClip(clip.id));
+      const cue = document.createElement("span");
+      cue.className = "script-cue";
+      const details = characterVoiceDetails(track.character_voice_id);
+      cue.textContent = `${(clip.start_ms / 1000).toFixed(2)}s · ${details ? details.character.name : track.name}`;
+      row.append(cue);
+      if (clip.type === "dialogue") {
+        const text = document.createElement("textarea");
+        text.value = clip.text || clip.label;
+        text.rows = 2;
+        text.maxLength = 4000;
+        text.setAttribute("aria-label", `Script line: ${clip.label}`);
+        text.addEventListener("change", () => updateDialogueText(clip.id, text.value));
+        row.append(text);
+        const status = document.createElement("span");
+        status.className = "script-line-status";
+        status.textContent = clip.build_error || clip.status || "stale";
+        row.append(status);
+      } else {
+        const cueText = document.createElement("p");
+        cueText.textContent = clip.type === "silence" ? `Pause · ${(clip.duration_ms / 1000).toFixed(2)}s` : `${track.type === "sfx" ? "SFX" : "Music"}: ${clip.label}`;
+        row.append(cueText);
+      }
+      scriptElement.append(row);
+    });
+    if (!scriptElement.childElementCount) {
+      const empty = document.createElement("p");
+      empty.textContent = "Add a Dialogue track and a line to start your script. Timing and sound cues are arranged in Timeline.";
+      scriptElement.append(empty);
+    }
+  }
+
   function renderTracks() {
     tracksElement.replaceChildren();
     const project = currentProject();
     if (!project) {
+      renderScript(null);
       renderScenes(null);
       updateBuildControls();
       updateRenderControls();
@@ -1074,6 +1150,7 @@
       return;
     }
     normalizeTracks(project);
+    renderScript(project);
     pruneSelection();
     const timelineDuration = timelineDurationMS(project);
     renderScenes(project);
@@ -2217,6 +2294,8 @@
     scheduleAutosave();
   });
   byID("storyBuilderAddDialogue").addEventListener("click", () => addTrack("dialogue"));
+  scriptViewButton.addEventListener("click", () => setProjectView("script"));
+  timelineViewButton.addEventListener("click", () => setProjectView("timeline"));
   byID("storyBuilderAddSFX").addEventListener("click", () => addTrack("sfx"));
   byID("storyBuilderAddMusic").addEventListener("click", () => addTrack("music"));
   undoButton.addEventListener("click", () => restoreTimeline(false));

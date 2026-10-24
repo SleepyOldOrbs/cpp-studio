@@ -1,4 +1,5 @@
 :root {
+  scroll-padding-top: 11rem;
   color-scheme: dark;
   --bg: #0d1118;
   --panel: #151c26;
@@ -21,7 +22,7 @@ body {
   background: radial-gradient(circle at top left, #182334 0, var(--bg) 38rem);
 }
 
-button, input { font: inherit; }
+button, input, textarea, select { font: inherit; }
 
 button, .studio-link {
   border: 1px solid var(--line);
@@ -33,7 +34,7 @@ button, .studio-link {
 
 button:hover, .studio-link:hover { border-color: var(--accent); }
 
-button:focus-visible, input:focus-visible, a:focus-visible {
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -215,6 +216,7 @@ button { padding: .55rem .75rem; }
 
 .project-editor { min-width: 0; padding: 1.2rem; }
 .editor-toolbar, .danger-zone { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
+.editor-toolbar { position: relative; z-index: 21; }
 .project-name-field { width: min(36rem, 62%); }
 .save-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .8rem; }
 .save-status { color: var(--muted); font-size: .78rem; }
@@ -375,6 +377,17 @@ button { padding: .55rem .75rem; }
 .selection-summary strong { display: block; color: var(--text); }
 .empty-state { padding: 5rem 2rem; text-align: center; }
 .empty-state h2 { color: var(--muted); font-weight: 500; }
+
+.view-switch { display: flex; gap: .35rem; }
+.view-switch button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.script-list { display: grid; gap: .65rem; padding: 1rem; }
+.script-list[hidden], .timeline-viewport[hidden] { display: none; }
+.script-row { min-width: 0; border: 1px solid var(--line); border-radius: .5rem; padding: .7rem; display: grid; gap: .4rem; }
+.script-row.is-selected { border-color: var(--accent); }
+.script-cue, .script-line-status { color: var(--muted); font-size: .78rem; }
+.script-row textarea { width: 100%; resize: vertical; border: 1px solid var(--line); border-radius: .35rem; padding: .6rem; background: var(--bg); color: var(--text); }
+.script-row p { margin: 0; }
+.script-mode .selection-panel, .script-mode .timeline-preferences { display: none; }
 
 @media (max-width: 760px) {
   .studio-header { position: static; padding: .7rem; }

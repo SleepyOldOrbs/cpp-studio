@@ -14,6 +14,48 @@ function functionSource(name) {
   return source.slice(start, start + 3 + next);
 }
 
+test('script rows keep stable clip identities, scene membership and same-time track order', () => {
+  const context = vm.createContext({});
+  vm.runInContext(functionSource('scriptRows'), context);
+  const project = { scenes: [{ id: 'opening', start_ms: 0 }, { id: 'arrival', start_ms: 5000 }], tracks: [
+    { id: 'fx', order: 2, clips: [{ id: 'bell', start_ms: 5000 }] },
+    { id: 'lead', order: 0, clips: [{ id: 'second', start_ms: 5000 }, { id: 'first', start_ms: 0 }, { id: 'aside', start_ms: 5000 }] },
+    { id: 'reply', order: 1, clips: [{ id: 'answer', start_ms: 5000 }] },
+  ] };
+  const before = JSON.stringify(project);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.scriptRows(project))), [
+    { clipID: 'first', trackID: 'lead', sceneID: 'opening' },
+    { clipID: 'second', trackID: 'lead', sceneID: 'arrival' },
+    { clipID: 'aside', trackID: 'lead', sceneID: 'arrival' },
+    { clipID: 'answer', trackID: 'reply', sceneID: 'arrival' },
+    { clipID: 'bell', trackID: 'fx', sceneID: 'arrival' },
+  ]);
+  assert.equal(JSON.stringify(project), before, 'reading Script must not reorder persisted clips');
+  assert.equal(context.scriptRows({ tracks: [{ id: 'empty', clips: null }] }).length, 0);
+  assert.equal(context.scriptRows({ tracks: [{ id: 'empty', clips: null }] }).length, 0, 'saved empty tracks can contain null clips');
+});
+
+test('script text uses shared undo and survives an older autosave response', () => {
+  const context = vm.createContext({ clone: structuredClone, normalizeTracks() {}, timelineError: () => '',
+    window: { clearTimeout() {}, setTimeout: () => 1 } });
+  vm.runInContext(functionSource('createEditSession') + functionSource('dialogueLabel') + functionSource('dialogueTextChanges') + functionSource('scriptRows') + '\nthis.session = createEditSession();', context);
+  const session = context.session;
+  const project = { id: 'script', revision: 1, scenes: [], timeline_duration_ms: 30000,
+    tracks: [{ id: 'narrator', order: 0, clips: [{ id: 'line', type: 'dialogue', text: 'Before', status: 'ready', start_ms: 0 }] }] };
+  session.upsert(project); session.open(project);
+  const saved = structuredClone(project), version = session.saveVersion();
+  session.edit(value => Object.assign(value.tracks[0].clips[0], context.dialogueTextChanges(value.tracks[0].clips[0], 'After')));
+  session.scheduleAutosave(() => {});
+  session.reconcileSaved(saved, version);
+  assert.equal(session.current().tracks[0].clips[0].text, 'After');
+  assert.equal(session.current().tracks[0].clips[0].status, 'stale');
+  assert.equal(context.scriptRows(session.current())[0].clipID, 'line');
+  assert.equal(session.restore(), true);
+  assert.equal(session.current().tracks[0].clips[0].text, 'Before');
+  assert.equal(session.restore(true), true);
+  assert.equal(session.current().tracks[0].clips[0].text, 'After');
+});
+
 test('save reconciliation preserves edits made while a save is in flight', () => {
   const context = vm.createContext({
     clone: structuredClone, normalizeTracks() {}, timelineError: () => '',

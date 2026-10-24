@@ -46,7 +46,7 @@
     <div>
       <p class="eyebrow">cpp-studio</p>
       <h1>Story Builder</h1>
-      <p class="subtitle">Arrange Dialogue, SFX, and Music on your project timeline.</p>
+      <p class="subtitle">Write your script, then arrange Dialogue, SFX, and Music on the timeline.</p>
     </div>
   </header>
 
@@ -102,6 +102,10 @@
             <h2 id="storyBuilderCanvasTitle">Timeline tracks</h2>
           </div>
           <div class="canvas-tools">
+            <div class="view-switch" role="group" aria-label="Project view">
+              <button id="storyBuilderScriptView" type="button" aria-pressed="false">Script</button>
+              <button id="storyBuilderTimelineView" type="button" aria-pressed="true">Timeline</button>
+            </div>
             <div class="timeline-preferences" aria-label="Timeline preferences">
               <label><input id="storyBuilderSnap" type="checkbox" checked> Snap 250 ms</label>
               <label for="storyBuilderTimelineDuration">Length (s)</label>
@@ -131,6 +135,7 @@
           <kbd>Ctrl/Cmd+S</kbd> save · <kbd>Ctrl/Cmd+Z</kbd> undo · <kbd>Ctrl/Cmd+Y</kbd> redo ·
           <kbd>Space</kbd> play or pause · <kbd>Delete</kbd> remove selected clips
         </p>
+        <div id="storyBuilderScript" class="script-list" aria-label="Project script" hidden></div>
         <div id="storyBuilderTimelineViewport" class="timeline-viewport">
           <div id="storyBuilderTimelineContent" class="timeline-content">
             <div id="storyBuilderTimelineRuler" class="timeline-ruler" aria-hidden="true"><span>0s</span><span>5s</span><span>10s</span><span>15s</span><span>20s</span><span>25s</span><span>30s</span></div>
